@@ -250,6 +250,16 @@
   select:not(:disabled) {
     min-height: 44px;
   }
+
+  .storefront button:not(:disabled),
+  .storefront a {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  .storefront button[aria-label]:not(:disabled) {
+    min-width: 44px;
+  }
 }
 
 /* تحسين قوائم <select> المنسدلة الأصليّة على مستوى التطبيق كلّه (١٥١ ملفاً تستعملها).
@@ -322,20 +332,28 @@ option:disabled {
   .storefront {
     --store-brand: #25406f;
     --store-brand-strong: #1b3158;
-    --store-accent: #ef6a5b;
-    --store-accent-strong: #d95245;
+    /* أبيض فوق اللونين يحقق 4.5:1 للنص العادي (5.75:1 و7.90:1 تقريباً). */
+    --store-accent: #b43d31;
+    --store-accent-strong: #922f28;
     --store-sun: #f4c84d;
     --store-mint: #dff4ee;
     --store-lilac: #eee6f6;
     --store-peach: #ffe5d5;
     --store-canvas: #fbf8f2;
     --store-ink: #20252a;
-    --store-muted: #727b80;
-    --store-sale: #d95245;
+    --store-muted: #5f696e;
+    --store-sale: #b43d31;
     background-color: var(--store-canvas);
     color: var(--store-ink);
     background-image: radial-gradient(circle at 10px 10px, rgb(37 64 111 / 7%) 1.25px, transparent 1.5px);
     background-size: 24px 24px;
+  }
+
+  .storefront :where(a, button, input, select, textarea, [tabindex]):focus-visible,
+  .storefront-consent:where(a, button, input, select, textarea, [tabindex]):focus-visible,
+  .storefront-consent :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 3px solid #25406f;
+    outline-offset: 2px;
   }
 
   .storefront .store-product-card {

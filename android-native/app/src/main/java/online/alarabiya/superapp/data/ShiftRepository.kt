@@ -25,6 +25,7 @@ class ShiftReportNotFoundException(val shiftId: Long) :
 internal interface ShiftApi {
     suspend fun queryObject(procedure: String, input: JSONObject? = null): JSONObject
     suspend fun queryNullableObject(procedure: String, input: JSONObject? = null): JSONObject?
+    suspend fun queryArray(procedure: String, input: JSONObject? = null): JSONArray
     suspend fun mutateObject(procedure: String, input: JSONObject? = null): JSONObject
 }
 
@@ -34,6 +35,9 @@ private class TrpcShiftApi(private val client: TrpcClient) : ShiftApi {
 
     override suspend fun queryNullableObject(procedure: String, input: JSONObject?): JSONObject? =
         client.queryNullableObject(procedure, input)
+
+    override suspend fun queryArray(procedure: String, input: JSONObject?): JSONArray =
+        client.queryArray(procedure, input)
 
     override suspend fun mutateObject(procedure: String, input: JSONObject?): JSONObject =
         client.mutate(procedure, input)

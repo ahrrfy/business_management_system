@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, type NativeScrollEvent, type NativeSyntheticEvent, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
 
 import type { StorefrontBanner, StorefrontOffer } from "@/lib/storefront-api";
+import { marketingCarouselGeometry } from "@/lib/marketing-carousel-layout";
 
 type Slide = {
   id: string;
@@ -59,8 +60,7 @@ export function MarketingCarousel({ banners, offers, onPress }: { banners: Store
     }
     return [{ id: "library-welcome", eyebrow: "كل ما تحتاجه في مكان واحد", title: "اكتشف عالم القراءة والتعلّم", subtitle: "منتجات مختارة وأسعار محدثة مباشرة من مكتبة العربية.", cta: "تسوق الآن", accent: "teal", source: null }];
   }, [banners, offers]);
-  const cardWidth = Math.min(Math.max(width - 32, 320), 480);
-  const sideInset = Math.max(16, (width - cardWidth) / 2);
+  const { cardWidth, sideInset } = marketingCarouselGeometry(width);
   const snapInterval = cardWidth + SLIDE_GAP;
   const listRef = useRef<FlatList<Slide>>(null);
   const activeIndexRef = useRef(0);

@@ -2,6 +2,9 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + PeriodFilter + printReportDoc).
 // ⚠️ أساس نقدي: من المقبوضات/المدفوعات المكتملة (receipts COMPLETED) لا الاستحقاق.
 import { useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, ymd, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -11,8 +14,6 @@ import { fmtAr, D } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { printTreasuryReportA4 } from "@/lib/printing/printTreasuryReportA4";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime } from "@/lib/date";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -155,6 +156,132 @@ export default function TreasuryReport() {
     t.setDate(t.getDate() + deltaDays);
     setPeriod({ from: ymd(f), to: ymd(t), preset: "custom" });
   }
+  /** أعمدة ملخّص الخزينة + ذيل الإجماليات (مقبوضات/مدفوعات/صافي). */
+  const treasuryColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
+    {
+      id: "label", header: "طريقة الدفع",
+      accessorFn: (r) => r.label,
+      cell: ({ row }) => <span className="font-medium">{row.original.label}</span>,
+      footer: () => (ts ? "الإجمالي" : null),
+      meta: { kind: "text" },
+    },
+    {
+      id: "settlement", header: "مكان التسوية",
+      accessorFn: (r) => r.settlementLabel,
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${row.original.settlement === "DRAWER" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"}`}>
+          {row.original.settlementLabel}
+        </span>
+      ),
+      footer: () => (ts ? <span className="text-muted-foreground">—</span> : null),
+      meta: { kind: "status" },
+    },
+    {
+      id: "in", header: "مقبوضات",
+      accessorFn: (r) => Number(r.in),
+      cell: ({ row }) => <span className="text-money-positive"><CopyInline value={String(row.original.in)} display={fmtAr(row.original.in)} mono={false} /></span>,
+      footer: () => (ts ? <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "out", header: "مدفوعات",
+      accessorFn: (r) => Number(r.out),
+      cell: ({ row }) => <span className="text-money-negative"><CopyInline value={String(row.original.out)} display={fmtAr(row.original.out)} mono={false} /></span>,
+      footer: () => (ts ? <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "net", header: "الصافي",
+      accessorFn: (r) => Number(r.net),
+      cell: ({ row }) => (
+        <span className={D(row.original.net).lt(0) ? "font-semibold text-money-negative" : "font-semibold text-money-positive"}>
+          <CopyInline value={String(row.original.net)} display={fmtAr(row.original.net)} mono={false} />
+        </span>
+      ),
+      footer: () => (ts ? <CopyInline value={String(ts.net)} display={fmtAr(ts.net)} mono={false} /> : null),
+      meta: { kind: "money" },
+    },
+  ], [ts]);
+
+  /** أعمدة تفاصيل تسوية الورديات — ثابتةٌ بلا اعتمادٍ على الحالة (الصفوف تأتي من `ts`). */
+  const shiftColumns = useMemo<ColumnDef<TS["shifts"]["rows"][number], unknown>[]>(() => [
+    { id: "id", header: "#", accessorFn: (s) => s.id, meta: { kind: "number", width: "id" }, cell: ({ row }) => row.original.id },
+    { id: "branchName", header: "الفرع", accessorFn: (s) => s.branchName ?? "—", cell: ({ row }) => row.original.branchName ?? "—" },
+    { id: "cashierName", header: "الكاشير", accessorFn: (s) => s.cashierName ?? "—", meta: { kind: "actor" }, cell: ({ row }) => row.original.cashierName ?? "—" },
+    {
+      id: "shiftType",
+      header: "النوع",
+      accessorFn: (s) => SHIFT_TYPE_LABEL[s.shiftType] ?? s.shiftType,
+      cell: ({ row }) => <span className="text-xs">{SHIFT_TYPE_LABEL[row.original.shiftType] ?? row.original.shiftType}</span>,
+    },
+    {
+      id: "period",
+      header: "الفترة",
+      accessorFn: (s) => `${fmtDateTime(s.openedAt)} — ${s.closedAt ? fmtDateTime(s.closedAt) : "مفتوحة"}`,
+      meta: { kind: "datetime" },
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {fmtDateTime(row.original.openedAt)}
+          <br />
+          {row.original.closedAt ? fmtDateTime(row.original.closedAt) : "مفتوحة"}
+        </span>
+      ),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (s) => (s.status === "CLOSED" ? "مغلقة" : "مفتوحة"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${row.original.status === "CLOSED" ? "bg-muted text-muted-foreground" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"}`}>
+          {row.original.status === "CLOSED" ? "مغلقة" : "مفتوحة"}
+        </span>
+      ),
+    },
+    {
+      id: "expectedCash",
+      header: "المتوقّع النقدي",
+      accessorFn: (s) => (s.expectedCash == null ? "—" : fmtAr(s.expectedCash)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.expectedCash == null ? "—" : <CopyInline value={row.original.expectedCash} display={fmtAr(row.original.expectedCash)} mono={false} />,
+    },
+    {
+      id: "countedCash",
+      header: "المعدود",
+      accessorFn: (s) => (s.countedCash == null ? "—" : fmtAr(s.countedCash)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.countedCash == null ? "—" : <CopyInline value={row.original.countedCash} display={fmtAr(row.original.countedCash)} mono={false} />,
+    },
+    {
+      id: "variance",
+      header: "الفرق",
+      accessorFn: (s) => (s.variance == null ? "—" : fmtAr(s.variance)),
+      meta: { kind: "money" },
+      cell: ({ row }) =>
+        row.original.variance == null ? (
+          "—"
+        ) : (
+          <span className={`font-semibold ${D(row.original.variance).lt(0) ? "text-money-negative" : "text-money-positive"}`}>
+            <CopyInline value={row.original.variance} display={fmtAr(row.original.variance)} mono={false} />
+          </span>
+        ),
+    },
+    {
+      id: "reconciliationStatus",
+      header: "التسوية",
+      accessorFn: (s) => (s.reconciliationStatus ? (RECONCILIATION_LABEL[s.reconciliationStatus] ?? s.reconciliationStatus) : "بانتظار الإغلاق"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.reconciliationStatus
+            ? (RECONCILIATION_LABEL[row.original.reconciliationStatus] ?? row.original.reconciliationStatus)
+            : "بانتظار الإغلاق"}
+        </span>
+      ),
+    },
+  ], []);
 
   return (
     <ReportShell
@@ -185,77 +312,24 @@ export default function TreasuryReport() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => setBranchId(value ? Number(value) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !ts ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">طريقة الدفع</th>
-                  <th className="p-3 text-right font-medium">مكان التسوية</th>
-                  <th className="p-3 text-right font-medium">مقبوضات</th>
-                  <th className="p-3 text-right font-medium">مدفوعات</th>
-                  <th className="p-3 text-right font-medium">الصافي</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا حركات في الفترة." />
-                ) : (
-                  rows.map((r, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className="p-3 text-right font-medium">{r.label}</td>
-                      <td className="p-3 text-right text-xs text-muted-foreground">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 ${r.settlement === "DRAWER" ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"}`}>
-                          {r.settlementLabel}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right tabular-nums text-money-positive" dir="ltr">
-                        <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
-                      </td>
-                      <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">
-                        <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
-                      </td>
-                      <td className={`p-3 text-right tabular-nums font-semibold ${D(r.net).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">
-                        <CopyInline value={String(r.net)} display={fmtAr(r.net)} mono={false} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-              <tfoot>
-                <tr className="border-t font-bold bg-muted/30">
-                  <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-right text-muted-foreground">—</td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} />
-                  </td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} />
-                  </td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    <CopyInline value={String(ts.net)} display={fmtAr(ts.net)} mono={false} />
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-            </ScrollTableShell>
-          )}
+          <DataTable
+            columns={treasuryColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا حركات في الفترة."
+          />
         </CardContent>
       </Card>
 
@@ -306,26 +380,18 @@ export default function TreasuryReport() {
               <h2 className="text-sm font-bold">تفاصيل تسوية الورديات النقدية</h2>
               <p className="mt-1 text-xs text-muted-foreground">المتوقّع والمعدود هنا للنقد الموجود في الدرج فقط؛ لا تدخل البطاقة أو التحويل في مبلغ إغلاق الكاشير.</p>
             </div>
-            <ScrollTableShell bordered={false} maxHeightClass="max-h-[calc(100dvh-19rem)]">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">#</th><th className="p-3 text-right font-medium">الفرع</th><th className="p-3 text-right font-medium">الكاشير</th><th className="p-3 text-right font-medium">النوع</th><th className="p-3 text-right font-medium">الفترة</th><th className="p-3 text-right font-medium">الحالة</th><th className="p-3 text-right font-medium">المتوقّع النقدي</th><th className="p-3 text-right font-medium">المعدود</th><th className="p-3 text-right font-medium">الفرق</th><th className="p-3 text-right font-medium">التسوية</th>
-                </tr></thead>
-                <tbody>
-                  {ts.shifts.rows.length === 0 ? <TableEmptyRow colSpan={10} message="لا ورديات فُتحت في الفترة." /> : ts.shifts.rows.map((s) => (
-                    <tr key={s.id} className="border-b last:border-0">
-                      <td className="p-3 tabular-nums" dir="ltr">{s.id}</td><td className="p-3">{s.branchName ?? "—"}</td><td className="p-3">{s.cashierName ?? "—"}</td><td className="p-3 text-xs">{SHIFT_TYPE_LABEL[s.shiftType] ?? s.shiftType}</td>
-                      <td className="p-3 text-xs whitespace-nowrap" dir="ltr">{fmtDateTime(s.openedAt)}<br />{s.closedAt ? fmtDateTime(s.closedAt) : "مفتوحة"}</td>
-                      <td className="p-3"><span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${s.status === "CLOSED" ? "bg-muted text-muted-foreground" : "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"}`}>{s.status === "CLOSED" ? "مغلقة" : "مفتوحة"}</span></td>
-                      <td className="p-3 tabular-nums" dir="ltr">{s.expectedCash == null ? "—" : <CopyInline value={s.expectedCash} display={fmtAr(s.expectedCash)} mono={false} />}</td>
-                      <td className="p-3 tabular-nums" dir="ltr">{s.countedCash == null ? "—" : <CopyInline value={s.countedCash} display={fmtAr(s.countedCash)} mono={false} />}</td>
-                      <td className={`p-3 tabular-nums font-semibold ${s.variance != null && D(s.variance).lt(0) ? "text-money-negative" : "text-money-positive"}`} dir="ltr">{s.variance == null ? "—" : <CopyInline value={s.variance} display={fmtAr(s.variance)} mono={false} />}</td>
-                      <td className="p-3 text-xs">{s.reconciliationStatus ? (RECONCILIATION_LABEL[s.reconciliationStatus] ?? s.reconciliationStatus) : "بانتظار الإغلاق"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: البطاقة تحمل العنوان والشرح؛ و`pageSize=Infinity` إلزاميّ مع `embedded`
+                لأنّ شريط الحالة (وفيه أزرار الترقيم) مكتومٌ — بلا ذلك تُحبَس الصفوف بعد الخمسين
+                بلا وسيلة وصول. الارتفاع المقيّد والترويسة اللاصقة كما كانا. */}
+            <DataTable<TS["shifts"]["rows"][number]>
+              embedded
+              searchable={false}
+              pageSize={Infinity}
+              maxHeightClass="max-h-[calc(100dvh-19rem)]"
+              data={ts.shifts.rows}
+              columns={shiftColumns}
+              emptyText="لا ورديات فُتحت في الفترة."
+            />
             {ts.shifts.count > ts.shifts.shownCount && <p className="border-t px-4 py-2 text-xs text-muted-foreground">تُعرض أحدث {ts.shifts.shownCount} وردية من أصل {ts.shifts.count}. صدّر Excel للحصول على الصفوف المعروضة.</p>}
           </CardContent>
         </Card>

@@ -9,6 +9,7 @@
  */
 import { useState } from "react";
 import { ChevronDown, ImageIcon, Loader2, Pencil, X } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,15 +23,38 @@ export interface DesignImage {
   revision?: number | null;
 }
 
+/** يبني حمولة النسخة من حقول ملف التصميم وحدها؛ غياب customizationText هنا مقصود للحفاظ عليه. */
+export function buildDesignSaveInput(workOrderId: number, draft: ImageItem[], note: string) {
+  return {
+    workOrderId,
+    images: draft.map((item, index) => ({
+      url: item.url || item.dataUrl,
+      caption: item.name?.trim() || null,
+      sortOrder: index,
+    })),
+    note: note.trim(),
+  };
+}
+
 export default function DesignFileCard({
   images,
   workOrderId,
   /** يُخفي محرّر النسخة على أمرٍ مُسلَّم/ملغى أو لمن لا يملك التعديل. */
   canEdit = false,
+  /**
+   * **رقمُ النسخة المثبَّتة فعلاً** من سجلّ النسخ (`workOrderDesignRevisions`)، أو `null` إن
+   * لم تُثبَّت بعد.
+   *
+   * ⚠️ كانت البطاقة تشتقّ الرقم من الصور وحدها وتسقط على `1` عند غيابها، فتُعلن «نسخة ١ من ١»
+   * على أمرٍ **بلا رأس نسخةٍ إطلاقاً** — بينما بطاقةُ الاعتماد فوقها تقول «لا توجد نسخة مثبتة
+   * بعد». بطاقتان على شاشةٍ واحدة تتناقضان في الحقيقة نفسها (بلاغ المالك ١/٩/٢٦).
+   */
+  pinnedRevision = null,
 }: {
   images: DesignImage[];
   workOrderId: number;
   canEdit?: boolean;
+  pinnedRevision?: number | null;
 }) {
   const [zoom, setZoom] = useState<DesignImage | null>(null);
   const [showOld, setShowOld] = useState(false);
@@ -43,19 +67,24 @@ export default function DesignFileCard({
     onSuccess: (r) => {
       notify.ok(
         r.changed
-          ? `حُفظت النسخة ${r.revision}${r.taskNumber ? ` — فُتح طلب موافقة ${r.taskNumber}` : ""}`
+          ? `حُفظت النسخة ${r.revision} — اطلب اعتمادها من بطاقة الحوكمة`
           : "لا تغيير — النسخة كما هي",
       );
       setEditing(false);
       void utils.workOrders.get.invalidate({ workOrderId });
+      void utils.workOrderDesignApproval.getCurrent.invalidate({ workOrderId });
     },
     onError: (e) => notify.err(e),
   });
 
   const revs = images.map((i) => Number(i.revision ?? 1));
-  const current = revs.length ? Math.max(...revs) : 1;
-  const currentImages = images.filter((i) => Number(i.revision ?? 1) === current);
-  const olderImages = images.filter((i) => Number(i.revision ?? 1) < current);
+  // سجلُّ النسخ هو المرجع؛ الصورُ تُكمله (نسخةٌ أحدث بصورٍ ولمّا يصل رأسُها بعد).
+  const highest = Math.max(...revs, pinnedRevision ?? 0, 0);
+  /** `null` = لا نسخةَ مثبَّتة ولا صورة — فلا نَدّعي «نسخة ١». */
+  const current: number | null = highest > 0 ? highest : null;
+  const currentImages = images.filter((i) => Number(i.revision ?? 1) === highest);
+  const olderImages = images.filter((i) => Number(i.revision ?? 1) < highest);
+  const validReason = note.trim().length >= 3;
 
   return (
     <div className="rounded-lg border p-4">
@@ -63,7 +92,7 @@ export default function DesignFileCard({
         <ImageIcon aria-hidden className="size-4" />
         <span className="text-sm font-bold">ملفّ التصميم</span>
         <span className="rounded-full bg-muted px-2 py-0.5 text-2xs font-bold text-muted-foreground">
-          نسخة {current} من {current}
+          {current == null ? "لم تُثبَّت نسخة بعد" : `نسخة ${current} من ${current}`}
         </span>
         {canEdit && !editing && (
           <Button
@@ -90,7 +119,7 @@ export default function DesignFileCard({
             aria-expanded={showOld}
             className="ms-auto inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground"
           >
-            النسخ السابقة ({current - 1})
+            النسخ السابقة ({highest - 1})
             <ChevronDown aria-hidden className={`size-3.5 transition-transform ${showOld ? "rotate-180" : ""}`} />
           </button>
         )}
@@ -102,31 +131,26 @@ export default function DesignFileCard({
             value={draft}
             onChange={setDraft}
             maxItems={10}
-            hint="عدّل الصور ثمّ احفظ — تُحفظ **نسخةً جديدة** والقديمة تبقى، ويُفتَح طلبُ موافقةٍ للعميل."
+            hint="عدّل الصور ثمّ احفظ — تُحفظ نسخة جديدة والقديمة تبقى. أي طلب معلق يصبح قديماً، ثم تطلب اعتماد النسخة الجديدة صراحةً."
           />
           <Input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="سبب التعديل (يظهر في طلب الموافقة)"
+            placeholder="سبب إنشاء النسخة الجديدة (3 محارف على الأقل)"
+            aria-invalid={note.length > 0 && !validReason}
           />
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
-              disabled={save.isPending}
+              disabled={save.isPending || !validReason}
               onClick={() =>
-                save.mutate({
-                  workOrderId,
-                  images: draft.map((d, i) => ({
-                    url: d.url || d.dataUrl,
-                    caption: d.name?.trim() || null,
-                    sortOrder: i,
-                  })),
-                  note: note.trim() || null,
-                })
+                // لا نرسل customizationText إطلاقاً: undefined يعني «حافظ على النص الحالي»،
+                // أما null فيعني مسحه صراحةً وفق عقد الخدمة.
+                save.mutate(buildDesignSaveInput(workOrderId, draft, note))
               }
             >
               {save.isPending ? (
-                <><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ الحفظ…</>
+                <><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> {ACTION_LABELS.saving}</>
               ) : (
                 "احفظ نسخةً جديدة"
               )}
@@ -137,7 +161,14 @@ export default function DesignFileCard({
           </div>
         </div>
       ) : (
-        <Grid images={currentImages} onZoom={setZoom} />
+        currentImages.length > 0 ? (
+          <Grid images={currentImages} onZoom={setZoom} />
+        ) : (
+          <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+            رفعُ ملفّ التصميم اختياريّ — نصّ التخصيص وحده يكفي مستنداً قابلاً للاعتماد. أضِف صوراً
+            فقط حين يحتاجها التنفيذ فعلاً.
+          </div>
+        )
       )}
 
       {showOld && olderImages.length > 0 && (

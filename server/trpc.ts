@@ -532,7 +532,6 @@ export const invoiceViewProcedure = branchScopedProcedure.use(
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
 export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");
-export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manager", "purchasing"], "purchases", "FULL");
 // inventory (يشمل production/stocktake — كلاهما يُحرّك المخزون)
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
@@ -644,6 +643,8 @@ export const deliveryReadProcedure = branchScopedProcedure.use(requireModule("st
 // operation narrower than storeFulfillProcedure: only cashier/manager may pay
 // a courier fee from a drawer.
 export const deliveryManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
+/** عمليات توصيل شديدة الحساسية: بوابة store:FULL ثم admin و2FA مركزياً. */
+export const deliveryAdminProcedure = deliveryManagerProcedure.use(requireAdmin);
 export const deliveryCashierProcedure = moduleProcedure(["cashier", "manager"], "store", "FULL");
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.
@@ -659,9 +660,8 @@ export const consignmentReadProcedure = branchScopedProcedure.use(requireModule(
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
 export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
-// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): أدوار الشراء التي تبني/تستلم أوامر الشراء
-// (purchasing/warehouse) تحتاجه لإضافة سطور PO، وكان محصوراً بالمدير فتعذّر عليها بناء أمر الشراء
-// رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
+// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): مسؤول الشراء يبني الفاتورة، وأمين المخزن
+// يحتاج قراءة بيانات الوحدة/التكلفة لأعمال الجرد والتحقيق. قراءة فقط،
 // ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
 export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
 // استوديو المنتجات وحدة مستقلة: العامل يقرأ/يكتب الصور والمحتوى المقترح فقط، ولا يعبر بوابة
@@ -701,6 +701,17 @@ export const workordersReadProcedure = branchScopedProcedure.use(requireModule("
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
 export const workordersExecProcedure = moduleProcedure(["cashier", "manager", "print_operator"], "workorders", "FULL");
 export const workordersManagerProcedure = moduleProcedure(["manager"], "workorders", "FULL");
+/**
+ * **الإلغاءُ المباشر لأمر الشغل** — مدير **أو فنّي مطبعة** (قرار المالك ١/٩/٢٦: الفنّي أوّلُ من
+ * يتحدّث مع العميل وإليه يتّصل ليُلغي). والحدُّ الفاصل بعد البوّابة هو **المال**: الخدمة ترفض
+ * أيَّ إلغاءٍ مباشر فيه عربونٌ أو مقبوضٌ أو أمانةُ أجرة، أو بدأ إنتاجُه.
+ *
+ * ⛔ **الكاشير ليس منها عمداً**: مساره `requestControl` كما كان قبل هذه الشريحة. توسيعُه إلى
+ * `workordersExecProcedure` كان سيسحبه معه صامتاً وينقض عقد RBAC المُختبَر («الكاشير ممنوع من
+ * العمليات الإدارية: لا يلغي أمر شغل») — والمالكُ طلب صلاحيةً للفنّي لا إعادةَ توزيعٍ للسلطة.
+ * والبوّابةُ هنا لا في الخدمة وحدها: عقدُ RBAC يتوقّع `FORBIDDEN` **قبل** تحقّق المدخلات.
+ */
+export const workordersDirectCancelProcedure = moduleProcedure(["manager", "print_operator"], "workorders", "FULL");
 
 // ─── F7 (تدقيق ٢/٧): بوّابات الوحدة المالية «treasury» ─────────────────────────
 // «محاسب» قالبه treasury=FULL ووصفه المعلن يشمل الخزينة والسندات — كان مصدوداً.
@@ -709,6 +720,16 @@ export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"
 export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
 export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
+/**
+ * قائمة مستلمي عهد النقد تخدم الكاشير عند إغلاق الوردية، وتخدم المدير أو
+ * المحاسب عند إعادة إسناد عهدة معلّقة. فصلها عن بوابة الكاشير يمنع توسيع
+ * بقية طفرات الوردية للمحاسب، مع إبقاء المنح الصريح وعزل الفرع.
+ */
+export const treasuryHandoverRecipientsProcedure = moduleProcedure(
+  ["cashier", "manager", "accountant"],
+  "treasury",
+  "READ",
+);
 /**
  * بيانات مرجعية عامّة للخزينة (فئات السندات) — **بلا اشتراط فرعٍ مُسنَد**.
  *

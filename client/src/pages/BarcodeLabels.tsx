@@ -1,4 +1,6 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -642,12 +644,11 @@ export default function BarcodeLabels() {
         actions={
           <div className="flex items-center gap-3">
             {canPickBranch && (
-              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                الفرع (يصحّح المخزون المعروض):
-                <select
+              <FilterField label="الفرع" hint="يصحّح المخزون المعروض" className="w-44">
+                <AppSelect
+                  className="h-8"
                   value={pickedBranch === "" ? "" : String(pickedBranch)}
-                  onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
-                  className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground"
+                  onValueChange={(v) => setPickedBranch(v === "" ? "" : Number(v))}
                 >
                   <option value="">
                     {me.data?.branchId != null ? "— فرعي —" : "— اختر —"}
@@ -655,8 +656,8 @@ export default function BarcodeLabels() {
                   {(branchesQ.data ?? []).map((b) => (
                     <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                   ))}
-                </select>
-              </label>
+                </AppSelect>
+              </FilterField>
             )}
             <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
           </div>
@@ -898,6 +899,8 @@ export default function BarcodeLabels() {
             )}
           </div>
 
+          {/* شبكةُ تحرير لا عرض: كل صفٍّ يحمل عدّاد ملصقاتٍ ومنتقي باركودٍ وزرَّ حذف —
+              `DataTable` أداةُ عرضٍ فيبقى طابور الطباعة خامّاً عن قصد. */}
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
@@ -937,18 +940,18 @@ export default function BarcodeLabels() {
                           {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
                           {/* وحدةٌ بعدّة باركودات (مصنّعيّ + داخليّ) ⇒ اختر أيّها يُطبع. يظهر فقط حين يوجد خيار. */}
                           {barcodeOptions(q).length > 1 && (
-                            <select
+                            <AppSelect
                               dir="ltr"
-                              className="h-8 rounded-md border bg-background px-1 text-xs font-mono"
+                              className="h-8 px-1 text-xs font-mono"
                               value={q.barcode}
-                              onChange={(e) => pickBarcode(q, e.target.value)}
+                              onValueChange={(v) => pickBarcode(q, v)}
                               aria-label={`الباركود المطبوع لـ${q.productName}`}
                               title="اختر أيّ باركود يُطبع على الملصق"
                             >
                               {barcodeOptions(q).map((o) => (
                                 <option key={o.code} value={o.code}>{o.code} — {o.label}</option>
                               ))}
-                            </select>
+                            </AppSelect>
                           )}
                         </div>
                       </td>

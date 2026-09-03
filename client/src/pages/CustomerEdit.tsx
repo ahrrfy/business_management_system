@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,15 +11,15 @@ import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
-import { fmtAr as fmt } from "@/lib/money";
+import { D, fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 /**
  * تعديل عميل — موحَّد على نمط شاشة الإضافة (CustomerNew v3).
@@ -34,6 +35,9 @@ import { selectClsFull } from "@/lib/ui/formStyles";
  *  - الحفظ: unlimited ⇒ null، none ⇒ "0"، limit ⇒ النص المُدخل. لا انقلاب صامت.
  *  - غير المدير: الحقل محجوب (get يحجب creditLimit أصلاً) ⇒ نرسل undefined
  *    فلا تُطمَس القيمة المخزّنة بقيمة محجوبة.
+ *
+ * تماثلها مع `CustomerNew` مقيسٌ نصّاً في `__tests__/customerFormParity.test.ts`: نفس الحقول،
+ * ونفس صيغة عرض المال (`fmtAr`)، ونفس مسار المغادرة المحروس بتأكيد.
  *
  * تصحيح الرصيد الافتتاحي (٢٥/٧): بطاقةٌ للأدمن/المدير وحدهما تُعدّل قيد OPENING المرجعيّ وتُطبّق
  * الفارق على الرصيد الجاري (تصون النشاط اللاحق) — لتصحيح أخطاء الإدخال الأوّليّ. غير المرتفعين
@@ -113,14 +117,15 @@ export default function CustomerEdit() {
       setDistrict(c.district ?? "");
       setAddress(c.address ?? "");
       // دلالة سقف الائتمان: null=بلا حدّ، "0"=نقدي فقط، >0=سقف محدّد — نشتقّ الوضع للحفاظ عليها عند الحفظ.
+      // ⛔ لا `Number()` على مبلغ: المقارنة بـDecimal (نفس نواة العرض والإرسال).
       if (c.creditLimit == null) { setCreditMode("unlimited"); setCreditLimit(""); }
-      else if (Number(c.creditLimit) === 0) { setCreditMode("none"); setCreditLimit(""); }
+      else if (D(c.creditLimit).isZero()) { setCreditMode("none"); setCreditLimit(""); }
       else { setCreditMode("limit"); setCreditLimit(String(c.creditLimit)); }
       setNotes(c.notes ?? "");
       // الرصيد الافتتاحي الموقَّع (من قيد OPENING): موجب = «لنا عليه»، سالب = «له علينا».
-      const signedOpen = Number((c as { openingBalance?: string }).openingBalance ?? 0);
-      setOpeningAmount(signedOpen !== 0 ? String(Math.abs(signedOpen)) : "");
-      setOpeningDir(signedOpen < 0 ? "OWED_BY_US" : "OWED_TO_US");
+      const signedOpen = D((c as { openingBalance?: string }).openingBalance ?? 0);
+      setOpeningAmount(signedOpen.isZero() ? "" : signedOpen.abs().toString());
+      setOpeningDir(signedOpen.isNegative() ? "OWED_BY_US" : "OWED_TO_US");
       setLoaded(true);
     }
   }, [detail.data, loaded]);
@@ -281,8 +286,11 @@ export default function CustomerEdit() {
         <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(c.id)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الرصيد الحالي</div><div dir="ltr">{fmt(c.currentBalance)}</div></div>
-          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}</div></div>
+          {/* الحقلان المحجوبان لغير المدير (maskCustomerSensitive: creditLimit=null و currentBalance="0")
+              يُعرضان «—» لا قيمةً مُختلَقة. كانت البطاقة تقرأ الحجب فتكتب «بلا حدّ» — أي تُعلن ائتماناً
+              مفتوحاً لعميلٍ سقفُه «نقدي فقط»، و«0» رصيداً لمن عليه ملايين. نفس حارس شاشة العملاء. */}
+          <div><div className="text-muted-foreground text-xs">الرصيد الحالي</div><div dir="ltr">{isElevated ? fmt(c.currentBalance) : "—"}</div></div>
+          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{isElevated && c.creditLimit == null ? "بلا حدّ" : isElevated ? fmt(c.creditLimit) : "—"}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
             <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
@@ -311,16 +319,16 @@ export default function CustomerEdit() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="type">النوع</Label>
-              <select
+              <AppSelect
                 id="type"
-                className={selectClsFull}
+                className="h-9"
                 value={customerType}
-                onChange={(e) => onTypeChange(e.target.value as CustomerType)}
+                onValueChange={(value) => onTypeChange(value as CustomerType)}
               >
                 {TYPE_OPTIONS.map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           </CardContent>
         </Card>
@@ -397,19 +405,19 @@ export default function CustomerEdit() {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
               <Label htmlFor="tier">فئة السعر الافتراضية</Label>
-              <select
+              <AppSelect
                 id="tier"
-                className={selectClsFull}
+                className="h-9"
                 value={defaultPriceTier}
-                onChange={(e) => {
+                onValueChange={(value) => {
                   setTierTouched(true);
-                  setDefaultPriceTier(e.target.value as PriceTier);
+                  setDefaultPriceTier(value as PriceTier);
                 }}
               >
                 {PRICE_OPTIONS.map((o) => (
                   <option key={o.v} value={o.v}>{o.l}</option>
                 ))}
-              </select>
+              </AppSelect>
               {tierMismatch && (
                 <p className="text-[11px] text-[var(--sem-warn)]">
                   النوع «{customerType}» يُسعَّر عادةً «{PRICE_OPTIONS.find((o) => o.v === suggestedTier(customerType))?.l}».
@@ -421,16 +429,16 @@ export default function CustomerEdit() {
             {isElevated ? (
               <div className="space-y-1">
                 <Label htmlFor="creditMode">سقف الائتمان (البيع الآجل)</Label>
-                <select
+                <AppSelect
                   id="creditMode"
-                  className={selectClsFull}
+                  className="h-9"
                   value={creditMode}
-                  onChange={(e) => setCreditMode(e.target.value as CreditMode)}
+                  onValueChange={(value) => setCreditMode(value as CreditMode)}
                 >
                   <option value="none">نقدي فقط (بلا بيع آجل)</option>
                   <option value="limit">سقف محدّد…</option>
                   <option value="unlimited">بلا سقف (بيع آجل مسموح دائماً)</option>
-                </select>
+                </AppSelect>
                 {creditMode === "limit" && (
                   <MoneyInput
                     id="credit"
@@ -463,29 +471,29 @@ export default function CustomerEdit() {
         </Card>
 
         {isElevated && (
-          <Card className="lg:col-span-2 border-sky-200">
+          <Card className="lg:col-span-2 border-[var(--sem-info)]/40">
             <CardHeader>
               <CardTitle className="text-base">تصحيح الرصيد الافتتاحي</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <Label htmlFor="openDir">اتجاه الرصيد</Label>
-                <select
+                <AppSelect
                   id="openDir"
-                  className={selectClsFull}
+                  className="h-9"
                   value={openingDir}
-                  onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+                  onValueChange={(value) => setOpeningDir(value as "OWED_TO_US" | "OWED_BY_US")}
                 >
                   <option value="OWED_TO_US">لنا على العميل (مدين لنا)</option>
                   <option value="OWED_BY_US">للعميل علينا (دفعة مقدّمة منه)</option>
-                </select>
+                </AppSelect>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="openAmt">المبلغ (د.ع)</Label>
                 <MoneyInput id="openAmt" value={openingAmount} onChange={setOpeningAmount} placeholder="0" ariaLabel="مبلغ الرصيد الافتتاحي" />
               </div>
               <div className="md:col-span-2">
-                <p className="text-[11px] text-sky-800">
+                <p className="text-[11px] text-[var(--sem-info)]">
                   يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الحالي
                   دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
                 </p>
@@ -517,7 +525,7 @@ export default function CustomerEdit() {
       <FormError message={error} />
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <Button onClick={submit} disabled={update.isPending} title="Ctrl+S">
-          {update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}
+          {update.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
         </Button>
         {isActive ? (
           <Button

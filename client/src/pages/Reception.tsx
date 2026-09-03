@@ -52,11 +52,12 @@ import {
 } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2, roundCashIQD } from "@/lib/money";
+import { D, fmt, formatIqd, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -91,8 +92,7 @@ import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
 import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
 import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
+import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 import {
   getServerBridgeStatus,
@@ -263,7 +263,19 @@ export default function Reception() {
         // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
         heldDepositsCount: rep?.heldDepositsCount ?? 0,
         heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
+        treasuryReturn: r.treasuryReturn
+          ? {
+              amount: r.countedCash,
+              referenceNumber: r.treasuryReturn.handoverNumber,
+            }
+          : null,
       });
+      if (r.treasuryReturn) {
+        notify.ok(
+          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
+          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
+        );
+      }
       setClosing(false);
       setCounted("");
       setCountEntered(false);
@@ -2215,7 +2227,7 @@ export default function Reception() {
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading || shiftQ.isLoading) {
-    return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
+    return <div className="p-8 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>;
   }
 
   // بوّابة وردية خدمة العملاء: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
@@ -2236,15 +2248,15 @@ export default function Reception() {
           {needsBranchChoice && (
             <div className="mb-3">
               <label htmlFor="rec-branch" className="mb-1.5 block text-sm font-bold">الفرع <span className="text-destructive">*</span></label>
-              <select
+              <AppSelect
                 id="rec-branch"
-                className="h-12 w-full rounded-md border border-input bg-transparent px-3 text-base shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-12 border-input px-3 text-base focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 value={pickedBranch ?? ""}
-                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
               >
                 <option value="">— اختر الفرع —</option>
                 {(branchesQ.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
           )}
           <label className="mb-1.5 block text-sm font-bold">المبلغ الموجود في الدرج الآن (د.ع)</label>
@@ -2412,10 +2424,6 @@ export default function Reception() {
                     </p>
                   </div>
                 )}
-                {/* العهدة الوسيطة (imprest، ٢٨/٧/٢٦): يعود كامل النقد المعدود للخزينة تلقائياً عند الإغلاق. */}
-                <div className="mt-3.5 rounded-lg border border-border bg-muted px-3 py-2.5 text-xs text-muted-foreground">
-                  عند التأكيد سيُسجّل النظام تسليم كامل المبلغ المعدود، ويبدأ العمل القادم بمبلغ جديد.
-                </div>
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
                     إلغاء

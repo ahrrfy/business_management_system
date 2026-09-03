@@ -56,7 +56,11 @@ export interface PlanWithTiers {
 
 /** الإسنادات الفعّالة للشهر P — سطر لكل موظف مؤهَّل (التداخل ممنوع كتابةً؛ نحسم دفاعياً بالأحدث).
  *  مشتركة مع لوحة الإنجاز/«أدائي» الحيّتين (S5) ⇒ تقبل DB أو Tx. */
-export async function loadEligible(runner: DB | Tx, period: string): Promise<EligibleRow[]> {
+export async function loadEligible(
+  runner: DB | Tx,
+  period: string,
+  scopedBranchId: number | null = null,
+): Promise<EligibleRow[]> {
   const rows = await runner
     .select({
       employeeId: commissionAssignments.employeeId,
@@ -72,6 +76,7 @@ export async function loadEligible(runner: DB | Tx, period: string): Promise<Eli
         sql`${commissionAssignments.effectiveFrom} <= ${period}`,
         sql`(${commissionAssignments.effectiveTo} IS NULL OR ${commissionAssignments.effectiveTo} >= ${period})`,
         sql`${employees.userId} IS NOT NULL`,
+        scopedBranchId == null ? undefined : eq(employees.branchId, scopedBranchId),
       ),
     )
     .orderBy(asc(commissionAssignments.effectiveFrom), asc(commissionAssignments.id));
@@ -173,7 +178,11 @@ export interface ComputeResult {
 }
 
 /** احتساب (أو إعادة احتساب مسودة) تشغيلة عمولات الشهر P — ذرّي بالكامل. */
-export async function computeCommissionRun(period: string, actor: Actor): Promise<ComputeResult> {
+export async function computeCommissionRun(
+  period: string,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<ComputeResult> {
   const p = assertPeriod(period);
   return withTx(async (tx) => {
     // ١) حارس التسلسل — الترحيل يُقرأ من المعتمَد فقط، فلا نقفز فوق مسودة أقدم.
@@ -199,14 +208,21 @@ export async function computeCommissionRun(period: string, actor: Actor): Promis
       }
       runId = Number(existing.id);
       recomputed = true;
-      await tx.delete(commissionRunLines).where(eq(commissionRunLines.runId, runId));
+      await tx
+        .delete(commissionRunLines)
+        .where(
+          and(
+            eq(commissionRunLines.runId, runId),
+            scopedBranchId == null ? undefined : eq(commissionRunLines.branchId, scopedBranchId),
+          ),
+        );
     } else {
       const res = await tx.insert(commissionRuns).values({ period: p, status: "draft", createdBy: actor.userId });
       runId = extractInsertId(res);
     }
 
     // ٣) الأهلية والمدخلات.
-    const eligible = await loadEligible(tx, p);
+    const eligible = await loadEligible(tx, p, scopedBranchId);
     if (eligible.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا موظفين بإسناد خطة فعّال لهذا الشهر — أسند الخطط أولاً من «خطط العمولات»." });
     }
@@ -279,14 +295,25 @@ export async function computeCommissionRun(period: string, actor: Actor): Promis
       totalCommission = totalCommission.plus(commission);
     }
 
-    // ٥) رأس التشغيلة — المُحتسِب الحالي يملك الأرقام النهائية (التاريخ الكامل في auditLogs).
+    // ٥) رأس التشغيلة — بعد احتساب فرعٍ واحد تُعاد مجاميع الرأس من جميع الأسطر القائمة؛
+    // مدير الفرع لا يحذف/يعيد احتساب أسطر الفروع الأخرى، والسلطة المركزية (scope=null)
+    // تعيد بناء الكشف كاملاً. المُحتسِب الأخير يبقى maker المحظور من الاعتماد.
+    const [runTotals] = await tx
+      .select({
+        employeeCount: sql<number>`COUNT(*)`,
+        totalBaseSales: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseSales}), 0) AS CHAR)`,
+        totalBaseReturns: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseReturns}), 0) AS CHAR)`,
+        totalCommission: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.commissionAmount}), 0) AS CHAR)`,
+      })
+      .from(commissionRunLines)
+      .where(eq(commissionRunLines.runId, runId));
     await tx
       .update(commissionRuns)
       .set({
-        employeeCount: eligible.length,
-        totalBaseSales: toDbMoney(totalSales),
-        totalBaseReturns: toDbMoney(totalReturns),
-        totalCommission: toDbMoney(totalCommission),
+        employeeCount: Number(runTotals?.employeeCount ?? 0),
+        totalBaseSales: toDbMoney(runTotals?.totalBaseSales ?? "0"),
+        totalBaseReturns: toDbMoney(runTotals?.totalBaseReturns ?? "0"),
+        totalCommission: toDbMoney(runTotals?.totalCommission ?? "0"),
         createdBy: actor.userId,
         computedAt: new Date(),
       })

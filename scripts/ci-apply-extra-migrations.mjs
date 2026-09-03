@@ -163,6 +163,52 @@ const EXTRA_MIGRATIONS = [
   // موثوقاً على MySQL 8، فالقيمة الجديدة تلزم إعادةَ التطبيق يدوياً على قاعدة الاختبار
   // كي يمرّ `check:migrations` وتقبل الخدمة الانتقالات الجديدة.
   "drizzle/migrations/0283_add_paused_studio_campaign_status.sql",
+  // ٣١/٨/٢٦: الحالة الصادقة RESOLVED_WITH_ADJUSTMENT توسّع enum المطابقة اليومية.
+  // الملف idempotent: ALTER إلى التعريف نفسه آمن، والجدولان CREATE IF NOT EXISTS، لذا
+  // يعيد تطبيق عقد enum على قاعدة db:push ويترك جداولها وقيودها القائمة بلا استبدال.
+  "drizzle/migrations/0297_cash_variance_resolution.sql",
+  // db:push لا ينشئ triggers؛ هذه المرآة تثبت أن رأس القضية وسجل أحداثها append-only فعلياً.
+  "drizzle/migrations/extras/0297_cash_variance_append_only_triggers.sql",
+  // ٣١/٨/٢٦: db:push ينشئ العمود والجدول لكنه لا ينشئ trigger نسخة أمر الشغل.
+  // إعادة التطبيق idempotent وتضمن أن كل كاتب قديم أو جديد يرفع version مركزياً.
+  "drizzle/migrations/0298_work_order_control_requests.sql",
+  // ٣١/٨/٢٦: جداول نسخ التصميم/الاعتماد CREATE IF NOT EXISTS؛ يلزم تطبيقها أيضاً بعد db:push.
+  "drizzle/migrations/0299_work_order_design_approvals.sql",
+  // ٣١/٨/٢٦: مراجعات PO وطلبات الشراء؛ يعيد بناء trigger النسخة بعد db:push.
+  "drizzle/migrations/0300_purchase_order_revisions_requisitions.sql",
+  // ٣١/٨/٢٦: إذن الاستلام المستقل/GRNI وعكسه؛ يعيد trigger النسخة ويرحّل القيود القديمة بصدق.
+  "drizzle/migrations/0301_goods_receipts_grni.sql",
+  // ٣١/٨/٢٦: فاتورة المورد والمطابقة الثلاثية؛ يعيد trigger النسخة ويبني رؤوس LEGACY بلا رقم خارجي مختلق.
+  "drizzle/migrations/0302_supplier_invoices_three_way_match.sql",
+  // ٣١/٨/٢٦: مرتجعات الشراء الموثقة وعكسها؛ الأعمدة IF NOT EXISTS وtrigger النسخة صالحان بعد db:push.
+  "drizzle/migrations/0303_purchase_return_governance.sql",
+  // ٣١/٨/٢٦: تخصيصات سداد المورد والاستردادات؛ يعيد حارسي POSTED وtrigger نسخة الدفعة.
+  "drizzle/migrations/0304_supplier_invoice_payment_allocations.sql",
+  // ٣١/٨/٢٦: مصروفات الشراء EXPENSE-only؛ يعيد حارسي نوع الحساب ونسخة المستند.
+  "drizzle/migrations/0305_purchase_ancillary_cost_allocations.sql",
+  // ٣١/٨/٢٦: قضايا النزاهة؛ يعيد حارسي append-only لسجل الأحداث.
+  "drizzle/migrations/0306_purchase_integrity_cases.sql",
+  // ٣١/٨/٢٦: توسيع قناة إثبات الدفع وإتاحة عدة محاولات جزئية للفاتورة مع إيصال أحادي.
+  "drizzle/migrations/0307_external_payment_collection_channels.sql",
+  // ٣١/٨/٢٦: حارس خطة نشطة واحدة لكل فاتورة مرتبطة؛ legacy ACTIVE بلا invoiceId يبقى متوافقاً.
+  "drizzle/migrations/0308_installment_invoice_active_guard.sql",
+  // ٣١/٨/٢٦: يضمن trigger نسخة عهدة COD بعد db:push.
+  "drizzle/migrations/0309_delivery_writeoff_control_requests.sql",
+  // ٣١/٨/٢٦: يضمن trigger نسخة تشغيلات العمولات بعد db:push.
+  "drizzle/migrations/0310_commission_branch_runs.sql",
+  // ٣١/٨/٢٦: db:push ينشئ الجداول؛ هذه المرآة تعيد حراس الاستثناء اليومي append-only.
+  "drizzle/migrations/extras/0314_missed_daily_count_exception_triggers.sql",
+  // ٣١/٨/٢٦: db:push ينشئ حقول/جدول مراجعات فاتورة المورد؛ هذه المرآة تعيد حراس السجل append-only.
+  "drizzle/migrations/extras/0315_supplier_invoice_draft_revision_triggers.sql",
+  // قيود الحجم/MIME وحرّاس append-only لمستندات دليل فرق النقد لا يمثلها db:push بالكامل.
+  "drizzle/migrations/0317_cash_variance_evidence.sql",
+  // ١/٩/٢٦: تُعدّل CHECKين قائمَين على `salesControlRequests` (شكل القرار + Maker-Checker)
+  // لتمثيل حالة WITHDRAWN. `db:push` يبني الصيغة القديمة من المخطّط فتسقط اختبارات السحب
+  // على قاعدة CI بينما الإنتاج (migrator) سليم — نفس فخّ #675.
+  "drizzle/migrations/0326_returns_withdraw_and_owner_override.sql",
+  // ١/٩/٢٦: يوسّع enum قناة طابور الاسترداد بـRETURN. `db:push` يبنيه من المخطّط فتنشأ
+  // الصيغة الجديدة على قاعدة الاختبار، لكن المرآة تُبقي المسارين متطابقين.
+  "drizzle/migrations/0327_offline_recovery_return_channel.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

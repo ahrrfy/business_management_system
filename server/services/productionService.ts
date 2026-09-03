@@ -29,3 +29,5 @@ export { createProduction } from "./production/create";
 export { cancelProduction } from "./production/cancel";
 export { listProductions, getProduction } from "./production/queries";
 export { runPreview } from "./production/preview";
+export { recipeCapacity } from "./production/capacity";
+export type { RecipeCapacityResult, RecipeCapacityComponent } from "./production/capacity";

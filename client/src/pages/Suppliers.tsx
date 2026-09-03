@@ -2,11 +2,12 @@ import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow } from "@/components/PageState";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -137,6 +138,171 @@ export default function Suppliers() {
     del.mutate({ supplierId: id });
   }
 
+  // أعمدة الجدول — تقرأ الصلاحيات وحالات الطفرات، فتُبنى في جسم المكوّن.
+  const columns: ColumnDef<Row, unknown>[] = [
+    {
+      id: "name",
+      header: "الاسم",
+      accessorFn: (s) => s.name ?? "",
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const s = row.original;
+        const id = Number(s.id);
+        return (
+          <span className="font-medium">
+            {canOpenStatement ? (
+              <Link href={`/suppliers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف الحساب">
+                {s.name}
+              </Link>
+            ) : (
+              s.name
+            )}
+            {(s as { supplierKind?: string }).supplierKind === "CONSIGNOR" && (
+              <span
+                className="mr-1.5 inline-flex items-center rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 align-middle text-[10px] font-bold text-[var(--sem-warn)]"
+                title="مودِعُ أمانة — بضاعتُه ملكُه، حصّتُه في تكلفة السطر"
+              >
+                أمانة
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ) — كما كان.
+    ...(hasLegacy
+      ? [{
+          id: "legacyCode",
+          header: "الرقم القديم",
+          accessorFn: (s: Row) => legacyCodeOf(s) ?? "—",
+          meta: { kind: "code" as const },
+          cell: ({ row }) => <span className="text-xs text-muted-foreground">{legacyCodeOf(row.original) ?? "—"}</span>,
+        } as ColumnDef<Row, unknown>]
+      : []),
+    {
+      id: "phone",
+      header: "الهاتف",
+      accessorFn: (s) => s.phone ?? "",
+      meta: { kind: "phone" },
+      cell: ({ row }) => <CopyInline value={row.original.phone} />,
+    },
+    { id: "city", header: "المدينة", accessorFn: (s) => s.city ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.city ?? "—"}</span> },
+    { id: "paymentTerms", header: "شروط الدفع", accessorFn: (s) => s.paymentTerms ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.paymentTerms ?? "—"}</span> },
+    {
+      id: "balance",
+      header: "الرصيد",
+      accessorFn: (s) => fmt(s.currentBalance ?? 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => <BalanceCell amount={row.original.currentBalance} entityType="supplier" />,
+    },
+    {
+      id: "balanceUsd",
+      header: "الرصيد $",
+      accessorFn: (s) => (Number(s.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(s.currentBalanceUsd)}` : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="font-medium">
+          {Number(row.original.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(row.original.currentBalanceUsd)}` : "—"}
+        </span>
+      ),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (s) => (s.isActive ? "مفعّل" : "معطّل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => {
+        const isActive = !!row.original.isActive;
+        return (
+          <span
+            className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}
+            title={isActive ? "نشط — يظهر في قوائم الشراء" : "معطّل — مستثنى من قوائم الشراء (أوامر الشراء المسوّاة تبقى)"}
+          >
+            {isActive ? "مفعّل" : "معطّل"}
+          </span>
+        );
+      },
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const s = row.original;
+        const id = Number(s.id);
+        const isActive = !!s.isActive;
+        return (
+          /* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */
+          <RowActions
+            contact={{
+              phone: s.phone,
+              whatsapp: (s as { whatsapp?: string | null }).whatsapp,
+              alternativePhones: [
+                (s as { phone2?: string | null }).phone2,
+                (s as { phone3?: string | null }).phone3,
+              ],
+              label: `واتساب ${s.name}`,
+              message: buildOperationalContactMessage({
+                partyName: s.name,
+                entityLabel: "حساب المورّد",
+                nextAction: "نتواصل معكم لمتابعة طلب شراء أو تسوية الحساب. يرجى الرد عند الملاءمة.",
+              }),
+              gate: { module: "suppliers", level: "READ" },
+            }}
+            actions={[
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل",
+                href: `/suppliers/${id}/edit`,
+                hidden: !canWrite,
+                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+              },
+              // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
+              {
+                key: "stmt",
+                kind: "view",
+                label: "كشف حساب",
+                href: `/suppliers-statement?id=${id}`,
+                gate: { module: "suppliers", level: "READ" },
+              },
+              {
+                key: "pay",
+                kind: "pay",
+                label: "سند صرف له",
+                href: "/vouchers/payment/new",
+                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+              },
+              {
+                key: "toggle",
+                kind: "approve",
+                label: isActive ? "تعطيل" : "تفعيل",
+                variant: isActive ? "destructive" : "default",
+                disabled: deactivate.isPending || activate.isPending,
+                disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                hidden: !canWrite,
+                onSelect: () => void toggle(id, isActive, s.name ?? ""),
+                gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
+              },
+              {
+                key: "delete",
+                kind: "delete",
+                label: "حذف نهائي",
+                variant: "destructive",
+                disabled: del.isPending,
+                disabledReason: "توجد عملية حذف قيد التنفيذ",
+                hidden: !canDelete,
+                onSelect: () => void remove(id, s.name ?? ""),
+                gate: { managerOnly: true },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -253,191 +419,37 @@ export default function Suppliers() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">الاسم</th>
-                {hasLegacy && <th className="p-2">الرقم القديم</th>}
-                <th className="p-2">الهاتف</th>
-                <th className="p-2">المدينة</th>
-                <th className="p-2">شروط الدفع</th>
-                <th className="p-2 text-start">الرصيد</th>
-                <th className="p-2 text-start">الرصيد $</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s) => {
-                const id = Number(s.id);
-                const isActive = !!s.isActive;
-                return (
-                  <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">
-                      {canOpenStatement ? (
-                        <Link
-                          href={`/suppliers-statement?id=${id}`}
-                          className="text-primary hover:underline"
-                          title="فتح كشف الحساب"
-                        >
-                          {s.name}
-                        </Link>
-                      ) : (
-                        s.name
-                      )}
-                      {(s as { supplierKind?: string }).supplierKind === "CONSIGNOR" && (
-                        <span
-                          className="mr-1.5 inline-flex items-center rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 align-middle text-[10px] font-bold text-[var(--sem-warn)]"
-                          title="مودِعُ أمانة — بضاعتُه ملكُه، حصّتُه في تكلفة السطر"
-                        >
-                          أمانة
-                        </span>
-                      )}
-                    </td>
-                    {hasLegacy && (
-                      <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
-                        {legacyCodeOf(s) ?? "—"}
-                      </td>
-                    )}
-                    <td className="p-2"><CopyInline value={s.phone} /></td>
-                    <td className="p-2 text-xs">{s.city ?? "—"}</td>
-                    <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
-                    <td className="p-2 text-start">
-                      <BalanceCell amount={s.currentBalance} entityType="supplier" />
-                    </td>
-                    <td className="p-2 text-start font-medium tabular-nums" dir="ltr">
-                      {Number(s.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(s.currentBalanceUsd)}` : "—"}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}
-                        title={isActive ? "نشط — يظهر في قوائم الشراء" : "معطّل — مستثنى من قوائم الشراء (أوامر الشراء المسوّاة تبقى)"}
-                      >
-                        {isActive ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
-                      <RowActions
-                        contact={{
-                          phone: s.phone,
-                          whatsapp: (s as { whatsapp?: string | null }).whatsapp,
-                          alternativePhones: [
-                            (s as { phone2?: string | null }).phone2,
-                            (s as { phone3?: string | null }).phone3,
-                          ],
-                          label: `واتساب ${s.name}`,
-                          message: buildOperationalContactMessage({
-                            partyName: s.name,
-                            entityLabel: "حساب المورّد",
-                            nextAction: "نتواصل معكم لمتابعة طلب شراء أو تسوية الحساب. يرجى الرد عند الملاءمة.",
-                          }),
-                          gate: { module: "suppliers", level: "READ" },
-                        }}
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            href: `/suppliers/${id}/edit`,
-                            hidden: !canWrite,
-                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
-                          },
-                          // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
-                          {
-                            key: "stmt",
-                            kind: "view",
-                            label: "كشف حساب",
-                            href: `/suppliers-statement?id=${id}`,
-                            gate: { module: "suppliers", level: "READ" },
-                          },
-                          {
-                            key: "pay",
-                            kind: "pay",
-                            label: "سند صرف له",
-                            href: "/vouchers/payment/new",
-                            gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: isActive ? "تعطيل" : "تفعيل",
-                            variant: isActive ? "destructive" : "default",
-                            disabled: deactivate.isPending || activate.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            hidden: !canWrite,
-                            onSelect: () => void toggle(id, isActive, s.name ?? ""),
-                            gate: { roles: ["manager", "warehouse", "purchasing"], module: "suppliers", level: "FULL" },
-                          },
-                          {
-                            key: "delete",
-                            kind: "delete",
-                            label: "حذف نهائي",
-                            variant: "destructive",
-                            disabled: del.isPending,
-                            disabledReason: "توجد عملية حذف قيد التنفيذ",
-                            hidden: !canDelete,
-                            onSelect: () => void remove(id, s.name ?? ""),
-                            gate: { managerOnly: true },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {list.isError && !list.isLoading && (
-                <tr>
-                  <td colSpan={hasLegacy ? 8 : 7}>
-                    <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
-                  </td>
-                </tr>
-              )}
-              {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow
-                  colSpan={hasLegacy ? 8 : 7}
-                  message={
-                    q || kind || includeInactive ? (
-                      <div className="space-y-2">
-                        <div>لا موردين مطابقين للفلاتر الحالية.</div>
-                        <Button variant="outline" size="sm" onClick={resetFilters}>
-                          مسح الفلاتر
-                        </Button>
-                      </div>
-                    ) : (
-                      "لا موردين بعد. أضف أوّل مورّد بزرّ «مورّد جديد» أعلاه."
-                    )
-                  }
-                />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          {/* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام الخادميّ) ⇒ `searchable={false}`
+              وإلّا ظهر حقلا بحثٍ متجاوران. والترقيم خادميّ يُصيّره DataTable — فزال شريط
+              «السابق/التالي» اليدويّ تحته (شريطان يقفزان بمقدارَين مختلفَين يتخطّيان صفوفاً). */}
+          <DataTable<Row>
+            columns={columns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={!!q.trim() || !!kind || includeInactive}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            getRowClassName={(s) => (s.isActive ? undefined : "opacity-60")}
+            serverPagination={{
+              page: displayPage,
+              onPageChange: (next) => setPage(next),
+              pageSize: limit,
+              total,
+              isFetching: list.isFetching,
+            }}
+            emptyState="لا موردين بعد. أضف أوّل مورّد بزرّ «مورّد جديد» أعلاه."
+            emptyFilteredState={
+              <div className="space-y-2">
+                <div>لا موردين مطابقين للفلاتر الحالية.</div>
+                <Button variant="outline" size="sm" onClick={resetFilters}>
+                  {FILTER_LABELS.reset}
+                </Button>
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
-      {total > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-          <div className="text-muted-foreground">
-            {pages > 1 ? (
-              <>يعرض {(displayPage * limit + 1).toLocaleString("ar-IQ-u-nu-latn")}–
-                {Math.min((displayPage + 1) * limit, total).toLocaleString("ar-IQ-u-nu-latn")} من
-                {" "}
-                {total.toLocaleString("ar-IQ-u-nu-latn")} مورّد</>
-            ) : (
-              <>الإجمالي: {total.toLocaleString("ar-IQ-u-nu-latn")} مورّد</>
-            )}
-          </div>
-          {pages > 1 && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={displayPage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-              <div className="text-muted-foreground">صفحة {displayPage + 1} من {pages}</div>
-              <Button variant="outline" size="sm" disabled={displayPage >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
-            </div>
-          )}
-        </div>
-      )}
 
       {isElevated && (
         <OperationsSummary

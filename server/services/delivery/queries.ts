@@ -7,6 +7,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 
 /**
@@ -171,6 +172,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
+      invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeDue,
       feeCollection: deliveryConsignments.feeCollection,
@@ -260,6 +263,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
       invoiceTotal: invoices.total,
       invoiceReturnedTotal: invoices.returnedTotal,
+      /**
+       * **المقبوضُ على المستند** — هو ما يقيس به `returnConsignment` خروجَ النقد
+       * (`previewNeedsCash = paidAmount > 0 || feeNet > 0`، [`returns.ts`](./returns.ts)).
+       * تعرضه الشاشةُ لتقدير ما سيخرج من الدرج عند الإرجاع؛ و`collectedAmount` **لا يصلح
+       * بديلاً**: لا يشمل ما سُدِّد بالكاونتر (`counterSettledAmount`) فيُنقِص التقدير.
+       * الجدولُ مضمومٌ أصلاً (`leftJoin(invoices)`) ⇒ عمودٌ بلا كلفةِ ضمٍّ جديدة.
+       */
+      invoicePaidAmount: invoices.paidAmount,
       /**
        * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة، بالصيغة
        * الحاكمة للمتبقّي الحيّ: codAmount − collectedAmount − counterSettledAmount (ما غطّاه
@@ -386,7 +397,12 @@ export async function getPartyStoreInTransit(partyId: number) {
     await db
       .select({
         count: sql<number>`COUNT(*)`,
-        value: sql<string>`COALESCE(SUM(GREATEST(CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)), 0)), 0)`,
+        // «ما بيد المندوب» سؤالُ تعرّضٍ ماليّ ⇒ `COLLECTIBLE` (مقصوص): طردٌ دُفِع فيه زائداً
+        // لا يجوز أن يُنقص تعرّضَ طردٍ آخر في نفس المجموع. القصُّ كان قائماً أصلاً.
+        // ⚠️ ترتيبُ الطرح تبدّل (`total − ret − paid` ⇐ `total − paid − ret`) وهو تجميعيّ على
+        // `DECIMAL` فالنتيجة واحدة رقماً برقم. وانتشارُ `NULL` محفوظ: الانضمامُ يساريّ وقد لا
+        // تكون فاتورة، و`GREATEST(NULL,0) = NULL` يتجاهله `SUM` — كما كان تماماً.
+        value: sql<string>`COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(onlineOrders)
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))

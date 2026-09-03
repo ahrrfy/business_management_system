@@ -36,6 +36,7 @@ import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
+import { assertApprover, resolveApprovalActor } from "./approval/ownerGate";
 import { resolveExpenseCategory } from "./expenseCategoryService";
 import { extractInsertId } from "../lib/insertId";
 import { parseSystemPaymentRequest } from "./voucher/create";
@@ -891,12 +892,26 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     )[0];
     if (!exp)
       throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
-    if (Number(exp.createdBy) === Number(actor.userId)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
-      });
-    }
+    // بالفعل لا بالإجراء: **اعتمادُ المصروف خروجُ مال** — تحقّقٌ من ثلاث كتاباتٍ أدناه في
+    // هذه الدالّة نفسها: `assertCashOutAvailable` على خزينة الفرع حين تكون الطريقة نقداً،
+    // ثمّ الإيصال المعلَّق يُقلَب `COMPLETED/APPROVED` بـ`cashBucket='TREASURY'` واتّجاهه
+    // `OUT` مضمونٌ بـ`assertPendingExpenseReceipt`، ثمّ `postEntry` بـ`PAYMENT_OUT`.
+    // ⇒ نقدٌ يغادر الخزينة فعلاً. وضابطُ فصل المهام القائم يُنقل كما هو إلى `legacy`.
+    // ⚠️ ولا مُصنِّفَ لهذا الفعل في `shared/approvalTriggers.ts` بعد — التصنيف هنا صريحٌ
+    // حتى يُضيفه القائد (`expenseApprovalTrigger`) فيُحوَّل هذا الموضع إليه.
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: "MONEY_OUT",
+      subject: `مصروف #${expenseId}`,
+      legacy: () => {
+        if (Number(exp.createdBy) === Number(actor.userId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
+          });
+        }
+      },
+    });
     if (exp.status === "ACTIVE") {
       const completedReceipt =
         exp.receiptId == null
@@ -1075,12 +1090,24 @@ export async function rejectExpense(
     )[0];
     if (!exp)
       throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
-    if (Number(exp.createdBy) === Number(actor.userId)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
-      });
-    }
+    // **الرفضُ حرّ**: لا `postEntry` ولا `assertCashOutAvailable` ولا مسَّ رصيدٍ — الإيصال
+    // يبقى `PENDING` حتى اللحظة فيُقلَب `FAILED/REJECTED` والمصروف `REJECTED` وأثرٌ تدقيقيّ.
+    // لا مالٌ خرج ولا أثرٌ قائمٌ يُمحى ⇒ `null`، وهو نفسُ `REJECT_IS_FREE` في كلّ مسارات
+    // المشتريات. وأثرُه المقصود: المالكُ الذي أنشأ الطلب يستطيع سحبَه بنفسه بدل جمودٍ
+    // مضمونٍ لا مخرجَ منه (لا أحدَ فوقه ليرفض).
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: null,
+      subject: `رفض مصروف #${expenseId}`,
+      legacy: () => {
+        if (Number(exp.createdBy) === Number(actor.userId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
+          });
+        }
+      },
+    });
     if (exp.status === "REJECTED") {
       const rejectedReceipt =
         exp.receiptId == null

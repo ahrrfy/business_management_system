@@ -12,17 +12,24 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
 import { useState } from "react";
+
+/** صفوفٌ مشتقّة من عقد الخادم فلا تنجرف عنه. */
+type LockHistoryRow = RouterOutputs["periodLock"]["history"]["rows"][number];
+type LockCertificateRow = RouterOutputs["periodLock"]["certificates"][number];
+
+/** جداول هذه الشاشة مُضمَّنة في بطاقاتٍ تحمل عناوينها ⇒ بلا شريط حالةٍ ولا منتقي أعمدة. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 export default function PeriodLockPage() {
   const utils = trpc.useUtils();
@@ -276,69 +283,66 @@ export default function PeriodLockPage() {
       <Card>
         <CardHeader className="font-semibold">سجل الإقفال والفتح</CardHeader>
         <CardContent className="p-0">
-          {history.isLoading ? (
-            <div className="p-4">
-              <LoadingState />
-            </div>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-right">الحدث</th>
-                    <th className="p-2 text-right">تاريخ الإقفال</th>
-                    <th className="p-2 text-right">بواسطة</th>
-                    <th className="p-2 text-right">الوقت</th>
-                    <th className="p-2 text-right">ملاحظات / سبب</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(history.data?.rows.length ?? 0) === 0 ? (
-                    <TableEmptyRow
-                      colSpan={5}
-                      message="لا عمليات قفل أو فتح مسجّلة بعد."
-                    />
+          <DataTable<LockHistoryRow>
+            {...PANEL_TABLE}
+            data={history.data?.rows ?? []}
+            loading={history.isLoading}
+            errorState={{ isError: history.isError, message: history.error?.message, onRetry: () => void history.refetch() }}
+            emptyText="لا عمليات قفل أو فتح مسجّلة بعد."
+            columns={[
+              {
+                id: "action",
+                header: "الحدث",
+                // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (r) => (r.action === "period.lock" ? "قفل" : "فتح"),
+                cell: ({ row }) =>
+                  row.original.action === "period.lock" ? (
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Lock aria-hidden className="size-3.5 text-destructive" />
+                      قفل
+                    </span>
                   ) : (
-                    history.data!.rows.map((r) => (
-                      <tr key={r.id} className="border-t">
-                        <td className="p-2">
-                          {r.action === "period.lock" ? (
-                            <span className="inline-flex items-center gap-1.5 font-medium">
-                              <Lock
-                                aria-hidden
-                                className="size-3.5 text-destructive"
-                              />
-                              قفل
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 font-medium">
-                              <LockOpen
-                                aria-hidden
-                                className="size-3.5 text-[var(--status-active)]"
-                              />
-                              فتح
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-2">
-                          {r.cutoffDate ? fmtDate(r.cutoffDate) : "—"}
-                        </td>
-                        <td className="p-2">{r.userName}</td>
-                        <td className="p-2 text-muted-foreground" dir="ltr">
-                          {fmtDateTime(r.createdAt)}
-                        </td>
-                        <td className="p-2 text-muted-foreground">
-                          {r.action === "period.lock"
-                            ? (r.notes ?? "—")
-                            : (r.reason ?? "—")}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <LockOpen aria-hidden className="size-3.5 text-[var(--status-active)]" />
+                      فتح
+                    </span>
+                  ),
+              },
+              {
+                id: "cutoffDate",
+                header: "تاريخ الإقفال",
+                accessorFn: (r) => (r.cutoffDate ? fmtDate(r.cutoffDate) : "—"),
+                meta: { kind: "date" },
+                cell: ({ row }) => (row.original.cutoffDate ? fmtDate(row.original.cutoffDate) : "—"),
+              },
+              {
+                id: "userName",
+                header: "بواسطة",
+                accessorFn: (r) => r.userName,
+                meta: { width: "actor" },
+                cell: ({ row }) => row.original.userName,
+              },
+              {
+                id: "createdAt",
+                header: "الوقت",
+                accessorFn: (r) => fmtDateTime(r.createdAt),
+                // kind: "datetime" يتكفّل بعزل اتّجاه الأرقام ⇒ لا dir="ltr" يدويّ.
+                meta: { kind: "datetime" },
+                cell: ({ row }) => <span className="text-muted-foreground">{fmtDateTime(row.original.createdAt)}</span>,
+              },
+              {
+                id: "notes",
+                header: "ملاحظات / سبب",
+                accessorFn: (r) => (r.action === "period.lock" ? (r.notes ?? "—") : (r.reason ?? "—")),
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => (
+                  <span className="text-muted-foreground">
+                    {row.original.action === "period.lock" ? (row.original.notes ?? "—") : (row.original.reason ?? "—")}
+                  </span>
+                ),
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -348,69 +352,72 @@ export default function PeriodLockPage() {
           شهادات الإقفال غير القابلة للتعديل
         </CardHeader>
         <CardContent className="p-0">
-          {certificates.isLoading ? (
-            <div className="p-4">
-              <LoadingState />
-            </div>
-          ) : (certificates.data?.length ?? 0) === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">
-              لا توجد شهادات بعد. الأقفال الإرثية المقر بها لا تُمنح شهادات
-              رجعية.
-            </p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-right">الشهادة</th>
-                    <th className="p-2 text-right">الشهر</th>
-                    <th className="p-2 text-right">النوع</th>
-                    <th className="p-2 text-right">الاعتماد</th>
-                    <th className="p-2 text-right">الإجراءات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {certificates.data!.map((row) => (
-                    <tr key={row.id} className="border-t">
-                      <td className="p-2 font-mono" dir="ltr">
-                        {row.certificateNumber}
-                      </td>
-                      <td className="p-2">
-                        {row.month} / {row.revision}
-                      </td>
-                      <td className="p-2">
-                        {row.kind === "YEAR_END" ? "سنوي" : "شهري"}
-                      </td>
-                      <td className="p-2">{fmtDateTime(row.approvedAt)}</td>
-                      <td className="p-2">
-                        <RowActions
-                          mode="inline"
-                          actions={[
-                            {
-                              key: "verify",
-                              kind: "view",
-                              label: "تحقق",
-                              icon: ShieldCheck,
-                              gate: { module: "reports", level: "READ" },
-                              onSelect: () => setSelectedCertificateId(row.id),
-                            },
-                            {
-                              key: "export",
-                              kind: "export",
-                              label: "Excel",
-                              icon: Download,
-                              gate: { module: "reports", level: "READ" },
-                              onSelect: () => void exportCertificate(row.id, row.certificateNumber),
-                            },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable<LockCertificateRow>
+            {...PANEL_TABLE}
+            data={certificates.data ?? []}
+            loading={certificates.isLoading}
+            errorState={{ isError: certificates.isError, message: certificates.error?.message, onRetry: () => void certificates.refetch() }}
+            emptyText="لا توجد شهادات بعد. الأقفال الإرثية المقر بها لا تُمنح شهادات رجعية."
+            columns={[
+              {
+                id: "certificateNumber",
+                header: "الشهادة",
+                accessorFn: (r) => r.certificateNumber,
+                // kind: "code" يتكفّل بالخطّ الأحاديّ وعزل الاتّجاه ⇒ لا dir="ltr" يدويّ.
+                meta: { kind: "code" },
+                cell: ({ row }) => row.original.certificateNumber,
+              },
+              {
+                id: "month",
+                header: "الشهر",
+                accessorFn: (r) => `${r.month} / ${r.revision}`,
+                cell: ({ row }) => `${row.original.month} / ${row.original.revision}`,
+              },
+              {
+                id: "kind",
+                header: "النوع",
+                accessorFn: (r) => (r.kind === "YEAR_END" ? "سنوي" : "شهري"),
+                meta: { kind: "status" },
+                cell: ({ row }) => (row.original.kind === "YEAR_END" ? "سنوي" : "شهري"),
+              },
+              {
+                id: "approvedAt",
+                header: "الاعتماد",
+                accessorFn: (r) => fmtDateTime(r.approvedAt),
+                meta: { kind: "datetime" },
+                cell: ({ row }) => fmtDateTime(row.original.approvedAt),
+              },
+              {
+                id: "actions",
+                header: "الإجراءات",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => (
+                  <RowActions
+                    mode="inline"
+                    actions={[
+                      {
+                        key: "verify",
+                        kind: "view",
+                        label: "تحقق",
+                        icon: ShieldCheck,
+                        gate: { module: "reports", level: "READ" },
+                        onSelect: () => setSelectedCertificateId(row.original.id),
+                      },
+                      {
+                        key: "export",
+                        kind: "export",
+                        label: "Excel",
+                        icon: Download,
+                        gate: { module: "reports", level: "READ" },
+                        onSelect: () => void exportCertificate(row.original.id, row.original.certificateNumber),
+                      },
+                    ]}
+                  />
+                ),
+              },
+            ]}
+          />
           {selectedCertificateId != null ? (
             <div className="border-t p-4 text-sm space-y-2">
               {certificate.isLoading || verification.isLoading ? (

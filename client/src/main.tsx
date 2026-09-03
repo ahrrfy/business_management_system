@@ -77,6 +77,9 @@ const queryClient = new QueryClient({
       },
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
     },
+    // Mutations are never retried generically. storefront.createOrder has a dedicated retryLink
+    // in the unified tRPC client because its durable clientRequestId makes one retry idempotent.
+    mutations: { retry: false },
   },
 });
 

@@ -2,13 +2,16 @@
 // الوارد «بالطريق» يستلمه الفرع الوجهة سطراً بسطر: كمية مستلَمة (0..المرسَل) وملاحظة
 // إلزامية عند أي فرق — العجز يبقى موثَّقاً على السند ويظهر هنا دائماً.
 import { Badge } from "@/components/ui/badge";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import type { ColumnDef } from "@tanstack/react-table";
 import { LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
@@ -23,8 +26,6 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type TransferRow = RouterOutputs["inventory"]["transfersList"]["rows"][number];
 
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const REASON_LABELS: Record<string, string> = {
   REBALANCE: "إعادة توزيع المخزون",
@@ -43,6 +44,76 @@ function StatusBadge({ status, sent, received }: { status: string; sent: number;
   return <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-[var(--sem-pos)]/30">مستلَم مطابق</Badge>;
 }
 
+/** نفسُ فروع `StatusBadge` نصّاً — تُغذّي «نسخ القيمة» والفرز بالتسمية المعروضة لا بالرمز. */
+function transferStatusLabel(r: TransferRow): string {
+  if (r.status === "IN_TRANSIT") return "بالطريق";
+  if (r.status === "CANCELLED") return "ملغى";
+  const sent = Number(r.totalSentBase);
+  const received = r.totalReceivedBase == null ? null : Number(r.totalReceivedBase);
+  if (received != null && received < sent) return `مستلَم بعجز ${fmtInt(sent - received)}`;
+  return "مستلَم مطابق";
+}
+
+/**
+ * أعمدةُ سجلّ التحويلات — موجة الجداول (٢/٩/٢٦). قائمةُ عرضٍ خالصة (لا حقلَ في صفٍّ)
+ * تُفتَح تفاصيلُها بنقر الصفّ ⇒ `DataTable` بـ`onRowClick`. شبكةُ الاستلام في الحوار
+ * أدناه تبقى خامّةً (انظر تعليقَها هناك).
+ */
+const transferColumns: ColumnDef<TransferRow, unknown>[] = [
+  {
+    id: "transferNumber",
+    header: "السند",
+    accessorFn: (r) => r.transferNumber,
+    meta: { kind: "code" },
+    cell: ({ row }) => <span className="text-xs">{row.original.transferNumber}</span>,
+  },
+  {
+    id: "route",
+    header: "من ← إلى",
+    accessorFn: (r) => `${r.fromBranchName} ← ${r.toBranchName}`,
+    meta: { width: "wide" },
+    cell: ({ row }) => `${row.original.fromBranchName} ← ${row.original.toBranchName}`,
+  },
+  {
+    id: "linesCount",
+    header: "المنتجات",
+    accessorFn: (r) => fmtInt(r.linesCount),
+    meta: { kind: "number", align: "center" },
+    cell: ({ row }) => fmtInt(row.original.linesCount),
+  },
+  {
+    id: "units",
+    header: "الوحدات (مرسَل/مستلَم)",
+    accessorFn: (r) => (r.totalReceivedBase != null ? `${fmtInt(r.totalSentBase)} / ${fmtInt(r.totalReceivedBase)}` : fmtInt(r.totalSentBase)),
+    meta: { kind: "number", align: "center" },
+    /* استثناءٌ مقصود: الخليّة رقمان في نصٍّ واحد («120 / 118») فالمقارنةُ المشتقّة تلصقهما
+       عدداً واحداً — نفرز على المرسَل وحده. */
+    sortingFn: (a, b) => Number(a.original.totalSentBase) - Number(b.original.totalSentBase),
+    cell: ({ row }) =>
+      `${fmtInt(row.original.totalSentBase)}${row.original.totalReceivedBase != null ? ` / ${fmtInt(row.original.totalReceivedBase)}` : ""}`,
+  },
+  {
+    id: "status",
+    header: "الحالة",
+    accessorFn: (r) => transferStatusLabel(r),
+    meta: { kind: "status" },
+    cell: ({ row }) => (
+      <StatusBadge
+        status={row.original.status}
+        sent={Number(row.original.totalSentBase)}
+        received={row.original.totalReceivedBase == null ? null : Number(row.original.totalReceivedBase)}
+      />
+    ),
+  },
+  {
+    id: "createdAt",
+    header: "التاريخ",
+    accessorFn: (r) => fmtDateTime(r.createdAt),
+    meta: { kind: "datetime", align: "end" },
+    cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.createdAt)}</span>,
+  },
+];
+
 export default function TransfersLog() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -56,6 +127,15 @@ export default function TransfersLog() {
   const [toDate, setToDate] = useState("");
   // فلتر فرع صريح — للمرتفعين فقط (المدير/الأدمن)؛ غيرهم مقيَّد بفرعه خادمياً أصلاً (نفس عزل القائمة).
   const [pickedBranch, setPickedBranch] = useState<number | "">("");
+
+  const activeFilterCount =
+    (q ? 1 : 0) + (fromDate ? 1 : 0) + (toDate ? 1 : 0) +
+    (status !== "all" ? 1 : 0) + (direction !== "all" ? 1 : 0) + (pickedBranch !== "" ? 1 : 0);
+
+  const resetFilters = () => {
+    setQ(""); setFromDate(""); setToDate("");
+    setStatus("all"); setDirection("all"); setPickedBranch("");
+  };
   const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: elevated });
   const dq = useDebouncedValue(q, 250);
   const [openId, setOpenId] = useState<number | null>(null);
@@ -240,94 +320,77 @@ export default function TransfersLog() {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">رقم السند</Label>
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="TRF-…" className="h-9 w-40" dir="ltr" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">من تاريخ</Label>
-          <Input type="date" dir="ltr" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="h-9" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">إلى تاريخ</Label>
-          <Input type="date" dir="ltr" value={toDate} onChange={(e) => setToDate(e.target.value)} className="h-9" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">الحالة</Label>
-          <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+      {/* الموجة ١: كان شريطاً يدوياً بـ`flex-wrap items-end` وخمسة حقولٍ بتسمياتٍ مكرّرة الأصناف. */}
+      <FilterShell
+        columns={3}
+        activeCount={activeFilterCount}
+        onReset={resetFilters}
+        headerActions={
+          <Button variant="outline" size="sm" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
+            {exporting ? ACTION_LABELS.exporting : "تصدير Excel (الكل)"}
+          </Button>
+        }
+      >
+        <FilterField label="رقم السند">
+          <SearchField value={q} onChange={setQ} placeholder="TRF-…" />
+        </FilterField>
+        <FilterField label="من تاريخ">
+          <Input type="date" dir="ltr" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+        </FilterField>
+        <FilterField label="إلى تاريخ">
+          <Input type="date" dir="ltr" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+        </FilterField>
+        <FilterField label="الحالة">
+          <AppSelect value={status} onValueChange={(v) => setStatus(v as typeof status)}>
             <option value="all">الكل</option>
             <option value="IN_TRANSIT">بالطريق</option>
             <option value="RECEIVED">مستلَم</option>
             <option value="CANCELLED">ملغى</option>
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label className="text-muted-foreground text-xs">الاتجاه</Label>
-          <select className={selectCls} value={direction} onChange={(e) => setDirection(e.target.value as typeof direction)}>
+          </AppSelect>
+        </FilterField>
+        <FilterField label="الاتجاه">
+          <AppSelect value={direction} onValueChange={(v) => setDirection(v as typeof direction)}>
             <option value="all">الكل</option>
             <option value="in">وارد لفرعي</option>
             <option value="out">صادر من فرعي</option>
-          </select>
-        </div>
+          </AppSelect>
+        </FilterField>
         {elevated && (
-          <div className="flex flex-col gap-1">
-            <Label className="text-muted-foreground text-xs">الفرع</Label>
-            <select className={selectCls} value={pickedBranch} onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}>
+          <FilterField label="الفرع">
+            <AppSelect value={pickedBranch === "" ? "" : String(pickedBranch)} onValueChange={(v) => setPickedBranch(v === "" ? "" : Number(v))}>
               <option value="">كل الفروع</option>
               {(branchesQ.data ?? []).map((b) => (
                 <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
               ))}
-            </select>
-          </div>
+            </AppSelect>
+          </FilterField>
         )}
-        <Button variant="outline" size="sm" className="h-9 ms-auto" disabled={rows.length === 0 || exporting} onClick={() => void exportAll()}>
-          {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
-        </Button>
-      </div>
+      </FilterShell>
 
       <Card>
         <CardContent className="p-0">
-          {list.isLoading ? (
-            <div className="p-6"><LoadingState /></div>
-          ) : rows.length === 0 ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا سندات تحويل بعد.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-right">السند</TableHead>
-                    <TableHead className="text-right">من ← إلى</TableHead>
-                    <TableHead className="text-center">المنتجات</TableHead>
-                    <TableHead className="text-center">الوحدات (مرسَل/مستلَم)</TableHead>
-                    <TableHead className="text-center">الحالة</TableHead>
-                    <TableHead className="text-left">التاريخ</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.id} className="cursor-pointer hover:bg-accent/40" onClick={() => openDoc(Number(r.id))}>
-                      <TableCell className="font-mono text-xs" dir="ltr">{r.transferNumber}</TableCell>
-                      <TableCell>{r.fromBranchName} ← {r.toBranchName}</TableCell>
-                      <TableCell className="text-center tabular-nums">{fmtInt(r.linesCount)}</TableCell>
-                      <TableCell className="text-center tabular-nums" dir="ltr">
-                        {fmtInt(r.totalSentBase)}{r.totalReceivedBase != null ? ` / ${fmtInt(r.totalReceivedBase)}` : ""}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <StatusBadge status={r.status} sent={Number(r.totalSentBase)} received={r.totalReceivedBase == null ? null : Number(r.totalReceivedBase)} />
-                      </TableCell>
-                      <TableCell className="text-left tabular-nums text-xs" dir="ltr">{fmtDateTime(r.createdAt)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ScrollTableShell>
-          )}
+          {/*
+            * `pageSize={Infinity}`: الصفحات تُراكَم بـ`useInfiniteQuery` وزرّ «تحميل المزيد»
+            * أدناه — ترقيمٌ محلّيّ فوقها يُخفي ما جُلب للتوّ. والفلاتر في `FilterShell` أعلاه
+            * ⇒ `searchable={false}` مع `externalFiltersActive` كي لا يُعلن الجدولُ «لا سندات
+            * بعد» بينما هي محجوبةٌ بالفلتر.
+            */}
+          <DataTable<TransferRow>
+            columns={transferColumns}
+            data={rows}
+            pageSize={Infinity}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            onRowClick={(r) => openDoc(Number(r.id))}
+            emptyText="لا سندات تحويل بعد."
+            emptyFilteredState="لا سندات تحويل مطابقة للفلاتر الحالية."
+          />
           {list.hasNextPage && (
             <div className="p-3 text-center border-t">
               <Button variant="outline" size="sm" onClick={() => list.fetchNextPage()} disabled={list.isFetchingNextPage}>
-                {list.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {list.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}
@@ -345,7 +408,7 @@ export default function TransfersLog() {
             <DialogDescription>
               {doc
                 ? `${doc.fromBranchName} ← ${doc.toBranchName}${doc.reason ? ` · ${REASON_LABELS[doc.reason] ?? doc.reason}` : ""} · أنشأه ${doc.createdByName ?? "—"} في ${fmtDateTime(doc.createdAt)}`
-                : "جارٍ التحميل…"}
+                : ACTION_LABELS.loading}
             </DialogDescription>
           </DialogHeader>
 
@@ -372,7 +435,15 @@ export default function TransfersLog() {
                 <p className="text-sm text-muted-foreground">ألغاه {doc.cancelledByName ?? "—"} في <span dir="ltr" className="tabular-nums">{fmtDateTime(doc.cancelledAt)}</span> — أُعيدت الكمية للفرع المرسل.</p>
               )}
 
-              <div className="border rounded-md overflow-hidden">
+              {/* شبكةُ تحرير لا عرض: كل سطرٍ يحمل حقلَ الكمية المستلَمة وحقلَ ملاحظته —
+                  `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. قشرتُها مشتركة الآن
+                  (`ScrollTableShell` بدل `border rounded-md overflow-hidden`): الترويسة تلتصق
+                  فيبقى «المرسَل ← المستلَم ← الفرق» مرئياً في سندٍ طويل. الارتفاع مقيَّد بـ
+                  `max-h-[50vh]` لأنّ الحوار نفسه يُمرَّر (`max-h-[85vh]`): بلا قيدٍ يتداخل
+                  تمريران ويهبط زرّا «مطابقة الكل» و«تأكيد الاستلام» تحت الأسطر.
+                  `showColumnVisibility` معطَّل — إخفاء «المرسَل» أو «الفرق» يُلغي المقارنة
+                  التي من أجلها فُتح الحوار. */}
+              <ScrollTableShell maxHeightClass="max-h-[50vh]" showColumnVisibility={false}>
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr>
@@ -435,7 +506,7 @@ export default function TransfersLog() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </ScrollTableShell>
 
               {canReceive && (
                 <div className="flex flex-wrap items-center justify-between gap-2">

@@ -166,6 +166,33 @@ beforeEach(async () => {
 });
 
 describe("governed direct USD purchase settlement", () => {
+  it("rejects a cross-branch service caller before reserving or posting", async () => {
+    await expect(
+      settlePurchaseUsdDirect(
+        {
+          purchaseOrderId: 1,
+          settledUsd: "100.00",
+          chargedIqd: "147000.00",
+          feeIqd: "1000.00",
+          method: "CARD",
+          referenceNumber: "CARD-AUTH-CROSS-BRANCH",
+          cardLastFour: "4242",
+          clientRequestId: "usd-cross-branch",
+        },
+        { userId: 3, branchId: 2, role: "manager" },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+    expect(await purchaseState()).toMatchObject({
+      po: { paidAmount: "0.00", paidUsd: "0.00" },
+      supplier: {
+        currentBalance: "290000.00",
+        currentBalanceUsd: "200.00",
+      },
+    });
+  });
+
   it("stays financially inert until a different owner approves, then posts once", async () => {
     const request = await requestUsd("usd-happy");
     expect(request).toMatchObject({

@@ -10,11 +10,19 @@
  *  · والإرجاع كان محصوراً بـASSIGNED|FAILED، وتسجيلُ FAILED حصريٌّ ببوّابة المندوب — وأغلب
  *    الجهات بلا حسابات ⇒ طردٌ بيد السائق **بلا مخرج إطلاقاً**.
  */
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelWorkOrder } from "../workOrder/cancel";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 import { updateWorkOrderDeliveryMethod } from "../workOrder/fulfillment";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { dispatchToDelivery } from "../delivery/dispatch";
@@ -26,6 +34,8 @@ const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryPartyMembers", "deliveryParties",
   "orderPayments", "idempotencyKeys", "auditLogs", "accountingEntries", "receipts",
+  "workOrderControlRequests", "workOrderEvents", "workOrderDesignApprovals",
+  "workOrderDesignRevisions", "taskEvents", "tasks", "serviceTypes",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
   "products", "shifts", "customers", "branches", "users",
@@ -33,6 +43,7 @@ const TABLES = [
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const OWNER = { userId: 3, branchId: 1, role: "admin", isOwner: true };
 
 function db() {
   const d = getDb();
@@ -51,7 +62,16 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc1", name: "موظف", email: "r1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "owner", name: "مالك معتمد", email: "o@t.test", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([
     { id: 1, name: "عميل", phone: "+9647701234567", currentBalance: "0.00", creditLimit: null },
   ]);
@@ -76,8 +96,37 @@ async function readyDeliveryOrder(reqId: string) {
     }],
   }, CASHIER);
   const woId = r.workOrders[0].workOrderId;
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId: woId,
+    requestKey: `delivery-design-request:${randomUUID()}`,
+    note: "اعتماد النسخة الحالية قبل التسليم",
+  }, CASHIER);
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `delivery-design-decision:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "ثبتت موافقة العميل على النسخة المنفذة",
+    evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.delivery.${randomUUID()}` },
+  }, MANAGER);
   await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
   return woId;
+}
+async function cancelGoverned(workOrderId: number) {
+  const [workOrder] = await db().select({ version: s.workOrders.version })
+    .from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+  const request = await requestWorkOrderControl({
+    requestKey: `delivery-cancel-request:${randomUUID()}`,
+    workOrderId,
+    requestType: "CANCEL",
+    baseVersion: Number(workOrder.version),
+    reason: "طلب إلغاء موثق بعد خروج الإرسالية مع المندوب",
+    payload: { refundShiftId: null, materials: null },
+  }, MANAGER);
+  return approveWorkOrderControlRequest(
+    Number(request.id),
+    OWNER,
+    "راجعت سبب الإلغاء ومسار الإرسالية قبل الاعتماد",
+  );
 }
 const dispatch = (workOrderId: number, reqId: string) =>
   dispatchToDelivery({ workOrderId, partyId: 1, clientRequestId: reqId }, CASHIER);
@@ -95,7 +144,7 @@ describe("حرّاس: لا عملية تفترض أنّ البضاعة في ال
     const woId = await readyDeliveryOrder("g-1");
     await dispatch(woId, "gd-1");
 
-    await expect(cancelWorkOrder(woId, MANAGER, { clientRequestId: "c-1" }))
+    await expect(cancelGoverned(woId))
       .rejects.toThrowError(/استرجع الإرساليّة|استرجع الإرسالية/);
 
     // ذرّية: لا شيء تغيّر — الأمر والفاتورة كما هما.

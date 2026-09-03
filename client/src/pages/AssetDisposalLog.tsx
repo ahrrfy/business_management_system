@@ -1,10 +1,12 @@
 import { Button } from "@/components/ui/button";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { FilterField, ListToolbar } from "@/components/list";
 import { fmtDate } from "@/lib/date";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
@@ -32,6 +34,67 @@ export default function AssetDisposalLog() {
     });
   }, [allRows, f.q, f.type, f.from, f.to]);
   const filtersActive = f.q.trim() !== "" || f.type !== "" || f.from !== "" || f.to !== "";
+
+  /*
+   * ⚠️ **فوق الرجوع المبكّر**: كان تحت `if (q.isLoading) return` فلا يُنفَّذ إلّا في
+   * التصيير الثاني ⇒ عددُ الخطّافات يتغيّر بين تصييرَين، وReact يسقط بدل عرض السجلّ
+   * (Codex P1 على PR #936). قاعدةُ الخطّافات: كلُّ `useMemo` فوق كلِّ `return` مشروط.
+   */
+  /** أعمدة سجلّ استبعاد الأصول. */
+  const disposalColumns = useMemo<ColumnDef<(typeof rows)[number], unknown>[]>(() => [
+    {
+      id: "asset", header: "الأصل",
+      accessorFn: (r) => r.name,
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <Link href={`/assets/${r.id}`} className="flex items-center gap-1.5 hover:text-primary">
+            <CategoryIcon category={r.category} />
+            <span>
+              <span className="font-medium">{r.name}</span>{" "}
+              <span className="text-xs text-muted-foreground" dir="ltr">{r.code}</span>
+              <div className="text-xs text-muted-foreground">{assetCategoryLabel(r.category)}</div>
+            </span>
+          </Link>
+        );
+      },
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "status", header: "النوع",
+      accessorFn: (r) => (r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"),
+      cell: ({ row }) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs ${row.original.status === "disposed" ? "badge-stock-out" : "badge-status-cancelled"}`}>
+          {row.original.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}
+        </span>
+      ),
+      meta: { kind: "status" },
+    },
+    {
+      id: "disposalDate", header: "التاريخ",
+      accessorFn: (r) => String(r.disposalDate ?? ""),
+      cell: ({ row }) => fmtDate(row.original.disposalDate),
+      meta: { kind: "date" },
+    },
+    { id: "purchaseValue", header: "قيمة الشراء", accessorFn: (r) => Number(r.purchaseValue), cell: ({ row }) => iqd(row.original.purchaseValue), meta: { kind: "money" } },
+    { id: "bookValue", header: "الدفترية عند الإخراج", accessorFn: (r) => Number(r.bookValue), cell: ({ row }) => iqd(row.original.bookValue), meta: { kind: "money" } },
+    {
+      id: "proceeds", header: "العائد",
+      accessorFn: (r) => (r.proceeds == null ? -1 : Number(r.proceeds)),
+      cell: ({ row }) => row.original.proceeds != null ? iqd(row.original.proceeds) : "—",
+      meta: { kind: "money" },
+    },
+    {
+      id: "gain", header: "ربح/خسارة",
+      accessorFn: (r) => (r.gain == null ? 0 : Number(r.gain)),
+      cell: ({ row }) => row.original.gain != null ? (
+        <span className={Number(row.original.gain) >= 0 ? "text-money-positive" : "text-money-negative"}>
+          {Number(row.original.gain) >= 0 ? "+" : ""}{iqd(row.original.gain)}
+        </span>
+      ) : "—",
+      meta: { kind: "money" },
+    },
+  ], []);
 
   if (q.isLoading) return <LoadingState />;
   if (q.error) return <ErrorState message={q.error.message} onRetry={() => q.refetch()} />;
@@ -140,41 +203,12 @@ export default function AssetDisposalLog() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr>
-                <th className="p-2">الأصل</th>
-                <th className="p-2 text-center">النوع</th>
-                <th className="p-2">التاريخ</th>
-                <th className="p-2 text-right">قيمة الشراء</th>
-                <th className="p-2 text-right">الدفترية عند الإخراج</th>
-                <th className="p-2 text-right">العائد</th>
-                <th className="p-2 text-right">ربح/خسارة</th>
-              </tr></thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t hover:bg-accent/50">
-                    <td className="p-2"><Link href={`/assets/${r.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={r.category} /><span><span className="font-medium">{r.name}</span> <span className="text-xs text-muted-foreground" dir="ltr">{r.code}</span><div className="text-xs text-muted-foreground">{assetCategoryLabel(r.category)}</div></span></Link></td>
-                    <td className="p-2 text-center">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "badge-stock-out" : "badge-status-cancelled"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
-                    </td>
-                    <td className="p-2 text-xs" dir="ltr">{fmtDate(r.disposalDate)}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.bookValue)}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {r.gain != null ? (
-                        <span className={Number(r.gain) >= 0 ? "text-money-positive" : "text-money-negative"}>{Number(r.gain) >= 0 ? "+" : ""}{iqd(r.gain)}</span>
-                      ) : "—"}
-                    </td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <TableEmptyRow colSpan={7} message={allRows.length === 0 ? "لا أصول مُستبعَدة أو خارج الخدمة." : "لا نتائج مطابقة للفلاتر."} />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable
+            columns={disposalColumns}
+            data={rows}
+            searchable={false}
+            emptyText={allRows.length === 0 ? "لا أصول مُستبعَدة أو خارج الخدمة." : "لا نتائج مطابقة للفلاتر."}
+          />
         </CardContent>
       </Card>
     </div>

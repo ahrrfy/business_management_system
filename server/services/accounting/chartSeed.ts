@@ -615,4 +615,13 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
     systemRole: "EXCHANGE_PAYABLE_USD",
     sortOrder: 218,
   },
+  {
+    id: 68,
+    code: "2150",
+    name: "بضاعة مستلمة غير مفوترة (GRNI)",
+    type: "LIABILITY",
+    parentId: 8,
+    systemRole: "GRNI",
+    sortOrder: 215,
+  },
 ];

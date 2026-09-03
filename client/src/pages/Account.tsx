@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { PASSWORD_POLICY_MSG, isStrongPassword } from "@shared/const";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { trpc } from "@/lib/trpc";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -54,12 +55,11 @@ export default function Account() {
     onSuccess: async () => { await utils.auth.mySessions.invalidate(); },
   });
 
-  // إشعارات الدفع — للمدير/الأدمن حصراً (يطابق RBAC لوحة MorningBrief).
-  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const pushKey = trpc.push.publicKey.useQuery(undefined, { enabled: elevated });
-  const pushStatus = trpc.push.myStatus.useQuery(undefined, { enabled: elevated });
+  // الاشتراك ذاتي لكل حساب؛ الخادم وحده يقرر الأحداث التي تخص هذا المستخدم.
+  const pushKey = trpc.push.publicKey.useQuery(undefined, { enabled: !!me.data });
+  const pushStatus = trpc.push.myStatus.useQuery(undefined, { enabled: !!me.data });
   const pushSubscribeMut = trpc.push.subscribe.useMutation({
-    onSuccess: async () => { await utils.push.myStatus.invalidate(); notify.ok("تمّ تفعيل إشعارات برنامج اليوم على هذا الجهاز"); },
+    onSuccess: async () => { await utils.push.myStatus.invalidate(); notify.ok("تمّ تفعيل إشعارات النظام على هذا الجهاز"); },
     onError: (e) => notify.err(e.message || "تعذّر التفعيل"),
   });
   const pushUnsubMut = trpc.push.unsubscribe.useMutation({
@@ -147,12 +147,12 @@ export default function Account() {
       {/* أدائي — ذاتي بحت (وحدة الأهداف والعمولات)؛ تختفي لمن لا موظف/خطة/هدف له. */}
       <MyPerformanceCard />
 
-      {/* إشعارات الدفع — للمدير/الأدمن حصراً. gap-audit (بند medium مؤجَّل): البطاقة كانت تختفي
+      {/* إشعارات الدفع لكل حساب. البطاقة لا تختفي
           صامتةً كلياً حين VAPID غير مضبوطة أو المتصفّح لا يدعم Push — الآن تظهر بحالة معطَّلة
-          مُفسِّرة (المدير يعرف أن الميزة موجودة ولماذا لا تعمل بدل «أين ذهبت البطاقة؟»). */}
-      {elevated && pushKey.data && (!pushKey.data.enabled || !isPushSupported()) && (
+          مُفسِّرة كي يعرف المستخدم لماذا لا تصل الإشعارات خارج النظام. */}
+      {pushKey.data && (!pushKey.data.enabled || !isPushSupported()) && (
         <Card>
-          <CardHeader><CardTitle className="text-base flex items-center gap-2"><BellOff className="size-4" aria-hidden /> إشعارات برنامج اليوم</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><BellOff className="size-4" aria-hidden /> إشعارات النظام</CardTitle></CardHeader>
           <CardContent className="text-sm text-muted-foreground">
             {!pushKey.data.enabled
               ? "الإشعارات غير مفعَّلة على الخادم (مفاتيح VAPID غير مضبوطة في إعدادات التشغيل) — راجع مدير النظام لتفعيلها."
@@ -160,12 +160,12 @@ export default function Account() {
           </CardContent>
         </Card>
       )}
-      {elevated && pushKey.data?.enabled && isPushSupported() && (
+      {pushKey.data?.enabled && isPushSupported() && (
         <Card>
-          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Bell className="size-4" aria-hidden /> إشعارات برنامج اليوم</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Bell className="size-4" aria-hidden /> إشعارات النظام</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm">
             <p className="text-muted-foreground">
-              يصلك إشعار صباحي (07:00 بغداد) بأعداد المتابعات اليوم — تذكيرات ذمم + وعود مستحقّة + أوامر شغل متأخّرة. بلا أسماء عملاء (تظهر أعداد فقط في شريط الإشعارات).
+              تصلك خارج النظام إشعارات الحضور والانصراف والمهام والطلبات التي تخص حسابك. ويصل للمدير أيضاً ملخص برنامج اليوم والتنبيهات الإدارية الموجّهة إليه.
             </p>
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-xs text-muted-foreground">
@@ -251,7 +251,7 @@ export default function Account() {
           <p className="text-xs text-muted-foreground">
             الأجهزة المسجَّل دخولها حالياً بحسابك. جلسات ما قبل آخر تسجيل خروج جماعي لا تظهر هنا.
           </p>
-          {sessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {sessions.isLoading && <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>}
           {!sessions.isLoading && (sessions.data?.length ?? 0) === 0 && (
             <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخلتَ قبل تفعيل هذه الميزة).</p>
           )}
@@ -423,7 +423,7 @@ function TwoFactorCard() {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         {status.isLoading ? (
-          <p className="text-muted-foreground">جارٍ التحميل…</p>
+          <p className="text-muted-foreground">{ACTION_LABELS.loading}</p>
         ) : enabled ? (
           <>
             <div className="flex items-center gap-2 flex-wrap">

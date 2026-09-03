@@ -1,5 +1,4 @@
 import { TRPCError } from "@trpc/server";
-import { failOpaque } from "../lib/opaqueFailure";
 import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
@@ -29,24 +28,35 @@ import {
   MAX_PURCHASE_INTEGRITY_LIMIT,
 } from "../services/purchaseIntegrityService";
 import {
-  cancelPurchaseOrder,
-  confirmPurchaseOrder,
+  createPurchaseRequisition,
   createPurchaseOrder,
-  receivePurchase,
-  settlePurchaseUsdDirect,
+  decidePurchaseOrderControl,
+  decidePurchaseRequisitionControl,
+  getPurchaseControlSettings,
+  getPurchaseOrderControlRequest,
+  getPurchaseOrderRevisionDiff,
+  getPurchaseRequisition,
+  listPendingPurchaseOrderControls,
+  listPendingPurchaseRequisitionControls,
+  listPurchaseOrderEvents,
+  listPurchaseOrderRevisions,
+  listPurchaseRequisitions,
+  requestPurchaseOrderControl,
+  requestPurchaseRequisitionCancellation,
+  submitPurchaseOrderForApproval,
+  submitPurchaseRequisition,
+  updatePurchaseControlSettings,
+  updatePurchaseRequisition,
   updatePurchaseOrder,
 } from "../services/purchaseService";
-import { payPurchaseOrder } from "../services/purchase/pay";
+import { assertLegacyPurchaseWritePathDisabled } from "../services/purchase/governanceCutover";
 import {
   canSeeCostForUser,
   purchasesManagerProcedure,
   purchasesReadProcedure,
-  purchasesWarehouseProcedure,
   router,
 } from "../trpc";
-import { pauseIfRetryableDbError } from "../lib/retryDup";
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 /**
  * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
  * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
@@ -57,10 +67,18 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
  * يجعل الرفض عند **حدّ العقد** (خطأ تحقّقٍ واضح) بدل عملٍ يسقط كاملاً — وهو الدرس المُوثَّق
  * في CLAUDE.md §٦: لا تُفتَح طريقةٌ قبل التحقّق أنّ الخادم يقبل حمولتها.
  *
- * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على `method` الكامل: مسارها مختلف
- * تماماً — تُنشئ سند صرفٍ نظاميّاً يقبل غير النقد فعلاً.
+ * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على الطرق المدعومة أعلاه: مسارها
+ * مختلف تماماً — تُنشئ طلب صرفٍ نظاميّاً يقبل غير النقد مع دليله، ولا يقبل الصكوك.
  */
 const supplierPaymentMethod = z.enum(["CASH"]);
+const requisitionItemInput = z.object({
+  variantId: z.number().int().positive(),
+  productUnitId: z.number().int().positive().nullish(),
+  requestedBaseQuantity: z.number().int().positive(),
+  estimatedUnitPrice: nonNegMoneyString.nullish(),
+  preferredSupplierId: z.number().int().positive().nullish(),
+  justification: z.string().trim().min(3).max(500),
+});
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
 const ymd = z
   .string()
@@ -225,43 +243,55 @@ export const purchaseRouter = router({
 
   createOrder: purchasesManagerProcedure
     .input(
-      z.object({
-        supplierId: z.number().int().positive(),
-        branchId: z.number().int().positive(),
-        // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
-        taxRatePercent: percentString.optional(),
-        status: z.enum(["DRAFT", "SENT", "CONFIRMED"]).optional(),
-        settlementType: z.enum(["CASH", "CREDIT"]).optional(),
-        items: z
-          .array(
-            z.object({
-              variantId: z.number().int().positive(),
-              productUnitId: z.number().int().positive(),
-              // PROC-01: سعر/كمية الشراء على حدّ الثقة — كانا z.string() ⇒ سعر سالب يُسمّم WAVG ويُخفّض AP.
-              quantity: positiveQtyString,
-              // سعرُ الوحدة **بعملة الأمر** (`agreedCurrency`): حتى ٤ منازل كسقفٍ أعلى، وتُضيّقه
-              // `computePurchaseDocument` حسب العملة (الدينار منزلتان). كان `nonNegMoneyString`
-              // فيقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ العمود `decimal(15,4)`.
-              unitPrice: unitPriceString,
-            }),
-          )
-          .min(1),
-        notes: z.string().optional(),
-        clientRequestId: z.string().min(1).max(80),
-        // usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي — لا يمسّ total/paidAmount الديناريَين).
-        agreedCurrency: z.enum(["IQD", "USD"]).optional(),
-        usdTotal: positiveMoneyString.optional(),
-        agreedRate: positiveRateString.optional(),
-        // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
-        // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
-        supplierInvoiceTotal: nonNegMoneyString.optional(),
-        // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
-        invoiceDiscount: nonNegMoneyString.optional(),
-        // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
-        // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
-        shippingCost: nonNegMoneyString.optional(),
-        customsCost: nonNegMoneyString.optional(),
-      }),
+      z
+        .object({
+          supplierId: z.number().int().positive(),
+          branchId: z.number().int().positive(),
+          // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
+          taxRatePercent: percentString.optional(),
+          settlementType: z.enum(["CASH", "CREDIT"]).optional(),
+          items: z
+            .array(
+              z.object({
+                variantId: z.number().int().positive(),
+                productUnitId: z.number().int().positive(),
+                // PROC-01: سعر/كمية الشراء على حدّ الثقة — كانا z.string() ⇒ سعر سالب يُسمّم WAVG ويُخفّض AP.
+                quantity: positiveQtyString,
+                // سعرُ الوحدة **بعملة الأمر** (`agreedCurrency`): حتى ٤ منازل كسقفٍ أعلى، وتُضيّقه
+                // `computePurchaseDocument` حسب العملة (الدينار منزلتان). كان `nonNegMoneyString`
+                // فيقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ العمود `decimal(15,4)`.
+                unitPrice: unitPriceString,
+              }),
+            )
+            .min(1),
+          notes: z.string().optional(),
+          clientRequestId: z.string().min(1).max(80),
+          // usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي — لا يمسّ total/paidAmount الديناريَين).
+          agreedCurrency: z.enum(["IQD", "USD"]).optional(),
+          usdTotal: positiveMoneyString.optional(),
+          agreedRate: positiveRateString.optional(),
+          // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
+          // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
+          supplierInvoiceTotal: nonNegMoneyString.optional(),
+          // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
+          invoiceDiscount: nonNegMoneyString.optional(),
+          // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
+          // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
+          shippingCost: nonNegMoneyString.optional(),
+          customsCost: nonNegMoneyString.optional(),
+          revisionReason: z.string().trim().min(3).max(500).optional(),
+          requisitionAllocations: z
+            .array(
+              z.object({
+                lineNo: z.number().int().positive(),
+                requisitionItemId: z.number().int().positive(),
+                allocatedBaseQuantity: z.number().int().positive(),
+              }),
+            )
+            .max(500)
+            .optional(),
+        })
+        .strict(),
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2 + عزل مدير الفرع ١٢/٨): createPurchaseOrder كان يستعمل input.branchId
@@ -279,7 +309,11 @@ export const purchaseRouter = router({
         : Number(ctx.user.branchId);
       const res = await createPurchaseOrder(
         { ...input, branchId: effectiveBranchId },
-        { userId: ctx.user.id, branchId: effectiveBranchId },
+        {
+          userId: ctx.user.id,
+          branchId: effectiveBranchId,
+          role: ctx.user.role,
+        },
       );
       await logAudit(ctx, {
         action: "purchase.createOrder",
@@ -297,6 +331,8 @@ export const purchaseRouter = router({
     .input(
       z.object({
         purchaseOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        revisionReason: z.string().trim().min(3).max(500),
         supplierId: z.number().int().positive(),
         taxRatePercent: percentString.optional(),
         items: z
@@ -322,6 +358,16 @@ export const purchaseRouter = router({
         invoiceDiscount: nonNegMoneyString.optional(),
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
+        requisitionAllocations: z
+          .array(
+            z.object({
+              lineNo: z.number().int().positive(),
+              requisitionItemId: z.number().int().positive(),
+              allocatedBaseQuantity: z.number().int().positive(),
+            }),
+          )
+          .max(500)
+          .optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -358,7 +404,14 @@ export const purchaseRouter = router({
   // (لا تُستلَم منها بضاعة، لا أثر مخزني/مالي أصلاً — createOrder لا يكتب شيئاً غير سطور الأمر
   // نفسها) ثم تُعتمَد لاحقاً فتصبح قابلة للاستلام عبر receive (الذي يشترط status=CONFIRMED حرفياً).
   confirmOrder: purchasesManagerProcedure
-    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(500),
+        clientRequestId: z.string().trim().min(1).max(80),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({
@@ -366,121 +419,31 @@ export const purchaseRouter = router({
           message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد أمر شراء",
         });
       }
-      const res = await confirmPurchaseOrder(input.purchaseOrderId, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
-        role: ctx.user.role,
-      });
+      const res = await submitPurchaseOrderForApproval(
+        {
+          purchaseOrderId: input.purchaseOrderId,
+          expectedVersion: input.expectedVersion,
+          reason: input.reason,
+          requestKey: input.clientRequestId,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+      );
       await logAudit(ctx, {
         action: "purchase.confirmOrder",
         entityType: "purchaseOrder",
         entityId: input.purchaseOrderId,
-        newValue: { status: "CONFIRMED" },
+        newValue: {
+          status: "SENT",
+          requestStatus: res.status,
+          reason: input.reason,
+          idempotent: res.idempotent,
+        },
       });
       return res;
-    }),
-
-  receive: purchasesWarehouseProcedure
-    .input(
-      z.object({
-        purchaseOrderId: z.number().int().positive(),
-        lines: z
-          .array(
-            z.object({
-              purchaseOrderItemId: z.number().int().positive(),
-              receivedBaseQuantity: z.number().int().positive(),
-            }),
-          )
-          .min(1)
-          .superRefine((lines, ctx) => {
-            const seen = new Set<number>();
-            lines.forEach((line, index) => {
-              if (seen.has(line.purchaseOrderItemId)) {
-                ctx.addIssue({
-                  code: z.ZodIssueCode.custom,
-                  path: [index, "purchaseOrderItemId"],
-                  message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه",
-                });
-              }
-              seen.add(line.purchaseOrderItemId);
-            });
-          }),
-        payment: z
-          .object({
-            amount: positiveMoneyString,
-            method: supplierPaymentMethod,
-          })
-          .optional(),
-        // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
-        shippingPaymentMethod: method.optional(),
-        shippingPaymentReference: z.string().trim().min(1).max(50).optional(),
-        shippingCardLastFour: z
-          .string()
-          .regex(/^\d{4}$/)
-          .optional(),
-        shippingBeneficiarySupplierId: z.number().int().positive().nullish(),
-        shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
-        shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
-        // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
-        clientRequestId: z.string().min(1).max(80),
-      }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      // G3: purchasesWarehouseProcedure يضمن branchId لغير-المدير عبر requireOwnBranch.
-      // المدير/الأدمن قد يصل بلا فرع (شرعي)، لكن الاستلام نفسه يحتاج فرعاً.
-      if (ctx.user.branchId == null) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن استلام بضاعة",
-        });
-      }
-      const actorBranchId = Number(ctx.user.branchId);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const res = await receivePurchase(input, {
-            userId: ctx.user.id,
-            branchId: actorBranchId,
-            role: ctx.user.role,
-          });
-          // AUDIT-DETAIL (تدقيق ٢/٧): كان يسجّل «عدد الأسطر» فقط — لا الكميات المستلمة ولا مبلغ دفعة
-          // المورد ⇒ لا يميّز استلام قطعة عن ألف مع دفعة ملايين. الآن نلتقط الكميات والدفعة.
-          await logAudit(ctx, {
-            action: "purchase.receive",
-            entityType: "purchaseOrder",
-            entityId: input.purchaseOrderId,
-            newValue: {
-              lines: input.lines.map((l) => ({
-                purchaseOrderItemId: l.purchaseOrderItemId,
-                receivedBaseQuantity: l.receivedBaseQuantity,
-              })),
-              totalReceivedBaseQuantity: input.lines.reduce(
-                (s, l) => s + l.receivedBaseQuantity,
-                0,
-              ),
-              payment: input.payment
-                ? { amount: input.payment.amount, method: input.payment.method }
-                : null,
-              shippingPaymentRequestReceiptId:
-                res.shippingPaymentRequestReceiptId,
-              supplierPaymentRequestReceiptId:
-                res.supplierPaymentRequestReceiptId,
-            },
-          });
-          return res;
-        } catch (e: any) {
-          if (attempt < 2 && (await pauseIfRetryableDbError(e, attempt))) continue;
-          if (e instanceof TRPCError) throw e;
-          failOpaque(e, {
-            op: "purchases.receive",
-            userMessage: "تعذّر إتمام الاستلام",
-            context: { userId: ctx.user.id, purchaseOrderId: input.purchaseOrderId },
-          });
-        }
-      }
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "تعذّر إتمام الاستلام (تكرار)",
-      });
     }),
 
   /**
@@ -498,84 +461,17 @@ export const purchaseRouter = router({
         clientRequestId: z.string().min(1).max(80),
       }),
     )
-    .mutation(async ({ input, ctx }) => {
-      const res = await payPurchaseOrder(input, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId ?? 0),
-        role: ctx.user.role,
-      });
-      await logAudit(ctx, {
-        action: "purchase.pay",
-        entityType: "purchaseOrder",
-        entityId: input.purchaseOrderId,
-        newValue: {
-          amount: input.amount,
-          method: input.method,
-          receiptId: res.paymentRequestReceiptId,
-        },
-      });
-      return res;
-    }),
-
-  // إلغاء أمر شراء لم يُستلم منه شيء (قلب حالة خالص — الحارس المالي/المخزني في الخدمة).
-  settleUsdDirect: purchasesManagerProcedure
-    .input(
-      z
-        .object({
-          purchaseOrderId: z.number().int().positive(),
-          settledUsd: positiveMoneyString,
-          chargedIqd: positiveMoneyString,
-          feeIqd: nonNegMoneyString.optional(),
-          method: z.enum(["CARD", "TRANSFER", "WALLET"]),
-          referenceNumber: z.string().trim().min(1).max(200),
-          cardLastFour: z
-            .string()
-            .regex(/^\d{4}$/)
-            .optional(),
-          clientRequestId: z.string().trim().min(1).max(64),
-        })
-        .superRefine((value, validation) => {
-          if (value.method === "CARD" && value.cardLastFour == null) {
-            validation.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["cardLastFour"],
-              message: "آخر ٤ أرقام من البطاقة مطلوبة",
-            });
-          }
-          if (value.method !== "CARD" && value.cardLastFour != null) {
-            validation.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["cardLastFour"],
-              message: "آخر ٤ أرقام تُرسل لطريقة البطاقة فقط",
-            });
-          }
-        }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const res = await settlePurchaseUsdDirect(input, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId ?? 0),
-        role: ctx.user.role,
-      });
-      await logAudit(ctx, {
-        action: "purchase.settleUsdDirect",
-        entityType: "purchaseOrder",
-        entityId: input.purchaseOrderId,
-        newValue: {
-          settledUsd: input.settledUsd,
-          chargedIqd: input.chargedIqd,
-          feeIqd: input.feeIqd ?? "0",
-          method: input.method,
-          referenceNumber: input.referenceNumber,
-          receiptId: res.receiptId,
-          approvalStatus: res.approvalStatus,
-        },
-      });
-      return res;
-    }),
+    .mutation(() => assertLegacyPurchaseWritePathDisabled("purchases.pay")),
 
   cancel: purchasesManagerProcedure
-    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(500),
+        requestKey: z.string().trim().min(1).max(120),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       // G3: لا إلغاء بلا فرع — assertBranchOwnership داخل الخدمة يحتاج actor.branchId صحيحاً.
       if (ctx.user.branchId == null) {
@@ -584,19 +480,361 @@ export const purchaseRouter = router({
           message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء أمر شراء",
         });
       }
-      const res = await cancelPurchaseOrder(input.purchaseOrderId, {
-        userId: ctx.user.id,
-        branchId: Number(ctx.user.branchId),
-        role: ctx.user.role,
-      });
+      const res = await requestPurchaseOrderControl(
+        {
+          purchaseOrderId: input.purchaseOrderId,
+          expectedVersion: input.expectedVersion,
+          kind: "CANCEL_ORDER",
+          requestKey: input.requestKey,
+          reason: input.reason,
+        },
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+      );
       await logAudit(ctx, {
         action: "purchase.cancelOrder",
         entityType: "purchaseOrder",
         entityId: input.purchaseOrderId,
-        newValue: { status: "CANCELLED" },
+        newValue: {
+          requestedStatus: "CANCELLED",
+          requestId: res.requestId,
+          requestStatus: res.status,
+        },
       });
       return res;
     }),
+
+  requestControl: purchasesManagerProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        revisionId: z.number().int().positive().nullish(),
+        expectedVersion: z.number().int().positive(),
+        kind: z.enum(["APPROVE_REVISION", "CANCEL_ORDER", "EMERGENCY_ORDER"]),
+        requestKey: z.string().trim().min(1).max(120),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      requestPurchaseOrderControl(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  decideControl: purchasesManagerProcedure
+    .input(
+      z.object({
+        requestId: z.number().int().positive(),
+        decisionKey: z.string().trim().min(1).max(120),
+        approve: z.boolean(),
+        reason: z.string().trim().min(3).max(500),
+        confirmedFullReceipt: z.boolean().optional(),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      decidePurchaseOrderControl(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  pendingControls: purchasesManagerProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(200).default(50),
+          cursor: z
+            .object({
+              purchaseOrderId: z.number().int().positive().nullish(),
+              requisitionId: z.number().int().positive().nullish(),
+            })
+            .optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const limit = input?.limit ?? 50;
+      const actor = {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      };
+      const [orders, requisitions] = await Promise.all([
+        listPendingPurchaseOrderControls(actor, {
+          limit,
+          cursor: input?.cursor?.purchaseOrderId,
+        }),
+        listPendingPurchaseRequisitionControls(actor, {
+          limit,
+          cursor: input?.cursor?.requisitionId,
+        }),
+      ]);
+      const combined = [
+        ...orders.map((request) => ({
+          documentType: "PURCHASE_ORDER" as const,
+          ...request,
+        })),
+        ...requisitions.map((request) => ({
+          documentType: "REQUISITION" as const,
+          ...request,
+        })),
+      ].sort(
+        (a, b) =>
+          Number(b.id) - Number(a.id) ||
+          a.documentType.localeCompare(b.documentType),
+      );
+      const rows = combined.slice(0, limit);
+      const consumedOrder = rows.filter(
+        (row) => row.documentType === "PURCHASE_ORDER",
+      );
+      const consumedRequisition = rows.filter(
+        (row) => row.documentType === "REQUISITION",
+      );
+      const hasMore =
+        combined.length > limit ||
+        orders.length > limit ||
+        requisitions.length > limit;
+      return {
+        rows,
+        hasMore,
+        nextCursor: hasMore
+          ? {
+              purchaseOrderId: consumedOrder.length
+                ? Number(consumedOrder.at(-1)!.id)
+                : (input?.cursor?.purchaseOrderId ?? null),
+              requisitionId: consumedRequisition.length
+                ? Number(consumedRequisition.at(-1)!.id)
+                : (input?.cursor?.requisitionId ?? null),
+            }
+          : null,
+      };
+    }),
+
+  controlRequest: purchasesManagerProcedure
+    .input(z.object({ requestId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      getPurchaseOrderControlRequest(input.requestId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  revisions: purchasesReadProcedure
+    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .query(({ input, ctx }) => {
+      if (!canSeeCostForUser(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "سجل مراجعات أمر الشراء يحتوي تكاليف محجوبة عن صلاحيتك",
+        });
+      }
+      return listPurchaseOrderRevisions(input.purchaseOrderId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+    }),
+
+  revisionDiff: purchasesReadProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        fromRevisionId: z.number().int().positive(),
+        toRevisionId: z.number().int().positive(),
+      }),
+    )
+    .query(({ input, ctx }) => {
+      if (!canSeeCostForUser(ctx.user)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "فروق مراجعات أمر الشراء تحتوي تكاليف محجوبة عن صلاحيتك",
+        });
+      }
+      return getPurchaseOrderRevisionDiff(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+    }),
+
+  events: purchasesReadProcedure
+    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      listPurchaseOrderEvents(input.purchaseOrderId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  requisitions: purchasesReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+          status: z
+            .enum([
+              "DRAFT",
+              "SUBMITTED",
+              "APPROVED",
+              "PARTIALLY_ORDERED",
+              "FULLY_ORDERED",
+              "FULFILLED",
+              "REJECTED",
+              "CANCELLED",
+            ])
+            .optional(),
+          limit: z.number().int().positive().max(200).optional(),
+        })
+        .optional(),
+    )
+    .query(({ input, ctx }) =>
+      listPurchaseRequisitions(input ?? {}, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  requisition: purchasesReadProcedure
+    .input(z.object({ requisitionId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      getPurchaseRequisition(input.requisitionId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  createRequisition: purchasesManagerProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        neededBy: ymd.nullish(),
+        purpose: z.string().trim().min(3).max(500),
+        costCenter: z.string().trim().max(120).nullish(),
+        priority: z.enum(["LOW", "NORMAL", "URGENT"]).optional(),
+        items: z.array(requisitionItemInput).min(1).max(200),
+        clientRequestId: z.string().trim().min(1).max(120),
+      }),
+    )
+    .mutation(({ input, ctx }) => {
+      return createPurchaseRequisition(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+    }),
+
+  updateRequisition: purchasesManagerProcedure
+    .input(
+      z.object({
+        requisitionId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        neededBy: ymd.nullish(),
+        purpose: z.string().trim().min(3).max(500),
+        costCenter: z.string().trim().max(120).nullish(),
+        priority: z.enum(["LOW", "NORMAL", "URGENT"]).optional(),
+        items: z.array(requisitionItemInput).min(1).max(200),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      updatePurchaseRequisition(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  submitRequisition: purchasesManagerProcedure
+    .input(
+      z.object({
+        requisitionId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        requestKey: z.string().trim().min(1).max(120),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      submitPurchaseRequisition(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  requestRequisitionCancel: purchasesManagerProcedure
+    .input(
+      z.object({
+        requisitionId: z.number().int().positive(),
+        expectedVersion: z.number().int().positive(),
+        requestKey: z.string().trim().min(1).max(120),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      requestPurchaseRequisitionCancellation(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  decideRequisition: purchasesManagerProcedure
+    .input(
+      z.object({
+        requestId: z.number().int().positive(),
+        decisionKey: z.string().trim().min(1).max(120),
+        approve: z.boolean(),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      decidePurchaseRequisitionControl(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  controlSettings: purchasesManagerProcedure
+    .input(z.object({ branchId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      getPurchaseControlSettings(input.branchId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
+
+  updateControlSettings: purchasesManagerProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        expectedVersion: z.number().int().nonnegative(),
+        requireRequisition: z.boolean(),
+        allowEmergencyOrder: z.boolean(),
+        requireEmergencyApproval: z.boolean(),
+        priceTolerancePercent: percentString,
+        totalToleranceAmount: nonNegMoneyString,
+        blockUninvoicedReceiptsAtClose: z.boolean(),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      updatePurchaseControlSettings(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      }),
+    ),
 
   /**
    * تقرير سلامة المشتريات: قراءة جنائية محدودة بفرع واحد، ومصدرها القيود المحاسبية لا
@@ -700,6 +938,9 @@ export const purchaseRouter = router({
               returnedUsd: purchaseOrders.returnedUsd,
               agreedRate: purchaseOrders.agreedRate,
               status: purchaseOrders.status,
+              version: purchaseOrders.version,
+              currentRevisionId: purchaseOrders.currentRevisionId,
+              approvedRevisionId: purchaseOrders.approvedRevisionId,
               createdBy: purchaseOrders.createdBy,
               createdByName: users.name,
               supplierName: suppliers.name,
@@ -785,6 +1026,14 @@ export const purchaseRouter = router({
             paidUsd: purchaseOrders.paidUsd,
             returnedUsd: purchaseOrders.returnedUsd,
             status: purchaseOrders.status,
+            version: purchaseOrders.version,
+            currentRevisionId: purchaseOrders.currentRevisionId,
+            approvedRevisionId: purchaseOrders.approvedRevisionId,
+            lastEditedBy: purchaseOrders.lastEditedBy,
+            submittedBy: purchaseOrders.submittedBy,
+            submittedAt: purchaseOrders.submittedAt,
+            approvedBy: purchaseOrders.approvedBy,
+            approvedAt: purchaseOrders.approvedAt,
             notes: purchaseOrders.notes,
             // usd-po-reconcile: للمقارنة البصرية لاحقاً بسعر التسديد الفعلي عبر الصيرفة.
             agreedCurrency: purchaseOrders.agreedCurrency,
@@ -861,7 +1110,8 @@ export const purchaseRouter = router({
           paidUsd: null,
           returnedUsd: null,
           agreedRate: null,
-          invoiceDiscount: null, usdInvoiceDiscount: null,
+          invoiceDiscount: null,
+          usdInvoiceDiscount: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -874,7 +1124,8 @@ export const purchaseRouter = router({
               usdUnitPrice: null,
               usdTotal: null,
               total: null,
-              listUnitPrice: null, usdListUnitPrice: null,
+              listUnitPrice: null,
+              usdListUnitPrice: null,
             }) as unknown as typeof row,
         );
         return { ...poMasked, items: itemsMasked };

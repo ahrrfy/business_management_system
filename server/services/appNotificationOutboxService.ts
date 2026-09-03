@@ -5,9 +5,11 @@ import type { Tx } from "../db";
 import { logger } from "../logger";
 import {
   APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH,
+  APP_NOTIFICATION_FAMILIES,
   APP_NOTIFICATION_KINDS,
   createAppNotification,
   type AppNotificationKind,
+  type AppNotificationFamily,
   type CreateAppNotificationInput,
 } from "./appNotificationService";
 import { withTx } from "./tx";
@@ -17,6 +19,7 @@ const DELIVERY_CONCURRENCY = 8;
 const MAX_CLAIM_ROUNDS = 8;
 
 const APP_NOTIFICATION_KIND_SET = new Set<string>(APP_NOTIFICATION_KINDS);
+const APP_NOTIFICATION_FAMILY_SET = new Set<string>(APP_NOTIFICATION_FAMILIES);
 
 export type AppNotificationWriter = (
   input: CreateAppNotificationInput,
@@ -49,6 +52,7 @@ function parseNotificationPayload(value: unknown): CreateAppNotificationInput | 
     value.eventKey.length > APP_NOTIFICATION_EVENT_KEY_MAX_LENGTH
   ) return null;
   if (value.entityType != null && typeof value.entityType !== "string") return null;
+  if (value.family != null && (typeof value.family !== "string" || !APP_NOTIFICATION_FAMILY_SET.has(value.family))) return null;
   if (value.entityId != null && (!Number.isSafeInteger(value.entityId) || Number(value.entityId) <= 0)) return null;
   if (value.requiresAction != null && typeof value.requiresAction !== "boolean") return null;
   if (value.lockScreenSafe != null && typeof value.lockScreenSafe !== "boolean") return null;
@@ -56,6 +60,7 @@ function parseNotificationPayload(value: unknown): CreateAppNotificationInput | 
   return {
     userId: Number(value.userId),
     kind: value.kind as AppNotificationKind,
+    family: value.family as AppNotificationFamily | undefined,
     title: value.title,
     body: value.body,
     route: value.route,

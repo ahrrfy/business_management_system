@@ -1,6 +1,8 @@
 // تقرير المشتريات — ملخّص حسب المورّد (مرآة تقرير المبيعات). عرض + بحث مورّد + تصدير Excel + طباعة A4.
 // المصدر: reports.purchasesReport (أوامر شراء ملتزمة CONFIRMED/RECEIVED ضمن الفترة).
 import { useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -11,8 +13,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { LoadingState, ErrorState } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+
+
 
 type Row = RouterOutputs["reports"]["purchasesReport"]["rows"][number];
 
@@ -92,6 +94,31 @@ export default function PurchasesReport() {
         : undefined,
     });
   }
+  /** أعمدة تقرير المشتريات حسب المورّد. */
+  const purchaseColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    {
+      id: "supplier", header: "المورّد",
+      accessorFn: (r) => r.supplierName ?? "—",
+      cell: ({ row }) => row.original.supplierId ? (
+        <Link href={`/suppliers-statement?id=${row.original.supplierId}`} className="text-primary hover:underline">
+          {row.original.supplierName ?? "—"}
+        </Link>
+      ) : (row.original.supplierName ?? "—"),
+      meta: { kind: "text", wrap: true },
+    },
+    { id: "orders", header: "عدد الأوامر", accessorFn: (r) => Number(r.orders), meta: { kind: "number" } },
+    { id: "total", header: "الإجمالي", accessorFn: (r) => Number(r.total), cell: ({ row }) => fmtAr(row.original.total), meta: { kind: "money" } },
+    {
+      id: "paid", header: "المدفوع", accessorFn: (r) => Number(r.paid),
+      cell: ({ row }) => <span className="text-money-positive">{fmtAr(row.original.paid)}</span>,
+      meta: { kind: "money" },
+    },
+    {
+      id: "unpaid", header: "المتبقّي", accessorFn: (r) => Number(r.unpaid),
+      cell: ({ row }) => <span className="text-[var(--stock-low)]">{fmtAr(row.original.unpaid)}</span>,
+      meta: { kind: "money" },
+    },
+  ], []);
 
   return (
     <ReportShell
@@ -131,48 +158,14 @@ export default function PurchasesReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل تقرير المشتريات." onRetry={() => q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">
-              {allRows.length ? "لا مورّد مطابق للبحث." : "لا مشتريات في هذا النطاق."}
-            </p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">المورّد</th>
-                    <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
-                    <th className="p-2.5 text-right font-medium">الإجمالي</th>
-                    <th className="p-2.5 text-right font-medium">المدفوع</th>
-                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r: Row, i: number) => (
-                    <tr key={r.supplierId ?? `no-supplier-${i}`} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">
-                        {r.supplierId ? (
-                          <Link href={`/suppliers-statement?id=${r.supplierId}`} className="text-primary hover:underline">
-                            {r.supplierName ?? "—"}
-                          </Link>
-                        ) : (
-                          r.supplierName ?? "—"
-                        )}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.orders}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-[var(--stock-low)]" dir="ltr">{fmtAr(r.unpaid)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable
+            columns={purchaseColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل تقرير المشتريات.", onRetry: () => void q.refetch() }}
+            emptyText={allRows.length ? "لا مورّد مطابق للبحث." : "لا مشتريات في هذا النطاق."}
+          />
         </CardContent>
       </Card>
     </ReportShell>

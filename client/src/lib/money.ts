@@ -8,6 +8,31 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 
 export const D = (v: string | number | null | undefined) => new Decimal(v == null || v === "" ? 0 : v);
 
+/**
+ * قراءةُ **مُدخَلٍ ماليٍّ قيد الكتابة** بأمان — للعرض والشروط داخل النماذج، لا للإرسال.
+ *
+ * ⚠️ `D()` **ترمي** على مُدخَلٍ جزئيٍّ مشروع: `MoneyInput.sanitizeRaw` تُنتج `"."` عند أوّل
+ * ضغطةٍ لمن يكتب `.5`، و`new Decimal(".")` ⇒ `[DecimalError] Invalid argument`. وحين يقع ذلك
+ * **داخل التصيير** (شرطُ إظهار تلميحٍ أو معاينةُ مبلغ) تسقط الشاشةُ بيضاء بينما المستخدم يكتب
+ * رقماً صحيحاً تماماً.
+ *
+ * والفخُّ أنّ الصيغة القديمة `Number(x) > 0` كانت تُعطي `NaN` بلا ضرر — فاستبدالُها بـ`D`
+ * التزاماً بقاعدة «لا `Number` على مال» **يُدخل عطباً وهو يُغلق آخر**. القاعدة صحيحة، وينقصها
+ * مدخلٌ آمن: هذا هو.
+ *
+ * المُدخَل الفارغ أو غير المكتمل ⇒ صفر (أي «لا رقمَ بعد»). وللإرسال يبقى
+ * `round2(D(v)).toFixed(2)` بعد اكتمال المُدخَل ومروره بحرّاس الخادم.
+ */
+export const moneyInput = (v: string | number | null | undefined): Decimal => {
+  const raw = typeof v === "number" ? String(v) : (v ?? "").trim();
+  if (raw === "") return new Decimal(0);
+  try {
+    return new Decimal(raw);
+  } catch {
+    return new Decimal(0);
+  }
+};
+
 /** Round to 2 dp, HALF_UP. */
 export const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -67,7 +92,7 @@ export const fmtInt = (v: string | number | null | undefined) =>
 
 /** تنسيق مبلغ بـ**ar-IQ** locale (أرقام لاتينية) حتى منزلتين عشريتين — **بلا** لاحقة عملة.
  *  null/undefined/"" ⇒ "—". مكافئ مركزي لتكرار Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })
- *  المنتشر في الصفحات (Customers/Suppliers/PurchaseReceive/WorkOrderDetail/SalesReport/BarcodeLabels…). */
+ *  المنتشر في الصفحات (Customers/Suppliers/PurchaseOrderDetail/WorkOrderDetail/SalesReport/BarcodeLabels…). */
 export const fmtAr = (v: string | number | null | undefined): string => {
   if (v === null || v === undefined || v === "") return "—";
   return round2(D(v)).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });

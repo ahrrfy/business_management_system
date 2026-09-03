@@ -94,6 +94,8 @@ export interface ProductForVariantEdit {
   isCustomizable: boolean;
   allowAutoCartRecommendations: boolean;
   isService: boolean;
+  /** «يُباع بالطلب» (0318): يُسمح ببيعه قبل توريده؛ يُغذَّى بشراءٍ من مورّد أو إنتاجٍ داخليّ. */
+  allowBackorder: boolean;
   /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
   isBundle: boolean;
   isActive: boolean;
@@ -182,6 +184,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isCustomizable: !!p.isCustomizable,
       allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
       isService: !!p.isService,
+      allowBackorder: !!p.allowBackorder,
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
       showInReception: !!p.showInReception,
@@ -266,6 +269,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isCustomizable: !!p.isCustomizable,
     allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
     isService: !!p.isService,
+    allowBackorder: !!p.allowBackorder,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
     showInReception: !!p.showInReception,
@@ -338,6 +342,8 @@ export interface UpdateProductVariantsInput {
   isCustomizable?: boolean;
   allowAutoCartRecommendations?: boolean;
   isService?: boolean;
+  /** «يُباع بالطلب» — نمط PATCH: `undefined` ⇒ لا تُمَسّ. */
+  allowBackorder?: boolean;
   isActive?: boolean;
   // ٢٤/٨ — متابعةُ PR #755: تحرير التوجيه بعد الإنشاء. اختياريّان بلا افتراض — نمط PATCH.
   showInReception?: boolean;
@@ -564,6 +570,36 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       }
     }
 
+    // تصحيح التصنيف (٣١/٨): تحويلُ صنفٍ مخزنيّ إلى خدمة يُجمّد رصيده إلى الأبد — `applyMovement`
+    // يتخطّى الخدمة، فالكمّية تبقى في `branchStock` تُحتسَب في تقييم المخزون ولا تتحرّك أبداً.
+    // ولذلك يُشترط رصيدٌ صفريّ عبر كل الفروع (نظير حارس وسم الأمانة أعلاه). الاتجاه المعاكس
+    // (خدمة ⇒ سلعة) آمنٌ بذاته: الرصيد صفرٌ حكماً ويبدأ التتبّع من الآن.
+    if (input.isService !== undefined && !!input.isService !== !!p.isService && input.isService) {
+      const rows = await tx
+        .select({ qty: branchStock.quantity })
+        .from(branchStock)
+        .innerJoin(productVariants, eq(branchStock.variantId, productVariants.id))
+        .where(eq(productVariants.productId, input.productId));
+      if (rows.reduce((sum, r) => sum + (r.qty || 0), 0) !== 0)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "لا يمكن تحويل الصنف إلى «خِدمة» ورصيده غير صفريّ — الخدمة بلا مخزون، فالرصيد الباقي سيتجمّد بلا حركة. صفِّر الرصيد (بيعاً أو تسويةً معتمَدة) أولاً",
+        });
+    }
+
+    // «يُباع بالطلب» (0318): CHECK القاعدة يمنع التركيبة المحرَّمة، لكنّه يرتدّ برسالة SQL خامّة
+    // لا يفهمها المستعمل. الحارس هنا يقولها بلغته وبسببها قبل أن تصل المعاملة للقاعدة.
+    if (input.allowBackorder === true) {
+      const willBeService = input.isService ?? !!p.isService;
+      const willBeConsign = wantConsign !== undefined ? !!wantConsign : !!p.isConsignment;
+      if (willBeService)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
+      if (p.isBundle)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
+      if (willBeConsign)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
+    }
+
     const name = composeName(input, p.name);
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
 
@@ -621,6 +657,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
         allowAutoCartRecommendations: input.allowAutoCartRecommendations ?? p.allowAutoCartRecommendations !== false,
         isService: input.isService ?? !!p.isService,
+        ...(input.allowBackorder !== undefined ? { allowBackorder: input.allowBackorder } : {}),
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
         ...(input.showInReception !== undefined ? { showInReception: input.showInReception } : {}),
         ...(input.showInPrintPos !== undefined ? { showInPrintPos: input.showInPrintPos } : {}),

@@ -6,6 +6,7 @@
  * الخصم التلقائي يظهر في مسيّر الرواتب (عمود الاستقطاع: «منه سلفة») عند التوليد.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -13,14 +14,14 @@ import { Label } from "@/components/ui/label";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D } from "@/lib/money";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { HandCoins, Plus, X } from "lucide-react";
@@ -43,6 +44,9 @@ const STATUS_TITLE: Record<string, string> = {
   SETTLED: "مسوّاة — استُوفي المبلغ كاملاً (خصماً من الرواتب أو سداداً مباشراً)",
   CANCELLED: "ملغاة — أُلغيت قبل بدء الخصم (سند الصرف لم يُعكَس آلياً)",
 };
+
+/** صفُّ سلفة موظّف — مشتقٌّ من عقد `payroll.advancesList` فلا ينجرف عن الخادم. */
+type AdvanceRow = RouterOutputs["payroll"]["advancesList"][number];
 
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -114,6 +118,120 @@ export default function EmployeeAdvances() {
     onError: (e) => notify.err(e),
   });
 
+  // أعمدة الجدول — تقرأ صلاحية المنح وحالة طفرة الإلغاء، فتُبنى في جسم المكوّن.
+  const columns: ColumnDef<AdvanceRow, unknown>[] = [
+    {
+      id: "employee",
+      header: "الموظف",
+      accessorFn: (r) => r.employeeName,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => (
+        <div className="flex items-center gap-2.5">
+          <EmpAvatar name={row.original.employeeName} sizePx={30} />
+          <div>
+            <div className="font-medium text-[13px]">{row.original.employeeName}</div>
+            {(row.original.position || row.original.note) && (
+              <div className="text-[11px] text-muted-foreground">{[row.original.position, row.original.note].filter(Boolean).join(" · ")}</div>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "branch",
+      header: "الفرع",
+      accessorFn: (r) => r.branchName ?? "—",
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName ?? "—"}</span>,
+    },
+    { id: "amount", header: "المبلغ", accessorFn: (r) => iqd(r.amount), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.amount) },
+    {
+      id: "remaining",
+      header: "المتبقّي",
+      accessorFn: (r) => iqd(r.remaining),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className={`font-bold ${D(row.original.remaining).gt(0) && row.original.status === "ACTIVE" ? "text-money-negative" : ""}`}>
+          {iqd(row.original.remaining)}
+        </span>
+      ),
+    },
+    {
+      id: "monthlyDeduction",
+      header: "الخصم الشهري",
+      accessorFn: (r) => (r.monthlyDeduction != null ? iqd(r.monthlyDeduction) : "أقصى الممكن"),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">{row.original.monthlyDeduction != null ? iqd(row.original.monthlyDeduction) : "أقصى الممكن"}</span>
+      ),
+    },
+    {
+      id: "voucherNumber",
+      header: "سند الصرف",
+      accessorFn: (r) => r.voucherNumber ?? "—",
+      meta: { kind: "code", align: "center" },
+      cell: ({ row }) => <span className="text-xs">{row.original.voucherNumber ?? "—"}</span>,
+    },
+    {
+      id: "grantedAt",
+      header: "التاريخ",
+      accessorFn: (r) => fmtDate(r.grantedAt),
+      meta: { kind: "date" },
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDate(row.original.grantedAt)}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => STATUS_LABEL[r.status] ?? r.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <StatusBadge status={row.original.status} />,
+    },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const r = row.original;
+        const cancellable = canGrant && r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
+        // سلفةٌ نشطة بدأ الخصم فيها: نُظهر «—» بتوضيح — لا نتركها فارغة صامتاً.
+        const partiallyDeducted = r.status === "ACTIVE" && !D(r.remaining).eq(D(r.amount));
+        if (cancellable) {
+          return (
+            <button
+              className="text-xs text-destructive font-medium hover:underline inline-flex items-center gap-1"
+              onClick={async () => {
+                const ok = await confirm({
+                  variant: "danger",
+                  title: `إلغاء سلفة ${r.employeeName}`,
+                  description: `تُلغى السلفة (${iqd(r.amount)} د.ع) قبل أي خصم. سند الصرف الأصلي ${r.voucherNumber ?? ""} لا يُعكَس آلياً — إرجاع النقد للخزينة يكون بإلغاء السند من شاشة السندات.`,
+                  confirmText: "إلغاء السلفة",
+                });
+                if (ok) cancelM.mutate({ advanceId: Number(r.id) });
+              }}
+              disabled={cancelM.isPending}
+            >
+              <X className="size-3.5" aria-hidden /> إلغاء
+            </button>
+          );
+        }
+        if (partiallyDeducted) {
+          return (
+            <span
+              className="text-xs text-muted-foreground"
+              // Codex P1 (٢٤/٨): «سلفة معاكسة» نصيحةٌ ضارّة — grantAdvance يقبل موجباً فقط
+              // ⇒ يُنشئ سنداً نقدياً OUT جديداً فيزيد الدين. المسار الصحيح: لوحةُ السداد
+              // اليدويّ تحت الجدول (EmployeeAdvanceRepaymentPanel) أو الخصمُ المستمرّ.
+              title="لا يُلغى بعد بدء الخصم — يُكمَل الاستيفاء بالخصم الشهريّ من الرواتب، أو بسداد يدويّ من لوحة السداد أسفل الجدول"
+            >
+              —
+            </span>
+          );
+        }
+        return null;
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -161,24 +279,24 @@ export default function EmployeeAdvances() {
             }}
             filters={<div className="flex items-end gap-2 flex-wrap">
               <FilterField label="الحالة">
-                <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="حالة السلفة">
+                <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next as typeof status)} aria-label="حالة السلفة">
                   <option value="">كل الحالات</option>
                   <option value="ACTIVE">نشطة</option>
                   <option value="SETTLED">مسوّاة</option>
                   <option value="CANCELLED">ملغاة</option>
-                </select>
+                </AppSelect>
               </FilterField>
               <FilterField label="الموظف">
-                <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                <AppSelect className="h-9" value={empFilter} onValueChange={(next) => setEmpFilter(next)} aria-label="الموظف">
                   <option value="">كل الموظفين</option>
                   {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
-                </select>
+                </AppSelect>
               </FilterField>
               <FilterField label="الفرع">
-                <select className={selectClsSm} value={branchFilter} onChange={(e) => setBranchFilter(e.target.value)} aria-label="الفرع">
+                <AppSelect className="h-9" value={branchFilter} onValueChange={(next) => setBranchFilter(next)} aria-label="الفرع">
                   <option value="">كل الفروع</option>
                   {(branchesQ.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-                </select>
+                </AppSelect>
               </FilterField>
             </div>}
           />
@@ -187,93 +305,27 @@ export default function EmployeeAdvances() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5">الموظف</th>
-                  <th className="p-2.5">الفرع</th>
-                  <th className="p-2.5 text-right">المبلغ</th>
-                  <th className="p-2.5 text-right">المتبقّي</th>
-                  <th className="p-2.5 text-right">الخصم الشهري</th>
-                  <th className="p-2.5 text-center">سند الصرف</th>
-                  <th className="p-2.5 text-center">التاريخ</th>
-                  <th className="p-2.5 text-center">الحالة</th>
-                  <th className="p-2.5 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r) => {
-                  const cancellable = canGrant && r.status === "ACTIVE" && D(r.remaining).eq(D(r.amount));
-                  // سلفةٌ نشطة بدأ الخصم فيها: نُظهر «—» بتوضيح — لا نتركها فارغة صامتاً.
-                  const partiallyDeducted = r.status === "ACTIVE" && !D(r.remaining).eq(D(r.amount));
-                  return (
-                    <tr key={r.id} className="border-t hover:bg-accent/40">
-                      <td className="p-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <EmpAvatar name={r.employeeName} sizePx={30} />
-                          <div>
-                            <div className="font-medium text-[13px]">{r.employeeName}</div>
-                            {(r.position || r.note) && (
-                              <div className="text-[11px] text-muted-foreground">{[r.position, r.note].filter(Boolean).join(" · ")}</div>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="p-2.5 text-muted-foreground">{r.branchName ?? "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(r.amount)}</td>
-                      <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">
-                        <span className={D(r.remaining).gt(0) && r.status === "ACTIVE" ? "text-money-negative" : ""}>{iqd(r.remaining)}</span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {r.monthlyDeduction != null ? iqd(r.monthlyDeduction) : "أقصى الممكن"}
-                      </td>
-                      <td className="p-2.5 text-center text-xs tabular-nums" dir="ltr">{r.voucherNumber ?? "—"}</td>
-                      <td className="p-2.5 text-center text-xs text-muted-foreground tabular-nums" dir="ltr">
-                        {fmtDate(r.grantedAt)}
-                      </td>
-                      <td className="p-2.5 text-center"><StatusBadge status={r.status} /></td>
-                      <td className="p-2.5 text-center">
-                        {cancellable ? (
-                          <button
-                            className="text-xs text-destructive font-medium hover:underline inline-flex items-center gap-1"
-                            onClick={async () => {
-                              const ok = await confirm({
-                                variant: "danger",
-                                title: `إلغاء سلفة ${r.employeeName}`,
-                                description: `تُلغى السلفة (${iqd(r.amount)} د.ع) قبل أي خصم. سند الصرف الأصلي ${r.voucherNumber ?? ""} لا يُعكَس آلياً — إرجاع النقد للخزينة يكون بإلغاء السند من شاشة السندات.`,
-                                confirmText: "إلغاء السلفة",
-                              });
-                              if (ok) cancelM.mutate({ advanceId: Number(r.id) });
-                            }}
-                            disabled={cancelM.isPending}
-                          >
-                            <X className="size-3.5" aria-hidden /> إلغاء
-                          </button>
-                        ) : partiallyDeducted ? (
-                          <span
-                            className="text-xs text-muted-foreground"
-                            // Codex P1 (٢٤/٨): «سلفة معاكسة» نصيحةٌ ضارّة — grantAdvance يقبل موجباً فقط
-                            // ⇒ يُنشئ سنداً نقدياً OUT جديداً فيزيد الدين. المسار الصحيح: لوحةُ السداد
-                            // اليدويّ تحت الجدول (EmployeeAdvanceRepaymentPanel) أو الخصمُ المستمرّ.
-                            title="لا يُلغى بعد بدء الخصم — يُكمَل الاستيفاء بالخصم الشهريّ من الرواتب، أو بسداد يدويّ من لوحة السداد أسفل الجدول"
-                          >
-                            —
-                          </span>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {listQ.isLoading && (
-                  <tr><td colSpan={9}><LoadingState /></td></tr>
-                )}
-                {!listQ.isLoading && filtered.length === 0 && (
-                  <TableEmptyRow colSpan={9} message={rows.length === 0 ? "لا سلف بعد. امنح سلفة للبدء — تُخصم تلقائياً من الرواتب." : "لا نتائج مطابقة للبحث."} />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* البحث في ListToolbar أعلاه (يغذّي `filtered`) ⇒ `searchable={false}` وإلّا ظهر حقلا بحث.
+              و`externalFiltersActive` = «للقائمة الأصل صفوفٌ لكن المعروض فارغ» ⇒ الفراغُ سببه
+              البحث لا خلوّ السجلّ — نفس تمييز الرسالتين في الجدول الخامّ. */}
+          <DataTable<AdvanceRow>
+            columns={columns}
+            data={filtered}
+            searchable={false}
+            externalFiltersActive={rows.length > 0}
+            /* ٢/٩ — استعادةُ سلوك الجدول الخامّ: كان يعرض **كلّ** صفوف `filtered` داخل
+               `ScrollTableShell` (تمريرٌ داخليّ بترويسةٍ لاصقة) بلا ترقيمٍ إطلاقاً. وبالتحويل
+               وَرِث افتراضَ `DataTable` (٥٠ صفّاً/صفحة) فصارت السلفُ بعد الخمسين خلف صفحةٍ
+               ثانية — ترقيمٌ لم تطلبه الشاشة ويُربك قارئها: العدُّ والمجاميع في الترويسة
+               محسوبان على `filtered` كاملةً، فصفحةٌ جزئيّة تحت مجموعٍ كلّيّ تُوحي أنّ المعروض
+               هو المحسوب. و`bounded` الافتراضيّة تُبقي التمرير الداخليّ نفسه، فلا تنمو الصفحة.
+               نفس اختيار أشقّائها في هذه الموجة (`Leaves` و`Payroll`). */
+            pageSize={Infinity}
+            loading={listQ.isLoading}
+            errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
+            emptyState="لا سلف بعد. امنح سلفة للبدء — تُخصم تلقائياً من الرواتب."
+            emptyFilteredState="لا نتائج مطابقة للبحث."
+          />
         </CardContent>
       </Card>
 
@@ -330,14 +382,14 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
         <div className="space-y-3 py-1">
           <div>
             <Label htmlFor="adv-emp">الموظف</Label>
-            <select id="adv-emp" className={`${selectClsSm} w-full h-9`} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <AppSelect id="adv-emp" className={`${selectClsSm} w-full h-9`} value={employeeId} onValueChange={(next) => setEmployeeId(next)}>
               <option value="">اختر موظفاً…</option>
               {emps.map((e) => (
                 <option key={e.id} value={String(e.id)}>
                   {e.fullName}{e.branchName ? ` — ${e.branchName}` : ""}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             {!!employeeId && balQ.data && D(balQ.data.balance).gt(0) && (
               <p className="text-xs text-money-negative mt-1">
                 عليه سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع ({balQ.data.activeCount} سلفة) — الخصم بالأقدم أولاً.

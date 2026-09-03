@@ -14,6 +14,7 @@
  *  ⑧ حمولةٌ غير صورةٍ بترويسة صورة ⇒ مرفوضة (`strictMagic`).
  *  ⑨ **أمرٌ بلا تصميم يبدأ كما هو اليوم** — عدمُ انحدار.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -24,8 +25,13 @@ import { startWorkOrder, markWorkOrderReady } from "../workOrder/lifecycle";
 import { requestDesignApproval } from "../workOrder/approval";
 import { setWorkOrderDesign } from "../workOrder/design";
 import { claimTask, resolveTask } from "../tasks/lifecycle";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions",
   "taskEvents", "tasks", "serviceTypes",
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -93,13 +99,37 @@ const stockOf = async () =>
 const movementCount = async () =>
   Number((await db().select({ n: sql<number>`COUNT(*)` }).from(s.inventoryMovements))[0].n);
 
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `approval-gate-request:${randomUUID()}`,
+      note: "طلب اعتماد النسخة الحالية قبل التنفيذ",
+    },
+    CASHIER,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `approval-gate-decision:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "راجع العميل النسخة الحالية ووافق عليها",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.approval-gate.${randomUUID()}`,
+      },
+    },
+    MANAGER,
+  );
+}
+
 describe("ش٢ — حارس موافقة التصميم", () => {
   it("⭐ ① البدء مرفوض — وصفر أثرٍ مخزنيّ (الحارس قبل القفل)", async () => {
     const woId = await order("ap-1");
     await requestDesignApproval({ workOrderId: woId }, CASHIER);
 
     const before = { stock: await stockOf(), moves: await movementCount() };
-    await expect(startWorkOrder(woId, CASHIER)).rejects.toThrowError(/موافقة العميل|لا يبدأ التنفيذ/);
+    await expect(startWorkOrder(woId, CASHIER)).rejects.toThrowError(/موافقة العميل|لا يبدأ التنفيذ|لم تُعتمد النسخة/);
 
     // الثابت الأخطر: لا خامةَ استُهلكت ولا حركةَ كُتبت.
     expect(await stockOf()).toBe(before.stock);
@@ -115,6 +145,7 @@ describe("ش٢ — حارس موافقة التصميم", () => {
     // ترفض المهمّة NEW صراحةً، فالتسجيل يمرّ بالسحب أوّلاً.
     await claimTask(res.taskId, MANAGER);
     await resolveTask(res.taskId, MANAGER, "وافق العميل هاتفياً");
+    await approveCurrentDesign(woId);
 
     await startWorkOrder(woId, CASHIER);
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
@@ -127,6 +158,7 @@ describe("ش٢ — حارس موافقة التصميم", () => {
     const first = await requestDesignApproval({ workOrderId: woId }, CASHIER);
     await claimTask(first.taskId, MANAGER);
     await resolveTask(first.taskId, MANAGER, "وافق");
+    await approveCurrentDesign(woId);
     await startWorkOrder(woId, CASHIER);
 
     await requestDesignApproval({ workOrderId: woId, note: "العميل طلب تعديلاً" }, CASHIER);
@@ -140,6 +172,7 @@ describe("ش٢ — حارس موافقة التصميم", () => {
       branchId: 1, title: "اتصل بالعميل", serviceTypeId: plainTypeId, linkedWorkOrderId: woId,
     } as never, { userId: 2, branchId: 1, role: "cashier" });
 
+    await approveCurrentDesign(woId);
     await startWorkOrder(woId, CASHIER); // يمرّ
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
     expect(wo.status).toBe("IN_PROGRESS");
@@ -156,8 +189,9 @@ describe("ش٢ — حارس موافقة التصميم", () => {
     expect(Number(n.n)).toBe(1);
   });
 
-  it("⭐ ⑨ أمرٌ بلا تصميم يبدأ كما هو اليوم (عدم انحدار)", async () => {
+  it("⭐ ⑨ أمرٌ بلا صور يملك نسخة نصية قابلة للاعتماد ثم يبدأ", async () => {
     const woId = await order("ap-9");
+    await approveCurrentDesign(woId);
     await startWorkOrder(woId, CASHIER);
     expect(await stockOf()).toBe(95);
   });
@@ -168,15 +202,15 @@ describe("ش٢ — نسخةُ ملفّ التصميم", () => {
     const woId = await order("dz-1");
     const r1 = await setWorkOrderDesign({ workOrderId: woId, images: [{ url: PNG }] }, CASHIER);
     expect(r1.changed).toBe(true);
-    expect(r1.revision).toBe(1);
+    expect(r1.revision).toBe(2);
 
     const r2 = await setWorkOrderDesign({ workOrderId: woId, images: [{ url: PNG2 }] }, CASHIER);
-    expect(r2.revision).toBe(2);
+    expect(r2.revision).toBe(3);
 
     const rows = await db().select().from(s.workOrderImages).where(eq(s.workOrderImages.workOrderId, woId));
     expect(rows.length).toBe(2); // سجلٌّ بلا حذف
-    expect(rows.filter((x) => Number(x.revision) === 1)).toHaveLength(1);
     expect(rows.filter((x) => Number(x.revision) === 2)).toHaveLength(1);
+    expect(rows.filter((x) => Number(x.revision) === 3)).toHaveLength(1);
   });
 
   it("⭐ ⑥ حفظُ نفس المجموعة ⇒ لا نسخة ولا مهمّة", async () => {
@@ -186,7 +220,7 @@ describe("ش٢ — نسخةُ ملفّ التصميم", () => {
 
     const again = await setWorkOrderDesign({ workOrderId: woId, images: [{ url: PNG }] }, CASHIER);
     expect(again.changed).toBe(false);
-    expect(again.revision).toBe(1);
+    expect(again.revision).toBe(2);
     expect(Number((await db().select({ n: sql<number>`COUNT(*)` }).from(s.tasks))[0].n)).toBe(tasksAfterFirst);
   });
 
@@ -199,10 +233,14 @@ describe("ش٢ — نسخةُ ملفّ التصميم", () => {
     ).rejects.toThrowError();
   });
 
-  it("⭐ حفظُ نسخةٍ يفتح الحجز فيُرفَض البدء", async () => {
+  /** ⭐ انقلب العقد (قرار المالك ١/٩/٢٦): حفظُ نسخةِ تصميمٍ لم يعد يفتح حجزاً على التنفيذ. */
+  it("⭐ حفظُ نسخةٍ لا يفتح حجزاً — البدء يمرّ", async () => {
     const woId = await order("dz-4");
     await setWorkOrderDesign({ workOrderId: woId, images: [{ url: PNG }] }, CASHIER);
-    await expect(startWorkOrder(woId, CASHIER)).rejects.toThrowError(/لا يبدأ التنفيذ/);
+    await startWorkOrder(woId, CASHIER);
+    expect(
+      (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)).limit(1))[0].status,
+    ).toBe("IN_PROGRESS");
   });
 
   it("لا يُعدَّل تصميم أمرٍ ملغى", async () => {

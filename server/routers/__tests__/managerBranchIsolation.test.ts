@@ -62,21 +62,21 @@ describe("canCrossBranches — مُسنَد عبور الفروع الموحّد
 });
 
 describe("عزل قراءة مدير الفرع — يقرأ فرعه فقط (branchScopedProcedure)", () => {
-  it("مدير ف١: stockByBranch لف٢ يُقصَر على فرعه ف١ (لا يرى مخزون ف٢)", async () => {
+  it("مدير ف١: onHand لف٢ يُقصَر على فرعه ف١ (لا يرى مخزون ف٢)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     // scopedBranchId=فرعه ⇒ كلّ الصفوف من ف١ (لا صفٌّ من ف٢).
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows.every((r: any) => Number(r.branchId) === 1)).toBe(true);
   });
-  it("الأدمن يعبُر: stockByBranch لف٢ يُرجِع صفوف ف٢", async () => {
+  it("الأدمن يعبُر: onHand لف٢ يُرجِع صفوف ف٢", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     expect(rows.every((r: any) => Number(r.branchId) === 2)).toBe(true);
   });
   it("المالك (isOwner) يعبُر كالأدمن عبر مسار isOwner الدفاعيّ: يرى مخزون ف٢", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(5)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    const rows = await caller.inventory.onHand({ branchId: 2 });
     expect(rows.every((r: any) => Number(r.branchId) === 2)).toBe(true);
   });
 });
@@ -85,14 +85,14 @@ describe("عزل كتابة مدير الفرع — لا يحرّك مخزون �
   it("مدير ف١ لا يُحوّل **من** ف٢ — FORBIDDEN، وصفر حركة", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4)));
     await expect(
-      caller.inventory.transfer({ variantId: 2, fromBranchId: 2, toBranchId: 1, baseQuantity: 5 }),
+      caller.inventory.transferBatch({ fromBranchId: 2, toBranchId: 1, items: [{ variantId: 2, baseQuantity: 5 }] }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
   });
   it("الأدمن يُحوّل من ف٢ بلا حظرٍ فرعيّ", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
     let err: any = null;
-    try { await caller.inventory.transfer({ variantId: 2, fromBranchId: 2, toBranchId: 1, baseQuantity: 5 }); } catch (e) { err = e; }
+    try { await caller.inventory.transferBatch({ fromBranchId: 2, toBranchId: 1, items: [{ variantId: 2, baseQuantity: 5 }] }); } catch (e) { err = e; }
     expect(err?.code).not.toBe("FORBIDDEN");
   });
 });

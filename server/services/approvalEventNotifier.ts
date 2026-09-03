@@ -136,6 +136,7 @@ export async function notifyApprovalPendingByReceipt(
         createAppNotification({
           userId: recipientId,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title,
           body,
           route: WEB_APPROVAL_ROUTE,
@@ -190,6 +191,7 @@ export async function notifyApprovalDecisionByReceipt(
     await createAppNotification({
       userId: projection.createdBy,
       kind: "APPROVAL_REQUIRED",
+      family: "EMPLOYEE",
       title,
       body,
       route: WEB_APPROVAL_ROUTE,

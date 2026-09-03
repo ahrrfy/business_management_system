@@ -30,10 +30,14 @@ import { createCardReconciliation, getCardSummary, listCardReconciliations } fro
 import { collectDeposit, collectOnReceptionInvoice, commitDraft, promoteDraft, refundDeposit } from "../reception";
 import { returnSale } from "../returnService";
 import { createWorkOrder } from "../workOrderService";
+import {
+  confirmExternalPaymentAttempt,
+  initiateExternalPaymentAttempt,
+} from "../posExternalPayment";
 
 const TABLES = [
   "cardReconciliations", "orderPayments", "receptionDraftLines", "receptionDrafts",
-  "idempotencyKeys", "accountingEntries", "receipts",
+  "idempotencyKeys", "externalPaymentAttempts", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrderImages", "workOrders",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "productPrices", "productUnits", "productVariants", "products",
@@ -283,8 +287,8 @@ describe("T7 — الحساب المشتقّ المعمَّم بلا اختلا�
   });
 });
 
-describe("T9 — إصلاح المراجعة: حارس زين داخل معاملة الدفع (TOCTOU + replay)", () => {
-  it("تسديد فاتورة استقبال بزين ينجح، وإعادة الإرسال بنفس المفتاح replay لا CONFLICT، والكود يبقى أحادياً", async () => {
+describe("T9 — محاولة SALES_COLLECTION المؤكدة: replay + single-use", () => {
+  it("تسديد فاتورة استقبال ببطاقة مؤكدة ينجح، وإعادة الإرسال replay، والمحاولة لا تُستهلك مرتين", async () => {
     const shift = await openReception();
     await db().insert(s.invoices).values({
       id: 9001,
@@ -301,28 +305,49 @@ describe("T9 — إصلاح المراجعة: حارس زين داخل معام�
       shiftId: shift.shiftId,
     });
     const K = uuid("t9k00001");
+    const deviceId = "RECEPTION-T9";
+    const attempt = await initiateExternalPaymentAttempt(
+      {
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        method: "CARD",
+        amount: "10000.00",
+        reference: "CARD-T9-51",
+        requestId: "reception-t9-card-attempt",
+        deviceId,
+      },
+      CASHIER,
+    );
+    await confirmExternalPaymentAttempt(
+      {
+        attemptId: attempt.attemptId,
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        deviceId,
+      },
+      CASHIER,
+    );
     const first = await collectOnReceptionInvoice(
-      { invoiceId: 9001, amount: "10000.00", method: "TELECOM", reference: CODE(51), clientRequestId: K },
-      { userId: 2, branchId: 1, role: "cashier" },
+      { invoiceId: 9001, amount: "10000.00", method: "CARD", reference: "CARD-T9-51", clientRequestId: K, externalPaymentAttemptId: attempt.attemptId, externalPaymentDeviceId: deviceId },
+      CASHIER,
     );
     expect((first as { idempotentReplay?: boolean }).idempotentReplay).toBeUndefined();
     const rcpt = (await db().select().from(s.receipts)
-      .where(and(eq(s.receipts.paymentMethod, "TELECOM"), eq(s.receipts.invoiceId, 9001))))[0];
+      .where(and(eq(s.receipts.paymentMethod, "CARD"), eq(s.receipts.invoiceId, 9001))))[0];
     expect(rcpt.cashBucket).toBeNull();
 
-    // إعادة الإرسال المشروعة (ردٌّ ضائع): كانت تُرفض CONFLICT «سبق قبضُه» قبل نقل الحارس
-    // داخل معاملة processPayment — الآن replay نظيف بنتيجة العملية الأولى.
+    // إعادة الإرسال المشروعة (ردٌّ ضائع) تعيد العملية الأولى بلا استهلاك جديد.
     const replay = await collectOnReceptionInvoice(
-      { invoiceId: 9001, amount: "10000.00", method: "TELECOM", reference: CODE(51), clientRequestId: K },
-      { userId: 2, branchId: 1, role: "cashier" },
+      { invoiceId: 9001, amount: "10000.00", method: "CARD", reference: "CARD-T9-51", clientRequestId: K, externalPaymentAttemptId: attempt.attemptId, externalPaymentDeviceId: deviceId },
+      CASHIER,
     );
     expect((replay as { idempotentReplay?: boolean }).idempotentReplay).toBe(true);
 
-    // والكود يبقى أحادياً لعمليةٍ جديدة (مفتاح مختلف).
+    // محاولة مؤكدة واحدة لا تصلح لعملية جديدة حتى لو تطابقت حمولة الدفع.
     await expect(collectOnReceptionInvoice(
-      { invoiceId: 9001, amount: "5000.00", method: "TELECOM", reference: CODE(51), clientRequestId: uuid("t9k00002") },
-      { userId: 2, branchId: 1, role: "cashier" },
-    )).rejects.toThrowError(/سبق قبضُه/);
+      { invoiceId: 9001, amount: "10000.00", method: "CARD", reference: "CARD-T9-51", clientRequestId: uuid("t9k00002"), externalPaymentAttemptId: attempt.attemptId, externalPaymentDeviceId: deviceId },
+      CASHIER,
+    )).rejects.toThrowError(/استُهلك/);
   });
 });
 

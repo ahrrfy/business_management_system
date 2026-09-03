@@ -1,12 +1,15 @@
 import { CopyInline } from "@/components/CopyButton";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -15,7 +18,6 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useState } from "react";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 /* ============================ Constants & helpers ============================ */
 
@@ -100,6 +102,144 @@ type RichRow = RouterOutputs["inventory"]["movementsRich"]["rows"][number];
 
 const PAGE_SIZE = 50;
 
+/*
+ * أعمدة السجلّ — كلّها مشتقّةٌ من الصفّ وحده فتبقى خارج المكوّن (بلا إعادة بناءٍ كلّ عرض).
+ * `accessorFn` على كل عمودٍ ذي قيمة يُمرّر **التسمية المعروضة** لا الرمز الخامّ، فـ«نسخ
+ * القيمة» يُخرج ما يقرأه المستعمِل. عمودُ الإجراءات معفى (لا قيمة له).
+ */
+const movementColumns: ColumnDef<RichRow, unknown>[] = [
+  {
+    id: "createdAt",
+    header: "التاريخ والوقت",
+    accessorFn: (r) => fmtDateTime(r.createdAt),
+    meta: { kind: "datetime" },
+    cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.createdAt)}</span>,
+  },
+  {
+    id: "variant",
+    header: "المنتج / المتغيّر",
+    accessorFn: (r) => variantLine(r).primary,
+    meta: { width: "wide" },
+    cell: ({ row }) => {
+      const { primary, secondary } = variantLine(row.original);
+      return (
+        <div>
+          <div className="font-medium">{primary}</div>
+          <CopyInline value={secondary} className="text-muted-foreground" />
+        </div>
+      );
+    },
+  },
+  {
+    id: "type",
+    header: "النوع",
+    accessorFn: (r) => MTYPE_LABEL[r.movementType as MovementType] ?? r.movementType,
+    meta: { kind: "status" },
+    cell: ({ row }) => <TypeBadge type={row.original.movementType as MovementType} />,
+  },
+  {
+    id: "qty",
+    header: "الكمية",
+    accessorFn: (r) => fmtSignedQty(r.signedQty),
+    meta: { kind: "number" },
+    cell: ({ row }) => (
+      <span
+        className={`font-semibold ${
+          row.original.signedQty > 0
+            ? "text-money-positive"
+            : row.original.signedQty < 0
+              ? "text-money-negative"
+              : "text-muted-foreground"
+        }`}
+      >
+        {fmtSignedQty(row.original.signedQty)}
+      </span>
+    ),
+  },
+  {
+    id: "branch",
+    header: "الفرع",
+    accessorFn: (r) => (r.relatedBranchName ? `${r.branchName} ← ${r.relatedBranchName}` : r.branchName),
+    cell: ({ row }) => (
+      <span className="text-xs">
+        {row.original.branchName}
+        {row.original.relatedBranchName && (
+          <span className="text-muted-foreground"> ← {row.original.relatedBranchName}</span>
+        )}
+      </span>
+    ),
+  },
+  {
+    id: "reference",
+    header: "المرجع",
+    accessorFn: (r) =>
+      r.referenceType
+        ? `${REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}`
+        : "—",
+    cell: ({ row }) => {
+      const r = row.original;
+      if (!r.referenceType) return <span className="text-muted-foreground">—</span>;
+      return (
+        <span className="text-xs">
+          <CopyInline
+            value={r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType}
+            display={
+              <>
+                {REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}
+                {r.referenceId ? <span className="text-muted-foreground"> #{r.referenceId}</span> : null}
+              </>
+            }
+            mono={false}
+          />
+        </span>
+      );
+    },
+  },
+  {
+    id: "createdByName",
+    header: ATTRIBUTION_LABELS.performedBy,
+    accessorFn: (r) => r.createdByName ?? "—",
+    meta: { kind: "actor" },
+    cell: ({ row }) => <span className="text-xs">{row.original.createdByName ?? "—"}</span>,
+  },
+  {
+    id: "notes",
+    header: "الملاحظة",
+    accessorFn: (r) => r.notes ?? "—",
+    cell: ({ row }) => (
+      // القصّ مع title كما كان — الملاحظة قد تطول فتُمدّد الجدول بلا فائدة.
+      <span className="block max-w-xs truncate text-xs text-muted-foreground" title={row.original.notes ?? undefined}>
+        {row.original.notes ?? "—"}
+      </span>
+    ),
+  },
+  {
+    id: "actions",
+    header: "إجراء",
+    meta: { kind: "actions" },
+    cell: ({ row }) => {
+      const r = row.original;
+      return (
+        /* «فتح المرجع» الشرطي: قيم referenceType الفعلية من الخدمات —
+           البيع INVOICE (saleService) والشراء PURCHASE_ORDER (purchaseService).
+           غير ذلك ⇒ hidden فيُخفي RowActions نفسه (يعيد null). */
+        <RowActions
+          actions={[
+            {
+              key: "ref",
+              kind: "view",
+              label: "فتح المرجع",
+              hidden: !r.referenceId || (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
+              href: r.referenceType === "INVOICE" ? `/invoices/${r.referenceId}` : `/purchases/${r.referenceId}`,
+              gate: r.referenceType === "INVOICE" ? { module: "sales", level: "READ" } : { module: "purchases", level: "READ" },
+            },
+          ]}
+        />
+      );
+    },
+  },
+];
+
 export default function InventoryMovements() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -133,6 +273,31 @@ export default function InventoryMovements() {
   const debouncedCreatedByName = useDebouncedValue(createdByName, 250);
   const [page, setPage] = useState(0);
 
+  /**
+   * عدّاد الفلاتر المفعّلة + تصفيرها — لم تكن الشاشة تملك زرّ تصفيرٍ أصلاً، فالموظّف
+   * يُضيّق سبعة فلاتر ثمّ لا يجد سبيلاً للعودة إلى الكلّ إلّا بإعادة تحميل الصفحة.
+   * البحث محسوبٌ هنا لأنّه أحد الفلاتر السبعة المرئية (لا حقلَ بحثٍ عامّاً منفصلاً).
+   */
+  const activeFilterCount =
+    (pickedBranch !== "" ? 1 : 0) +
+    (movementType ? 1 : 0) +
+    (q ? 1 : 0) +
+    (fromDate ? 1 : 0) +
+    (toDate ? 1 : 0) +
+    (referenceType ? 1 : 0) +
+    (createdByName ? 1 : 0);
+
+  const resetFilters = () => {
+    setPickedBranch("");
+    setMovementType("");
+    setQ("");
+    setFromDate("");
+    setToDate("");
+    setReferenceType("");
+    setCreatedByName("");
+    setPage(0);
+  };
+
   const offset = page * PAGE_SIZE;
 
   const queryInput = useMemo(
@@ -157,8 +322,12 @@ export default function InventoryMovements() {
 
   const rows: RichRow[] = movements.data?.rows ?? [];
   const total = movements.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const currentPage = page + 1;
+  /*
+   * لا `currentPage`/`totalPages` هنا بعد اليوم: شريط `TablePager` داخل `DataTable` يشتقّهما
+   * من `serverPagination` نفسه ويطبعهما («عرض 1–50 من N · صفحة X من Y»)، فحسابُهما ثانيةً
+   * في هذه الشاشة تعريفٌ مكرَّر لمقدارٍ واحد — وهو بابُ الانحراف: يكفي أن يتغيّر PAGE_SIZE
+   * في أحد الموضعين ليعرض الشريطان صفحتين مختلفتين لنفس البيانات.
+   */
 
   const [exporting, setExporting] = useState(false);
 
@@ -198,7 +367,7 @@ export default function InventoryMovements() {
           map: (r) =>
             r.referenceType ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}` : "",
         },
-        { key: "createdByName", header: "المستخدم", map: (r) => r.createdByName ?? "" },
+        { key: "createdByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.createdByName ?? "" },
         { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
       ],
       });
@@ -216,20 +385,22 @@ export default function InventoryMovements() {
       />
 
 
-      {/* Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">الفلاتر</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-3 items-end">
+      {/*
+        الموجة ١ (docs/ui-unification-campaign.md): كان الغلاف بطاقةً يدوية بشبكة
+        `lg:grid-cols-7` — سبعةُ حقولٍ في صفٍّ واحد لا يُقرأ على أيّ شاشة، وبلا زرّ
+        تصفيرٍ أصلاً (الموظّف يُفلتر ثم لا يجد سبيلاً للعودة إلى الكلّ).
+      */}
+      <FilterShell
+        columns={4}
+        activeCount={activeFilterCount}
+        onReset={resetFilters}
+      >
           {canPickBranch && (
-            <div className="space-y-1">
-              <Label>الفرع</Label>
-              <select
-                className={selectClsFull}
+            <FilterField label="الفرع">
+              <AppSelect
                 value={pickedBranch === "" ? "" : String(pickedBranch)}
-                onChange={(e) => {
-                  setPickedBranch(e.target.value ? Number(e.target.value) : "");
+                onValueChange={(v) => {
+                  setPickedBranch(v ? Number(v) : "");
                   setPage(0);
                 }}
               >
@@ -239,16 +410,14 @@ export default function InventoryMovements() {
                     {b.name}
                   </option>
                 ))}
-              </select>
-            </div>
+              </AppSelect>
+            </FilterField>
           )}
-          <div className="space-y-1">
-            <Label>نوع الحركة</Label>
-            <select
-              className={selectClsFull}
+          <FilterField label="نوع الحركة">
+            <AppSelect
               value={movementType}
-              onChange={(e) => {
-                setMovementType(e.target.value as MovementType | "");
+              onValueChange={(v) => {
+                setMovementType(v as MovementType | "");
                 setPage(0);
               }}
             >
@@ -259,21 +428,19 @@ export default function InventoryMovements() {
               <option value="ADJUST">تسوية</option>
               <option value="TRANSFER_IN">تحويل وارد</option>
               <option value="TRANSFER_OUT">تحويل صادر</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>بحث (اسم/SKU)</Label>
-            <Input
+            </AppSelect>
+          </FilterField>
+          <FilterField label="بحث (اسم/SKU)">
+            <SearchField
               value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
+              onChange={(value) => {
+                setQ(value);
                 setPage(0);
               }}
               placeholder="مثال: ورق A4"
             />
-          </div>
-          <div className="space-y-1">
-            <Label>من تاريخ</Label>
+          </FilterField>
+          <FilterField label="من تاريخ">
             <Input
               type="date"
               dir="ltr"
@@ -283,9 +450,8 @@ export default function InventoryMovements() {
                 setPage(0);
               }}
             />
-          </div>
-          <div className="space-y-1">
-            <Label>إلى تاريخ</Label>
+          </FilterField>
+          <FilterField label="إلى تاريخ">
             <Input
               type="date"
               dir="ltr"
@@ -295,14 +461,12 @@ export default function InventoryMovements() {
                 setPage(0);
               }}
             />
-          </div>
-          <div className="space-y-1">
-            <Label>نوع المرجع</Label>
-            <select
-              className={selectClsFull}
+          </FilterField>
+          <FilterField label="نوع المرجع">
+            <AppSelect
               value={referenceType}
-              onChange={(e) => {
-                setReferenceType(e.target.value as typeof referenceType);
+              onValueChange={(v) => {
+                setReferenceType(v as typeof referenceType);
                 setPage(0);
               }}
             >
@@ -310,21 +474,20 @@ export default function InventoryMovements() {
               {REFERENCE_TYPE_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>منشئ الحركة</Label>
-            <Input
+            </AppSelect>
+          </FilterField>
+          {/* «منشئ الحركة» = دور `performedBy` في عقد الإسناد الموحّد (shared/uiContracts). */}
+          <FilterField label={ATTRIBUTION_LABELS.performedBy}>
+            <SearchField
               value={createdByName}
-              onChange={(e) => {
-                setCreatedByName(e.target.value);
+              onChange={(value) => {
+                setCreatedByName(value);
                 setPage(0);
               }}
               placeholder="اسم المستخدم…"
             />
-          </div>
-        </CardContent>
-      </Card>
+          </FilterField>
+      </FilterShell>
 
       {/* Table */}
       <Card>
@@ -335,12 +498,11 @@ export default function InventoryMovements() {
               ({fmtInt(total)} حركة)
             </span>
           </CardTitle>
+          {/* مؤشّر «صفحة X من Y» كان هنا وحُذف: صار `TablePager` أسفل الجدول يطبعه ضمن
+              «عرض 1–50 من N · صفحة X من Y»، فبقاؤه هنا مؤشّرٌ ثانٍ لنفس المقدار يشغل النظر
+              ويوهم أنّهما شيئان. وتغذيتُه الأخرى (نصّ التحميل) لم تعد لازمة: `DataTable`
+              يستقبل `loading` فيعرض صفوفاً هيكلية، وهي إشارةُ تحميلٍ أوضح من كلمةٍ في الترويسة. */}
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">
-              {movements.isLoading
-                ? "جارٍ التحميل…"
-                : `صفحة ${fmtInt(currentPage)} من ${fmtInt(totalPages)}`}
-            </span>
             <Button
               variant="outline"
               size="sm"
@@ -391,138 +553,26 @@ export default function InventoryMovements() {
               disabled={total === 0 || exporting}
               onClick={() => void exportAll()}
             >
-              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+              {exporting ? ACTION_LABELS.exporting : "تصدير Excel"}
             </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">التاريخ والوقت</th>
-                <th className="p-2 text-start">المنتج / المتغيّر</th>
-                <th className="p-2 text-center">النوع</th>
-                <th className="p-2 text-center">الكمية</th>
-                <th className="p-2 text-start">الفرع</th>
-                <th className="p-2 text-start">المرجع</th>
-                <th className="p-2 text-start">المستخدم</th>
-                <th className="p-2 text-start">الملاحظة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const { primary, secondary } = variantLine(r);
-                const t = r.movementType as MovementType;
-                return (
-                  <tr key={r.id} className="border-t align-top">
-                    <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
-                    <td className="p-2">
-                      <div className="font-medium">{primary}</div>
-                      <CopyInline value={secondary} className="text-muted-foreground" />
-                    </td>
-                    <td className="p-2 text-center">
-                      <TypeBadge type={t} />
-                    </td>
-                    <td
-                      className={`p-2 text-center tabular-nums font-semibold ${
-                        r.signedQty > 0
-                          ? "text-money-positive"
-                          : r.signedQty < 0
-                          ? "text-money-negative"
-                          : "text-muted-foreground"
-                      }`}
-                      dir="ltr"
-                    >
-                      {fmtSignedQty(r.signedQty)}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {r.branchName}
-                      {r.relatedBranchName && (
-                        <span className="text-muted-foreground">
-                          {" "}
-                          ← {r.relatedBranchName}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {r.referenceType ? (
-                        <CopyInline
-                          value={r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType}
-                          display={
-                            <>
-                              {REFERENCE_TYPE_LABELS[r.referenceType] ?? r.referenceType}
-                              {r.referenceId ? <span className="text-muted-foreground"> #{r.referenceId}</span> : null}
-                            </>
-                          }
-                          mono={false}
-                        />
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className="p-2 text-xs">{r.createdByName ?? "—"}</td>
-                    <td className="p-2 text-xs text-muted-foreground max-w-xs truncate" title={r.notes ?? undefined}>
-                      {r.notes ?? "—"}
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* «فتح المرجع» الشرطي: قيم referenceType الفعلية من الخدمات —
-                          البيع INVOICE (saleService) والشراء PURCHASE_ORDER (purchaseService).
-                          غير ذلك ⇒ hidden فيُخفي RowActions نفسه (يعيد null). */}
-                      <RowActions
-                        actions={[
-                          {
-                            key: "ref",
-                            kind: "view",
-                            label: "فتح المرجع",
-                            hidden: !r.referenceId ||
-                              (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
-                            href:
-                              r.referenceType === "INVOICE"
-                                ? `/invoices/${r.referenceId}`
-                                : `/purchases/${r.referenceId}/receive`,
-                            gate: r.referenceType === "INVOICE"
-                              ? { module: "sales", level: "READ" }
-                              : { module: "purchases", level: "READ" },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {!movements.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={9} message="لا توجد حركات مطابقة للفلاتر." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable<RichRow>
+            columns={movementColumns}
+            data={rows}
+            /* الفلاتر السبعة في FilterShell أعلاه (تُغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ
+               متجاوران، وتُعلن الشاشةُ «لا حركات بعد» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0}
+            loading={movements.isLoading}
+            errorState={{ isError: movements.isError, message: movements.error?.message, onRetry: () => void movements.refetch() }}
+            /* ترقيمٌ خادميّ (limit/offset + total) — شريطُ الترقيم اليدويّ أسفل البطاقة حُذف معه
+               كي لا يقفز شريطان بمقدارَين مختلفَين فتُتخطّى صفوفٌ بصمت. */
+            serverPagination={{ page, onPageChange: (next) => setPage(next), pageSize: PAGE_SIZE, total, isFetching: movements.isFetching }}
+            emptyText="لا توجد حركات مطابقة للفلاتر."
+          />
         </CardContent>
-        <div className="flex items-center justify-between p-3 border-t">
-          <span className="text-xs text-muted-foreground">
-            عرض {rows.length > 0 ? fmtInt(offset + 1) : 0}–
-            {fmtInt(offset + rows.length)} من {fmtInt(total)}
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page === 0 || movements.isLoading}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-            >
-              السابق →
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={currentPage >= totalPages || movements.isLoading}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              ← التالي
-            </Button>
-          </div>
-        </div>
       </Card>
 
     </div>

@@ -2,6 +2,7 @@
 // الإيداع والسحب نقلُ أصلٍ بين الخزينة والصيرفة؛ شراء الدولار (نموذج الدَّين، قرار مالك ٣/٨) يزيد
 // ذمّتنا الدولارية على الصيرفة (الدولار يُسلَّم فوراً نقداً) ولا يمسّ الدينار إطلاقاً.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ArrowDownToLine, ArrowUpFromLine, Check, Clock, DollarSign, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -142,17 +143,17 @@ export default function ExchangeOperations() {
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={`${selectCls} w-full`} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className={`${selectCls} w-full`} value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {rows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الفرع</label>
-            <select className={`${selectCls} w-full`} value={effBranch} onChange={(e) => setBranchId(Number(e.target.value))} disabled={!isAdmin}>
+            <AppSelect className={`${selectCls} w-full`} value={String(effBranch)} onValueChange={(value) => setBranchId(Number(value))} disabled={!isAdmin}>
               <option value={0}>— اختر —</option>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </div>
 

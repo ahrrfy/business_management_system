@@ -1,11 +1,12 @@
 import { Button } from "@/components/ui/button";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -13,6 +14,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
 import { LEAVE_STATUSES, LEAVE_TYPES, leaveStatusLabel } from "@shared/hr";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
@@ -94,6 +96,44 @@ export default function Leaves() {
     const q = query.trim().toLocaleLowerCase("ar");
     return q ? rows.filter((l) => [l.employeeName, l.leaveType, l.reason, leaveStatusLabel(l.status)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
   }, [rows, query]);
+  type LeaveRow = (typeof visibleRows)[number];
+  type BalanceRow = NonNullable<(typeof balances)["data"]>[number];
+
+  /** أعمدة أرصدة الإجازات — جدولٌ مُضمَّن في بطاقةٍ تحمل عنوانه وعدَّه. */
+  const balanceColumns: ColumnDef<BalanceRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الموظف",
+      accessorFn: (b) => b.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => (
+        <div className="flex items-center gap-2">
+          <EmpAvatar name={row.original.name} color={row.original.colorTag} photoUrl={row.original.photoUrl} sizePx={28} />
+          <span className="font-medium">{row.original.name}</span>
+        </div>
+      ),
+    },
+    {
+      id: "department",
+      header: "القسم",
+      accessorFn: (b) => b.department ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.department ?? "—"}</span>,
+    },
+    {
+      id: "annual",
+      header: "سنوية",
+      accessorFn: (b) => b.annualLeaveBalance,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.annualLeaveBalance,
+    },
+    {
+      id: "sick",
+      header: "مرضية",
+      accessorFn: (b) => b.sickLeaveBalance,
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.sickLeaveBalance,
+    },
+  ];
 
   // مؤشّرات: قيد الموافقة، موافق عليها، أيام إجازة هذا الشهر — تُحسب خادمياً على كامل المجموعة
   // المفلترة (لا على الصفحة المعروضة وحدها) كي تبقى صحيحة عبر كل الصفحات.
@@ -147,6 +187,142 @@ export default function Leaves() {
       reason: reason.trim() || undefined,
     });
   };
+  /**
+   * أعمدة طلبات الإجازة — منقولة حرفياً.
+   * ⚠️ «الموظف» هنا **موضوع** السجلّ لا فاعله (صاحب الإجازة)، فلا يُسمّى «نفّذها»:
+   * الفاعل هو من وافق/رفض وهو غير معروضٍ في هذا الجدول (راجع حارس check:row-attribution).
+   */
+  const leaveColumns = useMemo<ColumnDef<LeaveRow, unknown>[]>(() => [
+    {
+      id: "employee", header: "الموظف",
+      accessorFn: (l) => l.employeeName || "—",
+      cell: ({ row }) => (
+        <div className="flex items-center gap-2">
+          <EmpAvatar name={row.original.employeeName} color={row.original.colorTag} photoUrl={row.original.photoUrl} sizePx={28} />
+          <span className="font-medium">{row.original.employeeName || "—"}</span>
+        </div>
+      ),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "leaveType", header: "النوع",
+      accessorFn: (l) => l.leaveType,
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.leaveType}
+          {!row.original.paid && <span className="text-muted-foreground"> · غير مدفوعة</span>}
+        </span>
+      ),
+      meta: { kind: "text" },
+    },
+    { id: "fromDate", header: "من", accessorFn: (l) => String(l.fromDate ?? ""), cell: ({ row }) => fmtDate(row.original.fromDate), meta: { kind: "date" } },
+    { id: "toDate", header: "إلى", accessorFn: (l) => String(l.toDate ?? ""), cell: ({ row }) => fmtDate(row.original.toDate), meta: { kind: "date" } },
+    { id: "days", header: "الأيام", accessorFn: (l) => Number(l.days ?? 0), meta: { kind: "number" } },
+    {
+      id: "reason", header: "السبب",
+      accessorFn: (l) => l.reason ?? "—",
+      cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.reason ?? "—"}</span>,
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "status", header: "الحالة",
+      accessorFn: (l) => l.status,
+      cell: ({ row }) => <LeaveStatusBadge status={row.original.status} />,
+      meta: { kind: "status" },
+    },
+    {
+      id: "actions", header: "إجراء",
+      cell: ({ row }) => {
+        const l = row.original;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "approve", kind: "approve", label: "موافقة",
+                hidden: l.status !== "pending", disabled: decide.isPending,
+                disabledReason: "توجد عملية قرار قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
+                  decide.mutate({ id: l.id, decision: "approved" });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+              {
+                key: "reject", kind: "reverse", label: "رفض", variant: "destructive",
+                hidden: l.status !== "pending", disabled: decide.isPending,
+                disabledReason: "توجد عملية قرار قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
+                  decide.mutate({ id: l.id, decision: "rejected" });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+              {
+                key: "cancel", kind: "reverse", label: "إلغاء الإجازة", variant: "destructive",
+                hidden: l.status !== "approved", disabled: cancel.isPending,
+                disabledReason: "توجد عملية إلغاء قيد التنفيذ",
+                onSelect: () => void (async () => {
+                  if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
+                  cancel.mutate({ id: l.id });
+                })(),
+                gate: { module: "hr", level: "FULL" },
+              },
+            ]}
+          />
+        );
+      },
+      meta: { kind: "actions" },
+    },
+  ], [decide.isPending, cancel.isPending]);
+
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة ببطاقات المؤشّرات والتبويبات
+  // وشريط الأدوات وأزرار الموافقة/الرفض). الصفوف هي المعروضة نفسها في تبويب «الطلبات»
+  // (صفحة الخادم بعد البحث المحلّي) بلا استعلامٍ جديد؛ والمؤشّرات الثلاثة تبقى على الورق
+  // كما كانت تظهر أعلى الصفحة — وهي محسوبة خادمياً على كامل المجموعة المفلترة لا على الصفحة.
+  function printLeaveRequests() {
+    const empName = (empOpts.data?.managers ?? []).find((m) => String(m.id) === empFilter)?.name;
+    printReportDoc({
+      title: "طلبات الإجازة",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${visibleRows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${(list.data?.total ?? visibleRows.length).toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: filterFrom || filterTo ? `${filterFrom || "البداية"} — ${filterTo || "اليوم"}` : "كل الفترات" },
+        { label: "النوع", value: type || "كل الأنواع" },
+        { label: "الحالة", value: status ? leaveStatusLabel(status) : "كل الحالات" },
+        { label: "الموظف", value: empName ?? "كل الموظفين" },
+      ],
+      meta: [
+        {
+          title: "مؤشّرات النطاق المفلتَر",
+          fields: [
+            { label: "طلبات قيد الموافقة", value: kpiPending.toLocaleString("ar-IQ-u-nu-latn") },
+            { label: "موافق عليها", value: kpiApproved.toLocaleString("ar-IQ-u-nu-latn") },
+            { label: "أيام إجازة هذا الشهر", value: kpiMonthDays.toLocaleString("ar-IQ-u-nu-latn") },
+          ],
+        },
+      ],
+      columns: [
+        { key: "employee", label: "الموظف" },
+        { key: "leaveType", label: "النوع" },
+        { key: "fromDate", label: "من" },
+        { key: "toDate", label: "إلى" },
+        { key: "days", label: "الأيام", align: "center" },
+        { key: "reason", label: "السبب" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleRows.map((l) => ({
+        employee: l.employeeName || "—",
+        // «غير مدفوعة» لاحقةٌ معروضة في خليّة النوع على الشاشة — تبقى على الورق.
+        leaveType: `${l.leaveType}${l.paid ? "" : " · غير مدفوعة"}`,
+        fromDate: fmtDate(l.fromDate),
+        toDate: fmtDate(l.toDate),
+        days: String(l.days ?? 0),
+        reason: l.reason ?? "—",
+        status: leaveStatusLabel(l.status),
+      })),
+      emptyText: "لا طلبات إجازة مطابقة.",
+    });
+  }
 
   return (
     <div className="space-y-4">
@@ -182,7 +358,7 @@ export default function Leaves() {
                 onResetFilters={() => { setQuery(""); setStatus(""); setType(""); setEmpFilter(""); setFilterFrom(""); setFilterTo(""); }}
                 onRefresh={() => void refresh()}
                 refreshing={list.isFetching || balances.isFetching}
-                onPrint={() => window.print()}
+                onPrint={printLeaveRequests}
                 exportSpec={{
                   filename: "طلبات-الإجازات",
                   rows: visibleRows,
@@ -209,22 +385,22 @@ export default function Leaves() {
                 }}
                 filters={<div className="flex items-end gap-2 flex-wrap">
                   <FilterField label="النوع">
-                    <select className={selectClsSm} value={type} onChange={(e) => setType(e.target.value)} aria-label="النوع">
+                    <AppSelect className="h-9" value={type} onValueChange={(next) => setType(next)} aria-label="النوع">
                       <option value="">كل الأنواع</option>
                       {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="الحالة">
-                    <select className={selectClsSm} value={status} onChange={(e) => setStatus(e.target.value)} aria-label="الحالة">
+                    <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next)} aria-label="الحالة">
                       <option value="">كل الحالات</option>
                       {LEAVE_STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="الموظف">
-                    <select className={selectClsSm} value={empFilter} onChange={(e) => setEmpFilter(e.target.value)} aria-label="الموظف">
+                    <AppSelect className="h-9" value={empFilter} onValueChange={(next) => setEmpFilter(next)} aria-label="الموظف">
                       <option value="">كل الموظفين</option>
                       {(empOpts.data?.managers ?? []).map((m) => <option key={m.id} value={String(m.id)}>{m.name}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                   <FilterField label="من تاريخ">
                     <Input type="date" dir="ltr" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} className="h-8 w-36" aria-label="من تاريخ" />
@@ -236,108 +412,27 @@ export default function Leaves() {
               />
             </CardHeader>
             <CardContent className="p-0">
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">الموظف</th>
-                      <th className="p-2">النوع</th>
-                      <th className="p-2">من</th>
-                      <th className="p-2">إلى</th>
-                      <th className="p-2 text-center">الأيام</th>
-                      <th className="p-2">السبب</th>
-                      <th className="p-2 text-center">الحالة</th>
-                      <th className="p-2 text-center">إجراء</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRows.map((l) => (
-                      <tr key={l.id} className="border-t hover:bg-accent/40">
-                        <td className="p-2">
-                          <div className="flex items-center gap-2">
-                            <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={28} />
-                            <span className="font-medium">{l.employeeName || "—"}</span>
-                          </div>
-                        </td>
-                        <td className="p-2 text-xs">{l.leaveType}{!l.paid && <span className="text-muted-foreground"> · غير مدفوعة</span>}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.fromDate)}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.toDate)}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{l.days}</td>
-                        <td className="p-2 text-xs text-muted-foreground max-w-[200px] truncate">{l.reason ?? "—"}</td>
-                        <td className="p-2 text-center"><LeaveStatusBadge status={l.status} /></td>
-                        <td className="p-2 text-center">
-                          <RowActions
-                            mode="inline"
-                            actions={[
-                              {
-                                key: "approve",
-                                kind: "approve",
-                                label: "موافقة",
-                                hidden: l.status !== "pending",
-                                disabled: decide.isPending,
-                                disabledReason: "توجد عملية قرار قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
-                                  decide.mutate({ id: l.id, decision: "approved" });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                              {
-                                key: "reject",
-                                kind: "reverse",
-                                label: "رفض",
-                                variant: "destructive",
-                                hidden: l.status !== "pending",
-                                disabled: decide.isPending,
-                                disabledReason: "توجد عملية قرار قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
-                                  decide.mutate({ id: l.id, decision: "rejected" });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                              {
-                                key: "cancel",
-                                kind: "reverse",
-                                label: "إلغاء الإجازة",
-                                variant: "destructive",
-                                hidden: l.status !== "approved",
-                                disabled: cancel.isPending,
-                                disabledReason: "توجد عملية إلغاء قيد التنفيذ",
-                                onSelect: () => void (async () => {
-                                  if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
-                                  cancel.mutate({ id: l.id });
-                                })(),
-                                gate: { module: "hr", level: "FULL" },
-                              },
-                            ]}
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                    {list.isError && (
-                      <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الطلبات." onRetry={() => list.refetch()} /></td></tr>
-                    )}
-                    {!list.isLoading && !list.isError && visibleRows.length === 0 && (
-                      <TableEmptyRow colSpan={8} message="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً." />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
-              {/* ترقيم حقيقي — خادميّ (offset/limit)، لا تحميل كامل الجدول دفعةً واحدة. */}
-              <div className="flex items-center justify-between gap-2 p-2 border-t text-xs text-muted-foreground">
-                <span>
-                  {list.data ? `${Math.min(offset + 1, list.data.total)}–${Math.min(offset + PAGE_SIZE, list.data.total)} من ${list.data.total.toLocaleString("ar-IQ-u-nu-latn")}` : ""}
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>
-                    <ChevronRight className="size-4" aria-hidden /> السابق
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={!list.data?.hasMore} onClick={() => setOffset((o) => o + PAGE_SIZE)}>
-                    التالي <ChevronLeft className="size-4" aria-hidden />
-                  </Button>
-                </div>
-              </div>
+              <DataTable
+                columns={leaveColumns}
+                data={visibleRows}
+                loading={list.isLoading}
+                searchable={false}
+                errorState={{ isError: list.isError, message: "تعذّر تحميل الطلبات.", onRetry: () => void list.refetch() }}
+                emptyText="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً."
+                /*
+                 * الترقيم خادميّ (offset/limit) ⇒ يجب إعلامُ DataTable.
+                 * بدونه يظنّ الصفحةَ الحاضرة كاملَ البيانات فيُفعّل فرزاً يرتّب ٢٥ صفّاً فقط،
+                 * فتُنتج الصفحةُ التالية شريحةً مفروزةً مستقلّة لا فرزاً شاملاً (Codex P2).
+                 * ومع serverPagination بلا serverSorting يُعطّل DataTable الفرزَ من نفسه.
+                 */
+                serverPagination={{
+                  page: Math.floor(offset / PAGE_SIZE),
+                  onPageChange: (p) => setOffset(p * PAGE_SIZE),
+                  pageSize: PAGE_SIZE,
+                  total: list.data?.total,
+                }}
+              />
+              {/* الترقيم يُصيّره DataTable نفسه عبر serverPagination — شريطٌ واحد لا اثنان. */}
             </CardContent>
           </Card>
         </TabsContent>
@@ -347,39 +442,17 @@ export default function Leaves() {
           <Card>
             <CardHeader><CardTitle className="text-base">أرصدة الإجازات <span className="text-muted-foreground font-normal">({balances.data?.length ?? 0})</span></CardTitle></CardHeader>
             <CardContent className="p-0">
-              <ScrollTableShell bordered={false}>
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">الموظف</th>
-                      <th className="p-2">القسم</th>
-                      <th className="p-2 text-center">سنوية</th>
-                      <th className="p-2 text-center">مرضية</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(balances.data ?? []).map((b) => (
-                      <tr key={b.id} className="border-t hover:bg-accent/40">
-                        <td className="p-2">
-                          <div className="flex items-center gap-2">
-                            <EmpAvatar name={b.name} color={b.colorTag} photoUrl={b.photoUrl} sizePx={28} />
-                            <span className="font-medium">{b.name}</span>
-                          </div>
-                        </td>
-                        <td className="p-2 text-xs text-muted-foreground">{b.department ?? "—"}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{b.annualLeaveBalance}</td>
-                        <td className="p-2 text-center tabular-nums" dir="ltr">{b.sickLeaveBalance}</td>
-                      </tr>
-                    ))}
-                    {balances.isError && (
-                      <tr><td colSpan={4}><ErrorState message="تعذّر تحميل الأرصدة." onRetry={() => balances.refetch()} /></td></tr>
-                    )}
-                    {!balances.isLoading && !balances.isError && (balances.data?.length ?? 0) === 0 && (
-                      <TableEmptyRow colSpan={4} message="لا موظفين على رأس العمل." />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
+              {/* مُضمَّن: البطاقة تحمل العنوان والعدّ ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+              <DataTable<BalanceRow>
+                embedded
+                searchable={false}
+                pageSize={Infinity}
+                columns={balanceColumns}
+                data={balances.data ?? []}
+                loading={balances.isLoading}
+                errorState={{ isError: balances.isError, message: "تعذّر تحميل الأرصدة.", onRetry: () => void balances.refetch() }}
+                emptyText="لا موظفين على رأس العمل."
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -392,18 +465,18 @@ export default function Leaves() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="lv-emp">الموظف</Label>
-              <select id="lv-emp" className={selectClsSm + " w-full h-9"} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+              <AppSelect id="lv-emp" className={selectClsSm + " w-full h-9"} value={employeeId} onValueChange={(next) => setEmployeeId(next)}>
                 <option value="">— اختر الموظف —</option>
                 {(empOpts.data?.managers ?? []).map((m) => (
                   <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label htmlFor="lv-type">نوع الإجازة</Label>
-              <select id="lv-type" className={selectClsSm + " w-full h-9"} value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
+              <AppSelect id="lv-type" className={selectClsSm + " w-full h-9"} value={leaveType} onValueChange={(next) => setLeaveType(next)}>
                 {LEAVE_TYPES.map((t) => <option key={t.key} value={t.key}>{t.key}{t.paid ? "" : " (غير مدفوعة)"}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">

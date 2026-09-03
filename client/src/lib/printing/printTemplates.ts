@@ -7,7 +7,7 @@
  * وخطّ التذييل الجديدة عبر brand.ts + docHtml.ts).
  */
 import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
-import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
+import { BRAND as B, CAIRO_FONT, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
 import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
@@ -1155,6 +1155,58 @@ const METHOD_AR: Record<string, string> = {
   CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة', TELECOM: 'رصيد زين',
 };
 
+/**
+ * غلاف خاص بإيصالات الوردية على Epson 80mm.
+ *
+ * عرض الورقة الاسمي 80mm، لكن عرض الطباعة الفعلي في TM-T20III هو 72mm (576 نقطة). ترك جسم
+ * المستند بعرض 80mm كان يجعل تعريف Windows يصغّره أو يعيد تدفّقه لحظة الطباعة وحدها. كذلك كان
+ * wrapReceiptDoc يطبع في body.onload قبل اكتمال خط Cairo، فتُلتقط مقاييس الخط الاحتياطي ثم تتبدل
+ * الوجوه العربية داخل مهمة الطباعة. هذا الغلاف يطابق عرض الرستر وينتظر الخط والصور قبل الطباعة.
+ */
+function wrapShiftReceiptDoc(title: string, bodyContent: string): string {
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<title>${esc(title)}</title>
+${CAIRO_FONT}
+<style>
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
+  @page{size:auto;margin:0}
+  html{direction:rtl;background:#fff}
+  body{font-family:'Cairo',sans-serif;width:72mm;max-width:72mm;background:#fff;color:#000;
+    margin:0 auto;padding:2mm;font-size:11px;line-height:1.6;direction:rtl;overflow:visible}
+  .shift-close-report{width:100%;direction:rtl;overflow:visible}
+  .shift-close-report>*,.shift-close-report div,.shift-close-report span{min-width:0}
+  .shift-close-report [style*="direction:ltr"]{unicode-bidi:isolate;white-space:nowrap}
+  .shift-close-report [data-shift-row]{column-gap:8px;line-height:1.55;min-height:27px}
+  .shift-close-report [data-shift-row]>:last-child{max-width:64%;overflow-wrap:anywhere}
+  .shift-close-report [data-payment-row]{column-gap:4px;line-height:1.55;min-height:27px}
+  @media print{
+    html,body{width:72mm;max-width:72mm}
+    body{margin:0 auto;padding:2mm}
+  }
+</style>
+</head>
+<body><main class="shift-close-report">${bodyContent}</main>
+<script>
+  (function () {
+    var images = Array.from(document.images).map(function (image) {
+      return image.complete
+        ? Promise.resolve()
+        : new Promise(function (resolve) {
+            image.addEventListener('load', resolve, { once: true });
+            image.addEventListener('error', resolve, { once: true });
+          });
+    });
+    var fonts = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+    Promise.all([fonts].concat(images)).then(function () {
+      window.setTimeout(function () { window.focus(); window.print(); }, 100);
+    });
+    window.addEventListener('afterprint', function () { window.close(); }, { once: true });
+  })();
+</script>
+</body></html>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ١١. إيصال فتح الوردية — حراري 80مم
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1302,6 +1354,11 @@ export interface ShiftCloseData {
   /** ش٤ (I14) — عرابين محجوزة لطلبات لم تُثبَّت قُبضت على هذه الوردية (إفصاح، اختياري). */
   heldDepositsCount?: number | null;
   heldDepositsTotal?: string | number | null;
+  /** سند الترحيل الآلي الناتج عن الإغلاق: خرج النقد من الدرج ودخل الخزينة فوراً. */
+  treasuryReturn?: {
+    amount: string | number;
+    referenceNumber: string;
+  } | null;
 }
 
 export function printShiftCloseBrowser(d: ShiftCloseData): void {
@@ -1313,17 +1370,18 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   const duration   = calcDuration(d.openedAt, d.closedAt);
 
   // صفوف بيانات الوردية
-  const metaRows = [
-    ['رقم الوردية', `#${d.shiftId}`],
-    ['فُتحت',        esc(openedStr)],
-    ['أُغلقت',       esc(closedStr)],
-    ['مدة الوردية',  esc(duration)],
-    ['الكاشير',      esc(d.cashierName)],
-    ['الفرع',        esc(d.branchName)],
-  ].map(([l, v]) =>
-    `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  const metaRows: [string, string, 'rtl' | 'ltr'][] = [
+    ['رقم الوردية', `#${d.shiftId}`, 'ltr'],
+    ['فُتحت',        esc(openedStr), 'ltr'],
+    ['أُغلقت',       esc(closedStr), 'ltr'],
+    ['مدة الوردية',  esc(duration), 'rtl'],
+    ['الكاشير',      esc(d.cashierName), 'rtl'],
+    ['الفرع',        esc(d.branchName), 'rtl'],
+  ];
+  const metaRowsHtml = metaRows.map(([l, v, direction]) =>
+    `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
       <span style="font-weight:600;color:#333;">${l}</span>
-      <span style="font-weight:800;">${v}</span>
+      <span dir="${direction}" style="font-weight:800;direction:${direction};unicode-bidi:isolate;">${v}</span>
     </div>`,
   ).join('');
 
@@ -1333,8 +1391,8 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     .map(p => {
       const label  = `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
       const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
-      return `<div style="display:grid;grid-template-columns:1fr 42px 82px;font-size:12px;
-               padding:4.5px 0;border-bottom:1px dashed #999;align-items:center;">
+      return `<div data-payment-row style="display:grid;grid-template-columns:minmax(0,1fr) 34px 88px;font-size:12px;
+               padding:5px 0;border-bottom:1px dashed #999;align-items:center;">
         <span style="font-weight:700;">${esc(label)}</span>
         <span style="text-align:center;font-weight:600;">${p.count}</span>
         <span style="text-align:left;direction:ltr;font-weight:800;">${amtStr}</span>
@@ -1382,29 +1440,29 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   </div>
 
   <!-- بيانات الوردية -->
-  ${metaRows}
+  ${metaRowsHtml}
   <div style="border-top:1.5px dashed #000;margin:8px 0;"></div>
 
   <!-- ملخص المبيعات -->
   ${sectionHdr('ملخّص المبيعات')}
 
-  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">عدد الفواتير</span>
     <span style="font-size:16px;font-weight:900;">${d.invoiceCount} فاتورة</span>
   </div>
-  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">إجمالي المبيعات</span>
     <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.salesTotal)} د.ع</span>
   </div>
-  ${discounts > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  ${discounts > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">إجمالي الخصومات</span>
     <span style="font-weight:800;direction:ltr;">${fmt(discounts)} د.ع</span>
   </div>` : ''}
-  ${returns > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  ${returns > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">المرتجعات</span>
     <span style="font-weight:800;direction:ltr;">${fmt(returns)} د.ع</span>
   </div>` : ''}
-  ${Number(d.heldDepositsCount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  ${Number(d.heldDepositsCount ?? 0) > 0 ? `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">عرابين محجوزة لطلبات لم تُثبَّت (${d.heldDepositsCount})</span>
     <span style="font-weight:800;direction:ltr;">${fmt(d.heldDepositsTotal ?? 0)} د.ع</span>
   </div>` : ''}
@@ -1419,7 +1477,7 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   <!-- تفصيل طرق الدفع -->
   ${sectionHdr('تفصيل طرق الدفع')}
 
-  <div style="display:grid;grid-template-columns:1fr 42px 82px;font-size:11px;font-weight:800;
+  <div data-payment-row style="display:grid;grid-template-columns:minmax(0,1fr) 34px 88px;font-size:11px;font-weight:800;
     padding:3px 0;border-bottom:2px solid #000;">
     <span style="text-align:right;">الطريقة</span>
     <span style="text-align:center;">عدد</span>
@@ -1430,7 +1488,7 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   <!-- تسوية الصندوق -->
   ${sectionHdr('تسوية الصندوق النقدي')}
 
-  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+  <div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
     <span style="font-weight:600;color:#333;">الرصيد الافتتاحي</span>
     <span style="font-weight:800;direction:ltr;">${fmt(d.openingBalance)} د.ع</span>
   </div>
@@ -1459,6 +1517,14 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     <div style="font-size:22px;font-weight:900;direction:ltr;">${esc(varVal)}</div>
   </div>
 
+  ${d.treasuryReturn ? `
+  ${sectionHdr('ترحيل النقد إلى الخزينة')}
+  <div style="border:2px solid #000;padding:7px;margin:4px 0;font-size:12px;line-height:1.8;">
+    <div><strong>المبلغ:</strong> <span style="direction:ltr;font-weight:900;">${fmt(d.treasuryReturn.amount)} د.ع</span></div>
+    <div><strong>رقم سند الترحيل:</strong> <span style="direction:ltr;font-weight:900;">${esc(d.treasuryReturn.referenceNumber)}</span></div>
+    <div style="font-size:10px;font-weight:700;">تم الترحيل إلى الخزينة تلقائياً عند إغلاق الوردية</div>
+  </div>` : ''}
+
   <!-- الإجمالي الكبير — معكوس -->
   <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;
     margin:10px 0;border-radius:2px;">
@@ -1486,8 +1552,8 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
 
   <!-- تاريخ الطباعة -->
   <div style="border-top:1px dashed #aaa;margin:8px 0;"></div>
-  <div style="text-align:center;font-size:10.5px;font-weight:600;margin-bottom:8px;direction:ltr;">
-    طُبع: ${esc(closedStr)} · نسخة أصلية
+  <div style="text-align:center;font-size:10.5px;font-weight:600;margin-bottom:8px;direction:rtl;">
+    طُبع: <span dir="ltr" style="direction:ltr;unicode-bidi:isolate;">${esc(closedStr)}</span> · نسخة أصلية
   </div>
 
   <div style="height:2px;background:#000;margin-bottom:10px;"></div>
@@ -1498,5 +1564,5 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
     ${phones}
   </div>`;
 
-  openPrintWindow(wrapReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body), 'width=380,height=920');
+  openPrintWindow(wrapShiftReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body), 'width=380,height=920');
 }

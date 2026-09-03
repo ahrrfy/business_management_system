@@ -132,7 +132,11 @@ class ShiftViewModel(
     fun requestClose() {
         val report = (state.detail as? ShiftDetailState.Content)?.report ?: return
         if (!ShiftStatePolicy.canRequestClose(state, report.shift)) return
-        state = state.copy(closeDraft = ShiftCloseDraft(report.shift.id), error = null, notice = null)
+        state = state.copy(
+            closeDraft = ShiftCloseDraft(report.shift.id),
+            error = null,
+            notice = null,
+        )
     }
 
     fun updateCloseCounted(value: String) {
@@ -153,7 +157,12 @@ class ShiftViewModel(
     }
 
     fun dismissClose() {
-        if (!state.closing) state = state.copy(closeDraft = null, error = null)
+        if (!state.closing) {
+            state = state.copy(
+                closeDraft = null,
+                error = null,
+            )
+        }
     }
 
     fun confirmClose() {
@@ -175,7 +184,11 @@ class ShiftViewModel(
                         closeDraft = null,
                         selectedShiftId = null,
                         detail = ShiftDetailState.None,
-                        notice = if (result.alreadyClosed) "كانت الوردية مغلقة وتم تحديث التقرير" else "تم إغلاق الوردية وتثبيت المطابقة",
+                        notice = when {
+                            result.alreadyClosed -> "كانت الوردية مغلقة وتم تحديث التقرير"
+                            counted.isPositive() -> "تم إغلاق الوردية وترحيل كامل النقد إلى الخزينة تلقائياً"
+                            else -> "تم إغلاق الوردية وتثبيت المطابقة"
+                        },
                     )
                     load(reset = true, preserveNotice = true)
                 }
@@ -256,6 +269,7 @@ class ShiftViewModel(
                 }
             }
     }
+
 }
 
 private fun Throwable.userMessage(): String =

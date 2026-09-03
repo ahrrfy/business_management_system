@@ -10,7 +10,7 @@ import { formatIqd } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
   Home, TrendingUp, Scale, BookOpen, Landmark, Droplet,
-  ScrollText, Search, Ruler, FileText, Hourglass, SearchCheck, CreditCard,
+  ScrollText, Search, FileText, SearchCheck, CreditCard,
   Package, RefreshCw, ClipboardList, AlertTriangle, FolderOpen, ListOrdered,
   Calculator, Receipt, Banknote, Clock, Clock8, Palmtree, User, Archive,
   Handshake, Recycle, Microscope, ShoppingCart, Users, Truck, Boxes,
@@ -68,9 +68,7 @@ const SECTIONS: Section[] = [
     icon: ShoppingCart,
     items: [
       { title: "تقارير المبيعات المُوحَّدة", desc: "٣ زَوايا في صَفحة واحدة (مُلخّص/تَفصيلي/حَسَب البُعد)", href: "/reports/sales-hub", icon: LayoutDashboard, gate: "manager", status: "ready" },
-      { title: "تقرير المبيعات (مُلخّص)", desc: "فواتير + أكثر مبيعاً + بطيئة + ربح حسب الفئة", href: "/sales-report", icon: Receipt, gate: "manager", status: "ready" },
-      { title: "سجلّ المبيعات المفصّل", desc: "بمستوى بنود الفاتورة (drill-down)", href: "/reports/sales-register", icon: Search, gate: "manager", status: "ready" },
-      { title: "المبيعات حسب البُعد", desc: "عميل/فرع/كاشير/طريقة دفع", href: "/reports/sales-by-dimension", icon: Ruler, gate: "manager", status: "ready" },
+      // الملخّص والسجلّ والتوزيع تبويبات داخل المجمّع؛ تبقى مساراتها القديمة في App للروابط المحفوظة فقط.
       { title: "تحليل الربحية الحقيقي", desc: "ربح وهامش حسب منتج/فئة/عميل/فرع/كاشير + كشف تآكل الهامش", href: "/reports/profitability", icon: TrendingUp, gate: "manager", status: "ready" },
     ],
   },
@@ -81,8 +79,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "كشف حساب عميل", desc: "فواتير + دفعات + الرصيد الحالي", href: "/customers-statement", icon: FileText, gate: "manager", status: "ready" },
       { title: "أعمار الذمم المُوحَّدة (مدينة/دائنة)", desc: "مَدينة ودائنة + مُلخَّص/تَفصيل في صَفحة واحدة", href: "/reports/aging-hub", icon: LayoutDashboard, gate: "manager", status: "ready" },
-      { title: "أعمار الذمم المدينة (مُلخَّص)", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: Hourglass, gate: "manager", status: "ready" },
-      { title: "تفصيل أعمار الذمم (AR/AP)", desc: "مستندٌ بمستند مع المتبقّي والتأخّر", href: "/reports/aging-detail", icon: SearchCheck, gate: "manager", status: "ready" },
+      // الملخّص والتفصيل تبويبات داخل المجمّع؛ لا نكرّرهما كبطاقات مستقلة.
       { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل + تصنيف خطر + تذكير واتساب", href: "/reports/credit-exposure", icon: CreditCard, gate: "manager", status: "ready" },
     ],
   },
@@ -92,7 +89,6 @@ const SECTIONS: Section[] = [
     icon: Truck,
     items: [
       { title: "كشف حساب مورد", desc: "أوامر شراء + مدفوعات + الرصيد الحالي", href: "/suppliers-statement", icon: FileText, gate: "manager", status: "ready" },
-      { title: "أعمار الذمم الدائنة", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ap-aging", icon: Hourglass, gate: "manager", status: "ready" },
       { title: "تقرير المشتريات", desc: "بالفترة/المورد + أكبر الموردين", href: "/reports/purchases", icon: Package, gate: "manager", status: "ready" },
       { title: "سجلّ المشتريات المفصّل", desc: "بنود أوامر الشراء سطر-سطر", href: "/reports/purchase-register", icon: Search, gate: "manager", status: "ready" },
     ],

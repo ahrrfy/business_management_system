@@ -30,7 +30,10 @@ export type PushKind =
   | "TASK_ASSIGNED"
   | "PAYROLL_READY"
   | "LEAVE_STATUS"
-  | "APPROVAL_REQUIRED";
+  | "APPROVAL_REQUIRED"
+  | "ANNOUNCEMENT"
+  | "SESSION_EVENT"
+  | "SYSTEM";
 type DailyPushKind = Extract<PushKind, "MORNING_BRIEF">;
 
 /** جسم الإشعار المُرسَل — أعداد فقط (لا بيانات شخصية). يُوسَّع للأنواع القادمة. */
@@ -66,7 +69,9 @@ export interface OperationalPushPayload {
     | "APPROVAL_REQUIRED"
     // ن-٢-د (٢٥/٨) — تنبيهُ إدارةٍ عن دخول/خروج/إبطالٍ لجلسةِ موظّف. عناوينُ فقط، آمنة
     // لشاشة القفل. المستقبلون هم admin/isOwner/manager للفرع (يفلترهم sessionEventNotifier).
-    | "SESSION_EVENT";
+    | "SESSION_EVENT"
+    | "ANNOUNCEMENT"
+    | "SYSTEM";
   title: string;
   body: string;
   url: string;

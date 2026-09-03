@@ -2,14 +2,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { ListToolbar } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
+import { D } from "@/lib/money";
 import { printCustodyAck } from "@/lib/assets/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { assetCategoryLabel } from "@shared/assets";
 import { ChevronDown, ChevronLeft, Package, ShieldCheck, Users, Wallet } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
@@ -20,6 +23,29 @@ function textMatches(needle: string, ...vals: (string | null | undefined)[]): bo
   if (!needle) return true;
   return vals.some((v) => v != null && String(v).toLowerCase().includes(needle));
 }
+
+/** صفُّ «أصل بلا عهدة» — مشتقٌّ من عقد `assets.custodyReport` فلا ينجرف عن الخادم. */
+type UnassignedAssetRow = RouterOutputs["assets"]["custodyReport"]["unassigned"][number];
+
+const unassignedColumns: ColumnDef<UnassignedAssetRow, unknown>[] = [
+  {
+    id: "name",
+    header: "الأصل",
+    accessorFn: (r) => r.name,
+    meta: { width: "wide" },
+    cell: ({ row }) => (
+      <Link href={`/assets/${row.original.id}`} className="flex items-center gap-1.5 hover:text-primary">
+        <CategoryIcon category={row.original.category} />
+        {row.original.name}
+      </Link>
+    ),
+  },
+  { id: "code", header: "الرمز", accessorFn: (r) => r.code ?? "", meta: { kind: "code", width: "id" }, cell: ({ row }) => row.original.code },
+  { id: "branch", header: "الفرع", accessorFn: (r) => r.branchName ?? "—", cell: ({ row }) => row.original.branchName ?? "—" },
+  // `accessorFn` نصُّ العرض (للنسخ) ⇒ `sortingFn` صريحٌ بـDecimal: الفرز الافتراضيّ نصّيّ
+  // فيقرأ «1,234» أصغر من «999» ويقلب ترتيب القيم الدفترية.
+  { id: "bookValue", header: "القيمة الدفترية", accessorFn: (r) => iqd(r.bookValue), meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.bookValue ?? 0).cmp(D(b.original.bookValue ?? 0)), cell: ({ row }) => iqd(row.original.bookValue) },
+];
 
 export default function AssetCustodyReport() {
   const q = trpc.assets.custodyReport.useQuery();
@@ -215,24 +241,17 @@ export default function AssetCustodyReport() {
         <Card>
           <CardHeader><CardTitle className="text-base">أصول بلا عهدة ({filteredUnassigned.length})</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-right">القيمة الدفترية</th></tr></thead>
-              <tbody>
-                {filteredUnassigned.map((a) => (
-                  <tr key={a.id} className="border-t hover:bg-accent/50">
-                    <td className="p-2"><Link href={`/assets/${a.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={a.category} />{a.name}</Link></td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{a.code}</td>
-                    <td className="p-2 text-xs">{a.branchName ?? "—"}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(a.bookValue)}</td>
-                  </tr>
-                ))}
-                {filteredUnassigned.length === 0 && (
-                  <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا نتائج مطابقة للفلاتر.</td></tr>
-                )}
-              </tbody>
-            </table>
-            </ScrollTableShell>
+            {/* مُضمَّن: العنوان والعدّ في رأس البطاقة أعلاه، والبحث/الفرع في شريط الأدوات الذي يغذّي الصفوف. */}
+            <DataTable<UnassignedAssetRow>
+              embedded
+              searchable={false}
+              pageSize={Infinity}
+              externalFiltersActive={filtersActive}
+              columns={unassignedColumns}
+              data={filteredUnassigned}
+              emptyText="لا نتائج مطابقة للفلاتر."
+              emptyFilteredState="لا نتائج مطابقة للفلاتر."
+            />
           </CardContent>
         </Card>
       )}

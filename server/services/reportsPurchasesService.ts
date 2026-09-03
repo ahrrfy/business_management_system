@@ -113,7 +113,14 @@ export interface PurchaseRegisterRow {
   poId: number;
   poNumber: string | null;
   orderDate: string; // YYYY-MM-DD
+  /**
+   * إسناد الصفّ — دوران متمايزان (shared/uiContracts):
+   *   • `supplierName`   = «الطرف الآخر» — الجهة المقابلة في المستند.
+   *   • `orderedByName`  = «نفّذها»      — مَن أنشأ أمر الشراء (`purchaseOrders.createdBy`).
+   * كان السجلّ يعرض المورّد وحده: تعرف ممّن اشتُري ولا تعرف مَن اشترى.
+   */
   supplierName: string | null;
+  orderedByName: string | null;
   productName: string | null;
   quantity: string;
   unitPrice: string;
@@ -166,6 +173,7 @@ export async function getPurchaseRegister(opts: {
         po.poNumber AS poNumber,
         DATE_FORMAT(po.orderDate, '%Y-%m-%d') AS orderDate,
         s.name AS supplierName,
+        ou.name AS orderedByName,
         p.name AS productName,
         CAST(poi.quantity AS CHAR) AS quantity,
         CAST(poi.unitPrice AS CHAR) AS unitPrice,
@@ -175,6 +183,7 @@ export async function getPurchaseRegister(opts: {
       JOIN productVariants pv ON pv.id = poi.variantId
       JOIN products p ON p.id = pv.productId
       LEFT JOIN suppliers s ON s.id = po.supplierId
+      LEFT JOIN users ou ON ou.id = po.createdBy
       WHERE po.poStatus <> 'CANCELLED'
         AND DATE(po.orderDate) >= ${opts.from} AND DATE(po.orderDate) <= ${opts.to}
         ${branchPo}
@@ -191,6 +200,7 @@ export async function getPurchaseRegister(opts: {
     poNumber: r.poNumber ?? null,
     orderDate: String(r.orderDate ?? ""),
     supplierName: r.supplierName ?? null,
+    orderedByName: (r.orderedByName as string | null) ?? null,
     productName: r.productName ?? null,
     quantity: String(r.quantity ?? "0"),
     unitPrice: toDbMoney(money(r.unitPrice ?? 0)),

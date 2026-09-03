@@ -7,13 +7,15 @@
 //   ٤) أداء الحملات — قمع أُرسل→سُلّم→قُرئ لكل حملة + الكلفة التقديرية مقابل الفعلية.
 // لا اعتماديات جديدة — القمع/التوزيع بأشرطة CSS بسيطة (لا مكتبة رسوم).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem, type KpiTone } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { exportRows } from "@/lib/export";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -89,6 +91,139 @@ const TASK_RESPONSE_NOTE =
   "زمن أول ردّ/حلّ يُحسَب من إنشاء المهمّة. «SLA» يشمل مهامّاً محلولة ولها موعد استحقاق مضبوط فقط. «الحلّ من أوّل تواصل» = محلولة بلا أي إعادة فتح.";
 const AGENT_VOLUME_NOTE =
   "قياس حِمل عمل وجودة خدمة — لا مراقبة أداء فردية (لا عدّ رسائل ولا زمن اتصال/أونلاين، فقط الإسناد والإنجاز وCSAT).";
+
+/**
+ * جداولُ هذه الشاشة كلٌّ داخل بطاقةِ تبويبٍ تحمل عنوانَه وشرحَه ⇒ `embedded` يكتم شريط
+ * الحالة. و`pageSize: Infinity` لازمٌ معه: شريط الحالة يحمل أزرار الترقيم، فبلا ذلك
+ * تُحبَس الصفوف بعد الخمسين. والارتفاع كما كان في ScrollTableShell.
+ */
+const TAB_TABLE = {
+  embedded: true,
+  searchable: false,
+  pageSize: Infinity,
+  maxHeightClass: "max-h-[calc(100dvh-15rem)]",
+} as const;
+
+const kindColumns: ColumnDef<KindRow, unknown>[] = [
+  {
+    id: "kind",
+    header: "النوع",
+    accessorFn: (k) => KIND_LABEL[k.kind as TaskKind] ?? k.kind,
+    cell: ({ row }) => <span className="font-medium">{KIND_LABEL[row.original.kind as TaskKind] ?? row.original.kind}</span>,
+  },
+  { id: "totalTasks", header: "المهام", accessorFn: (k) => fmtAr(k.totalTasks), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.totalTasks) },
+  {
+    id: "firstResponse",
+    header: "أول ردّ (متوسط)",
+    accessorFn: (k) => fmtMinutes(k.firstResponseAvgMinutes),
+    meta: { kind: "number" },
+    cell: ({ row }) => fmtMinutes(row.original.firstResponseAvgMinutes),
+  },
+  {
+    id: "resolution",
+    header: "زمن الحلّ (متوسط)",
+    accessorFn: (k) => fmtMinutes(k.resolutionAvgMinutes),
+    meta: { kind: "number" },
+    cell: ({ row }) => fmtMinutes(row.original.resolutionAvgMinutes),
+  },
+  { id: "sla", header: "التزام SLA", accessorFn: (k) => fmtPctStr(k.slaCompliancePct), meta: { kind: "number" }, cell: ({ row }) => fmtPctStr(row.original.slaCompliancePct) },
+  {
+    id: "fcr",
+    header: "الحلّ من أوّل تواصل",
+    accessorFn: (k) => fmtPctStr(k.firstContactResolutionPct),
+    meta: { kind: "number" },
+    cell: ({ row }) => fmtPctStr(row.original.firstContactResolutionPct),
+  },
+  { id: "reopened", header: "إعادة الفتح", accessorFn: (k) => fmtPctStr(k.reopenedPct), meta: { kind: "number" }, cell: ({ row }) => fmtPctStr(row.original.reopenedPct) },
+];
+
+const agentColumns: ColumnDef<AgentRow, unknown>[] = [
+  { id: "userName", header: "الموظف", accessorFn: (r) => r.userName, meta: { kind: "actor" }, cell: ({ row }) => <span className="font-medium">{row.original.userName}</span> },
+  { id: "assigned", header: "المسنَدة", accessorFn: (r) => fmtAr(r.assigned), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.assigned) },
+  {
+    id: "resolved",
+    header: "المحلولة",
+    accessorFn: (r) => fmtAr(r.resolved),
+    meta: { kind: "number" },
+    cell: ({ row }) => <span className="text-money-positive">{fmtAr(row.original.resolved)}</span>,
+  },
+  {
+    id: "open",
+    header: "المفتوحة",
+    accessorFn: (r) => (r.open > 0 ? fmtAr(r.open) : "—"),
+    meta: { kind: "number" },
+    cell: ({ row }) => (row.original.open > 0 ? fmtAr(row.original.open) : "—"),
+  },
+  {
+    id: "avgResolution",
+    header: "متوسط زمن الحلّ",
+    accessorFn: (r) => fmtMinutes(r.avgResolutionMinutes),
+    meta: { kind: "number" },
+    cell: ({ row }) => fmtMinutes(row.original.avgResolutionMinutes),
+  },
+  {
+    id: "avgCsat",
+    header: "متوسط CSAT",
+    accessorFn: (r) => (r.avgCsat != null ? `${r.avgCsat} / ٥ (${fmtAr(r.csatCount)})` : "—"),
+    meta: { kind: "number" },
+    cell: ({ row }) => (row.original.avgCsat != null ? `${row.original.avgCsat} / ٥ (${fmtAr(row.original.csatCount)})` : "—"),
+  },
+];
+
+/** أعمدة الحملات — دالّةٌ لأنّها تحتاج مُترجِم اسم الفرع القادم من الشاشة. */
+function campaignColumns(branchName: (id: number | null) => string): ColumnDef<CampaignRow, unknown>[] {
+  return [
+    { id: "name", header: "الحملة", accessorFn: (r) => r.name, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+    {
+      id: "branch",
+      header: "الفرع",
+      accessorFn: (r) => branchName(r.branchId),
+      cell: ({ row }) => <span className="text-muted-foreground">{branchName(row.original.branchId)}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => CAMPAIGN_STATUS_META[r.broadcastStatus]?.label ?? r.broadcastStatus,
+      meta: { kind: "status" },
+      cell: ({ row }) => {
+        const meta = CAMPAIGN_STATUS_META[row.original.broadcastStatus] ?? { label: row.original.broadcastStatus, variant: "neutral" as const };
+        return <Badge variant={meta.variant}>{meta.label}</Badge>;
+      },
+    },
+    { id: "audienceCount", header: "الجمهور", accessorFn: (r) => fmtAr(r.audienceCount), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.audienceCount) },
+    { id: "sent", header: "أُرسل", accessorFn: (r) => fmtAr(r.sent), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.sent) },
+    { id: "delivered", header: "سُلّم", accessorFn: (r) => fmtAr(r.delivered), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.delivered) },
+    { id: "read", header: "قُرئ", accessorFn: (r) => fmtAr(r.read), meta: { kind: "number" }, cell: ({ row }) => fmtAr(row.original.read) },
+    {
+      id: "failed",
+      header: "فشل",
+      accessorFn: (r) => (r.failed > 0 ? fmtAr(r.failed) : "—"),
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="text-money-negative">{row.original.failed > 0 ? fmtAr(row.original.failed) : "—"}</span>,
+    },
+    {
+      id: "skippedOptout",
+      header: "انسحب",
+      accessorFn: (r) => (r.skippedOptout > 0 ? fmtAr(r.skippedOptout) : "—"),
+      meta: { kind: "number" },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.skippedOptout > 0 ? fmtAr(row.original.skippedOptout) : "—"}</span>,
+    },
+    {
+      id: "deliveryRate",
+      header: "معدّل التسليم",
+      accessorFn: (r) => fmtPctStr(r.deliveryRatePct),
+      meta: { kind: "number" },
+      cell: ({ row }) => fmtPctStr(row.original.deliveryRatePct),
+    },
+    {
+      id: "actualCost",
+      header: "الكلفة الفعلية",
+      accessorFn: (r) => formatIqd(r.actualCost),
+      meta: { kind: "money" },
+      cell: ({ row }) => formatIqd(row.original.actualCost),
+    },
+  ];
+}
 
 export default function WhatsappHubReport() {
   const [from, setFrom] = useState<string>(defaultFrom);
@@ -419,10 +554,10 @@ export default function WhatsappHubReport() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }
@@ -466,43 +601,10 @@ function TaskResponseSection({ data, isLoading, isError, errorMessage, onRetry }
     <Card>
       <CardContent className="space-y-2 p-3">
         <p className="text-xs text-muted-foreground">{TASK_RESPONSE_NOTE}</p>
-        {isLoading ? (
-          <LoadingState />
-        ) : isError ? (
+        {isError ? (
           <ErrorState message={errorMessage} onRetry={onRetry} />
         ) : (
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-2.5 text-right font-medium">النوع</th>
-                  <th className="p-2.5 text-right font-medium">المهام</th>
-                  <th className="p-2.5 text-right font-medium">أول ردّ (متوسط)</th>
-                  <th className="p-2.5 text-right font-medium">زمن الحلّ (متوسط)</th>
-                  <th className="p-2.5 text-right font-medium">التزام SLA</th>
-                  <th className="p-2.5 text-right font-medium">الحلّ من أوّل تواصل</th>
-                  <th className="p-2.5 text-right font-medium">إعادة الفتح</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!rows.length ? (
-                  <TableEmptyRow colSpan={7} message="لا مهام في هذا النطاق." />
-                ) : (
-                  rows.map((k) => (
-                    <tr key={k.kind} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right font-medium">{KIND_LABEL[k.kind as TaskKind] ?? k.kind}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(k.totalTasks)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtMinutes(k.firstResponseAvgMinutes)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtMinutes(k.resolutionAvgMinutes)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtPctStr(k.slaCompliancePct)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtPctStr(k.firstContactResolutionPct)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtPctStr(k.reopenedPct)}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<KindRow> {...TAB_TABLE} data={rows} columns={kindColumns} loading={isLoading} emptyText="لا مهام في هذا النطاق." />
         )}
       </CardContent>
     </Card>
@@ -515,43 +617,10 @@ function AgentVolumeSection({ data, isLoading, isError, errorMessage, onRetry }:
     <Card>
       <CardContent className="space-y-2 p-3">
         <p className="text-xs text-muted-foreground">{AGENT_VOLUME_NOTE}</p>
-        {isLoading ? (
-          <LoadingState />
-        ) : isError ? (
+        {isError ? (
           <ErrorState message={errorMessage} onRetry={onRetry} />
         ) : (
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-2.5 text-right font-medium">الموظف</th>
-                  <th className="p-2.5 text-right font-medium">المسنَدة</th>
-                  <th className="p-2.5 text-right font-medium">المحلولة</th>
-                  <th className="p-2.5 text-right font-medium">المفتوحة</th>
-                  <th className="p-2.5 text-right font-medium">متوسط زمن الحلّ</th>
-                  <th className="p-2.5 text-right font-medium">متوسط CSAT</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!rows.length ? (
-                  <TableEmptyRow colSpan={6} message="لا مهام مُسنَدة في هذا النطاق." />
-                ) : (
-                  rows.map((r) => (
-                    <tr key={r.userId} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right font-medium">{r.userName}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.assigned)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.resolved)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.open > 0 ? fmtAr(r.open) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtMinutes(r.avgResolutionMinutes)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                        {r.avgCsat != null ? `${r.avgCsat} / ٥ (${fmtAr(r.csatCount)})` : "—"}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          <DataTable<AgentRow> {...TAB_TABLE} data={rows} columns={agentColumns} loading={isLoading} emptyText="لا مهام مُسنَدة في هذا النطاق." />
         )}
       </CardContent>
     </Card>
@@ -648,49 +717,12 @@ function CampaignSection({
                 })}
               </div>
             )}
-            <ScrollTableShell bordered={false}>
-              <table className="w-full min-w-[980px] text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الحملة</th>
-                    <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                    <th className="p-2.5 text-right font-medium">الجمهور</th>
-                    <th className="p-2.5 text-right font-medium">أُرسل</th>
-                    <th className="p-2.5 text-right font-medium">سُلّم</th>
-                    <th className="p-2.5 text-right font-medium">قُرئ</th>
-                    <th className="p-2.5 text-right font-medium">فشل</th>
-                    <th className="p-2.5 text-right font-medium">انسحب</th>
-                    <th className="p-2.5 text-right font-medium">معدّل التسليم</th>
-                    <th className="p-2.5 text-right font-medium">الكلفة الفعلية</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={11} message="لا حملات في هذا النطاق." />
-                  ) : (
-                    rows.map((r) => {
-                      const statusMeta = CAMPAIGN_STATUS_META[r.broadcastStatus] ?? { label: r.broadcastStatus, variant: "neutral" as const };
-                      return (
-                        <tr key={r.broadcastId} className="border-b last:border-0 hover:bg-accent/40">
-                          <td className="p-2.5 text-right font-medium">{r.name}</td>
-                          <td className="p-2.5 text-right text-muted-foreground">{branchName(r.branchId)}</td>
-                          <td className="p-2.5 text-right"><Badge variant={statusMeta.variant}>{statusMeta.label}</Badge></td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.audienceCount)}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.sent)}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.delivered)}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.read)}</td>
-                          <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{r.failed > 0 ? fmtAr(r.failed) : "—"}</td>
-                          <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.skippedOptout > 0 ? fmtAr(r.skippedOptout) : "—"}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtPctStr(r.deliveryRatePct)}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{formatIqd(r.actualCost)}</td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+            <DataTable<CampaignRow>
+              {...TAB_TABLE}
+              data={rows}
+              columns={campaignColumns(branchName)}
+              emptyText="لا حملات في هذا النطاق."
+            />
           </>
         )}
       </CardContent>

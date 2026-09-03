@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 import { reconcileCustomerBalances } from "../reconcileService";
 import { getARAging } from "../reportsService";
 import { returnSale } from "../returnService";
@@ -12,6 +17,8 @@ const actor = { userId: 1, branchId: 1, role: "admin" };
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -34,7 +41,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" },
+    { id: 2, openId: "poReviewer", name: "مراجع مشتريات", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -117,6 +127,23 @@ describe("purchaseService — receivedNet (last-installment correction = صفر 
     // اضبط total = 100.00 ليكون كسرياً عبر 3.
     await db().update(s.purchaseOrderItems).set({ total: "100.00" }).where(eq(s.purchaseOrderItems.id, Number(it.id)));
     await db().update(s.purchaseOrders).set({ subtotal: "100.00", total: "100.00" }).where(eq(s.purchaseOrders.id, po.purchaseOrderId));
+    const currentPo = (await db()
+      .select({ version: s.purchaseOrders.version })
+      .from(s.purchaseOrders)
+      .where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    if (!currentPo) throw new Error("أمر شراء اختبار التقريب غير موجود");
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: Number(currentPo.version),
+      reason: "إرسال أمر اختبار التقريب للمراجعة المستقلة",
+      requestKey: `financial-schema-po-submit:${randomUUID()}`,
+    }, actor);
+    await decidePurchaseOrderControl({
+      requestId: submitted.requestId,
+      decisionKey: `financial-schema-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت قيمة الأمر المجزأة واعتمدتها قبل الاستلام",
+    }, { userId: 2, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: 1 }] }, actor);
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: 1 }] }, actor);

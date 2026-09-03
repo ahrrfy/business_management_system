@@ -27,6 +27,8 @@
  * ⚠️ **التكلفة عمودٌ على المتغيّر لا على الفرع** — إعادة تقييمها تمسّ رصيد **كل** الفروع.
  * لذلك لا يطلبها مديرُ فرعٍ إلّا إن كان الرصيد محصوراً في فرعه (`assertBranchAuthority`).
  */
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -279,7 +281,7 @@ export async function requestCostRevaluation(
 }
 
 /** يفرض فصل المهام (المُعتمِد ≠ المُنشئ إلّا admin) — مرآة `adjustmentApproval.assertApprover`. */
-function assertApprover(createdBy: number | null, actor: Actor, verb: string): void {
+function assertIndependentInventoryReviewer(createdBy: number | null, actor: Actor, verb: string): void {
   if (actor.role !== "admin" && createdBy != null && Number(createdBy) === actor.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -312,7 +314,13 @@ export async function approveCostRevaluation(
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب إعادة التقييم ليس في انتظار الموافقة" });
     }
-    assertApprover(r.createdBy != null ? Number(r.createdBy) : null, actor, "اعتماد");
+    assertApprover({
+      actor: await resolveApprovalActor(tx, actor),
+      trigger: costRevaluationApprovalTrigger("APPROVE"),
+      subject: `إعادة تقييم تكلفة (طلب ${id})`,
+      legacy: () =>
+        assertIndependentInventoryReviewer(r.createdBy != null ? Number(r.createdBy) : null, actor, "اعتماد"),
+    });
 
     const variantId = Number(r.variantId);
     const variant = (
@@ -462,7 +470,7 @@ export async function rejectCostRevaluation(
     if (r.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "طلب إعادة التقييم ليس في انتظار الموافقة" });
     }
-    assertApprover(r.createdBy != null ? Number(r.createdBy) : null, actor, "رفض");
+    assertIndependentInventoryReviewer(r.createdBy != null ? Number(r.createdBy) : null, actor, "رفض");
     await tx
       .update(costRevaluationRequests)
       .set({ status: "REJECTED", approvedBy: actor.userId, approvedAt: new Date(), rejectionReason: reason?.trim() || null })

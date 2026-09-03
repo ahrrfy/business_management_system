@@ -23,6 +23,7 @@ import {
   router,
   selfServiceProcedure,
   treasuryCashierProcedure,
+  treasuryHandoverRecipientsProcedure,
   treasuryReadProcedure,
 } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -306,8 +307,6 @@ export const shiftRouter = router({
             clientRequestId: z.string().trim().min(1).max(64),
           })
           .optional(),
-        // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): لا تسليم يدويّ عند الإغلاق — يعود كامل المعدود للخزينة
-        // تلقائياً (settleShiftReturnTx). أُزيل حقل handover؛ أيّ إرسال قديم منه يُهمَل (zod يُجرّده).
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -370,7 +369,10 @@ export const shiftRouter = router({
       // متزامنان لنفس الفرع/اليوم قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على
       // التصادم (closeShift ذرّية داخل withTx فتتراجع المحاولة الفاشلة كاملةً).
       const res = await retryOnDup(() =>
-        closeShift({ ...input, enforceCashGovernance: true }, {
+        closeShift({
+          ...input,
+          enforceCashGovernance: true,
+        }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
           role: ctx.user.role,
@@ -392,14 +394,23 @@ export const shiftRouter = router({
           varianceReasonCode: res.varianceReasonCode,
           varianceReason: res.varianceReason,
           requiresManagerReview: res.requiresManagerReview,
-          // العهدة الوسيطة: إرجاع كامل النقد للخزينة تلقائياً عند الإغلاق (المبلغ = المعدود).
+          // النقد خرج من الدرج ودخل الخزينة تلقائياً داخل معاملة الإغلاق نفسها.
           treasuryReturn: res.treasuryReturn
-            ? { handoverNumber: res.treasuryReturn.handoverNumber, amount: res.countedCash }
+            ? {
+                handoverNumber: res.treasuryReturn.handoverNumber,
+                amount: res.countedCash,
+                destination: "TREASURY",
+              }
             : null,
         },
       });
       return res;
     }),
+
+  // إغلاق الوردية لا يفتح عقد حيازة جديداً ولا يحتاج اسم مستلم.
+  // كامل النقد المطابق ينتقل إلى الخزينة داخل معاملة الإغلاق نفسها،
+  // بينما يبقى السحب أثناء الوردية أدناه مساراً تشغيلياً مستقلاً
+  // ذا مستلم مسمّى وقبول لاحق حتى لا تُخفَّف حوكمته مصادفةً.
 
   // السحب النقديّ أثناء الوردية (cash drop) — نقلٌ مِن الدرج إلى الخزينة في منتصف الوردية لتقليل
   // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس treasuryCashierProcedure + فحص الملكية داخل الخدمة).
@@ -448,18 +459,24 @@ export const shiftRouter = router({
       return res;
     }),
 
-  // treasury-stage2: مستلِمو تسليم النقد عند إغلاق الوردية. يطابق تحقّق cashHandoverService
-  // (المستلِم admin/manager نشط) ⇒ نُرجِع فقط الإداريين/المديرين النشطين. متاح للكاشير
-  // (treasuryCashierProcedure نفس بوّابة الإغلاق) كي يختار من يُسلّمه نقد الدرج.
-  handoverRecipients: treasuryCashierProcedure.query(async () => {
+  // مستلمو السحب النقدي أثناء الوردية وإعادة إسناد العهد التشغيلية المعلّقة.
+  // المستلِم admin/manager نشط، أمّا القارئ فيشمل الكاشير والمدير والمحاسب
+  // والمنح الصريح. غير admin يرى مستلمي فرعه فقط؛ admin يعبر الفروع لمعالجة
+  // الوردية في الفرع المختار.
+  handoverRecipients: treasuryHandoverRecipientsProcedure.query(async ({ ctx }) => {
     const db = getDb();
     if (!db) return [] as { id: number; name: string; branchId: number | null }[];
+    const branchScope = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
     const rows = await db
-      // branchId مكشوفٌ للواجهة كي تُصفّي المستلمين بفرع العهدة (مراجعة Codex على #605):
-      // القائمة عابرةٌ للفروع، ومَن هو خارج فرع العهدة يرفضه الخادم لاحقاً ⇒ خيارٌ ميّت في الشاشة.
       .select({ id: users.id, name: users.name, branchId: users.branchId })
       .from(users)
-      .where(and(eq(users.isActive, true), inArray(users.role, ["admin", "manager"])))
+      .where(
+        and(
+          eq(users.isActive, true),
+          inArray(users.role, ["admin", "manager"]),
+          branchScope == null ? undefined : eq(users.branchId, branchScope),
+        ),
+      )
       .orderBy(users.name);
     return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}`, branchId: r.branchId == null ? null : Number(r.branchId) }));
   }),

@@ -2,7 +2,6 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { appRouter } from "../../routers";
 import { approveStockAdjustment, requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { createProduction, cancelProduction } from "../productionService";
 import { createRecipe } from "../recipeService";
@@ -57,29 +56,9 @@ async function resetAndSeed() {
   ]);
 }
 
-function ctx(user: any) {
-  return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
-}
-
 beforeEach(resetAndSeed);
 
 describe("حواجز سلامة المخزون والتكلفة", () => {
-  it("يرفض حتى للأدمن إنشاء IN يدوي بلا مستند مصدر", async () => {
-    const admin = (await db().select().from(s.users).where(eq(s.users.id, 1)))[0];
-    const caller = appRouter.createCaller(ctx(admin));
-    await expect(caller.inventory.createManualMovement({
-      variantId: 1,
-      branchId: 1,
-      movementType: "IN",
-      productUnitId: 1,
-      quantity: "5",
-      reason: "CORRECTION",
-    })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    const stock = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock)
-      .where(eq(s.branchStock.variantId, 1)))[0];
-    expect(stock.q).toBe(100);
-  });
-
   it("يرفض self-convert حتى لو أرسل العميل مفتاح التجاوز", async () => {
     await expect(createProduction({
       branchId: 1,

@@ -47,7 +47,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -81,7 +81,12 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     // v3 (٢٤/٨، Codex P2 على PR #755): إضافة `showInPrintPos` إلى CRC — تحوّطاً لأيّ تغييرٍ يدويٍّ
     // لاحق لهذا الحقل (لا واجهة تحرير له اليوم — قد تُضاف لاحقاً). يضمن أن أجهزة الأوفلاين تُحدّث
     // لقطتها فوراً بدل الاعتماد على تغيّر productType الملازم في المهاجرة القائمة.
-    "v3",
+    // v4 (٣١/٨، هجرة 0318): حقلٌ جديد في صيغة اللقطة (`allowBackorder`) + إدخالُه في الـCRC أعلاه.
+    // الاثنان لازمان معاً: البادئة تُجبر كل جهازٍ على سحب الصيغة الجديدة (لقطةٌ قديمة تُرجع
+    // `undefined` ⇒ تُقرأ «ليس بالطلب» فيعود «نافذ» بلا اتصال)، والـCRC يجعل **قلبَ الوسم**
+    // على منتجٍ قائمٍ يُحدّث الأجهزة فوراً — وبدونه يبقى الجهاز على الحقيقة القديمة بلا نهاية،
+    // لأنّ لا عموداً آخر في البصمة يتغيّر مع هذا التبديل وحده.
+    "v4",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
@@ -134,6 +139,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         barcode: productUnits.barcode,
         isBaseUnit: productUnits.isBaseUnit,
         isService: products.isService,
+        allowBackorder: products.allowBackorder,
         isCustomizable: products.isCustomizable,
         isBundle: products.isBundle,
         productType: products.productType,
@@ -200,6 +206,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
       allBarcodes,
       isBaseUnit: !!r.isBaseUnit,
       isService: !!r.isService,
+      allowBackorder: !!r.allowBackorder,
       isBundle: !!r.isBundle,
       isCustomizable: !!r.isCustomizable,
       // Codex P2 (٢٤/٨ على PR #755): هذا الحقل هويّةٌ تشغيليّة لا مؤشّرَ رؤية —

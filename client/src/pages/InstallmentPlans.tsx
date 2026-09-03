@@ -17,10 +17,12 @@ import {
   Undo2,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import { POS_METHODS, type PosPaymentMethod } from "@/lib/paymentMethod";
 import { fmtDateTime } from "@/lib/date";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { exportRows } from "@/lib/export";
 import { PageHeader } from "@/components/PageHeader";
@@ -51,6 +53,17 @@ type PlanRow = RouterOutputs["installments"]["list"]["rows"][number];
 type PlanDetail = RouterOutputs["installments"]["get"];
 type PlanLine = PlanDetail["lines"][number];
 type DueRow = RouterOutputs["installments"]["dueSoon"][number];
+type PendingExternalPayment =
+  RouterOutputs["installments"]["pendingExternalPayments"][number];
+type PayTarget = {
+  lineId: number;
+  branchId: number;
+  seq: number;
+  amount: string;
+  kind: string;
+  checkNumber: string | null;
+  externalApproval?: PendingExternalPayment;
+};
 
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
 
@@ -115,20 +128,30 @@ export default function InstallmentPlans() {
     { branchId: isAdmin ? branchFilter : undefined, days: dueSoonDays },
     { staleTime: 15_000 },
   );
+  const pendingExternal =
+    trpc.installments.pendingExternalPayments.useQuery(
+      { branchId: isAdmin ? branchFilter : undefined, limit: 100 },
+      { staleTime: 10_000 },
+    );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [detailPlanId, setDetailPlanId] = useState<number | null>(null);
-  const [payTarget, setPayTarget] = useState<{ lineId: number; seq: number; amount: string; kind: string; checkNumber: string | null } | null>(null);
+  const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
 
   async function invalidateAll() {
-    await Promise.all([utils.installments.list.invalidate(), utils.installments.dueSoon.invalidate(), utils.installments.get.invalidate()]);
+    await Promise.all([
+      utils.installments.list.invalidate(),
+      utils.installments.dueSoon.invalidate(),
+      utils.installments.get.invalidate(),
+      utils.installments.pendingExternalPayments.invalidate(),
+    ]);
   }
 
   return (
     <div className="space-y-4 p-4">
       <PageHeader
         title="الأقساط"
-        description="جدولة تحصيل ذمّة العميل بدفعات نقدية مجدولة — سداد كل قسط يُنشئ سند قبض حقيقياً."
+        description="جدولة تحصيل ذمّة العميل بدفعات مجدولة — سداد كل قسط يُنشئ سند قبض حقيقياً موثقاً."
         actions={
           <Button onClick={() => setCreateOpen(true)} className="gap-1.5">
             <Plus className="size-4" aria-hidden /> خطة أقساط جديدة
@@ -142,7 +165,25 @@ export default function InstallmentPlans() {
         isLoading={due.isLoading}
         days={dueSoonDays}
         onDaysChange={setDueSoonDays}
-        onPay={(r) => setPayTarget({ lineId: r.lineId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
+        onPay={(r) => setPayTarget({ lineId: r.lineId, branchId: r.branchId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
+      />
+
+      <PendingExternalPaymentsPanel
+        rows={pendingExternal.data ?? []}
+        isLoading={pendingExternal.isLoading}
+        isError={pendingExternal.isError}
+        onRetry={() => void pendingExternal.refetch()}
+        onOpen={(row) =>
+          setPayTarget({
+            lineId: row.lineId,
+            branchId: row.branchId,
+            seq: row.lineSeq,
+            amount: row.amount,
+            kind: "CASH",
+            checkNumber: null,
+            externalApproval: row,
+          })
+        }
       />
 
       {/* فلاتر */}
@@ -150,30 +191,30 @@ export default function InstallmentPlans() {
         {isAdmin && (
           <div className="space-y-1">
             <Label className="text-xs">الفرع</Label>
-            <select
+            <AppSelect
               value={String(branchFilter ?? "")}
-              onChange={(e) => { setBranchFilter(e.target.value ? Number(e.target.value) : undefined); setOffset(0); }}
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onValueChange={(value) => { setBranchFilter(value ? Number(value) : undefined); setOffset(0); }}
+              className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="">كل الفروع</option>
               {(branches.data ?? []).map((b) => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         )}
         <div className="space-y-1">
           <Label className="text-xs">الحالة</Label>
-          <select
+          <AppSelect
             value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value as typeof statusFilter); setOffset(0); }}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onValueChange={(value) => { setStatusFilter(value as typeof statusFilter); setOffset(0); }}
+            className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <option value="">كل الحالات</option>
             <option value="ACTIVE">نشطة</option>
             <option value="COMPLETED">مكتملة</option>
             <option value="CANCELLED">ملغاة</option>
-          </select>
+          </AppSelect>
         </div>
         <div className="min-w-64 flex-1 max-w-sm space-y-1">
           <Label className="text-xs">العميل</Label>
@@ -264,7 +305,7 @@ export default function InstallmentPlans() {
         <PlanDetailDialog
           planId={detailPlanId}
           onClose={() => setDetailPlanId(null)}
-          onPay={(l) => setPayTarget({ lineId: l.id, seq: l.seq, amount: l.amount, kind: l.kind, checkNumber: l.checkNumber })}
+          onPay={(l, planBranchId) => setPayTarget({ lineId: l.id, branchId: planBranchId, seq: l.seq, amount: l.amount, kind: l.kind, checkNumber: l.checkNumber })}
           onChanged={invalidateAll}
         />
       )}
@@ -278,6 +319,74 @@ export default function InstallmentPlans() {
         />
       )}
     </div>
+  );
+}
+
+/* ============================ اعتماد التحصيل غير النقدي ============================ */
+
+function PendingExternalPaymentsPanel({
+  rows,
+  isLoading,
+  isError,
+  onRetry,
+  onOpen,
+}: {
+  rows: PendingExternalPayment[];
+  isLoading: boolean;
+  isError: boolean;
+  onRetry: () => void;
+  onOpen: (row: PendingExternalPayment) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">اعتماد التحصيل غير النقدي</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {isLoading ? (
+          <LoadingState className="rounded-md border p-4" />
+        ) : isError ? (
+          <ErrorState
+            className="rounded-md border border-destructive/30 p-4"
+            message="تعذّر تحميل طابور الاعتماد."
+            onRetry={onRetry}
+          />
+        ) : rows.length === 0 ? (
+          <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+            لا توجد محاولات غير نقدية بانتظار الاعتماد أو السداد.
+          </div>
+        ) : (
+          rows.map((row) => (
+            <div
+              key={row.attemptId}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
+            >
+              <div className="min-w-0 space-y-1 text-sm">
+                <p className="font-medium">
+                  القسط #{row.lineSeq} — {row.customerName} — {fmt(row.amount)} د.ع
+                </p>
+                <p className="text-xs text-muted-foreground" dir="auto">
+                  {row.paymentMethod} · المرجع {row.reference} · أنشأها {row.createdByName}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={row.canConfirm || row.canSettle ? "default" : "outline"}
+                disabled={!row.canConfirm && !row.canSettle}
+                onClick={() => onOpen(row)}
+              >
+                {row.canSettle
+                  ? "إكمال السداد"
+                  : row.canConfirm
+                    ? "اعتماد ومتابعة"
+                    : "بانتظار موظف مستقل"}
+              </Button>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -563,14 +672,32 @@ function CreatePlanDialog({
 }) {
   const [customer, setCustomer] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
   const [branchId, setBranchId] = useState<number | null>(null);
+  const [invoiceId, setInvoiceId] = useState<number | null>(null);
   const [total, setTotal] = useState("");
   const [count, setCount] = useState(3);
   const [firstDue, setFirstDue] = useState(addDays(todayYmd(), 30));
   const [intervalDays, setIntervalDays] = useState(30);
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([]);
+  const [createClientRequestId, setCreateClientRequestId] = useState(() => crypto.randomUUID());
 
   const effectiveBranch = isAdmin ? (branchId ?? branches[0]?.id ?? null) : myBranchId;
+  const invoiceOptions = trpc.sales.list.useQuery(
+    {
+      customerId: customer.customerId ?? undefined,
+      branchId: effectiveBranch ?? undefined,
+      balanceState: "OUTSTANDING",
+      limit: 100,
+    },
+    {
+      enabled: customer.customerId != null && effectiveBranch != null,
+      staleTime: 15_000,
+    },
+  );
+
+  function invoiceOutstanding(inv: { total: string | null; paidAmount: string | null; returnedTotal: string | null }) {
+    return D(inv.total ?? "0").minus(D(inv.paidAmount ?? "0")).minus(D(inv.returnedTotal ?? "0"));
+  }
 
   const create = trpc.installments.create.useMutation({
     onSuccess: async (r) => {
@@ -583,12 +710,14 @@ function CreatePlanDialog({
 
   function resetForm() {
     setCustomer(EMPTY_CUSTOMER);
+    setInvoiceId(null);
     setTotal("");
     setCount(3);
     setFirstDue(addDays(todayYmd(), 30));
     setIntervalDays(30);
     setNotes("");
     setLines([]);
+    setCreateClientRequestId(crypto.randomUUID());
   }
 
   /** توليد أسطر متساوية: الإجمالي ÷ العدد، والسطر الأخير يمتصّ فرق التقريب ⇒ Σ مطابق دائماً. */
@@ -622,6 +751,7 @@ function CreatePlanDialog({
   const datesAscending = lines.every((l, i) => i === 0 || l.dueDate >= lines[i - 1].dueDate);
   const canSubmit =
     customer.customerId != null &&
+    invoiceId != null &&
     effectiveBranch != null &&
     sumMatches &&
     datesAscending &&
@@ -629,9 +759,11 @@ function CreatePlanDialog({
     !create.isPending;
 
   function submit() {
-    if (!canSubmit || customer.customerId == null || effectiveBranch == null) return;
+    if (!canSubmit || customer.customerId == null || effectiveBranch == null || invoiceId == null) return;
     create.mutate({
+      clientRequestId: createClientRequestId,
       customerId: customer.customerId,
+      invoiceId,
       branchId: effectiveBranch,
       totalAmount: D(total).toFixed(2),
       notes: notes.trim() || undefined,
@@ -643,7 +775,7 @@ function CreatePlanDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { resetForm(); onClose(); } }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>خطة أقساط جديدة</DialogTitle>
@@ -656,7 +788,16 @@ function CreatePlanDialog({
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1 sm:col-span-2">
               <Label>العميل *</Label>
-              <SmartCustomerInput value={customer} onChange={setCustomer} placeholder="ابحث عن عميل قائم…" />
+              <SmartCustomerInput
+                value={customer}
+                onChange={(next) => {
+                  setCustomer(next);
+                  setInvoiceId(null);
+                  setTotal("");
+                  setLines([]);
+                }}
+                placeholder="ابحث عن عميل قائم…"
+              />
               {customer.isNew && (
                 <p className="text-xs text-destructive">اختر عميلاً قائماً — خطة الأقساط تتطلب عميلاً مسجَّلاً.</p>
               )}
@@ -664,20 +805,57 @@ function CreatePlanDialog({
             {isAdmin && (
               <div className="space-y-1">
                 <Label>الفرع *</Label>
-                <select
+                <AppSelect
                   value={String(effectiveBranch ?? "")}
-                  onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : null)}
-                  className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  onValueChange={(value) => {
+                    setBranchId(value ? Number(value) : null);
+                    setInvoiceId(null);
+                    setTotal("");
+                    setLines([]);
+                  }}
+                  className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   {branches.map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             )}
+            <div className="space-y-1 sm:col-span-2">
+              <Label>الفاتورة المستحقّة *</Label>
+              <AppSelect
+                value={invoiceId == null ? "" : String(invoiceId)}
+                onValueChange={(value) => {
+                  const nextId = value ? Number(value) : null;
+                  setInvoiceId(nextId);
+                  const selected = (invoiceOptions.data ?? []).find((inv) => Number(inv.id) === nextId);
+                  setTotal(selected ? invoiceOutstanding(selected).toFixed(2) : "");
+                  setLines([]);
+                }}
+                aria-label="الفاتورة المستحقة لخطة الأقساط"
+                disabled={customer.customerId == null || invoiceOptions.isLoading}
+              >
+                <option value="">اختر فاتورة مستحقّة</option>
+                {(invoiceOptions.data ?? []).map((inv) => {
+                  const outstanding = invoiceOutstanding(inv);
+                  return (
+                    <option key={Number(inv.id)} value={String(inv.id)}>
+                      فاتورة #{inv.invoiceNumber} — متبقٍّ {fmt(outstanding.toFixed(2))} د.ع
+                    </option>
+                  );
+                })}
+              </AppSelect>
+              {invoiceOptions.isError && (
+                <p className="text-xs text-destructive">تعذّر تحميل فواتير العميل؛ أعد المحاولة قبل إنشاء الخطة.</p>
+              )}
+              {customer.customerId != null && !invoiceOptions.isLoading && !invoiceOptions.isError && (invoiceOptions.data ?? []).length === 0 && (
+                <p className="text-xs text-muted-foreground">لا توجد فاتورة حيّة بمبلغ متبقٍّ لهذا العميل في الفرع المحدد.</p>
+              )}
+            </div>
             <div className="space-y-1">
-              <Label>إجمالي الخطة (د.ع) *</Label>
-              <MoneyInput value={total} onChange={setTotal} ariaLabel="إجمالي الخطة" />
+              <Label>إجمالي الخطة الحي (د.ع)</Label>
+              <MoneyInput value={total} onChange={() => {}} ariaLabel="إجمالي الخطة الحي" readOnly />
+              <p className="text-[11px] text-muted-foreground">مشتق من إجمالي الفاتورة ناقص المدفوع والمرتجع، ويُعاد التحقق منه عند الحفظ تحت القفل.</p>
             </div>
             <div className="space-y-1 sm:col-span-2">
               <p className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
@@ -777,9 +955,9 @@ function CreatePlanDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button variant="outline" onClick={() => { resetForm(); onClose(); }}>إلغاء</Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {create.isPending ? "جارٍ الحفظ…" : "إنشاء الخطة"}
+            {create.isPending ? ACTION_LABELS.saving : "إنشاء الخطة"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -797,7 +975,7 @@ function PlanDetailDialog({
 }: {
   planId: number;
   onClose: () => void;
-  onPay: (line: PlanLine) => void;
+  onPay: (line: PlanLine, branchId: number) => void;
   onChanged: () => Promise<void> | void;
 }) {
   const plan = trpc.installments.get.useQuery({ planId });
@@ -805,6 +983,7 @@ function PlanDetailDialog({
   const [bounceNote, setBounceNote] = useState("");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [cancelClientRequestId, setCancelClientRequestId] = useState(() => crypto.randomUUID());
 
   const bounce = trpc.installments.bounce.useMutation({
     onSuccess: async (res) => {
@@ -905,7 +1084,7 @@ function PlanDetailDialog({
                               label: "سداد",
                               icon: CircleDollarSign,
                               hidden: p.status !== "ACTIVE" || (l.status !== "PENDING" && l.status !== "BOUNCED"),
-                              onSelect: () => onPay(l),
+                              onSelect: () => onPay(l, Number(p.branchId)),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
@@ -937,7 +1116,10 @@ function PlanDetailDialog({
                   className="gap-1 text-destructive"
                   disabled={hasPaid}
                   title={hasPaid ? "لا يمكن إلغاء خطة سُدِّد منها قسط" : undefined}
-                  onClick={() => setCancelOpen(true)}
+                  onClick={() => {
+                    setCancelClientRequestId(crypto.randomUUID());
+                    setCancelOpen(true);
+                  }}
                 >
                   <Ban className="size-4" aria-hidden /> إلغاء الخطة
                 </Button>
@@ -990,7 +1172,11 @@ function PlanDetailDialog({
               <Button
                 variant="destructive"
                 disabled={cancel.isPending}
-                onClick={() => cancel.mutate({ planId, reason: cancelReason.trim() || undefined })}
+                onClick={() => cancel.mutate({
+                  planId,
+                  reason: cancelReason.trim() || undefined,
+                  clientRequestId: cancelClientRequestId,
+                })}
               >
                 {cancel.isPending ? "جارٍ…" : "تأكيد الإلغاء"}
               </Button>
@@ -1009,21 +1195,42 @@ function PayLineDialog({
   onClose,
   onDone,
 }: {
-  target: { lineId: number; seq: number; amount: string; kind: string; checkNumber: string | null };
+  target: PayTarget;
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
-  // الصكوك أُزيلت من طرق السداد (٤/٨، قرار مالك «لا استثناء») — حتى قسطٍ مجدوَل أصلاً كصكٍّ
-  // (بيانات قديمة سابقة للقرار) يُحصَّل الآن نقداً أو ببديل آخر، لا صكّاً جديداً.
-  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
-  const [reference, setReference] = useState("");
+  const approval = target.externalApproval;
+  const [clientRequestId] = useState(() => crypto.randomUUID());
+  const [method, setMethod] = useState<PosPaymentMethod>(
+    (approval?.paymentMethod as PosPaymentMethod | undefined) ?? "CASH",
+  );
+  const [reference, setReference] = useState(approval?.reference ?? "");
   const [cardLastFour, setCardLastFour] = useState("");
   const [note, setNote] = useState("");
   const [attachment, setAttachment] = useState<ImageItem[]>([]);
-  const thresholds = trpc.vouchers.thresholds.useQuery(undefined, { staleTime: 300_000 });
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(approval ? {
+    attemptId: approval.attemptId,
+    requestId: "",
+    deviceId: approval.deviceId,
+    fingerprint: `SALES_COLLECTION|${approval.branchId}|${approval.paymentMethod}|${D(approval.amount).toFixed(2)}|${approval.reference.trim()}`,
+    confirmed: approval.state === "CONFIRMED",
+  } : null);
 
-  // المُرفق اختياريّ دائماً (٣١/٧، قرار المالك: لا مُرفق إلزامي في النظام كله).
-  const needsApproval = thresholds.data != null && D(target.amount).gte(thresholds.data.approval);
+  const normalizedAmount = D(target.amount).toFixed(2);
+  const externalFingerprint = `SALES_COLLECTION|${target.branchId}|${method}|${normalizedAmount}|${reference.trim()}`;
+  const externalConfirmed =
+    method === "CASH" ||
+    (externalAttempt?.confirmed === true &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  const initiateExternal = trpc.installments.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.installments.confirmExternalPayment.useMutation();
 
   const pay = trpc.installments.pay.useMutation({
     onSuccess: async (r) => {
@@ -1040,6 +1247,88 @@ function PayLineDialog({
     onError: (e) => notify.err(e.message || "تعذّر السداد"),
   });
 
+  async function confirmProviderPayment() {
+    if (method === "CASH") return;
+    const normalizedReference = reference.trim();
+    if (!normalizedReference) {
+      notify.err("مرجع العملية إلزامي قبل تأكيد الدفع الخارجي");
+      return;
+    }
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint
+          ? externalAttempt
+          : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        // ثبّت requestId+device قبل النداء: إن انقطعت الشبكة بعد إنشاء المحاولة، تعيد
+        // النقرة التالية نفس الطلب بدلاً من إنشاء مرجع متعارض لا يمكن استعادته.
+        setExternalAttempt({
+          attemptId: null,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: target.branchId,
+          lineId: target.lineId,
+          method,
+          amount: normalizedAmount,
+          reference: normalizedReference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({
+          attemptId,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+        notify.ok(
+          "أُرسلت محاولة التحصيل للاعتماد",
+          "يجب أن يؤكدها موظف خزينة مستقل ثم يُكمل السداد من طابور الاعتماد.",
+        );
+        await onDone();
+        onClose();
+        return;
+      }
+      if (!approval?.canConfirm) {
+        notify.err("لا يحق لهذا المستخدم تأكيد المحاولة؛ يلزم موظف مستقل.");
+        return;
+      }
+      await confirmExternal.mutateAsync({
+        branchId: target.branchId,
+        lineId: target.lineId,
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok("تأكّد الدفع الخارجي", "أصبح جاهزاً للاستهلاك مرة واحدة مع سند القسط.");
+    } catch (error) {
+      notify.err(error);
+    }
+  }
+
+  const cardEvidenceValid = method !== "CARD" || /^\d{4}$/.test(cardLastFour);
+  const canSubmit =
+    externalConfirmed &&
+    (method === "CASH" || approval?.canConfirm === true || approval?.canSettle === true) &&
+    cardEvidenceValid &&
+    !pay.isPending &&
+    !initiateExternal.isPending &&
+    !confirmExternal.isPending;
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="z-[100] sm:max-w-md">
@@ -1048,61 +1337,92 @@ function PayLineDialog({
           <DialogDescription>
             المبلغ <span dir="ltr" className="font-bold tabular-nums">{fmt(target.amount)}</span> د.ع — يُنشأ سند قبض حقيقي يُحرّك ذمّة العميل والدفتر.
             {target.kind === "CHECK" && target.checkNumber && (
-              <> — كان مجدولاً سابقاً بصك رقم <span dir="ltr">{target.checkNumber}</span>، وسيُحصّل الآن نقداً.</>
+              <> — كان مجدولاً سابقاً بصك رقم <span dir="ltr">{target.checkNumber}</span>.</>
             )}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label>طريقة الدفع</Label>
-            <select
+            <Label>طريقة السداد</Label>
+            <AppSelect
               value={method}
-              onChange={(e) => {
-                setMethod(e.target.value as typeof method);
+              disabled={approval != null || (externalConfirmed && method !== "CASH")}
+              onValueChange={(value) => {
+                setMethod(value as PosPaymentMethod);
+                setExternalAttempt(null);
                 setReference("");
                 setCardLastFour("");
               }}
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              {([
-                { v: "CASH", label: "نقدي" },
-                { v: "TRANSFER", label: "تحويل" },
-                { v: "CARD", label: "بطاقة" },
-                { v: "WALLET", label: "محفظة" },
-              ] as const).map((m) => (
-                <option key={m.v} value={m.v} disabled={!isInboundPaymentMethodEnabled(m.v)}>{m.label}</option>
+              {POS_METHODS.map((option) => (
+                <option key={option.v} value={option.v}>{option.label}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           {method !== "CASH" && (
-            <div className="space-y-1">
-              <Label>مرجع العملية <span className="text-destructive">*</span></Label>
-              <Input
-                dir="ltr"
-                value={reference}
-                onChange={(e) => setReference(e.target.value)}
-                maxLength={100}
-                placeholder="رقم التحويل أو إشعار الجهاز"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                لا يُسجَّل قبضٌ غير نقديّ بلا مرجعٍ يُطابَق بكشف المزوّد.
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="space-y-1">
+                <Label htmlFor="installment-payment-reference">مرجع العملية *</Label>
+                <Input
+                  id="installment-payment-reference"
+                  dir="ltr"
+                  value={reference}
+                  disabled={approval != null || externalConfirmed || initiateExternal.isPending || confirmExternal.isPending}
+                  onChange={(event) => {
+                    setReference(event.target.value);
+                    setExternalAttempt(null);
+                  }}
+                  maxLength={100}
+                  placeholder="رقم إشعار الجهاز أو التحويل"
+                />
+              </div>
+              {method === "CARD" && (
+                <div className="space-y-1">
+                  <Label htmlFor="installment-card-last-four">آخر ٤ من البطاقة *</Label>
+                  <Input
+                    id="installment-card-last-four"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={cardLastFour}
+                    onChange={(event) => setCardLastFour(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                    maxLength={4}
+                    placeholder="1234"
+                  />
+                </div>
+              )}
+              <Button
+                type="button"
+                variant={externalConfirmed ? "outline" : "secondary"}
+                className="w-full"
+                disabled={
+                  !reference.trim() ||
+                  externalConfirmed ||
+                  (approval != null && !approval.canConfirm) ||
+                  initiateExternal.isPending ||
+                  confirmExternal.isPending
+                }
+                onClick={() => void confirmProviderPayment()}
+              >
+                {initiateExternal.isPending || confirmExternal.isPending
+                  ? "جارٍ تثبيت التأكيد…"
+                  : externalConfirmed
+                    ? "الدفع معتمد — أكمل السداد"
+                    : approval?.canConfirm
+                      ? "اعتماد الدفع كموظف مستقل"
+                      : "إرسال لاعتماد موظف مستقل"}
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                المنشئ يرسل المحاولة فقط؛ موظف مستقل يؤكدها ويسددها مرة واحدة مع السند والقيد.
               </p>
             </div>
           )}
-          {method === "CARD" && (
-            <div className="space-y-1">
-              <Label>آخر ٤ أرقام من البطاقة <span className="text-destructive">*</span></Label>
-              <Input
-                dir="ltr"
-                inputMode="numeric"
-                value={cardLastFour}
-                onChange={(e) => setCardLastFour(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                maxLength={4}
-                placeholder="1234"
-              />
-            </div>
+          {!cardEvidenceValid && (
+            <p className="text-xs text-destructive">أدخل آخر ٤ أرقام صحيحة للبطاقة.</p>
           )}
+          <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            السداد النقدي يدخل الخزينة، وغير النقد يرتبط بإثبات المزوّد ولا يدخل الدلو النقدي.
+          </div>
           <div className="space-y-1">
             <Label>ملاحظة</Label>
             <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={255} placeholder="اختياري" />
@@ -1118,31 +1438,23 @@ function PayLineDialog({
               hint="صورة وصل التحصيل — تُضغط تلقائياً قبل الحفظ."
             />
           </div>
-          {needsApproval && (
-            <p className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
-              المبلغ يبلغ عتبة الاعتماد — سيُسجَّل السند بانتظار اعتماد مدير ثانٍ (Maker-Checker) ويبقى القسط معلَّقاً حتى الاعتماد.
-            </p>
-          )}
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>إلغاء</Button>
           <Button
-            disabled={pay.isPending}
+            disabled={!canSubmit}
             onClick={() => {
-              if (method !== "CASH" && !reference.trim()) {
-                notify.err("مرجع العملية مطلوب للقبض غير النقديّ.");
-                return;
-              }
-              if (method === "CARD" && !/^\d{4}$/.test(cardLastFour)) {
-                notify.err("أدخِل آخر ٤ أرقام من البطاقة.");
-                return;
-              }
               pay.mutate({
                 lineId: target.lineId,
+                clientRequestId,
                 paymentMethod: method,
                 referenceNumber: method === "CASH" ? undefined : reference.trim(),
                 cardLastFour: method === "CARD" ? cardLastFour : undefined,
+                externalPaymentAttemptId:
+                  method === "CASH" ? undefined : externalAttempt?.attemptId,
+                deviceId:
+                  method === "CASH" ? undefined : externalAttempt?.deviceId,
                 note: note.trim() || undefined,
                 attachmentUrl: attachment[0]?.dataUrl || undefined,
               });

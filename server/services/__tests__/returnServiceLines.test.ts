@@ -86,8 +86,10 @@ describe("مرتجع فاتورة خدمة — عكسٌ ماليّ بلا مخز
     await returnSale({
       invoiceId: sale.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
-      refund: { amount: "2500.00", method: "CASH", shiftId },
-      restock: true, // حتى مع طلب الإرجاع للمخزون: الخدمة لا رصيد لها
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "2500.00", shiftId,
+        reason: "مرتجع خدمة كامل بلا إنشاء مخزون وهمي", disposition: "RESTOCK",
+      }, // حتى مع قرار الإرجاع للمخزون: الخدمة لا رصيد لها
     }, manager);
 
     // الأثر الماليّ وقع كاملاً.
@@ -116,8 +118,10 @@ describe("مرتجع فاتورة خدمة — عكسٌ ماليّ بلا مخز
     await returnSale({
       invoiceId: sale.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: 5 }],
-      refund: { amount: "5000.00", method: "CASH", shiftId },
-      restock: true,
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "5000.00", shiftId,
+        reason: "مرتجع سلعة كاملة قابلة للعودة إلى المخزون", disposition: "RESTOCK",
+      },
     }, manager);
 
     expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 2)))[0].quantity)).toBe(100);
@@ -138,8 +142,10 @@ describe("مرتجع فاتورة خدمة — عكسٌ ماليّ بلا مخز
     await returnSale({
       invoiceId: sale.invoiceId,
       lines: items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity) })),
-      refund: { amount: "4000.00", method: "CASH", shiftId },
-      restock: true,
+      resolution: {
+        kind: "IMMEDIATE_REFUND", method: "CASH", amount: "4000.00", shiftId,
+        reason: "مرتجع فاتورة مختلطة يعيد السلعة المملوكة فقط", disposition: "RESTOCK",
+      },
     }, manager);
 
     expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 2)))[0].quantity)).toBe(100);

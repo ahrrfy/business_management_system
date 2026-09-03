@@ -85,7 +85,7 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
           const snapshot = action.snapshotsByUnitId[item.productUnitId];
           return snapshot
             ? { ...item, ...snapshot }
-            : { ...item, stockBase: 0, stockBranchId: undefined, reservedBase: 0, availableBase: 0, isService: false };
+            : { ...item, stockBase: 0, stockBranchId: undefined, reservedBase: 0, availableBase: 0, isService: false, allowBackorder: false };
         }),
       };
 

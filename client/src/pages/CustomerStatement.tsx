@@ -1,12 +1,15 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
@@ -14,7 +17,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
@@ -56,6 +59,32 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
 // تعريب حالة الفاتورة من `@shared/invoiceStatus` وحده — كان قاموساً محلّياً بلا `SUPERSEDED`
 // يسبق `invoiceStatusLabel` في السلسلة، فيَحجب المصدر المركزيّ ويُخالف مسرده (PENDING).
 /** حالة سند القبض/الصرف كما يعيدها كشف الحساب (COMPLETED/REVERSED فقط بعد فلترة الخادم). */
+type CustomerStatementData = NonNullable<RouterOutputs["reports"]["customerStatement"]>;
+type StmtInvoiceRow = CustomerStatementData["invoices"][number];
+type StmtPaymentRow = CustomerStatementData["payments"][number];
+
+/**
+ * عمود مبلغ. `accessorFn` يُرجع النصّ المعروض (للنسخ)، و`sortingFn` رقميّ صريح بـDecimal:
+ * الفرز الافتراضيّ يقارن نصّاً فيه فواصل آلاف («1,234» قبل «999») فيقلب ترتيب الذمم.
+ */
+function stmtMoneyCol<T>(
+  id: string,
+  header: string,
+  get: (r: T) => string | number,
+  display?: (r: T) => string,
+  cls?: string,
+): ColumnDef<T, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: (r) => (display ? display(r) : fmt(get(r))),
+    meta: { kind: "money" },
+    sortDescFirst: true,
+    sortingFn: (a, b) => D(get(a.original)).cmp(D(get(b.original))),
+    cell: ({ row }) => <span className={cls}>{display ? display(row.original) : fmt(get(row.original))}</span>,
+  };
+}
+
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   COMPLETED: "مكتملة",
   REVERSED: "معكوسة",
@@ -72,6 +101,158 @@ const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
   COD: "تحصيل مندوب", RETURN: "مرتجع", OPENING_ADJ: "تصحيح افتتاحي",
 };
+
+/*
+ * §٥ + REP-06: المتبقّي = total − (المدفوع + المُرتجَع) بدقّة Decimal (لا Number float).
+ * إغفال returnedTotal كان يُظهر متبقّياً موجباً لفاتورة مُرتجَعة جزئياً سُدِّد صافيها.
+ */
+const invoiceRemaining = (i: StmtInvoiceRow) =>
+  positiveDiff(i.total, D(i.paidAmount).plus(i.returnedTotal).toFixed(2)).toFixed(2);
+
+/** عربونٌ مقبوضٌ على طلب/أمر شغل ما زال له باقٍ مستحق — يُلوَّن صفُّه ويُوسَم. */
+const isDepositDue = (i: StmtInvoiceRow) =>
+  i.status !== "CANCELLED" &&
+  i.status !== "RETURNED" &&
+  (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") &&
+  D(i.paidAmount).gt(0) &&
+  D(invoiceRemaining(i)).gt(0);
+
+const stmtInvoiceColumns: ColumnDef<StmtInvoiceRow, unknown>[] = [
+  {
+    id: "invoiceNumber",
+    header: "الفاتورة",
+    accessorFn: (i) => i.invoiceNumber,
+    meta: { kind: "code" },
+    cell: ({ row }) => <CopyInline value={row.original.invoiceNumber} />,
+  },
+  {
+    id: "invoiceDate",
+    header: "التاريخ",
+    accessorFn: (i) => fmtDate(i.invoiceDate),
+    meta: { kind: "date" },
+    cell: ({ row }) => fmtDate(row.original.invoiceDate),
+  },
+  {
+    id: "dueDate",
+    header: "الاستحقاق",
+    accessorFn: (i) => (i.dueDate ? String(i.dueDate).slice(0, 10) : "—"),
+    meta: { kind: "date" },
+    cell: ({ row }) => (row.original.dueDate ? String(row.original.dueDate).slice(0, 10) : "—"),
+  },
+  {
+    id: "sourceType",
+    header: "المصدر",
+    accessorFn: (i) => sourceTypeLabel(i.sourceType),
+    cell: ({ row }) => <span className="text-xs">{sourceTypeLabel(row.original.sourceType)}</span>,
+  },
+  stmtMoneyCol<StmtInvoiceRow>("total", "الإجمالي", (i) => i.total),
+  stmtMoneyCol<StmtInvoiceRow>("paidAmount", "المدفوع", (i) => i.paidAmount),
+  stmtMoneyCol<StmtInvoiceRow>(
+    "returnedTotal",
+    "مُرتجَع",
+    (i) => i.returnedTotal,
+    (i) => (D(i.returnedTotal).isZero() ? "—" : fmt(D(i.returnedTotal).toFixed(2))),
+  ),
+  stmtMoneyCol<StmtInvoiceRow>("remaining", "المتبقّي", invoiceRemaining, undefined, "font-semibold"),
+  {
+    id: "status",
+    header: "الحالة",
+    // القاموس الموحّد `invoiceStatusLabel` — لا تسميةً محلّية (shared/invoiceStatus).
+    accessorFn: (i) => invoiceStatusLabel(i.status),
+    meta: { kind: "status", wrap: true },
+    cell: ({ row }) => (
+      <>
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+          {invoiceStatusLabel(row.original.status)}
+        </span>
+        {isDepositDue(row.original) && (
+          <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>
+        )}
+      </>
+    ),
+  },
+  {
+    id: "createdBy",
+    header: "المنفذ",
+    accessorFn: (i) => i.createdByName ?? (i.createdBy ? "مستخدم #" + i.createdBy : "غير موثق"),
+    meta: { kind: "actor" },
+    cell: ({ row }) => (
+      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
+    ),
+  },
+  {
+    id: "open",
+    header: "فتح",
+    meta: { kind: "actions" },
+    enableSorting: false,
+    cell: ({ row }) => (
+      <Link href={`/invoices/${row.original.id}`}>
+        <Button variant="outline" size="sm">فتح</Button>
+      </Link>
+    ),
+  },
+];
+
+const stmtPaymentColumns: ColumnDef<StmtPaymentRow, unknown>[] = [
+  {
+    id: "createdAt",
+    header: "التاريخ",
+    accessorFn: (p) => fmtDateTime(p.createdAt),
+    meta: { kind: "datetime" },
+    cell: ({ row }) => fmtDateTime(row.original.createdAt),
+  },
+  {
+    id: "invoice",
+    header: "الفاتورة",
+    accessorFn: (p) => (p.isStandalone ? (p.voucherNumber ?? "سند مستقل") : String(p.invoiceId ?? "")),
+    meta: { kind: "code" },
+    cell: ({ row }) =>
+      row.original.isStandalone ? (
+        // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.
+        <span className="inline-flex items-center gap-1" title={row.original.description ?? undefined}>
+          <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">سند مستقل</span>
+          {row.original.voucherNumber && <CopyInline value={row.original.voucherNumber} />}
+        </span>
+      ) : (
+        <CopyInline value={row.original.invoiceId} />
+      ),
+  },
+  {
+    id: "direction",
+    header: "الاتجاه",
+    accessorFn: (p) => (p.direction === "IN" ? "وارد" : "صادر/استرداد"),
+    meta: { kind: "status" },
+    cell: ({ row }) => (
+      <span className={`inline-block rounded px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+        {row.original.direction === "IN" ? "وارد" : "صادر/استرداد"}
+      </span>
+    ),
+  },
+  {
+    id: "paymentMethod",
+    header: "طريقة الدفع",
+    accessorFn: (p) => METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod,
+    cell: ({ row }) => <span className="text-xs">{METHOD_LABEL[row.original.paymentMethod] ?? row.original.paymentMethod}</span>,
+  },
+  stmtMoneyCol<StmtPaymentRow>("amount", "المبلغ", (p) => p.amount),
+  {
+    // حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel.
+    id: "status",
+    header: "الحالة",
+    accessorFn: (p) => RECEIPT_STATUS_LABEL[p.status] ?? p.status,
+    meta: { kind: "status" },
+    cell: ({ row }) => <span className="text-xs">{RECEIPT_STATUS_LABEL[row.original.status] ?? row.original.status}</span>,
+  },
+  {
+    id: "createdBy",
+    header: "المنفذ",
+    accessorFn: (p) => p.createdByName ?? (p.createdBy ? "مستخدم #" + p.createdBy : "غير موثق"),
+    meta: { kind: "actor" },
+    cell: ({ row }) => (
+      <span className="text-xs">{row.original.createdByName ?? (row.original.createdBy ? "مستخدم #" + row.original.createdBy : "غير موثق")}</span>
+    ),
+  },
+];
 
 export default function CustomerStatement() {
   // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
@@ -383,80 +564,37 @@ export default function CustomerStatement() {
             <CardContent className="p-0">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 p-3">
                 <span className="text-sm font-medium">الفواتير</span>
-                <select className="h-8 rounded-md border bg-background px-2 text-xs" value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value as typeof invoiceFilter)}>
+                <AppSelect className="h-8 px-2 text-xs" value={invoiceFilter} onValueChange={(value) => setInvoiceFilter(value as typeof invoiceFilter)}>
                   <option value="ALL">كل الفواتير</option>
                   <option value="DEPOSIT_DUE">عربون — متبقّي للتحصيل</option>
                   <option value="OUTSTANDING">عليها مبلغ متبقٍ</option>
                   <option value="SETTLED">مسوّاة بالكامل</option>
-                </select>
+                </AppSelect>
               </div>
-              <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">الفاتورة</th>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">الاستحقاق</th>
-                    <th className="p-2">المصدر</th>
-                    <th className="p-2 text-right">الإجمالي</th>
-                    <th className="p-2 text-right">المدفوع</th>
-                    <th className="p-2 text-right">مُرتجَع</th>
-                    <th className="p-2 text-right">المتبقّي</th>
-                    <th className="p-2">الحالة</th>
-                    <th className="p-2">المنفذ</th>
-                    <th className="p-2 text-center">فتح</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* الرصيد المُرحَّل = افتتاحي مستورد + كل النشاط قبل from — صف أول يجعل رصيد نهاية الفترة قابلاً للتتبّع. */}
-                  {from && (
-                    <tr className="border-t bg-[var(--sem-warn-bg)]/60 font-medium">
-                      <td className="p-2 text-xs">رصيد مُرحَّل</td>
-                      <td className="p-2 text-xs" dir="ltr">{from}</td>
-                      <td className="p-2 text-xs text-muted-foreground" colSpan={5}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
-                      <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
-                      <td className="p-2" colSpan={3} />
-                    </tr>
-                  )}
-                  {shownInvoices.map((i) => {
-                    // §٥ + REP-06: المتبقّي = total − (المدفوع + المُرتجَع) بدقّة Decimal (لا Number float).
-                    // إغفال returnedTotal كان يُظهر متبقّياً موجباً لفاتورة مُرتجَعة جزئياً سُدِّد صافيها.
-                    const remaining = positiveDiff(i.total, D(i.paidAmount).plus(i.returnedTotal).toFixed(2)).toFixed(2);
-                    const returned = D(i.returnedTotal);
-                    const depositDue = i.status !== "CANCELLED" && i.status !== "RETURNED"
-                      && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER")
-                      && D(i.paidAmount).gt(0) && D(remaining).gt(0);
-                    return (
-                      <tr key={i.id} className={`border-t ${depositDue ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : ""}`}>
-                        <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
-                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(i.invoiceDate)}</td>
-                        <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-xs">{sourceTypeLabel(i.sourceType)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.total)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{returned.isZero() ? "—" : fmt(returned.toFixed(2))}</td>
-                        <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
-                        <td className="p-2">
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
-                            {invoiceStatusLabel(i.status)}
-                          </span>
-                          {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
-                        </td>
-                        <td className="p-2 text-xs">{i.createdByName ?? (i.createdBy ? `مستخدم #${i.createdBy}` : "غير موثق")}</td>
-                        <td className="p-2 text-center">
-                          <Link href={`/invoices/${i.id}`}>
-                            <Button variant="outline" size="sm">فتح</Button>
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {shownInvoices.length === 0 && (
-                    <TableEmptyRow colSpan={11} message="لا فواتير مطابقة لهذا الفلتر." />
-                  )}
-                </tbody>
-              </table>
-              </ScrollTableShell>
+              {/* الرصيد المُرحَّل = افتتاحي مستورد + كل النشاط قبل from — يبقى فوق الجدول
+                  (لا صفّاً داخله) كي يبقى الجدولُ صفوفاً متجانسة، ويظلّ رصيدُ نهاية الفترة
+                  قابلاً للتتبّع. */}
+              {from && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-[var(--sem-warn-bg)]/60 px-3 py-2 text-xs font-medium">
+                  <span>
+                    رصيد مُرحَّل حتى <span className="tabular-nums" dir="ltr">{from}</span>
+                    <span className="ms-2 font-normal text-muted-foreground">ما قبل الفترة (افتتاحي + نشاط سابق)</span>
+                  </span>
+                  <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</span>
+                </div>
+              )}
+              <DataTable<StmtInvoiceRow>
+                columns={stmtInvoiceColumns}
+                data={shownInvoices}
+                /* الفلترة بمنتقي «كل الفواتير/…» أعلاه (يغذّي shownInvoices). */
+                searchable={false}
+                externalFiltersActive={invoiceFilter !== "ALL"}
+                /* `!bg-…` ضرورةٌ لا زينة: `DataTable` يلوّن الصفوف بـ`odd:`/`even:`
+                   وتخصّصُهما (0,2,0) يتجاوز صنفَ خلفيةٍ عادياً (0,1,0) ⇒ بلا `!` يبقى
+                   وسمُ «عربون — الباقي مستحق» ظلَّ حدٍّ جانبيّ بلا خلفية. */
+                getRowClassName={(i) => (isDepositDue(i) ? "!bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : undefined)}
+                emptyText="لا فواتير مطابقة لهذا الفلتر."
+              />
             </CardContent>
           </Card>
 
@@ -467,52 +605,12 @@ export default function CustomerStatement() {
                   والتحصيلات المندوبيّة (COD) ومرتجعات البيع (RETURN) الثلاثة، لا الفواتير وحدها.
                   تحقّقٌ صريح (لا تُطبَّق فلترة عميل إضافية هنا كي لا نُكرّر منطقاً صحيحاً أصلاً). */}
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات والاستردادات</div>
-              <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">الفاتورة</th>
-                    <th className="p-2">الاتجاه</th>
-                    <th className="p-2">طريقة الدفع</th>
-                    <th className="p-2 text-right">المبلغ</th>
-                    <th className="p-2">الحالة</th>
-                    <th className="p-2">المنفذ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stmt.data.payments.map((p) => (
-                    <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(p.createdAt)}</td>
-                      <td className="p-2">
-                        {p.isStandalone ? (
-                          // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.
-                          <span className="inline-flex items-center gap-1" title={p.description ?? undefined}>
-                            <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">سند مستقل</span>
-                            {p.voucherNumber && <CopyInline value={p.voucherNumber} />}
-                          </span>
-                        ) : (
-                          <CopyInline value={p.invoiceId} />
-                        )}
-                      </td>
-                      <td className="p-2">
-                        <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
-                          {p.direction === "IN" ? "وارد" : "صادر/استرداد"}
-                        </span>
-                      </td>
-                      <td className="p-2 text-xs">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
-                      {/* حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel. */}
-                      <td className="p-2 text-xs">{RECEIPT_STATUS_LABEL[p.status] ?? p.status}</td>
-                      <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
-                    </tr>
-                  ))}
-                  {stmt.data.payments.length === 0 && (
-                    <TableEmptyRow colSpan={7} message="لا دفعات." />
-                  )}
-                </tbody>
-              </table>
-              </ScrollTableShell>
+              <DataTable<StmtPaymentRow>
+                columns={stmtPaymentColumns}
+                data={stmt.data.payments}
+                searchable={false}
+                emptyText="لا دفعات."
+              />
             </CardContent>
           </Card>
 

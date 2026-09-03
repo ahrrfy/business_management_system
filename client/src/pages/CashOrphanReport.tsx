@@ -2,39 +2,50 @@
 //  - الخزينة الإدارية (TREASURY): معاملات admin/manager بـcashBucket='TREASURY' (متوقَّعة، مشروعة).
 //  - نقد يتيم حقيقي (TRUE_ORPHAN): سجلات تاريخية قبل cashBucket (NULL) أو خَلل كاشير بـnull-shift.
 // كلاهما خارج Z-report. تَسوية درج الكاشير تَبقى دقيقة، والمعاملات الإدارية تَدخل تَسوية شهرية مستقلّة.
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle, Building2 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { selectCls } from "@/lib/ui/formStyles";
+import { CASH_RECEIPT_SOURCE_LABEL_AR } from "@shared/cashReceiptSourceDocument";
+import { ROLE_LABEL } from "@/lib/roles";
 
 type CO = RouterOutputs["reports"]["cashOrphans"];
+type OrphanRow = CO["rows"][number];
 type Tab = "all" | "TREASURY" | "TRUE_ORPHAN";
 
-const SOURCE_LABEL: Record<string, string> = {
-  EXPENSE: "مصروف",
-  VOUCHER: "سند",
-  OTHER: "أخرى",
-};
+// ⚠️ `DIR_LABEL` و`PARTY_LABEL` يبقيان محلّيَّين عن **قياسٍ لا عن إهمال**: القاموسان نفسُهما
+// مكرّران حرفياً في [Vouchers.tsx:81](Vouchers.tsx#L81) و[:83](Vouchers.tsx#L83) باسمَي
+// `TYPE_LABEL` و`PARTY_LABEL`، وفيهما انحرافٌ قائم (`OTHER` هناك «أخرى» وهنا «متفرّق»).
+// ⇒ توحيدُهما قرارُ لفظٍ يمسّ شاشةً لا تملكها هذه الشريحة؛ رفعُه إلى `shared/` بلا كنس
+// مستهلكيه يُنتج مصدرَين اثنين بدل واحد — وهو العطبُ عينُه بثوبٍ أنظف.
 const DIR_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = {
   CUSTOMER: "عميل",
   SUPPLIER: "مورّد",
   OTHER: "متفرّق",
 };
-const ROLE_LABEL: Record<string, { label: string; cls: string }> = {
-  admin: { label: "مدير عام", cls: "badge-status-done" },
-  manager: { label: "مدير", cls: "badge-status-pending" },
-  cashier: { label: "كاشير", cls: "badge-stock-low" },
-  warehouse: { label: "مخزن", cls: "badge-stock-low" },
+
+/**
+ * لونُ شارة الدور — **عرضٌ لا مصطلح**، ولذلك يبقى هنا بينما التسميةُ تأتي من
+ * [`@/lib/roles`](../lib/roles.ts) المصدرِ الذي تقرأ منه بقيّةُ النظام (الشريط الجانبي
+ * والمستخدمون والحساب). الدورُ الذي لا لونَ له يأخذ المحايد بدل أن يختفي: هذه شاشةُ
+ * ملاحقةِ دينارٍ ضائع، ونسبةُ الحركة إلى فاعلها أحدُ خمسة يلزمها كلُّ مبلغ.
+ */
+const ROLE_BADGE_CLASS: Record<string, string> = {
+  admin: "badge-status-done",
+  manager: "badge-status-pending",
+  cashier: "badge-stock-low",
+  warehouse: "badge-stock-low",
 };
 
 const NOTE =
@@ -42,6 +53,11 @@ const NOTE =
   "تَبويب «النقد اليتيم الحقيقي» (cashBucket=NULL أو DRAWER+shiftId=null) سجلات تاريخية قبل ١٧/٦/٢٠٢٦ أو خَلل يَستدعي قيد تَسوية يدوي. " +
   "كلتا الفئتَين خارج Z-report.";
 
+
+/** رقم المستند المعروض — نفس الاشتقاق المستعمَل في الطباعة كي لا ينجرف العرض عن المستند. */
+function docLabel(r: OrphanRow): string {
+  return r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`);
+}
 
 function ymdOf(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10);
@@ -71,6 +87,137 @@ export default function CashOrphanReport() {
       ]
     : [];
 
+  /*
+   * الأعمدة تُبنى داخل المكوّن لأنّ ذيل الإجماليات يقرأ مجاميع الخادم (co) — والذيل
+   * يُصيَّر في <tfoot> عبر `footer` على العمود، فلا صفَّ إجمالياتٍ داخل <tbody>.
+   */
+  const columns = useMemo<ColumnDef<OrphanRow, unknown>[]>(
+    () => [
+      {
+        id: "createdAt",
+        header: "التاريخ",
+        accessorFn: (r) => fmtDate(r.createdAt),
+        meta: { kind: "date" },
+        cell: ({ row }) => fmtDate(row.original.createdAt),
+        footer: () => <span className="font-bold">الإجمالي ({co ? co.count : 0} معاملة)</span>,
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (r) => r.branchName ?? "—",
+        cell: ({ row }) => row.original.branchName ?? "—",
+      },
+      {
+        id: "category",
+        header: "الفئة",
+        // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+        accessorFn: (r) => (r.category === "TREASURY" ? "خزينة" : "يتيم"),
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${row.original.category === "TREASURY" ? "badge-status-pending" : "badge-stock-low"}`}>
+            {row.original.category === "TREASURY" ? <><Building2 aria-hidden className="size-3.5" />خزينة</> : <><AlertTriangle aria-hidden className="size-3.5" />يتيم</>}
+          </span>
+        ),
+      },
+      {
+        id: "source",
+        header: "النوع",
+        accessorFn: (r) => CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-cancelled">
+            {CASH_RECEIPT_SOURCE_LABEL_AR[row.original.source] ?? row.original.source}
+          </span>
+        ),
+      },
+      {
+        id: "doc",
+        header: "المستند",
+        accessorFn: (r) => docLabel(r),
+        meta: { kind: "code" },
+        cell: ({ row }) => docLabel(row.original),
+      },
+      {
+        id: "direction",
+        header: "الاتجاه",
+        accessorFn: (r) => DIR_LABEL[r.direction] ?? r.direction,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+            {DIR_LABEL[row.original.direction] ?? row.original.direction}
+          </span>
+        ),
+      },
+      {
+        id: "amount",
+        header: "المبلغ",
+        accessorFn: (r) => fmtAr(r.amount),
+        meta: { kind: "money" },
+        cell: ({ row }) => (
+          <span className={row.original.direction === "IN" ? "text-money-positive" : "text-money-negative"}>
+            {fmtAr(row.original.amount)}
+          </span>
+        ),
+        footer: () =>
+          co ? (
+            <span className="inline-flex flex-col items-end font-bold">
+              <span>خزينة: {fmtAr(co.netTreasury)}</span>
+              <span>يتيم: {fmtAr(co.netTrueOrphan)}</span>
+            </span>
+          ) : null,
+      },
+      {
+        id: "description",
+        header: "الوصف",
+        accessorFn: (r) => r.description ?? "—",
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <span className="block max-w-xs truncate text-xs" title={row.original.description ?? ""}>
+            {row.original.description ?? "—"}
+          </span>
+        ),
+      },
+      {
+        id: "createdBy",
+        header: "أنشأها",
+        accessorFn: (r) => r.createdByName ?? "—",
+        meta: { width: "actor" },
+        cell: ({ row }) => <span className="text-xs">{row.original.createdByName ?? "—"}</span>,
+      },
+      {
+        id: "role",
+        header: "الدور",
+        // ⚠️ `ROLE_LABEL` من `@/lib/roles` **خريطةُ نصوص** لا كائنات: هي مصدرُ التسمية الذي
+        // يقرأ منه بقيّة النظام، وبه انتهى عرضُ سبعة أدوارٍ بـ«—» أو بمفتاحها الإنجليزيّ.
+        // فالشارةُ تأخذ لوناً محايداً موحَّداً بدل لونٍ لكلّ دور.
+        accessorFn: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole] ?? r.createdByRole : "—"),
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const roleLabel = row.original.createdByRole
+            ? ROLE_LABEL[row.original.createdByRole] ?? row.original.createdByRole
+            : null;
+          return roleLabel ? (
+            <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-neutral">{roleLabel}</span>
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          );
+        },
+      },
+    ],
+    [co],
+  );
+
+  /** رسالة الفراغ تتبع التبويب — «لا يتيم» خبرٌ سار لا نقصُ بيانات. */
+  const emptyMessage = (
+    <span className="text-money-positive">
+      {tab === "TRUE_ORPHAN"
+        ? "ممتاز — لا نقد يتيم حقيقي في هذه الفترة. تَسوية الصندوق متّسقة."
+        : tab === "TREASURY"
+          ? "لا معاملات خزينة إدارية في هذه الفترة."
+          : "لا معاملات خارج وردية الكاشير."}
+    </span>
+  );
+
   const branchLabel = branchId
     ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)
     : "الكل";
@@ -84,7 +231,7 @@ export default function CashOrphanReport() {
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
         { key: "category", header: "الفئة", map: (r) => (r.category === "TREASURY" ? "خزينة إدارية" : "يتيم حقيقي") },
         { key: "cashBucket", header: "مكان النقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج" : r.cashBucket === "TREASURY" ? "خزينة" : "") },
-        { key: "source", header: "النوع", map: (r) => SOURCE_LABEL[r.source] ?? r.source },
+        { key: "source", header: "النوع", map: (r) => CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source },
         { key: "sourceId", header: "رقم المستند", map: (r) => r.sourceId ?? r.receiptId },
         { key: "voucherNumber", header: "رقم السند", map: (r) => r.voucherNumber ?? "" },
         { key: "direction", header: "الاتجاه", map: (r) => DIR_LABEL[r.direction] ?? r.direction },
@@ -92,7 +239,7 @@ export default function CashOrphanReport() {
         { key: "partyType", header: "نوع الطرف", map: (r) => (r.partyType ? PARTY_LABEL[r.partyType] ?? r.partyType : "") },
         { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
         { key: "createdByName", header: "أنشأها", map: (r) => r.createdByName ?? "" },
-        { key: "createdByRole", header: "الدور", map: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole : "") },
+        { key: "createdByRole", header: "الدور", map: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole] ?? r.createdByRole : "") },
       ],
     });
   }
@@ -122,12 +269,12 @@ export default function CashOrphanReport() {
         createdAt: fmtDate(r.createdAt),
         branch: r.branchName ?? "—",
         category: r.category === "TREASURY" ? "خزينة" : "يتيم",
-        source: SOURCE_LABEL[r.source] ?? r.source,
+        source: CASH_RECEIPT_SOURCE_LABEL_AR[r.source] ?? r.source,
         doc: r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`),
         direction: DIR_LABEL[r.direction] ?? r.direction,
         amount: fmtAr(r.amount),
         description: r.description ?? "",
-        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole})` : ""}` : "—",
+        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${ROLE_LABEL[r.createdByRole] ?? r.createdByRole})` : ""}` : "—",
       })),
       showIndex: true,
       summary: [
@@ -153,10 +300,10 @@ export default function CashOrphanReport() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => setBranchId(value ? Number(value) : "")}
             >
               <option value="">الكل</option>
               {branches.data?.map((b) => (
@@ -164,7 +311,7 @@ export default function CashOrphanReport() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }
@@ -193,108 +340,34 @@ export default function CashOrphanReport() {
 
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !co ? (
-            <LoadingState />
-          ) : co.rows.length === 0 ? (
-            <p className="p-8 text-center text-sm text-money-positive">
-              {tab === "TRUE_ORPHAN"
-                ? "ممتاز — لا نقد يتيم حقيقي في هذه الفترة. تَسوية الصندوق متّسقة."
-                : tab === "TREASURY"
-                ? "لا معاملات خزينة إدارية في هذه الفترة."
-                : "لا معاملات خارج وردية الكاشير."}
-            </p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground bg-muted/30">
-                  <th className="p-3 text-right font-medium">التاريخ</th>
-                  <th className="p-3 text-right font-medium">الفرع</th>
-                  <th className="p-3 text-right font-medium">الفئة</th>
-                  <th className="p-3 text-right font-medium">النوع</th>
-                  <th className="p-3 text-right font-medium">المستند</th>
-                  <th className="p-3 text-right font-medium">الاتجاه</th>
-                  <th className="p-3 text-right font-medium">المبلغ</th>
-                  <th className="p-3 text-right font-medium">الوصف</th>
-                  <th className="p-3 text-right font-medium">أنشأها</th>
-                  <th className="p-3 text-right font-medium">الدور</th>
-                </tr>
-              </thead>
-              <tbody>
-                {co.rows.map((r) => {
-                  const rowBg = r.category === "TREASURY" ? "bg-[var(--sem-info-bg)]" : "bg-[var(--sem-warn-bg)]/40";
-                  const roleInfo = r.createdByRole ? ROLE_LABEL[r.createdByRole] : null;
-                  return (
-                    <tr key={r.receiptId} className={`border-b last:border-0 ${rowBg}`}>
-                      <td className="p-3 text-right text-xs" dir="ltr">
-                        {fmtDate(r.createdAt)}
-                      </td>
-                      <td className="p-3 text-right">{r.branchName ?? "—"}</td>
-                      <td className="p-3 text-right">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "badge-status-pending" : "badge-stock-low"}`}>
-                          {r.category === "TREASURY" ? <><Building2 aria-hidden className="size-3.5" />خزينة</> : <><AlertTriangle aria-hidden className="size-3.5" />يتيم</>}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right">
-                        <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-cancelled">
-                          {SOURCE_LABEL[r.source] ?? r.source}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right font-mono text-xs" dir="ltr">
-                        {r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`)}
-                      </td>
-                      <td className="p-3 text-right">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${
-                            r.direction === "IN" ? "badge-status-active" : "badge-stock-out"
-                          }`}
-                        >
-                          {DIR_LABEL[r.direction] ?? r.direction}
-                        </span>
-                      </td>
-                      <td
-                        className={`p-3 text-right tabular-nums ${
-                          r.direction === "IN" ? "text-money-positive" : "text-money-negative"
-                        }`}
-                        dir="ltr"
-                      >
-                        {fmtAr(r.amount)}
-                      </td>
-                      <td className="p-3 text-right text-xs max-w-xs truncate" title={r.description ?? ""}>
-                        {r.description ?? "—"}
-                      </td>
-                      <td className="p-3 text-right text-xs">{r.createdByName ?? "—"}</td>
-                      <td className="p-3 text-right">
-                        {roleInfo ? (
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${roleInfo.cls}`}>
-                            {roleInfo.label}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t font-bold bg-muted/30">
-                  <td colSpan={6} className="p-3 text-right">
-                    الإجمالي ({co.count} معاملة)
-                  </td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">
-                    خزينة: {fmtAr(co.netTreasury)} / يتيم: {fmtAr(co.netTrueOrphan)}
-                  </td>
-                  <td colSpan={3} />
-                </tr>
-              </tfoot>
-            </table>
-            </ScrollTableShell>
-          )}
+          <DataTable<OrphanRow>
+            columns={columns}
+            data={co?.rows ?? []}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            /*
+             * ⛔ لا بحثَ محلّيّ هنا: الخادم يقتطع الصفوف عند سقفٍ (LIMIT، افتراضه ١٠٠٠) فبحثٌ
+             * فوق المحمَّل وحده يقول «لا نتائج» عن صفٍّ موجودٍ خلف السقف. وأسوأ: ذيلُ الإجماليات
+             * أدناه مجاميعُ الخادم على **كامل** المحمَّل، فيتناقض مع الصفوف حين يُصفّيها بحثٌ
+             * محلّيّ. الفلترة هنا خادمية وحدها (الفترة · الفرع · التبويب).
+             */
+            searchable={false}
+            /* تبويب الفئة فلترٌ خارج الجدول — بلا هذا تُعلَن «لا صفوف بعد» بينما الصفوف محجوبةٌ بالتبويب. */
+            externalFiltersActive={tab !== "all"}
+            /*
+             * تلوينُ الصفّ على **الخلايا** لا على `<tr>`: زِبرةُ `DataTable` تُصدَّر
+             * `odd:bg-…`/`even:bg-…` أي `&:nth-child(odd)` بنوعيّةٍ (0,2,0) تغلب أيّ
+             * `bg-…` عاريةٍ (0,1,0) في نفس العنصر ⇒ لونُ الفئة يموت صامتاً. والتمييزُ
+             * بين «خزينة» و«يتيم» هو رسالةُ هذا التقرير كلّها، فلا يُترَك للصدفة.
+             */
+            getRowClassName={(r) =>
+              r.category === "TREASURY"
+                ? "[&>td]:bg-[var(--sem-info-bg)]"
+                : "[&>td]:bg-[var(--sem-warn-bg)]/40"
+            }
+            emptyState={emptyMessage}
+            emptyFilteredState={emptyMessage}
+          />
         </CardContent>
       </Card>
     </ReportShell>

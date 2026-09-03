@@ -1,12 +1,12 @@
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, TableEmptyRow, TableSkeleton } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { ROLE_LABEL, ROLE_OPTIONS } from "@/lib/roles";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -20,10 +20,19 @@ type Row = RouterOutputs["users"]["list"]["rows"][number];
 /** شارة «القسم الفعليّ» — ما سيفتحه الحساب فعلاً في نقطة البيع (طبقة الشفافية ش١، محسوب خادمياً). */
 function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) {
   if (!station || station === "NONE") return <span className="text-muted-foreground text-xs">—</span>;
+  // لوحةُ هويّةٍ تصنيفية (قسمٌ لا حالة): كلّ قسمٍ صِبغةٌ مستقلّة تُميّزه عن جاره. لا تُترجَم إلى
+  // توكنز sem-* لأنّ «التجزئة» ليست موجباً و«الاستقبال» ليست معلومة — والترجمة تُوحّد لونَ قسمين.
+  // ولذلك توكنز `--chan-*` بالذات: هي المصمَّمة لهذا الغرض في tokens.css («هويّة لا حالة»، تشبّعٌ
+  // أدنى عمداً كي لا تُزاحم ألوان الإنذار)، ونطاقُها هو نطاقُ الأقسام حرفياً — نفس النغمات التي
+  // يُسندها `shared/invoiceChannel.ts` لقنوات RETAIL/RECEPTION/PRINT ⇒ القسمُ الواحد بلونٍ واحد
+  // في شاشة المستخدمين وفي قوائم الفواتير معاً.
+  // وكان الخامُّ السابق (زمرّديّ للتجزئة وبنفسجيّ للاستقبال) يَعِد بتمييزٍ لا يُسلّمه: طبقةُ التوافق
+  // الداكن في tokens.css تطوي التدرّجَين 100/700 إلى --sem-pos و--chart-check ⇒ «التجزئة» تُقرأ
+  // ليلاً حالةً موجبة، وهي قسمٌ لا حُكم.
   const cls: Record<string, string> = {
-    RETAIL: "bg-emerald-100 text-emerald-700",
-    PRINT_SERVICES: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-    RECEPTION: "bg-violet-100 text-violet-700",
+    RETAIL: "bg-[var(--chan-retail-bg)] text-[var(--chan-retail)]",
+    PRINT_SERVICES: "bg-[var(--chan-print-bg)] text-[var(--chan-print)]",
+    RECEPTION: "bg-[var(--chan-reception-bg)] text-[var(--chan-reception)]",
     MULTI: "bg-muted text-foreground",
   };
   const label = station === "MULTI" ? "متعدّد الأقسام" : POS_STATION_LABEL[station];
@@ -40,40 +49,60 @@ function stationExportLabel(station?: PosStation | "MULTI" | "NONE"): string {
  *  فجوة صدق الدور (٢٤/٧): «كاشير طباعة» كان يظهر «كاشير» فيبدو سلوك النظام غير منطقي.
  *  hasOverride: تخصيص فردي (permissionsOverride) بلا دور مخصّص ⇒ لاحقة «مُخصَّص» — الشكوى نفسها
  *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
+/** صفُّ الإدارة — الأدوار ذاتُ السلطة الواسعة، تُميَّز بالشكل لا باللون (انظر RoleBadge). */
+const AUTHORITY_ROLES = new Set(["admin", "manager"]);
+
 export function RoleBadge({ role, customRoleLabel, hasOverride, isOwner }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean; isOwner?: boolean }) {
   if (isOwner) {
+    // كان تدرّجاً كهرمانياً خامّاً (خلفية ٢٠٠ ونصّ ٩٠٠): طبقةُ التوافق الداكن في tokens.css تُترجم
+    // النصّ إلى --sem-warn ولا تملك مقابلاً لتلك الخلفية ⇒ نصٌّ فاتحٌ على خلفيةٍ فاتحة في الوضع
+    // الداكن. التوكن يُصلح ذلك ويحفظ الهيو. لكنّ --sem-warn-bg أخفّ من الخلفية القديمة: بعد التحويل
+    // قِيست الشارة (خلفية #ffefd5 ونصّ #8a6000) فصارت شبهَ توأمٍ لشارة «مخزن» يومَها (#fef3c7 /
+    // #b45309)، وحدٌّ بشفافية ٤٠٪ لا يعوّض فارقَ التشبُّع. فالحدُّ كاملُ القوّة و font-bold يُعيدان
+    // بروزَ أعلى شارةِ صلاحيةٍ في الشاشة.
     return (
-      <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-amber-200 text-amber-900">
+      <span className="inline-block rounded-full border border-[var(--sem-warn)] px-2 py-0.5 text-xs font-bold bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
         مالك النظام
       </span>
     );
   }
-  const colors: Record<string, string> = {
-    admin:          "bg-red-100 text-red-700",
-    manager:        "bg-purple-100 text-purple-700",
-    accountant:     "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-    cashier:        "bg-emerald-100 text-emerald-700",
-    warehouse:      "bg-amber-100 text-amber-700",
-    purchasing:     "bg-orange-100 text-orange-700",
-    print_operator: "bg-cyan-100 text-cyan-700",
-    sales_rep:      "bg-teal-100 text-teal-700",
-    auditor:        "bg-muted text-foreground",
-    courier:        "bg-lime-100 text-lime-700",
-    user:           "bg-muted text-muted-foreground",
-  };
+  // الدور **هويّةٌ إداريّة لا حالة**: لا توكن دلاليّ يصلح له — أحمرُ «مدير النظام» يُقرأ خطأً،
+  // وأخضرُ «كاشير» يُقرأ نجاحاً. لكنّ لوحة الأحد عشر صِبغاً الخامّة لم تكن تفي بوعدها أصلاً:
+  // طبقةُ التوافق الداكن في tokens.css تطوي كلّ 100/700 إلى خمس مجموعات (emerald≡lime ⇒
+  // كاشير≡مندوب توصيل · amber≡orange ⇒ أمين مخزن≡مشتريات · cyan≡teal≡info ⇒ فنّي≡مندوب≡محاسب)
+  // وتطبعها **بألوان الحالة نفسها** ⇒ ليلاً تصير شارةُ «كاشير» sem-pos وشارةُ «مدير النظام»
+  // sem-neg، فتُزاحم عمودَ «الحالة» في الصفّ ذاته وتُلغي التمييزَ الذي كانت اللوحة تدّعيه.
+  // فالقرار: سطحٌ محايد واحد، والتمييزُ محفوظٌ حيث يحمل وزناً تشغيلياً وحده — المالك (أعلاه)
+  // والدور المخصّص (أدناه). والتسميةُ العربية تحمل الدور كاملاً بلا لون.
   if (customRoleLabel) {
     return (
       <span
-        className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700"
+        // كان تدرّجاً نيليّاً خامّاً. المعنى المطلوب «هذا دورٌ مخصّص لا فئةٌ أساس» —
+        // يُؤدّيه الحدُّ المتقطّع بالشكل لا باللون، فيصمد في الوضعين بلا استهلاك صِبغٍ دلاليّ.
+        className="inline-block rounded-full border border-dashed px-2 py-0.5 text-xs font-medium bg-muted text-foreground"
         title={`دور مخصّص — الفئة الأساس: ${ROLE_LABEL[role] ?? role}`}
       >
         {customRoleLabel}
       </span>
     );
   }
+  // ⭐ **محورٌ واحدٌ يستحقّ تمييزاً بصرياً في هذا الجدول: السلطة.** إسقاطُ لوحة الأحد عشر
+  // صِبغاً كان صحيحاً (أعلاه)، لكنّ تسويةَ الأدوار كلِّها بسطحٍ واحد تُسقط معها السؤالَ الذي
+  // يُفتَح لأجله جدولُ المستخدمين أصلاً: «من يملك صلاحيةً واسعة؟» — لا «من كاشير ومن مندوب».
+  // فيُستعاد صفُّ الإدارة وحده (مدير النظام · مدير فرع) تحت مالك النظام مباشرةً.
+  // والتمييزُ **بالشكل لا باللون** — حدٌّ ووزنٌ أثقل، كما في الدور المخصّص — لسببين:
+  // يصمد في الوضعين الفاتح والداكن معاً بلا طبقةِ توافقٍ تطويه، ولا يستعير صِبغاً دلالياً
+  // فيُزاحم عمودَ «الحالة» في الصفّ نفسه؛ وتلك بالضبط هي العلّة التي أسقطت اللوحة الملوّنة.
+  const roleCls = AUTHORITY_ROLES.has(role)
+    ? "bg-muted text-foreground font-semibold border border-border"
+    : role === "user" || !ROLE_LABEL[role]
+      // «مستخدم عام» والدورُ غير المعروف أخفتُ من الأدوار التشغيلية — تمييزٌ كان قائماً في
+      // الخريطة الملوّنة (`user` وحده كان muted-foreground) فحُفظ كما هو.
+      ? "bg-muted text-muted-foreground"
+      : "bg-muted text-foreground";
   return (
     <span
-      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-muted text-muted-foreground"}`}
+      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${roleCls}`}
       title={hasOverride ? "صلاحيات معدَّلة يدوياً عن قالب الدور" : undefined}
     >
       {ROLE_LABEL[role] ?? role}
@@ -135,7 +164,6 @@ export default function Users() {
 
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
-  const pages = Math.max(1, Math.ceil(total / limit));
   const activeFilterCount = [role, branchId, includeInactive ? "1" : "", customRoleId ? "1" : ""].filter(Boolean).length;
 
   async function toggle(id: number, isActive: boolean, name: string, email: string) {
@@ -150,6 +178,180 @@ export default function Users() {
     }
     setActive.mutate({ userId: id, isActive: !isActive });
   }
+
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بشريط الأدوات والقائمة الجانبية).
+  // نفس صفوف الجدول المعروضة (صفحة الترقيم الحالية) ونفس أعمدته وتسمياتها — بلا استعلامٍ جديد،
+  // فما يُطبع هو ما يراه المستعمِل حرفياً. والفلاتر النشطة تُذكر في الرأس كي لا تُقرأ الورقة
+  // على أنّها كامل المستخدمين.
+  function printUsers() {
+    printReportDoc({
+      title: "قائمة المستخدمين",
+      headerExtra: [
+        {
+          label: "المعروض",
+          value: `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${total.toLocaleString("ar-IQ-u-nu-latn")}`,
+        },
+        { label: "البحث", value: q.trim() || "بلا بحث" },
+        { label: "الدور", value: role ? (ROLE_OPTIONS.find((r) => r.value === role)?.label ?? role) : "كل الأدوار" },
+        // فلترُ الدور المخصّص يعيش في الرابط ويُضيّق القائمة فعلياً (يُحسب في activeFilterCount)
+        // لكنّه لا يمرّ بمنسدلة «الدور» ⇒ إغفالُه هنا يجعل الورقة تقول «كل الأدوار» وهي مقصورةٌ
+        // على دورٍ واحد. الشاشة تُصرّح به بشريطٍ فوق الجدول، فالورقة تُصرّح به كذلك.
+        ...(customRoleId != null
+          ? [{ label: "دور مخصّص", value: `مقصورة على الدور المخصّص #${customRoleId}` }]
+          : []),
+        { label: "الفرع", value: branchId ? (branchName.get(Number(branchId)) ?? `#${branchId}`) : "كل الفروع" },
+        { label: "المعطّلون", value: includeInactive ? "مشمولون" : "مستبعَدون" },
+      ],
+      columns: [
+        { key: "name", label: "الاسم" },
+        { key: "login", label: "معرّف الدخول" },
+        { key: "role", label: "الدور" },
+        { key: "station", label: "القسم الفعليّ" },
+        { key: "branch", label: "الفرع" },
+        { key: "lastSignedIn", label: "آخر دخول" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: rows.map((u) => ({
+        name: u.name ?? "—",
+        login: (u as { username?: string | null }).username || u.email || "—",
+        // نفس اشتقاق عمود «الدور» على الشاشة: المالك يسبق الدور المخصّص ثمّ الدور الأساس.
+        role: (u as any).isOwner ? "مالك النظام" : (u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role),
+        station: stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation),
+        branch: u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—",
+        lastSignedIn: fmtDate(u.lastSignedIn),
+        status: u.isActive ? "مفعّل" : "معطّل",
+      })),
+      emptyText: "لا مستخدمين مطابقين.",
+    });
+  }
+
+  /*
+   * أعمدة القائمة — تُبنى داخل المكوّن لأنّها تقرأ خريطة الفروع وحالة الطفرة ودالّة التبديل.
+   * كلّ عمودٍ ذي قيمة يحمل `accessorFn` بالتسمية **المعروضة** (لا الرمز الخامّ) كي يَنسخ
+   * «نسخ القيمة» ما يقرأه المستعمِل. عمود الإجراءات معفى (لا قيمة له).
+   */
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "name",
+        header: "الاسم",
+        accessorFn: (u) => u.name ?? "—",
+        cell: ({ row }) => (
+          <span className="font-medium">
+            {row.original.name ?? "—"}
+            {/* الحقلان mustChangePassword وisOwner خارج نوع الصفّ المُصدَّر — نفس الصبّ الذي كان. */}
+            {!!(row.original as any).mustChangePassword && (
+              <span className="me-1 inline-flex text-[var(--sem-warn)]" title="إلزام تغيير كلمة المرور">
+                <AlertTriangle aria-hidden className="size-3.5" />
+              </span>
+            )}
+          </span>
+        ),
+      },
+      {
+        id: "login",
+        header: "معرّف الدخول",
+        accessorFn: (u) => (u as { username?: string | null }).username || u.email || "—",
+        // kind: "code" يتكفّل بـfont-mono وعزل اتّجاه النصّ اللاتينيّ (بدل dir="ltr" اليدويّ).
+        meta: { kind: "code" },
+        cell: ({ row }) => {
+          const username = (row.original as { username?: string | null }).username;
+          return (
+            <span className="text-xs">
+              {username ? <span className="block">{username}</span> : null}
+              {row.original.email ? <span className="block text-muted-foreground">{row.original.email}</span> : null}
+              {!username && !row.original.email ? "—" : null}
+            </span>
+          );
+        },
+      },
+      {
+        id: "role",
+        header: "الدور",
+        accessorFn: (u) =>
+          (u as any).isOwner ? "مالك النظام" : (u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role),
+        cell: ({ row }) => (
+          <RoleBadge
+            role={row.original.role}
+            customRoleLabel={row.original.customRoleLabel}
+            hasOverride={Object.keys((row.original.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
+            isOwner={!!(row.original as any).isOwner}
+          />
+        ),
+      },
+      {
+        id: "effectiveStation",
+        header: "القسم الفعليّ",
+        accessorFn: (u) => stationExportLabel((u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation),
+        cell: ({ row }) => (
+          <StationBadge station={(row.original as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} />
+        ),
+      },
+      {
+        id: "branch",
+        header: "الفرع",
+        accessorFn: (u) => (u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"),
+        cell: ({ row }) => (
+          <span className="text-xs">
+            {row.original.branchId ? (branchName.get(Number(row.original.branchId)) ?? `#${Number(row.original.branchId)}`) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "lastSignedIn",
+        header: "آخر دخول",
+        accessorFn: (u) => fmtDate(u.lastSignedIn),
+        meta: { kind: "date" },
+        cell: ({ row }) => fmtDate(row.original.lastSignedIn),
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (u) => (u.isActive ? "مفعّل" : "معطّل"),
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isActive ? "badge-status-active" : "badge-stock-out"}`}>
+            {row.original.isActive ? "مفعّل" : "معطّل"}
+          </span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "إجراء",
+        meta: { kind: "actions" },
+        cell: ({ row }) => {
+          const id = Number(row.original.id);
+          const isActive = !!row.original.isActive;
+          return (
+            <RowActions
+              actions={[
+                { key: "edit", kind: "edit", label: "تعديل", href: `/users/${id}/edit`, gate: { adminOnly: true } },
+                {
+                  key: "reset",
+                  kind: "edit",
+                  label: "إعادة تعيين كلمة المرور",
+                  href: `/users/${id}/edit`,
+                  gate: { adminOnly: true },
+                },
+                {
+                  key: "toggle",
+                  kind: "approve",
+                  label: isActive ? "تعطيل" : "تفعيل",
+                  variant: isActive ? "destructive" : "default",
+                  disabled: setActive.isPending,
+                  disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                  onSelect: () => void toggle(id, isActive, row.original.name ?? "", row.original.email ?? ""),
+                  gate: { adminOnly: true },
+                },
+              ]}
+            />
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [branchName, setActive.isPending],
+  );
 
   return (
     <div className="space-y-4">
@@ -221,7 +423,7 @@ export default function Users() {
             onResetFilters={() => resetF()}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printUsers}
             exportSpec={{
               filename: "المستخدمون",
               rows,
@@ -248,107 +450,23 @@ export default function Users() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">الاسم</th>
-                <th className="p-2">معرّف الدخول</th>
-                <th className="p-2">الدور</th>
-                <th className="p-2">القسم الفعليّ</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">آخر دخول</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.isLoading && <TableSkeleton rows={8} cols={8} />}
-              {!list.isLoading && rows.map((u) => {
-                const id = Number(u.id);
-                const isActive = !!u.isActive;
-                const mustChange = !!(u as any).mustChangePassword;
-                return (
-                  <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">
-                      {u.name ?? "—"}
-                      {mustChange && <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور"><AlertTriangle aria-hidden className="size-3.5" /></span>}
-                    </td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">
-                      {(u as { username?: string | null }).username
-                        ? <div>{(u as { username?: string | null }).username}</div>
-                        : null}
-                      {u.email ? <div className="text-muted-foreground">{u.email}</div> : null}
-                      {!(u as { username?: string | null }).username && !u.email ? "—" : null}
-                    </td>
-                    <td className="p-2">
-                      <RoleBadge
-                        role={u.role}
-                        customRoleLabel={u.customRoleLabel}
-                        hasOverride={Object.keys((u.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
-                        isOwner={!!(u as any).isOwner}
-                      />
-                    </td>
-                    <td className="p-2"><StationBadge station={(u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} /></td>
-                    <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
-                    <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {isActive ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            href: `/users/${id}/edit`,
-                            gate: { adminOnly: true },
-                          },
-                          {
-                            key: "reset",
-                            kind: "edit",
-                            label: "إعادة تعيين كلمة المرور",
-                            href: `/users/${id}/edit`,
-                            gate: { adminOnly: true },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: isActive ? "تعطيل" : "تفعيل",
-                            variant: isActive ? "destructive" : "default",
-                            disabled: setActive.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(id, isActive, u.name ?? "", u.email ?? ""),
-                            gate: { adminOnly: true },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {list.isError && (
-                <tr><td colSpan={8} className="p-0"><ErrorState message="تعذّر تحميل المستخدمين." onRetry={() => list.refetch()} /></td></tr>
-              )}
-              {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow colSpan={8} message="لا مستخدمين مطابقين." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable<Row>
+            columns={columns}
+            data={rows}
+            /* البحث والفلاتر في ListToolbar أعلاه (تُغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ
+               متجاوران، وتُعلن الشاشةُ «لا مستخدمين» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || q.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: "تعذّر تحميل المستخدمين.", onRetry: () => void list.refetch() }}
+            /* ترقيمٌ خادميّ (limit/offset + total) — شريطُ الترقيم اليدويّ أسفل البطاقة حُذف
+               معه كي لا يقفز شريطان بمقدارَين مختلفَين فتُتخطّى صفوفٌ بصمت. */
+            serverPagination={{ page, onPageChange: (next) => setPage(next), pageSize: limit, total, isFetching: list.isFetching }}
+            getRowClassName={(u) => (u.isActive ? undefined : "opacity-60")}
+            emptyText="لا مستخدمين مطابقين."
+          />
         </CardContent>
       </Card>
-
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
-          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,7 @@ import {
 } from "@/lib/permissionsModel";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
@@ -131,6 +133,8 @@ export default function RoleEdit() {
     else createM.mutate(payload);
   }
 
+  // نصٌّ مخصّص عمداً: هذا الرجوع المبكّر يسبق <PageHeader> ⇒ لا سياق آخر على الشاشة أثناء الانتظار.
+  // وليس من أنماط check:loading-strings («جارٍ تحميل الدور» ≠ «جارٍ التحميل») ⇒ لا يُعمَّم على القاموس.
   if (isEdit && detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل الدور…</div>;
 
   return (
@@ -150,9 +154,9 @@ export default function RoleEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="base">الفئة الأساسية (المستوى)</Label>
-            <select id="base" className={selectCls} value={baseRole} onChange={(e) => handleBaseRoleChange(e.target.value as RoleKey)}>
+            <AppSelect id="base" className="h-9" value={baseRole} onValueChange={(next) => handleBaseRoleChange(next as RoleKey)}>
               {BASE_ROLE_OPTIONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </select>
+            </AppSelect>
             <p className="text-[11px] text-muted-foreground">
               تحدّد البوّابات الخشنة ورؤية التكلفة{baseInfo?.canSeeCost ? " (يرى التكلفة)" : " (لا يرى التكلفة)"}. ابدأ من قالبها ثم خصّص.
             </p>
@@ -164,7 +168,7 @@ export default function RoleEdit() {
           {/* ش٤ «انسخ ثم عدّل»: بداية من دورٍ جاهز (قياسيّ/مبنيّ) بدل الصفر — يُلغي فخّ «نسيتُ وحدة». */}
           <div className="space-y-1">
             <Label htmlFor="clone">ابدأ من دورٍ جاهز (اختياري)</Label>
-            <select id="clone" className={selectCls} value="" onChange={(e) => cloneFrom(e.target.value)}>
+            <AppSelect id="clone" className="h-9" value="" onValueChange={(next) => cloneFrom(next)}>
               <option value="">— انسخ صلاحيات دورٍ ثم عدّل —</option>
               {standardRoles.length > 0 && (
                 <optgroup label="أدوار قياسية">
@@ -176,7 +180,7 @@ export default function RoleEdit() {
               <optgroup label="قوالب النظام">
                 {BASE_ROLE_OPTIONS.map((r) => <option key={`b${r.key}`} value={`builtin:${r.key}`}>{r.label}</option>)}
               </optgroup>
-            </select>
+            </AppSelect>
           </div>
           {isEdit && assignedCount > 0 && (
             <p className="text-[11px] text-[var(--sem-warn)] md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>
@@ -209,7 +213,7 @@ export default function RoleEdit() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
-        <Button onClick={submit} disabled={pending}>{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الدور"}</Button>
+        <Button onClick={submit} disabled={pending}>{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الدور"}</Button>
         <Link href="/roles"><Button variant="ghost">إلغاء</Button></Link>
       </div>
     </div>

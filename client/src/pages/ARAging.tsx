@@ -1,10 +1,11 @@
 import { CopyButton, CopyInline } from "@/components/CopyButton";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -14,9 +15,9 @@ import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
-import { ArrowDown, ArrowUp, ArrowUpDown, Info, X } from "lucide-react";
+import { Info, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
@@ -32,42 +33,24 @@ const BUCKETS = [
 ] as const;
 type MoneyKey = (typeof BUCKETS)[number]["key"] | "unpaidTotal" | "currentBalance";
 
-const PAGE = 50;
-
 const fmt = (s: string | number) => fmtMoney(s);
 
-/** رأس عمود قابل للفرز (تنازلي أولاً ثم تصاعدي) مع aria-sort. */
-function SortTh({
-  label,
-  k,
-  sort,
-  onSort,
-}: {
-  label: string;
-  k: MoneyKey;
-  sort: { key: MoneyKey | ""; dir: "asc" | "desc" };
-  onSort: (k: MoneyKey) => void;
-}) {
-  const active = sort.key === k;
-  return (
-    <th
-      className="p-2 text-right"
-      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
-    >
-      <button
-        type="button"
-        onClick={() => onSort(k)}
-        className="inline-flex items-center gap-1 hover:underline"
-      >
-        {label}
-        {active ? (
-          sort.dir === "asc" ? <ArrowUp aria-hidden className="size-3" /> : <ArrowDown aria-hidden className="size-3" />
-        ) : (
-          <ArrowUpDown aria-hidden className="size-3 opacity-40" />
-        )}
-      </button>
-    </th>
-  );
+/**
+ * عمود مبلغ في تقرير الأعمار. `accessorFn` يُرجع **النصّ المعروض** (كي ينسخه المستعمِل كما
+ * يقرأه)، و`sortingFn` صريحٌ بـDecimal لأنّ الفرز الافتراضيّ على نصٍّ فيه فواصل آلاف
+ * («1,234» قبل «999») يقلب ترتيب الذمم — والفرز هنا هو أداة التحصيل نفسها.
+ * `sortDescFirst` يحفظ سلوك الشاشة القائم: أوّل نقرةٍ تُظهر الأكبر ديناً.
+ */
+function moneyCol(id: string, header: string, get: (r: Row) => string | null, cls?: string): ColumnDef<Row, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: (r) => fmt(get(r) ?? 0),
+    meta: { kind: "money" },
+    sortDescFirst: true,
+    sortingFn: (a, b) => D(get(a.original) || 0).cmp(D(get(b.original) || 0)),
+    cell: ({ row }) => (cls ? <span className={cls}>{fmt(get(row.original) ?? 0)}</span> : fmt(get(row.original) ?? 0)),
+  };
 }
 
 export default function ARAging() {
@@ -80,14 +63,7 @@ export default function ARAging() {
     branchId: canCrossBranches && f.branch ? Number(f.branch) : undefined,
   });
   const sel = useRowSelection<number>();
-
-  // الفرز العميلي: تنازلي أولاً (الأهم = الأكبر ديناً) ثم تصاعدي عند النقر مجدداً.
-  const [sort, setSort] = useState<{ key: MoneyKey | ""; dir: "asc" | "desc" }>({ key: "", dir: "desc" });
-  const onSort = (k: MoneyKey) =>
-    setSort((s) => (s.key === k ? { key: k, dir: s.dir === "desc" ? "asc" : "desc" } : { key: k, dir: "desc" }));
-
-  const [page, setPage] = useState(0);
-  useEffect(() => { setPage(0); }, [f.q, f.bucket, f.ctype, f.branch]);
+  // الفرز والترقيم صارا داخل `DataTable` (نقرُ الترويسة + شريط الحالة) — بلا حالةٍ محلّية.
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
   // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا فواتير.
@@ -130,26 +106,15 @@ export default function ARAging() {
   // الفلاتر العميلية: بحث بالاسم/الهاتف + شريحة عمرية بها مبلغ + فئة العميل، ثم الفرز.
   const filtered = useMemo(() => {
     const q = f.q.trim();
-    let out = (aging.data ?? []).filter((r) => {
+    const out = (aging.data ?? []).filter((r) => {
       if (q && !(r.customerName.includes(q) || (r.phone ?? "").includes(q))) return false;
       if (f.bucket && !D((r as Record<MoneyKey, string | null>)[f.bucket as MoneyKey] || 0).gt(0)) return false;
       if (f.ctype && (r.customerType ?? "") !== f.ctype) return false;
       return true;
     });
-    if (sort.key) {
-      const k = sort.key;
-      out = [...out].sort((a, b) => {
-        const cmp = D((a as Record<MoneyKey, string | null>)[k] || 0).cmp(
-          D((b as Record<MoneyKey, string | null>)[k] || 0),
-        );
-        return sort.dir === "asc" ? cmp : -cmp;
-      });
-    }
     return out;
-  }, [aging.data, f.q, f.bucket, f.ctype, sort]);
+  }, [aging.data, f.q, f.bucket, f.ctype]);
 
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
-  const pageRows = filtered.slice(page * PAGE, page * PAGE + PAGE);
   const activeCount = [f.q.trim(), f.bucket, f.ctype].filter(Boolean).length;
 
   // الصفوف المحدَّدة فقط — للتصدير الجزئي ولنسخ ملخّص واتساب (التحديد يعبر الصفحات).
@@ -181,6 +146,103 @@ export default function ARAging() {
     L.push("نرجو التكرّم بالسداد أو التواصل لترتيب التسوية.");
     return sanitizeForWhatsApp(L.join("\n"));
   }, [selectedRows]);
+
+  // الأعمدة داخل المكوّن: عمود «غير مفوتر/افتتاحي» مشتقٌّ بـ`unbilledOf` المعرَّفة أعلاه.
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "customerName",
+        header: "العميل",
+        accessorFn: (r) => r.customerName,
+        meta: { width: "wide" },
+        cell: ({ row }) => <span className="font-medium">{row.original.customerName}</span>,
+      },
+      {
+        id: "customerType",
+        header: "الفئة",
+        accessorFn: (r) => r.customerType ?? "—",
+        cell: ({ row }) => <span className="text-xs">{row.original.customerType ?? "—"}</span>,
+      },
+      {
+        id: "phone",
+        header: "الهاتف",
+        accessorFn: (r) => r.phone ?? "",
+        meta: { kind: "phone" },
+        cell: ({ row }) => <CopyInline value={row.original.phone} />,
+      },
+      moneyCol("d0_30", "0–30", (r) => r.d0_30),
+      moneyCol("d31_60", "31–60", (r) => r.d31_60),
+      moneyCol("d61_90", "61–90", (r) => r.d61_90),
+      moneyCol("d91p", "+90", (r) => r.d91p),
+      moneyCol("unpaidTotal", "إجمالي غير المدفوع", (r) => r.unpaidTotal, "font-semibold"),
+      {
+        /* المُعرِّف عربيٌّ عمداً: `DataTable` يشتقّ اسمَ العمود في منتقي الأعمدة وفي «نسخ
+           العمود كـTSV» من الترويسة **حين تكون نصّاً**، وإلّا رجع إلى `id`. وهذه ترويسةٌ
+           مركَّبة (فيها Popover) ⇒ لولا التعريب لقرأ الموظّف «unbilled» وسط أعمدةٍ عربية. */
+        id: "غير مفوتر/افتتاحي",
+        header: () => (
+          <span className="inline-flex items-center gap-1">
+            غير مفوتر/افتتاحي
+            {/* Popover بدل title (نمط ٢٤/٨، Codex #764): متاحٌ باللمس والتركيز.
+                الشرحُ محاسبيّ مهمّ — يُميّز رصيداً افتتاحياً مستورداً من فاتورةٍ غير مسجَّلة. */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="شرح: غير مفوتر/افتتاحي"
+                  // Codex P2 (٢٤/٨ على PR #770): هدف اللمس ≥ ٢٤×٢٤px (تُلبّي WCAG 2.5.8
+                  // للحاجة الحدّ الأدنى للأهداف؛ توسيعُ padding يعوّض عن حجم الأيقونة الصغير).
+                  className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
+                  /* ترويسة `DataTable` نفسها زرُّ فرز: بلا كبح التصعيد يفتح النقرُ الشرحَ
+                     **ويقلب الفرز** معاً (وكذلك Enter/مسافة). الشرحُ قراءةٌ لا فرز. */
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <Info aria-hidden className="size-3.5" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent side="top" className="max-w-xs text-xs">
+                الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم أو الحركات غير المُوثَّقة بفاتورة.
+              </PopoverContent>
+            </Popover>
+          </span>
+        ),
+        accessorFn: (r) => fmt(unbilledOf(r).toFixed(2)),
+        meta: { kind: "money" },
+        sortDescFirst: true,
+        sortingFn: (a, b) => unbilledOf(a.original).cmp(unbilledOf(b.original)),
+        cell: ({ row }) => <span className="text-[var(--sem-info)]">{fmt(unbilledOf(row.original).toFixed(2))}</span>,
+      },
+      moneyCol("currentBalance", "الرصيد (لنا عليه)", (r) => r.currentBalance),
+      {
+        id: "oldestInvoiceDate",
+        header: "أقدم فاتورة",
+        accessorFn: (r) => r.oldestInvoiceDate ?? "—",
+        meta: { kind: "date" },
+        cell: ({ row }) => row.original.oldestInvoiceDate ?? "—",
+      },
+      {
+        id: "actions",
+        header: "إجراء",
+        meta: { kind: "actions" },
+        enableSorting: false,
+        cell: ({ row }) => (
+          <RowActions
+            mode="inline"
+            actions={[{
+              key: "statement",
+              kind: "view",
+              label: "كشف الحساب",
+              href: "/customers-statement?id=" + row.original.customerId,
+              gate: { module: "crm", level: "READ" },
+            }]}
+          />
+        ),
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   const onExportSelected = () => {
     if (selectedRows.length === 0) return;
@@ -291,7 +353,7 @@ export default function ARAging() {
           {activeCount > 0 && (
             <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground">
               <X aria-hidden className="size-4" />
-              مسح الفلاتر
+              {FILTER_LABELS.reset}
             </Button>
           )}
         </CardContent>
@@ -311,114 +373,22 @@ export default function ARAging() {
 
       <Card>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 w-8 text-center">
-                  <input
-                    type="checkbox"
-                    aria-label="تحديد كل الذمم المعروضة"
-                    checked={pageRows.length > 0 && pageRows.every((r) => sel.isSelected(r.customerId))}
-                    onChange={(e) => sel.setMany(pageRows.map((r) => r.customerId), e.target.checked)}
-                  />
-                </th>
-                <th className="p-2">العميل</th>
-                <th className="p-2">الفئة</th>
-                <th className="p-2">الهاتف</th>
-                <SortTh label="0–30" k="d0_30" sort={sort} onSort={onSort} />
-                <SortTh label="31–60" k="d31_60" sort={sort} onSort={onSort} />
-                <SortTh label="61–90" k="d61_90" sort={sort} onSort={onSort} />
-                <SortTh label="+90" k="d91p" sort={sort} onSort={onSort} />
-                <SortTh label="إجمالي غير المدفوع" k="unpaidTotal" sort={sort} onSort={onSort} />
-                <th className="p-2 text-right">
-                  <span className="inline-flex items-center gap-1">
-                    غير مفوتر/افتتاحي
-                    {/* Popover بدل title (نمط ٢٤/٨، Codex #764): متاحٌ باللمس والتركيز.
-                        الشرحُ محاسبيّ مهمّ — يُميّز رصيداً افتتاحياً مستورداً من فاتورةٍ غير مسجَّلة. */}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          aria-label="شرح: غير مفوتر/افتتاحي"
-                          // Codex P2 (٢٤/٨ على PR #770): هدف اللمس ≥ ٢٤×٢٤px (تُلبّي WCAG 2.5.8
-                          // للحاجة الحدّ الأدنى للأهداف؛ توسيعُ padding يعوّض عن حجم الأيقونة الصغير).
-                          className="inline-flex h-6 w-6 items-center justify-center rounded outline-none focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground hover:text-foreground hover:bg-accent"
-                        >
-                          <Info aria-hidden className="size-3.5" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent side="top" className="max-w-xs text-xs">
-                        الرصيد الحالي ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم أو الحركات غير المُوثَّقة بفاتورة.
-                      </PopoverContent>
-                    </Popover>
-                  </span>
-                </th>
-                <SortTh label="الرصيد (لنا عليه)" k="currentBalance" sort={sort} onSort={onSort} />
-                <th className="p-2">أقدم فاتورة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.map((r: Row) => (
-                <tr key={r.customerId} className="border-t">
-                  <td className="p-2 text-center">
-                    <input
-                      type="checkbox"
-                      aria-label={`تحديد ${r.customerName}`}
-                      checked={sel.isSelected(r.customerId)}
-                      onChange={() => sel.toggle(r.customerId)}
-                    />
-                  </td>
-                  <td className="p-2 font-medium">{r.customerName}</td>
-                  <td className="p-2 text-xs">{r.customerType ?? "—"}</td>
-                  <td className="p-2"><CopyInline value={r.phone} /></td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d31_60)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d91p)}</td>
-                  <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(r.unpaidTotal)}</td>
-                  <td className="p-2 text-right tabular-nums text-[var(--sem-info)]" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
-                  <td className="p-2 text-xs" dir="ltr">{r.oldestInvoiceDate ?? "—"}</td>
-                  <td className="p-2 text-center">
-                    <RowActions
-                      mode="inline"
-                      actions={[{
-                        key: "statement",
-                        kind: "view",
-                        label: "كشف الحساب",
-                        href: `/customers-statement?id=${r.customerId}`,
-                        gate: { module: "crm", level: "READ" },
-                      }]}
-                    />
-                  </td>
-                </tr>
-              ))}
-              {aging.data && filtered.length === 0 && (
-                <TableEmptyRow
-                  colSpan={13}
-                  message={aging.data.length === 0 ? "لا ذمم مستحقّة. ممتاز." : "لا نتائج مطابقة للفلاتر."}
-                />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable<Row, number>
+            columns={columns}
+            data={filtered}
+            /* البحث في بطاقة الفلاتر أعلاه (يغذّي filtered) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={activeCount > 0}
+            loading={aging.isLoading}
+            errorState={{ isError: aging.isError, message: aging.error?.message, onRetry: () => void aging.refetch() }}
+            selection={sel}
+            getRowId={(r) => r.customerId}
+            getRowSelectionLabel={(r) => `تحديد ${r.customerName}`}
+            emptyState="لا ذمم مستحقّة. ممتاز."
+            emptyFilteredState="لا نتائج مطابقة للفلاتر."
+          />
         </CardContent>
       </Card>
-
-      {/* ترقيم عميلي بسيط — القائمة كلها محمَّلة، التقطيع للعرض فقط. */}
-      {filtered.length > PAGE && (
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">
-            {filtered.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ — صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")} من {pages.toLocaleString("ar-IQ-u-nu-latn")}
-          </span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>السابق</Button>
-            <Button variant="outline" size="sm" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>التالي</Button>
-          </div>
-        </div>
-      )}
 
       {sel.count > 0 && (
         <div className="sticky bottom-3 z-20 mx-auto flex w-fit items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur">

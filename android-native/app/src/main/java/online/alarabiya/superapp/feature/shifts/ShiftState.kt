@@ -85,4 +85,5 @@ internal object ShiftStatePolicy {
 
     fun variance(report: ShiftReport, rawCountedCash: String): ShiftMoney? =
         ShiftMoney.parseUnsigned(rawCountedCash)?.minus(report.expectedCash)
+
 }

@@ -3,6 +3,7 @@
 //  • إغلاق ثغرة workOrderItems (لا تُكتب بعد الآن ⇒ لا مخزون/COGS يتيم).
 //  • السحب الذاتي (claim) + منع سرقة أمر زميل.
 //  • عزل المحطة: فني المطبعة ينفّذ أوامره فقط؛ ولا يُسلّم/يُصدر فاتورة (أقلّ امتياز).
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -12,6 +13,10 @@ import { appRouter } from "../../routers";
 import { createWorkOrder, startWorkOrder, markWorkOrderReady, deliverWorkOrder } from "../workOrderService";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -21,7 +26,8 @@ const caller = (ctx: any = adminCtx) => appRouter.createCaller(ctx);
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "expenses", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "workOrderImages", "workOrderItems", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
+  "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks", "workOrderEvents",
+  "shifts", "workOrderImages", "workOrderItems", "workOrderMaterials", "workOrders", "serviceTypes", "customers", "suppliers", "branches", "users",
 ];
 function db() { const d = getDb(); if (!d) throw new Error("no DB"); return d; }
 async function reset() {
@@ -37,7 +43,16 @@ async function seedBase() {
     { id: 1, openId: "local_admin", name: "admin", role: "admin", loginMethod: "local" },
     { id: 2, openId: "op2", name: "فني ١", role: "print_operator", branchId: 1, loginMethod: "local" },
     { id: 3, openId: "op3", name: "فني ٢", role: "print_operator", branchId: 1, loginMethod: "local" },
+    { id: 4, openId: "design-reviewer", name: "مراجع تصميم", role: "manager", branchId: 1, loginMethod: "local" },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PAP-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -46,10 +61,29 @@ async function seedBase() {
 }
 beforeEach(async () => { await reset(); await seedBase(); });
 
+async function approveCurrentDesign(workOrderId: number) {
+  const approval = await requestWorkOrderDesignApproval({
+    workOrderId,
+    requestKey: `hybrid-design-request:${randomUUID()}`,
+    note: "اعتماد التصميم قبل بدء التنفيذ",
+  }, { ...actor, role: "admin" });
+  await decideWorkOrderDesignApproval({
+    approvalId: Number(approval.approval.id),
+    decisionKey: `hybrid-design-approve:${randomUUID()}`,
+    decision: "APPROVED",
+    reason: "وافق العميل على التصميم النهائي",
+    evidence: {
+      type: "WHATSAPP_MESSAGE",
+      reference: `wamid.hybrid.${randomUUID()}`,
+    },
+  }, { userId: 4, branchId: 1, role: "manager" });
+}
+
 describe("تسليم أمر خدمة خالص (بلا منتج أساس) — كان مكسوراً", () => {
   it("baseVariantId=null ⇒ فاتورة بلا سطر invoiceItems + قيد SALE صحيح", async () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: null, title: "تصميم شعار", salePrice: "100.00" }, actor);
+    await approveCurrentDesign(wo.workOrderId);
     await startWorkOrder(wo.workOrderId, { ...actor, role: "admin" }); // لا مواد ⇒ لا خصم مخزون
     await markWorkOrderReady(wo.workOrderId, { ...actor, role: "admin" });
     const d = await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "100.00", method: "CASH" } }, { ...actor, role: "admin" });
@@ -250,6 +284,7 @@ describe("السحب الذاتي (claim) + منع سرقة أمر زميل", ()
   it("لا يُسحب أمر إلا في الطابور الوارد (RECEIVED)", async () => {
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "x", salePrice: "30.00" }, actor);
     await caller(opCtx(2)).workOrders.claim({ workOrderId: wo.workOrderId });
+    await approveCurrentDesign(wo.workOrderId);
     await caller(opCtx(2)).workOrders.start({ workOrderId: wo.workOrderId }); // RECEIVED→IN_PROGRESS
     await expect(caller(opCtx(3)).workOrders.claim({ workOrderId: wo.workOrderId })).rejects.toThrow();
   });
@@ -259,6 +294,7 @@ describe("عزل المحطة: الفني ينفّذ أوامره فقط، ول�
   it("فنّي غير المالك لا يبدأ الأمر؛ والمالك يبدأ", async () => {
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "كرت", salePrice: "30.00" }, actor);
     await caller(opCtx(2)).workOrders.claim({ workOrderId: wo.workOrderId });
+    await approveCurrentDesign(wo.workOrderId);
     await expect(caller(opCtx(3)).workOrders.start({ workOrderId: wo.workOrderId })).rejects.toThrow();
     await caller(opCtx(2)).workOrders.start({ workOrderId: wo.workOrderId });
     const row = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, wo.workOrderId)))[0];
@@ -268,6 +304,7 @@ describe("عزل المحطة: الفني ينفّذ أوامره فقط، ول�
   it("فنّي المطبعة لا يُسلّم/يُصدر فاتورة (أقلّ امتياز — cashierProcedure)", async () => {
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع", salePrice: "30.00" }, actor);
     await caller(opCtx(2)).workOrders.claim({ workOrderId: wo.workOrderId });
+    await approveCurrentDesign(wo.workOrderId);
     await caller(opCtx(2)).workOrders.start({ workOrderId: wo.workOrderId });
     await caller(opCtx(2)).workOrders.markReady({ workOrderId: wo.workOrderId });
     await expect(

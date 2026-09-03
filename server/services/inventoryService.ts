@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { branchStock, inventoryMovements, openingModeSettings, productUnits, productVariants, products } from "../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import { variantDisplayName } from "@shared/variantDisplay";
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
@@ -10,6 +12,33 @@ import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertPeriodOpen } from "./periodLockService";
 
 export { ensureBranchStockRows } from "./inventory/stockLock";
+
+/**
+ * اسمُ الصنف كما يعرفه الموظّف — تُقرأ **في مسار الرفض وحده**.
+ *
+ * «المخزون غير كافٍ: المتاح 0، المطلوب 3» رقمان بلا هويّة: الكاشير أمام زبونٍ واقف لا يعرف
+ * أيَّ سطرٍ من سلّته سقط، فيفتح شاشةً أخرى ليخمّن. الاسمُ هو ما يحوّل الرسالة إلى فعل.
+ * والصيغة من `@shared/variantDisplay` كي لا ينجرف اسمُ الصنف في الرفض عن اسمه في الشاشة.
+ *
+ * تتحمّل غياب الصفّ فتعود إلى رقم المتغيّر: رسالةُ الرفض لا يصحّ أن تسقط هي نفسها.
+ */
+async function describeVariantForMessage(tx: Tx, variantId: number): Promise<string> {
+  const rows = await tx
+    .select({
+      productName: products.name,
+      variantName: productVariants.variantName,
+      variantKind: productVariants.variantKind,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, variantId))
+    .limit(1);
+  const row = rows[0];
+  return row ? variantDisplayName(row) : `الصنف رقم ${variantId}`;
+}
 
 /** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
 export async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
@@ -32,6 +61,26 @@ export async function isBundleVariant(tx: Tx, variantId: number): Promise<boolea
     .where(eq(productVariants.id, variantId))
     .limit(1);
   return !!rows[0]?.isBundle;
+}
+
+/**
+ * «يُباع بالطلب» (0318): صنفٌ مخزنيّ مسموحٌ بيعُه **قبل** توريده، ورصيدُه السالب عدّادُ التزامٍ
+ * يعود صفراً بأوّل شراءٍ (فاتورة مورّد) أو إنتاجٍ داخليّ يُغطّيه.
+ *
+ * ⚠️ الإعفاء **دائم** بقصد: البديلان القائمان كلاهما ينكسر في الدورة الثانية —
+ *  • `allowNegativeUnopened` مشروطٌ بـ`openedAt IS NULL`، وأوّل استلامٍ يَسِم الصنف مُفتتَحاً
+ *    (`stampOpened`) فيعود الرفض؛
+ *  • و«وضع الافتتاح» مفتاحٌ عامّ بنافذة ≤٦٠ يوماً ونقديٍّ كامل — أداةُ ترحيلٍ لا سياسةَ تشغيل.
+ * والصفة هنا حقيقةُ عملٍ دائمة عن الصنف، فمكانها صفُّ المنتج لا لحظةٌ ولا مفتاحٌ عامّ.
+ */
+export async function isBackorderVariant(tx: Tx, variantId: number): Promise<boolean> {
+  const rows = await tx
+    .select({ allowBackorder: products.allowBackorder })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, variantId))
+    .limit(1);
+  return !!rows[0]?.allowBackorder;
 }
 
 export type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
@@ -168,7 +217,14 @@ async function assertInventoryPeriodOpen(tx: Tx): Promise<void> {
 /** Read current stock under a row lock, then write a movement + the new branchStock. */
 export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<ApplyMovementResult> {
   if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّرت حركة المخزون",
+        why: `الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً، والمُرسَل ${a.baseQuantity}`,
+        doThis: "أدخِل كمّيةً موجبة تُنتج عدداً صحيحاً بالوحدة الأساس، أو اختر وحدةً بمعامل تحويلٍ يقبل كسر الكمية",
+      }),
+    });
   }
   await lockInventoryVariants(tx, [a.variantId]);
 
@@ -177,7 +233,14 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   // كِتابة على branchStock. الإيراد/التَكلفة يَستمرّ عَبر مَسارات أخرى (saleService، COGS).
   if (await isServiceVariant(tx, a.variantId)) {
     if (a.movementType === "TRANSFER_IN" || a.movementType === "TRANSFER_OUT") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُمكن تَحويل مُنتج خِدمي بين الفُروع" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: `تعذّر تحويل «${await describeVariantForMessage(tx, a.variantId)}» بين الفرعين`,
+          why: "الصنف خِدميّ (بلا مخزون) — والخدمة تُقدَّم في كل فرعٍ ولا تُنقَل كالبضاعة",
+          doThis: "أزِل السطر الخِدميّ من التحويل وأرسِل البضاعة وحدها؛ وإن كان تصنيفه خطأً فصحّحه من صفحة تعديل المنتج",
+        }),
+      });
     }
     return { movementId: 0, newQuantity: 0 };
   }
@@ -187,7 +250,11 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   if (await isBundleVariant(tx, a.variantId)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "لا يُمكن تحريك مخزون مباشرةً لمنتج بكج — البكج مركّب ومخزونه = مخزون مكوّناته",
+      message: appErrorMessage({
+        what: `تعذّرت حركة مخزونٍ مباشرة على «${await describeVariantForMessage(tx, a.variantId)}»`,
+        why: "الصنف بكج (مركَّب) — لا رصيد له بذاته، ورصيدُه هو رصيد مكوّناته",
+        doThis: "حرّك مكوّنات البكج بدلاً منه (شراءً أو تحويلاً أو جرداً)، وراجع وصفته من صفحة تعديل المنتج",
+      }),
     });
   }
 
@@ -221,7 +288,17 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const currentQty = rows[0]?.quantity ?? 0;
   // «وضع الافتتاح»: السماح المشروط يسري على غير المُفتتَح فقط — openedAt مقروء تحت نفس القفل
   // (صفٌّ يُنشأ الآن = غير مُفتتَح بداهةً؛ واعتمادُ جردٍ افتتاحي متزامن يتسلسل على هذا القفل).
-  const negativeAllowed = a.allowNegative || (a.allowNegativeUnopened === true && rows[0]?.openedAt == null);
+  const unopenedAllowed = a.allowNegativeUnopened === true && rows[0]?.openedAt == null;
+  // «يُباع بالطلب» (0318): إعفاءٌ **دائم** لصنفٍ وُسِم كذلك — رصيدُه السالب عدّادُ التزامٍ مقصود
+  // (مُباعٌ لم يُورَّد) يعود صفراً بأوّل شراءٍ أو إنتاجٍ يُغطّيه.
+  // القراءة **كسولة ومحفوظة**: لا تُدفَع إلّا حين يوشك حارسٌ على الرفض فعلاً — فالبيع المكتفي
+  // المخزون (الغالبية العظمى) لا يدفع أيّ استعلامٍ إضافيّ — وتُقرأ مرّةً واحدة لا مرّةً لكلّ حارس.
+  let backorderCache: boolean | null = null;
+  const isBackorder = async (): Promise<boolean> => {
+    if (a.allowNegative || unopenedAllowed) return false; // مسموحٌ سلفاً — لا حاجة للقراءة.
+    if (backorderCache == null) backorderCache = await isBackorderVariant(tx, a.variantId);
+    return backorderCache;
+  };
 
   const requestedFormalExemption = Number.isSafeInteger(a.formalReservationExemptionBase)
     && Number(a.formalReservationExemptionBase) > 0
@@ -233,25 +310,60 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   );
   const reservedBase = Math.max(0, (lockedAvailability?.reservedBase ?? 0) - formalReservationExemption);
   const availableAfterAllocations = Math.max(0, currentQty - reservedBase);
+  // «يُباع بالطلب» يعبر حاجز الحجوزات أيضاً — وإلّا بقي الصنف محجوباً كلّما وُجد حجزٌ قائم،
+  // وهو نقيض معنى الصفة: الطلب المحجوز يُغطّى من التوريد التالي كما يُغطّى البيع الجديد.
   if (
     DEDUCTING.has(a.movementType) &&
     reservedBase > 0 &&
     a.baseQuantity > availableAfterAllocations &&
-    a.allowNegative !== true
+    a.allowNegative !== true &&
+    !(await isBackorder())
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message:
-        `المتاح بعد الحجوزات وطلبات المتجر ${availableAfterAllocations} وحدة أساس، ` +
-        `والمطلوب ${a.baseQuantity} — لا يمكن استهلاك مخزون مخصّص لطلب آخر`,
+      message: appErrorMessage({
+        what: `رصيد «${await describeVariantForMessage(tx, a.variantId)}» في هذا الفرع محجوزٌ لطلبٍ آخر`,
+        why:
+          `المتاح بعد الحجوزات وطلبات المتجر ${availableAfterAllocations} وحدة أساس، ` +
+          `والمطلوب ${a.baseQuantity} — لا يمكن استهلاك مخزون مخصّص لطلب آخر`,
+        // المخرج الأوّل وحده يملكه الكاشير؛ والآخران محجوبان بالدور (التحويلات
+        // `inventoryWarehouseProcedure`) ⇒ يُصاغان إحالةً لا أمراً، وإلّا وقف مَن لا يملكهما.
+        doThis:
+          `أنقص الكمية إلى ${availableAfterAllocations} وحدة أساس، ` +
+          "أو اطلب فكّ الحجز من الطلب الذي يحمله، " +
+          "أو اطلب من أمين المخزن تحويل الفرق من فرعٍ آخر ثمّ أعِد المحاولة",
+      }),
     });
   }
 
   const sign = SIGN[a.movementType];
+  const backorderAllowed =
+    DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && (await isBackorder());
+  const negativeAllowed = a.allowNegative || unopenedAllowed || backorderAllowed;
   if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !negativeAllowed) {
+    // ⚠️ «المخزون غير كافٍ» **جزءٌ متعاقَد عليه** من هذا النصّ: `sale/create.ts` و`workOrder/lifecycle.ts`
+    // يُثريان الرفضَ بسبب وضع الافتتاح حين تطابقه، و`Reception.tsx` يفتح به تأكيد البيع بالسالب.
+    // أعِد صياغة ما شئت حولها — ولا تُسقِطها، فإسقاطها يُعطّل ثلاثة مسارات في ملفّاتٍ أخرى بصمت.
     throw new TRPCError({
       code: "CONFLICT",
-      message: `المخزون غير كافٍ: المتاح ${currentQty}، المطلوب ${a.baseQuantity}`,
+      message: appErrorMessage({
+        what: `المخزون غير كافٍ لصرف «${await describeVariantForMessage(tx, a.variantId)}» من هذا الفرع`,
+        why: `المتاح ${currentQty} وحدة أساس والمطلوب ${a.baseQuantity}`,
+        // ثلاثةُ قيودٍ على هذا المخرج، كلٌّ منها أمسكته مراجعةٌ عدائية بعد أوّل صياغة:
+        //   ① الرصيد قد يكون سالباً أصلاً (بيعٌ سابق بالسالب) ⇒ «أنقص الكمية إلى -5» لا تُنفَّذ.
+        //   ② **الوحدة تُسمّى في الأمر لا في السبب وحده**: `currentQty` وحدةُ أساس، وسطرُ البيع
+        //      يمرّ بـ`convertToBaseQuantity` ⇒ الكاشير يُدخل بالوحدة المختارة. «أنقص إلى 7»
+        //      على سطرٍ بالدرزن تُقرأ «7 درزن» = 84 أساساً فيسقط ثانيةً — والأمرُ هو المُنفَّذ.
+        //   ③ **مَن يقرأ ليس مَن يستطيع**: التحويلات محجوبةٌ بـ`inventoryWarehouseProcedure`
+        //      و«يُباع بالطلب» بـ`productsManagerProcedure` ⇒ للكاشير صفرُ مخرجٍ منفَّذ. صيغةُ
+        //      الإحالة تُعيد له فعلاً يملكه: أن يطلب. و«يُباع بالطلب» ممنوعٌ بنيوياً على
+        //      الأمانة والخدمة والبكج (`chk_product_backorder_stocked_only`) — فيُقيَّد بالمملوك.
+        doThis:
+          (currentQty > 0 ? `أنقص الكمية إلى ${currentQty} وحدة أساس، أو ` : "") +
+          "اطلب من أمين المخزن تحويل الكمية من فرعٍ آخر (المخزون ← التحويلات)، " +
+          "أو اطلب من المدير تفعيل «يُباع بالطلب» على المنتج إن كان مملوكاً ويُورَّد بالطلب، " +
+          "ثمّ أعِد المحاولة",
+      }),
     });
   }
   const signedDelta = sign * a.baseQuantity;
@@ -267,19 +379,32 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   //     إعادة تشغيلٍ أوفلاينيّ = فقدُ بيعٍ حصل فعلاً؛ نكتفي بوسم الحركة ورفع floorBreached للكشف.
   let notes = a.notes;
   let floorBreached = false;
+  // وسمُ الحركة صراحةً: سالبُ «يُباع بالطلب» مقصودٌ ويجب أن يُقرأ كذلك في كشف الحركة، وإلّا
+  // بدا في المراجعة كعجزٍ مخزنيّ مجهول السبب — وهو أكثر ما يُهدر وقت المدقّق.
+  if (backorderAllowed) {
+    notes = `${a.notes ? `${a.notes} — ` : ""}[بيع بالطلب: بانتظار التوريد بشراءٍ أو إنتاج]`;
+  }
   if (DEDUCTING.has(a.movementType) && negativeAllowed && newQuantity < 0) {
     const cap = await readNegativeFloorCap(tx);
     if (newQuantity < -cap) {
-      if (!a.allowNegative) {
+      // «يُباع بالطلب» يُوسَم ولا يُرفَض — نظير allowNegative تماماً. الرفض هنا كان سيُعيد
+      // نصبَ الحاجز الذي وُجدت الصفة لإزالته، وفي أسوأ لحظة: بعد أن التزم الموظّف للزبون.
+      if (!a.allowNegative && !backorderAllowed) {
+        // ⚠️ «البيع بالسالب في وضع الافتتاح» متعاقَدٌ عليه أيضاً: `negativeStockFloorGuard.test.ts`
+        // يطابقه، و`Reception.tsx` يشترط «الافتتاح» ليفتح تأكيد التوفّر الفيزيائيّ.
         throw new TRPCError({
           code: "CONFLICT",
-          message:
-            `بلغ الصنف حدّ البيع بالسالب في وضع الافتتاح (الحدّ ${cap} وحدة أساس، والرصيد سيصبح ${newQuantity}) — ` +
-            `يلزم جردٌ افتتاحي يثبّت رصيده الحقيقي قبل متابعة بيعه`,
+          message: appErrorMessage({
+            what: `بلغ «${await describeVariantForMessage(tx, a.variantId)}» حدّ البيع بالسالب في وضع الافتتاح`,
+            why: `الحدّ ${cap} وحدة أساس، والرصيد سيصبح ${newQuantity}`,
+            doThis:
+              "اعتمد جرداً افتتاحياً يثبّت رصيده الحقيقي (المخزون ← الجرد) ثمّ أعِد بيعه، " +
+              "أو ورِّد الصنف بشراءٍ يرفع رصيده فوق الحدّ",
+          }),
         });
       }
       floorBreached = true;
-      notes = `${a.notes ? `${a.notes} — ` : ""}[تجاوز حدّ السالب: الرصيد ${newQuantity} دون ‑${cap}]`;
+      notes = `${notes ? `${notes} — ` : ""}[تجاوز حدّ السالب: الرصيد ${newQuantity} دون ‑${cap}]`;
     }
   }
 
@@ -327,32 +452,80 @@ export async function convertToBaseQuantity(
   variantId?: number
 ): Promise<ConvertResult> {
   const rows = await tx
+    // `unitName` للرسالة وحدها: «وحدة المنتج معطّلة» بلا اسمِ الوحدة تُجبر الموظّف على تخمين
+    // أيَّ وحدةٍ من وحدات الصنف يقصد النظام (قطعة/درزن/كرتون) قبل أن يعرف ما يُصلحه.
     .select({
       factor: productUnits.conversionFactor,
       isBase: productUnits.isBaseUnit,
       isActive: productUnits.isActive,
       variantId: productUnits.variantId,
+      unitName: productUnits.unitName,
     })
     .from(productUnits)
     .where(eq(productUnits.id, productUnitId))
     .limit(1);
   const u = rows[0];
-  if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "وحدة المنتج غير موجودة" });
+  if (!u) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر تحويل الكمية إلى الوحدة الأساس",
+        why: `وحدة المنتج رقم ${productUnitId} غير موجودة — يبدو أنها حُذفت بعد فتح الشاشة`,
+        doThis: "أعِد تحميل الشاشة واختر وحدةً من قائمة وحدات الصنف الحالية",
+      }),
+    });
+  }
   if (variantId !== undefined && Number(u.variantId) !== variantId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الوحدة لا تخص المتغيّر المُرسَل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `تعذّر استعمال وحدة «${u.unitName}» مع هذا الصنف`,
+        why: `الوحدة تخصّ صنفاً آخر (رقم ${Number(u.variantId)}) لا الصنف المُرسَل (رقم ${variantId})`,
+        doThis: "أعِد اختيار الصنف ثمّ وحدته من القائمة نفسها — لا تنسخ سطراً من صنفٍ إلى آخر",
+      }),
+    });
   }
   if (u.isActive === false) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "وحدة المنتج معطّلة" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `وحدة «${u.unitName}» معطّلة`,
+        why: "الوحدة المعطّلة لا تُستعمَل في حركةٍ جديدة، وقد عُطِّلت بعد فتح هذه الشاشة",
+        doThis: "اختر وحدةً فعّالة للصنف، أو أعِد تفعيل هذه الوحدة من صفحة تعديل المنتج",
+      }),
+    });
   }
   const q = new Decimal(quantity);
   const f = new Decimal(u.factor);
-  if (q.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون موجبة" });
-  if (f.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "معامل التحويل غير صالح" });
+  if (q.lte(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تحويل الكمية إلى الوحدة الأساس",
+        why: `الكمية يجب أن تكون موجبة، والمُدخَل ${q.toString()}`,
+        doThis: "أدخِل كمّيةً أكبر من صفر؛ ولحذف السطر استعمل زرّ الحذف لا الكمّية الصفرية",
+      }),
+    });
+  }
+  if (f.lte(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: `معامل تحويل وحدة «${u.unitName}» غير صالح`,
+        why: `المعامل يجب أن يكون أكبر من صفر، والمخزَّن ${f.toString()}`,
+        doThis: "صحّح معامل التحويل للوحدة من صفحة تعديل المنتج (كم وحدة أساس فيها) ثمّ أعِد المحاولة",
+      }),
+    });
+  }
   const base = q.mul(f);
   if (!base.isInteger()) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `الكمية الأساس الناتجة (${base.toString()}) ليست عدداً صحيحاً — راجع الكمية أو معامل التحويل`,
+      message: appErrorMessage({
+        what: "تعذّر تحويل الكمية إلى الوحدة الأساس",
+        why: `${q.toString()} × معامل وحدة «${u.unitName}» (${f.toString()}) = ${base.toString()}، وهو ليس عدداً صحيحاً — والمخزون يُمسَك بالوحدة الأساس صحيحاً`,
+        doThis: "قرّب الكمية إلى ما يُنتج عدداً صحيحاً، أو أدخِلها بالوحدة الأساس مباشرةً، أو صحّح معامل التحويل من صفحة تعديل المنتج",
+      }),
     });
   }
   return { baseQuantity: base.toNumber(), conversionFactor: f.toString(), isBaseUnit: !!u.isBase };
@@ -377,7 +550,14 @@ export interface SetStockArgs {
 /** Absolute stock adjustment (ADJUST). Records abs(delta) and the direction in notes. */
 export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementResult> {
   if (!Number.isInteger(a.targetQuantity) || (a.targetQuantity < 0 && !a.allowNegativeTarget)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّرت تسوية الرصيد",
+        why: `الرصيد المستهدف يجب أن يكون عدداً صحيحاً غير سالب، والمُرسَل ${a.targetQuantity}`,
+        doThis: "أدخِل العدد المعدود فعلياً بالوحدة الأساس (صفر إن لم يبقَ منه شيء)؛ والرصيد السالب لا يُثبَّت إلّا بجردٍ افتتاحيّ",
+      }),
+    });
   }
   await lockInventoryVariants(tx, [a.variantId]);
   // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
@@ -388,7 +568,11 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   if (await isBundleVariant(tx, a.variantId)) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "لا تُسوَّى مخزون بكجٍ مباشرةً — سوِّ مكوّناته",
+      message: appErrorMessage({
+        what: `تعذّرت تسوية رصيد «${await describeVariantForMessage(tx, a.variantId)}»`,
+        why: "الصنف بكج (مركَّب) لا رصيد له بذاته — رصيدُه محسوبٌ من مكوّناته",
+        doThis: "سوِّ مكوّنات البكج واحداً واحداً، ويعود رصيد البكج صحيحاً من تلقائه",
+      }),
     });
   }
   // `setStock` يكتب حركته وصفَّه بنفسه (لا يمرّ بـapplyMovement) ⇒ يلزمه الحارس صراحةً.
@@ -460,7 +644,14 @@ export interface TransferArgs {
 /** Move stock between branches as two linked movements; deterministic lock order. */
 export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
   if (a.fromBranchId === a.toBranchId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ التحويل",
+        why: `فرع المصدر وفرع الوجهة واحد (رقم ${a.fromBranchId}) — والتحويل نقلُ رصيدٍ بين فرعين`,
+        doThis: "اختر فرع وجهةٍ مختلفاً؛ ولتصحيح رصيدٍ داخل الفرع نفسه استعمل تسوية المخزون لا التحويل",
+      }),
+    });
   }
   await lockInventoryVariants(tx, [a.variantId]);
   // Lock both branch rows in ascending branchId order to avoid deadlocks.

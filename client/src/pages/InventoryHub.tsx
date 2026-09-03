@@ -16,6 +16,7 @@ const InventoryMovements = lazy(() => import("@/pages/InventoryMovements"));
 const Transfers = lazy(() => import("@/pages/Transfers"));
 const Stocktakes = lazy(() => import("@/pages/Stocktakes"));
 const ReorderAlerts = lazy(() => import("@/pages/ReorderAlerts"));
+const BackorderShortfall = lazy(() => import("@/pages/BackorderShortfall"));
 const SeasonPlanning = lazy(() => import("@/pages/SeasonPlanning"));
 const Categories = lazy(() => import("@/pages/Categories"));
 const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
@@ -30,6 +31,9 @@ const TABS: HubTab[] = [
   { value: "transfers", label: "التحويلات", gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" }, Component: Transfers },
   { value: "stocktakes", label: "الجرد والتسوية", Component: Stocktakes },
   { value: "reorder", label: "إعادة الطلب", Component: ReorderAlerts },
+  // «المُسنَد المطلوب توريده» (0318): جارُ «إعادة الطلب» لأنّهما سؤالٌ واحد بمصدرين — هذه
+  // تُتابع التزاماً **قائماً تجاه زبونٍ اشترى** (رصيدٌ سالب)، وتلك تُنبّه قبل النفاد.
+  { value: "backorder", label: "المطلوب توريده", Component: BackorderShortfall },
   // تخطيط الموسم: أداة تجهيزٍ على مستوى العمل (seasonPlan/setSeasonTarget على inventoryWarehouseProcedure) —
   // بوّابة مرآة التحويلات تُخفيه عن الكاشير (كل نداءاته FORBIDDEN له).
   { value: "season", label: "تخطيط الموسم", gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" }, Component: SeasonPlanning },

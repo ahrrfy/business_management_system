@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -20,6 +21,8 @@ import {
 } from "@/lib/integrationCenter";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Switch } from "@/components/ui/switch";
 import { useEffect, useMemo, useState } from "react";
 
@@ -979,15 +982,15 @@ function AutomationSettingsCard() {
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1">
             <label className="text-xs font-medium">وضع الفرز</label>
-            <select
+            <AppSelect
               value={draft.triageMode}
-              onChange={(e) => setDraft({ ...draft, triageMode: e.target.value as TriageMode })}
-              className="w-full h-9 border rounded-md px-2 text-sm bg-background"
+              onValueChange={(next) => setDraft({ ...draft, triageMode: next as TriageMode })}
+              className="h-9 px-2 text-sm"
             >
               <option value="AUTO_ALL">تلقائي للكلّ</option>
               <option value="KEYWORD_ONLY">حسب الكلمات المفتاحية فقط</option>
               <option value="MANUAL">يدوي بالكامل</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="flex items-center justify-between rounded-md border px-3 h-9 self-end">
             <label className="text-xs font-medium">إنشاء مهام تلقائياً</label>
@@ -1108,6 +1111,9 @@ function AutomationSettingsCard() {
   );
 }
 
+/** صفُّ قالب Meta — مشتقٌّ من عقد `integrations.templates.list` فلا ينجرف عن الخادم. */
+type MetaTemplateRow = RouterOutputs["integrations"]["templates"]["list"][number];
+
 const TEMPLATE_STATUS_META: Record<string, { label: string; cls: string }> = {
   APPROVED: { label: "معتمد", cls: "badge-status-active" },
   PENDING: { label: "قيد المراجعة", cls: "badge-status-pending" },
@@ -1115,6 +1121,43 @@ const TEMPLATE_STATUS_META: Record<string, { label: string; cls: string }> = {
   PAUSED: { label: "معلّق", cls: "badge-status-cancelled" },
   DISABLED: { label: "معطّل", cls: "badge-status-cancelled" },
 };
+
+const metaTemplateColumns: ColumnDef<MetaTemplateRow, unknown>[] = [
+  { id: "name", header: "الاسم", accessorFn: (t) => t.name, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+  { id: "language", header: "اللغة", accessorFn: (t) => t.language, meta: { kind: "code", align: "center" }, cell: ({ row }) => row.original.language },
+  {
+    id: "category",
+    header: "الفئة",
+    accessorFn: (t) => t.category,
+    meta: { align: "center" },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.category}</span>,
+  },
+  {
+    id: "templateStatus",
+    header: "الحالة",
+    // التسمية المعروضة لا الرمز الخامّ.
+    accessorFn: (t) => (TEMPLATE_STATUS_META[t.templateStatus] ?? TEMPLATE_STATUS_META.PENDING).label,
+    meta: { kind: "status" },
+    cell: ({ row }) => {
+      const st = TEMPLATE_STATUS_META[row.original.templateStatus] ?? TEMPLATE_STATUS_META.PENDING;
+      return <Badge variant="outline" className={st.cls}>{st.label}</Badge>;
+    },
+  },
+  {
+    id: "variableCount",
+    header: "المتغيّرات",
+    accessorFn: (t) => t.variableCount,
+    meta: { kind: "number", align: "center" },
+    cell: ({ row }) => row.original.variableCount,
+  },
+  {
+    id: "syncedAt",
+    header: "آخر مزامنة",
+    accessorFn: (t) => (t.syncedAt ? fmtDateTime(t.syncedAt) : "—"),
+    meta: { kind: "datetime" },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.syncedAt ? fmtDateTime(row.original.syncedAt) : "—"}</span>,
+  },
+];
 
 /** مزامنة قوالب Meta + جدول القوالب المخزّنة (waTemplates — عامّة، ليست بحسب الفرع؛
  *  الفرع هنا يحدّد فقط أيّ تكامل واتساب ACTIVE يستعمل كمصدر للمزامنة). */
@@ -1145,13 +1188,13 @@ function TemplateSyncSection({ branches }: { branches: { id: number; name: strin
         <div className="flex flex-wrap items-end gap-2">
           <div className="space-y-1">
             <label className="text-xs font-medium">الفرع (لتحديد تكامل واتساب المصدر)</label>
-            <select
-              value={branchId || ""}
-              onChange={(e) => setBranchId(Number(e.target.value))}
-              className="h-9 border rounded-md px-2 text-sm bg-background"
+            <AppSelect
+              value={String(branchId || "")}
+              onValueChange={(next) => setBranchId(Number(next))}
+              className="h-9 px-2 text-sm"
             >
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <Button variant="outline" onClick={() => sync.mutate({ branchId })} disabled={sync.isPending || !branchId}>
             {sync.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <RefreshCw aria-hidden className="size-4 me-1" />}
@@ -1160,44 +1203,23 @@ function TemplateSyncSection({ branches }: { branches: { id: number; name: strin
         </div>
         <p className="text-[11px] text-muted-foreground">يتطلّب تكامل واتساب ACTIVE على الفرع المختار + WABA ID مضبوطاً في بطاقة تكامله أعلاه.</p>
 
-        {templatesQ.isLoading ? (
-          <LoadingState />
-        ) : templatesQ.isError ? (
-          <ErrorState message="تعذّر تحميل قوالب Meta." onRetry={() => void templatesQ.refetch()} />
-        ) : (templatesQ.data?.length ?? 0) === 0 ? (
+        {(templatesQ.data?.length ?? 0) === 0 && !templatesQ.isLoading && !templatesQ.isError ? (
           <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
             لا قوالب مزامنة بعد. اضغط «مزامنة القوالب من Meta» بعد ضبط WABA ID.
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-md border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-xs text-muted-foreground">
-                <tr>
-                  <th className="text-right p-2 font-medium">الاسم</th>
-                  <th className="text-center p-2 font-medium">اللغة</th>
-                  <th className="text-center p-2 font-medium">الفئة</th>
-                  <th className="text-center p-2 font-medium">الحالة</th>
-                  <th className="text-center p-2 font-medium">المتغيّرات</th>
-                  <th className="text-center p-2 font-medium">آخر مزامنة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templatesQ.data?.map((t) => {
-                  const st = TEMPLATE_STATUS_META[t.templateStatus] ?? TEMPLATE_STATUS_META.PENDING;
-                  return (
-                    <tr key={t.id} className="border-t">
-                      <td className="p-2 font-medium">{t.name}</td>
-                      <td className="p-2 text-center" dir="ltr">{t.language}</td>
-                      <td className="p-2 text-center text-xs text-muted-foreground">{t.category}</td>
-                      <td className="p-2 text-center"><Badge variant="outline" className={st.cls}>{st.label}</Badge></td>
-                      <td className="p-2 text-center tabular-nums">{t.variableCount}</td>
-                      <td className="p-2 text-center text-xs text-muted-foreground" dir="ltr">{t.syncedAt ? fmtDateTime(t.syncedAt) : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          /* مُضمَّن: البطاقة تحمل عنوان «قوالب Meta» وأدواتها أعلاه. */
+          <DataTable<MetaTemplateRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={metaTemplateColumns}
+            data={templatesQ.data ?? []}
+            loading={templatesQ.isLoading}
+            errorState={{ isError: templatesQ.isError, message: "تعذّر تحميل قوالب Meta.", onRetry: () => void templatesQ.refetch() }}
+            emptyText="لا قوالب مزامنة بعد."
+          />
         )}
       </CardContent>
     </Card>
@@ -1378,7 +1400,7 @@ pnpm prod:deploy
                   <option value="ALL">كل الفروع</option>
                   {branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
                 </AppSelect>
-                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters} disabled={!hasFilters}>{FILTER_LABELS.reset}</Button>
               </div>
               <div className="mt-3 text-xs text-muted-foreground">
                 عرض {filteredIntegrations.length} من {summary.total} اتصال
@@ -1406,7 +1428,7 @@ pnpm prod:deploy
               <CardContent className="space-y-3 py-10 text-center">
                 <Search aria-hidden className="mx-auto size-6 text-muted-foreground" />
                 <div className="font-medium">لا توجد نتائج مطابقة</div>
-                <Button variant="outline" onClick={clearFilters}>مسح الفلاتر</Button>
+                <Button variant="outline" onClick={clearFilters}>{FILTER_LABELS.reset}</Button>
               </CardContent>
             </Card>
           ) : (

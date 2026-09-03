@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -30,8 +31,15 @@ import { notify } from "@/lib/notify";
 import { D, formatIqd } from "@/lib/money";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
 import { RowActions } from "@/components/list/RowActions";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 
 type Report = RouterOutputs["deliveryLegacyRepair"]["report"];
+type ClosedWithoutConsignmentRow = Report["closedWithoutConsignment"][number];
+type PrepaidWithoutProofRow = Report["prepaidClosedWithoutProof"][number];
+type PartialOutstandingRow = Report["partialOutstanding"][number];
+type PartyWithoutGatewayRow = Report["openPartiesWithoutGateway"][number];
+type InvoiceMissingCustomerRow = Report["invoicesMissingCustomer"][number];
 type RepairInput = RouterInputs["deliveryLegacyRepair"]["repair"];
 type RepairAction = RepairInput["action"];
 
@@ -110,12 +118,8 @@ function FindingSection({
   );
 }
 
-function TableShell({ children }: { children: ReactNode }) {
-  return <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm">{children}</table></div>;
-}
-
-const headCell = "border-b bg-muted/40 px-3 py-2 text-start text-xs font-medium text-muted-foreground";
-const cell = "border-b px-3 py-2 align-top";
+/* جداولُ الأقسام مُضمَّنة في بطاقاتٍ تحمل عناوينها وعدَّها — شريطُ حالةٍ لكلٍّ منها ضجيجٌ لا معلومة. */
+const FINDING_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 export default function LegacyDataRepair() {
   const [dialog, setDialog] = useState<RepairDialogState | null>(null);
@@ -161,6 +165,297 @@ export default function LegacyDataRepair() {
       customerBalanceAction: dialog.customerBalanceAction || null,
     });
   }
+
+  /*
+   * أعمدة الأقسام الخمسة. تُبنى في كل تصيير لأنّها تُغلِق على `openDialog` (حوارُ الإصلاح
+   * الفرديّ) — وتجميدُها بمصفوفة تبعيّاتٍ ناقصة يُنتج إجراءات تعمل على حالةٍ قديمة.
+   */
+  const closedWithoutConsignmentColumns: ColumnDef<ClosedWithoutConsignmentRow, unknown>[] = [
+    {
+      id: "order",
+      header: "الطلب",
+      accessorFn: (r) => r.orderNumber,
+      cell: ({ row }) => (
+        <div>
+          <div className="font-medium">{row.original.orderNumber}</div>
+          <div className="text-xs text-muted-foreground">فرع {row.original.branchId}</div>
+        </div>
+      ),
+    },
+    {
+      id: "invoice",
+      header: "الفاتورة",
+      accessorFn: (r) => r.invoiceNumber ?? "#" + (r.invoiceId ?? "—"),
+      meta: { kind: "code" },
+      cell: ({ row }) => row.original.invoiceNumber ?? "#" + (row.original.invoiceId ?? "—"),
+    },
+    {
+      id: "contact",
+      header: "المستلم/العنوان",
+      accessorFn: (r) => (r.contactName ?? "—") + " — " + (r.deliveryAddress ?? "بلا عنوان محفوظ"),
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => (
+        <div>
+          <div>{row.original.contactName ?? "—"}</div>
+          <div className="max-w-xs text-xs text-muted-foreground">{row.original.deliveryAddress ?? "بلا عنوان محفوظ"}</div>
+        </div>
+      ),
+    },
+    { id: "deliveredAt", header: "أغلق في", accessorFn: (r) => fmtDate(r.deliveredAt), meta: { kind: "date" }, cell: ({ row }) => fmtDate(row.original.deliveredAt) },
+    {
+      id: "actions",
+      header: "الإجراء",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => (
+        <RowActions mode="inline" actions={[{
+          key: "create-missing-consignment",
+          kind: "edit",
+          label: "معالجة",
+          icon: Truck,
+          gate: { module: "reports", level: "FULL" },
+          onSelect: () => openDialog({
+            action: "CREATE_MISSING_CONSIGNMENT",
+            targetId: row.original.id,
+            title: "إنشاء الإرسالية المفقودة",
+            description: "اختر الجهة والأجرة صراحةً. ستنشأ الإرسالية DISPATCHED بلا ختم تسليم.",
+            expectedConfirmation: row.original.orderNumber,
+            deliveryFee: String(row.original.deliveryCost ?? "0"),
+          }),
+        }]} />
+      ),
+    },
+  ];
+
+  const prepaidWithoutProofColumns: ColumnDef<PrepaidWithoutProofRow, unknown>[] = [
+    {
+      id: "consignment",
+      header: "الإرسالية",
+      accessorFn: (r) => r.consignmentNumber,
+      cell: ({ row }) => (
+        <div>
+          <div className="font-medium">{row.original.consignmentNumber}</div>
+          <Badge variant="outline">COD = 0</Badge>
+        </div>
+      ),
+    },
+    {
+      id: "order",
+      header: "الطلب",
+      accessorFn: (r) => r.orderNumber ?? "#" + (r.workOrderId ?? "—"),
+      meta: { kind: "code" },
+      cell: ({ row }) => row.original.orderNumber ?? "#" + (row.original.workOrderId ?? "—"),
+    },
+    { id: "party", header: "الجهة", accessorFn: (r) => r.partyName, cell: ({ row }) => row.original.partyName },
+    { id: "dispatchedAt", header: "الإرسال", accessorFn: (r) => fmtDate(r.dispatchedAt), meta: { kind: "date" }, cell: ({ row }) => fmtDate(row.original.dispatchedAt) },
+    {
+      id: "actions",
+      header: "الإجراء",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => (
+        <RowActions mode="inline" actions={[
+          {
+            key: "record-proof",
+            kind: "approve",
+            label: "إثبات التسليم",
+            icon: ClipboardCheck,
+            gate: { module: "reports", level: "FULL" },
+            onSelect: () => openDialog({
+              action: "RECORD_PREPAID_DELIVERY_PROOF",
+              targetId: row.original.id,
+              title: "تسجيل إثبات التسليم",
+              description: "أدخل الوقت والمرجع من مستند/اتصال تشغيلي حقيقي. لا يملأ النظام أياً منهما.",
+              expectedConfirmation: row.original.consignmentNumber,
+              deliveredAt: "",
+              evidenceRef: "",
+              feeSettlementAction: "",
+              proofDeliveryFee: row.original.deliveryFee,
+              proofFeeCollection: row.original.feeCollection,
+            }),
+          },
+          ...(row.original.parcelStatus === "DELIVERED" ? [{
+            key: "reopen",
+            kind: "edit" as const,
+            label: "إعادة فتح",
+            icon: RefreshCw,
+            gate: { module: "reports" as const, level: "FULL" as const },
+            onSelect: () => openDialog({
+              action: "REOPEN_PREPAID_CONSIGNMENT" as const,
+              targetId: row.original.id,
+              title: "إعادة فتح الإرسالية",
+              description: "يُعاد الصف إلى DISPATCHED ليظهر في العمل الميداني؛ لا يُسجل إثبات تسليم.",
+              expectedConfirmation: row.original.consignmentNumber,
+            }),
+          }] : []),
+        ]} />
+      ),
+    },
+  ];
+
+  const partialOutstandingColumns: ColumnDef<PartialOutstandingRow, unknown>[] = [
+    { id: "consignment", header: "الإرسالية", accessorFn: (r) => r.consignmentNumber, meta: { kind: "code" }, cell: ({ row }) => row.original.consignmentNumber },
+    { id: "party", header: "الجهة", accessorFn: (r) => r.partyName, cell: ({ row }) => row.original.partyName },
+    { id: "cod", header: "المطلوب", accessorFn: (r) => fmtMoney(r.codAmount), meta: { kind: "money" }, cell: ({ row }) => fmtMoney(row.original.codAmount) },
+    { id: "collected", header: "المحصّل", accessorFn: (r) => fmtMoney(r.collectedAmount), meta: { kind: "money" }, cell: ({ row }) => fmtMoney(row.original.collectedAmount) },
+    {
+      id: "remaining",
+      header: "المتبقي",
+      accessorFn: (r) => fmtMoney(r.remainingAmount),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium text-[var(--sem-warn)]">{fmtMoney(row.original.remainingAmount)}</span>,
+    },
+    {
+      id: "review",
+      header: "المراجعة",
+      accessorFn: (r) =>
+        r.remittanceTraceMissing ? "أثر التوريد مفقود — يلزم تحقيق مستقل" : r.reviewedAt ? "رُوجعت " + fmtDate(r.reviewedAt) : "بلا مراجعة",
+      meta: { width: "wide", wrap: true },
+      enableSorting: false,
+      cell: ({ row }) =>
+        row.original.remittanceTraceMissing ? (
+          <Badge variant="destructive">أثر التوريد مفقود — يلزم تحقيق مستقل</Badge>
+        ) : row.original.reviewedAt ? (
+          <Badge variant="secondary">رُوجعت {fmtDate(row.original.reviewedAt)}</Badge>
+        ) : (
+          <RowActions mode="inline" actions={[{
+            key: "acknowledge-partial",
+            kind: "approve",
+            label: "تسجيل المراجعة",
+            icon: ClipboardCheck,
+            gate: { module: "reports", level: "FULL" },
+            onSelect: () => openDialog({
+              action: "ACKNOWLEDGE_PARTIAL_OUTSTANDING",
+              targetId: row.original.id,
+              title: "تسجيل مراجعة الرصيد الجزئي",
+              description: "لن يتغير المبلغ أو الحالة؛ يُسجل قرار إبقاء المتبقي للتحصيل مرة واحدة.",
+              expectedConfirmation: row.original.consignmentNumber,
+            }),
+          }]} />
+        ),
+    },
+  ];
+
+  const partiesWithoutGatewayColumns: ColumnDef<PartyWithoutGatewayRow, unknown>[] = [
+    {
+      id: "party",
+      header: "الجهة",
+      accessorFn: (r) => r.name,
+      cell: ({ row }) => (
+        <div>
+          <div className="font-medium">{row.original.name}</div>
+          <div className="text-xs text-muted-foreground">#{row.original.id}</div>
+        </div>
+      ),
+    },
+    {
+      id: "partyType",
+      header: "النوع",
+      accessorFn: (r) => (r.partyType === "COMPANY" ? "شركة" : "مندوب فرد"),
+      cell: ({ row }) => (row.original.partyType === "COMPANY" ? "شركة" : "مندوب فرد"),
+    },
+    {
+      id: "openCount",
+      header: "المفتوح",
+      accessorFn: (r) => r.openCount,
+      meta: { kind: "number" },
+      cell: ({ row }) => row.original.openCount.toLocaleString("ar-IQ-u-nu-latn"),
+    },
+    { id: "oldest", header: "الأقدم", accessorFn: (r) => fmtDate(r.oldestOpenAt), meta: { kind: "date" }, cell: ({ row }) => fmtDate(row.original.oldestOpenAt) },
+    {
+      id: "actions",
+      header: "الإجراء",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => (
+        <div className="space-x-2 space-x-reverse">
+          <RowActions mode="inline" actions={[
+            {
+              key: "link-gateway",
+              kind: "edit",
+              label: "ربط حساب",
+              icon: Link2,
+              gate: { module: "reports", level: "FULL" },
+              onSelect: () => openDialog({
+                action: "LINK_GATEWAY_ACCOUNT",
+                targetId: row.original.id,
+                title: "ربط حساب البوابة",
+                description: "اختر حساب مندوب نشطاً وغير مرتبط بجهة أخرى.",
+                expectedConfirmation: row.original.name,
+                gatewayUserId: "",
+              }),
+            },
+            ...(!row.original.reviewedAt ? [{
+              key: "confirm-external",
+              kind: "approve" as const,
+              label: "جهة خارجية",
+              icon: ShieldCheck,
+              gate: { module: "reports" as const, level: "FULL" as const },
+              onSelect: () => openDialog({
+                action: "CONFIRM_EXTERNAL_WITHOUT_GATEWAY" as const,
+                targetId: row.original.id,
+                title: "اعتماد جهة خارجية بلا بوابة",
+                description: "يسجل القرار فقط؛ تبقى الجهة بلا حساب ويجب متابعة إرسالياتها إدارياً.",
+                expectedConfirmation: row.original.name,
+              }),
+            }] : []),
+          ]} />
+          {row.original.reviewedAt && <Badge variant="secondary">قرار مسجل</Badge>}
+        </div>
+      ),
+    },
+  ];
+
+  const invoicesMissingCustomerColumns: ColumnDef<InvoiceMissingCustomerRow, unknown>[] = [
+    { id: "invoice", header: "الفاتورة", accessorFn: (r) => r.invoiceNumber, meta: { kind: "code" }, cell: ({ row }) => row.original.invoiceNumber },
+    { id: "order", header: "الطلب", accessorFn: (r) => r.orderNumber, meta: { kind: "code" }, cell: ({ row }) => row.original.orderNumber },
+    {
+      id: "customer",
+      header: "العميل المصدر",
+      accessorFn: (r) => r.customerName,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => (
+        <div>
+          <div>{row.original.customerName}</div>
+          <div className="text-xs text-muted-foreground">
+            #{row.original.customerId} · الذمة الحالية {fmtMoney(row.original.customerCurrentBalance)}
+          </div>
+        </div>
+      ),
+    },
+    { id: "total", header: "الإجمالي", accessorFn: (r) => fmtMoney(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtMoney(row.original.total) },
+    { id: "paid", header: "المدفوع", accessorFn: (r) => fmtMoney(r.paidAmount), meta: { kind: "money" }, cell: ({ row }) => fmtMoney(row.original.paidAmount) },
+    {
+      id: "outstanding",
+      header: "المتبقي",
+      accessorFn: (r) => fmtMoney(r.outstandingAmount),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{fmtMoney(row.original.outstandingAmount)}</span>,
+    },
+    {
+      id: "actions",
+      header: "الإجراء",
+      meta: { kind: "actions" },
+      enableSorting: false,
+      cell: ({ row }) => (
+        <RowActions mode="inline" actions={[{
+          key: "restore-customer",
+          kind: "correct",
+          label: "استعادة العميل",
+          icon: UserRoundSearch,
+          gate: { module: "reports", level: "FULL" },
+          onSelect: () => openDialog({
+            action: "RESTORE_INVOICE_CUSTOMER",
+            targetId: row.original.id,
+            title: "استعادة هوية عميل الفاتورة",
+            description: `المصدر هو أمر الشغل ${row.original.orderNumber} وعميله المحفوظ ${row.original.customerName}. المتبقي المرصود ${fmtMoney(row.original.outstandingAmount)}؛ قرر بعد مراجعة الذمة إن كان سيُضاف.`,
+            expectedConfirmation: row.original.invoiceNumber,
+            customerBalanceAction: "",
+          }),
+        }]} />
+      ),
+    },
+  ];
 
   if (reportQ.isLoading) return <LoadingState />;
 
@@ -209,34 +504,11 @@ export default function LegacyDataRepair() {
             description="الإصلاح ينشئ إرسالية مفتوحة على جهة تختارها أنت؛ لا يثبت وصول العميل."
             count={data.closedWithoutConsignment.length}
           >
-            <TableShell>
-              <thead><tr><th className={headCell}>الطلب</th><th className={headCell}>الفاتورة</th><th className={headCell}>المستلم/العنوان</th><th className={headCell}>أغلق في</th><th className={headCell}>الإجراء</th></tr></thead>
-              <tbody>{data.closedWithoutConsignment.map((row) => (
-                <tr key={row.id}>
-                  <td className={cell}><div className="font-medium">{row.orderNumber}</div><div className="text-xs text-muted-foreground">فرع {row.branchId}</div></td>
-                  <td className={cell}>{row.invoiceNumber ?? `#${row.invoiceId ?? "—"}`}</td>
-                  <td className={cell}><div>{row.contactName ?? "—"}</div><div className="max-w-xs text-xs text-muted-foreground">{row.deliveryAddress ?? "بلا عنوان محفوظ"}</div></td>
-                  <td className={cell}>{fmtDate(row.deliveredAt)}</td>
-                  <td className={cell}>
-                    <RowActions mode="inline" actions={[{
-                      key: "create-missing-consignment",
-                      kind: "edit",
-                      label: "معالجة",
-                      icon: Truck,
-                      gate: { module: "reports", level: "FULL" },
-                      onSelect: () => openDialog({
-                        action: "CREATE_MISSING_CONSIGNMENT",
-                        targetId: row.id,
-                        title: "إنشاء الإرسالية المفقودة",
-                        description: "اختر الجهة والأجرة صراحةً. ستنشأ الإرسالية DISPATCHED بلا ختم تسليم.",
-                        expectedConfirmation: row.orderNumber,
-                        deliveryFee: String(row.deliveryCost ?? "0"),
-                      }),
-                    }]} />
-                  </td>
-                </tr>
-              ))}</tbody>
-            </TableShell>
+            <DataTable<ClosedWithoutConsignmentRow>
+              {...FINDING_TABLE}
+              data={data.closedWithoutConsignment}
+              columns={closedWithoutConsignmentColumns}
+            />
           </FindingSection>
 
           <FindingSection
@@ -244,54 +516,11 @@ export default function LegacyDataRepair() {
             description="الإرسالية القديمة المغلقة يمكن إعادة فتحها؛ والإرسالية التي أنشأها الإصلاح تبقى مفتوحة حتى إدخال ختم ومرجع إثبات حقيقيين."
             count={data.prepaidClosedWithoutProof.length}
           >
-            <TableShell>
-              <thead><tr><th className={headCell}>الإرسالية</th><th className={headCell}>الطلب</th><th className={headCell}>الجهة</th><th className={headCell}>الإرسال</th><th className={headCell}>الإجراء</th></tr></thead>
-              <tbody>{data.prepaidClosedWithoutProof.map((row) => (
-                <tr key={row.id}>
-                  <td className={cell}><div className="font-medium">{row.consignmentNumber}</div><Badge variant="outline">COD = 0</Badge></td>
-                  <td className={cell}>{row.orderNumber ?? `#${row.workOrderId ?? "—"}`}</td>
-                  <td className={cell}>{row.partyName}</td>
-                  <td className={cell}>{fmtDate(row.dispatchedAt)}</td>
-                  <td className={`${cell} space-x-2 space-x-reverse`}>
-                    <RowActions mode="inline" actions={[
-                      {
-                        key: "record-proof",
-                        kind: "approve",
-                        label: "إثبات التسليم",
-                        icon: ClipboardCheck,
-                        gate: { module: "reports", level: "FULL" },
-                        onSelect: () => openDialog({
-                          action: "RECORD_PREPAID_DELIVERY_PROOF",
-                          targetId: row.id,
-                          title: "تسجيل إثبات التسليم",
-                          description: "أدخل الوقت والمرجع من مستند/اتصال تشغيلي حقيقي. لا يملأ النظام أياً منهما.",
-                          expectedConfirmation: row.consignmentNumber,
-                          deliveredAt: "",
-                          evidenceRef: "",
-                          feeSettlementAction: "",
-                          proofDeliveryFee: row.deliveryFee,
-                          proofFeeCollection: row.feeCollection,
-                        }),
-                      },
-                      ...(row.parcelStatus === "DELIVERED" ? [{
-                        key: "reopen",
-                        kind: "edit" as const,
-                        label: "إعادة فتح",
-                        icon: RefreshCw,
-                        gate: { module: "reports" as const, level: "FULL" as const },
-                        onSelect: () => openDialog({
-                          action: "REOPEN_PREPAID_CONSIGNMENT" as const,
-                          targetId: row.id,
-                          title: "إعادة فتح الإرسالية",
-                          description: "يُعاد الصف إلى DISPATCHED ليظهر في العمل الميداني؛ لا يُسجل إثبات تسليم.",
-                          expectedConfirmation: row.consignmentNumber,
-                        }),
-                      }] : []),
-                    ]} />
-                  </td>
-                </tr>
-              ))}</tbody>
-            </TableShell>
+            <DataTable<PrepaidWithoutProofRow>
+              {...FINDING_TABLE}
+              data={data.prepaidClosedWithoutProof}
+              columns={prepaidWithoutProofColumns}
+            />
           </FindingSection>
 
           <FindingSection
@@ -299,38 +528,11 @@ export default function LegacyDataRepair() {
             description="هذه ليست تسوية تلقائية. يسجل الإجراء أن المسؤول راجع الرصيد وأبقاه مفتوحاً للتحصيل."
             count={data.partialOutstanding.length}
           >
-            <TableShell>
-              <thead><tr><th className={headCell}>الإرسالية</th><th className={headCell}>الجهة</th><th className={headCell}>المطلوب</th><th className={headCell}>المحصّل</th><th className={headCell}>المتبقي</th><th className={headCell}>المراجعة</th></tr></thead>
-              <tbody>{data.partialOutstanding.map((row) => (
-                <tr key={row.id}>
-                  <td className={cell}>{row.consignmentNumber}</td>
-                  <td className={cell}>{row.partyName}</td>
-                  <td className={cell}>{fmtMoney(row.codAmount)}</td>
-                  <td className={cell}>{fmtMoney(row.collectedAmount)}</td>
-                  <td className={`${cell} font-medium text-[var(--sem-warn)]`}>{fmtMoney(row.remainingAmount)}</td>
-                  <td className={cell}>{row.remittanceTraceMissing ? (
-                    <Badge variant="destructive">أثر التوريد مفقود — يلزم تحقيق مستقل</Badge>
-                  ) : row.reviewedAt ? (
-                    <Badge variant="secondary">رُوجعت {fmtDate(row.reviewedAt)}</Badge>
-                  ) : (
-                    <RowActions mode="inline" actions={[{
-                      key: "acknowledge-partial",
-                      kind: "approve",
-                      label: "تسجيل المراجعة",
-                      icon: ClipboardCheck,
-                      gate: { module: "reports", level: "FULL" },
-                      onSelect: () => openDialog({
-                        action: "ACKNOWLEDGE_PARTIAL_OUTSTANDING",
-                        targetId: row.id,
-                        title: "تسجيل مراجعة الرصيد الجزئي",
-                        description: "لن يتغير المبلغ أو الحالة؛ يُسجل قرار إبقاء المتبقي للتحصيل مرة واحدة.",
-                        expectedConfirmation: row.consignmentNumber,
-                      }),
-                    }]} />
-                  )}</td>
-                </tr>
-              ))}</tbody>
-            </TableShell>
+            <DataTable<PartialOutstandingRow>
+              {...FINDING_TABLE}
+              data={data.partialOutstanding}
+              columns={partialOutstandingColumns}
+            />
           </FindingSection>
 
           <FindingSection
@@ -338,51 +540,11 @@ export default function LegacyDataRepair() {
             description="اربط حساب مندوب صراحةً، أو سجل أنها جهة خارجية ستعمل بلا دخول للنظام."
             count={data.openPartiesWithoutGateway.length}
           >
-            <TableShell>
-              <thead><tr><th className={headCell}>الجهة</th><th className={headCell}>النوع</th><th className={headCell}>المفتوح</th><th className={headCell}>الأقدم</th><th className={headCell}>الإجراء</th></tr></thead>
-              <tbody>{data.openPartiesWithoutGateway.map((row) => (
-                <tr key={row.id}>
-                  <td className={cell}><div className="font-medium">{row.name}</div><div className="text-xs text-muted-foreground">#{row.id}</div></td>
-                  <td className={cell}>{row.partyType === "COMPANY" ? "شركة" : "مندوب فرد"}</td>
-                  <td className={cell}>{row.openCount.toLocaleString("ar-IQ-u-nu-latn")}</td>
-                  <td className={cell}>{fmtDate(row.oldestOpenAt)}</td>
-                  <td className={`${cell} space-x-2 space-x-reverse`}>
-                    <RowActions mode="inline" actions={[
-                      {
-                        key: "link-gateway",
-                        kind: "edit",
-                        label: "ربط حساب",
-                        icon: Link2,
-                        gate: { module: "reports", level: "FULL" },
-                        onSelect: () => openDialog({
-                          action: "LINK_GATEWAY_ACCOUNT",
-                          targetId: row.id,
-                          title: "ربط حساب البوابة",
-                          description: "اختر حساب مندوب نشطاً وغير مرتبط بجهة أخرى.",
-                          expectedConfirmation: row.name,
-                          gatewayUserId: "",
-                        }),
-                      },
-                      ...(!row.reviewedAt ? [{
-                        key: "confirm-external",
-                        kind: "approve" as const,
-                        label: "جهة خارجية",
-                        icon: ShieldCheck,
-                        gate: { module: "reports" as const, level: "FULL" as const },
-                        onSelect: () => openDialog({
-                          action: "CONFIRM_EXTERNAL_WITHOUT_GATEWAY" as const,
-                          targetId: row.id,
-                          title: "اعتماد جهة خارجية بلا بوابة",
-                          description: "يسجل القرار فقط؛ تبقى الجهة بلا حساب ويجب متابعة إرسالياتها إدارياً.",
-                          expectedConfirmation: row.name,
-                        }),
-                      }] : []),
-                    ]} />
-                    {row.reviewedAt && <Badge variant="secondary">قرار مسجل</Badge>}
-                  </td>
-                </tr>
-              ))}</tbody>
-            </TableShell>
+            <DataTable<PartyWithoutGatewayRow>
+              {...FINDING_TABLE}
+              data={data.openPartiesWithoutGateway}
+              columns={partiesWithoutGatewayColumns}
+            />
           </FindingSection>
 
           <FindingSection
@@ -390,39 +552,11 @@ export default function LegacyDataRepair() {
             description="يعيد customerId من أمر الشغل المعروف؛ أثر الذمة قرار صريح لأن السجل القديم لا يثبت إن كانت أضيفت سابقاً."
             count={data.invoicesMissingCustomer.length}
           >
-            <TableShell>
-              <thead><tr><th className={headCell}>الفاتورة</th><th className={headCell}>الطلب</th><th className={headCell}>العميل المصدر</th><th className={headCell}>الإجمالي</th><th className={headCell}>المدفوع</th><th className={headCell}>المتبقي</th><th className={headCell}>الإجراء</th></tr></thead>
-              <tbody>{data.invoicesMissingCustomer.map((row) => (
-                <tr key={row.id}>
-                  <td className={cell}>{row.invoiceNumber}</td>
-                  <td className={cell}>{row.orderNumber}</td>
-                  <td className={cell}>
-                    <div>{row.customerName}</div>
-                    <div className="text-xs text-muted-foreground">#{row.customerId} · الذمة الحالية {fmtMoney(row.customerCurrentBalance)}</div>
-                  </td>
-                  <td className={cell}>{fmtMoney(row.total)}</td>
-                  <td className={cell}>{fmtMoney(row.paidAmount)}</td>
-                  <td className={`${cell} font-medium`}>{fmtMoney(row.outstandingAmount)}</td>
-                  <td className={cell}>
-                    <RowActions mode="inline" actions={[{
-                      key: "restore-customer",
-                      kind: "correct",
-                      label: "استعادة العميل",
-                      icon: UserRoundSearch,
-                      gate: { module: "reports", level: "FULL" },
-                      onSelect: () => openDialog({
-                        action: "RESTORE_INVOICE_CUSTOMER",
-                        targetId: row.id,
-                        title: "استعادة هوية عميل الفاتورة",
-                        description: `المصدر هو أمر الشغل ${row.orderNumber} وعميله المحفوظ ${row.customerName}. المتبقي المرصود ${fmtMoney(row.outstandingAmount)}؛ قرر بعد مراجعة الذمة إن كان سيُضاف.`,
-                        expectedConfirmation: row.invoiceNumber,
-                        customerBalanceAction: "",
-                      }),
-                    }]} />
-                  </td>
-                </tr>
-              ))}</tbody>
-            </TableShell>
+            <DataTable<InvoiceMissingCustomerRow>
+              {...FINDING_TABLE}
+              data={data.invoicesMissingCustomer}
+              columns={invoicesMissingCustomerColumns}
+            />
           </FindingSection>
         </>
       )}
@@ -484,10 +618,10 @@ function RepairDialog({
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-party">جهة التوصيل المختارة</Label>
-                    <select id="legacy-party" value={state.partyId ?? ""} onChange={(event) => patch({ partyId: event.target.value })} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                    <AppSelect id="legacy-party" value={state.partyId ?? ""} onValueChange={(next) => patch({ partyId: next })} className="h-10 border-input px-3 text-sm">
                       <option value="">اختر الجهة…</option>
                       {(report?.options.parties ?? []).map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
-                    </select>
+                    </AppSelect>
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="legacy-fee">أجرة التوصيل المثبتة</Label>
@@ -499,7 +633,7 @@ function RepairDialog({
               {needsGateway && (
                 <div className="space-y-1.5">
                   <Label htmlFor="legacy-gateway">حساب المندوب</Label>
-                  <select id="legacy-gateway" value={state.gatewayUserId ?? ""} onChange={(event) => patch({ gatewayUserId: event.target.value })} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+                  <AppSelect id="legacy-gateway" value={state.gatewayUserId ?? ""} onValueChange={(next) => patch({ gatewayUserId: next })} className="h-10 border-input px-3 text-sm">
                     <option value="">اختر حساباً نشطاً…</option>
                     {(report?.options.courierAccounts ?? []).map((account) => (
                       <option key={account.id} value={account.id} disabled={account.linkedPartyId != null && account.linkedPartyId !== state.targetId}>
@@ -507,7 +641,7 @@ function RepairDialog({
                         {account.linkedPartyId === state.targetId ? " — عضوية سابقة" : account.linkedPartyId != null ? " — مرتبط" : ""}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </div>
               )}
 
@@ -524,18 +658,18 @@ function RepairDialog({
                   {needsFeeDecision && (
                     <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="legacy-fee-settlement">قرار أجرة التوصيل ({fmtMoney(state.proofDeliveryFee)})</Label>
-                      <select
+                      <AppSelect
                         id="legacy-fee-settlement"
                         value={state.feeSettlementAction ?? ""}
-                        onChange={(event) => patch({ feeSettlementAction: event.target.value as RepairDialogState["feeSettlementAction"] })}
-                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        onValueChange={(next) => patch({ feeSettlementAction: next as RepairDialogState["feeSettlementAction"] })}
+                        className="h-10 border-input px-3 text-sm"
                       >
                         <option value="">اختر ما يثبته السجل فقط…</option>
                         <option value="EARN_ONLY">تثبيت استحقاق الأجرة فقط — الدفع/الصرف غير مثبت</option>
                         {state.proofFeeCollection === "COURIER" && (
                           <option value="EARN_AND_DIRECT_PAID">تثبيت الاستحقاق والقبض المباشر — المندوب قبضها من العميل</option>
                         )}
-                      </select>
+                      </AppSelect>
                     </div>
                   )}
                 </div>
@@ -544,16 +678,16 @@ function RepairDialog({
               {needsCustomerBalanceDecision && (
                 <div className="space-y-1.5">
                   <Label htmlFor="legacy-customer-balance">قرار ذمة العميل</Label>
-                  <select
+                  <AppSelect
                     id="legacy-customer-balance"
                     value={state.customerBalanceAction ?? ""}
-                    onChange={(event) => patch({ customerBalanceAction: event.target.value as RepairDialogState["customerBalanceAction"] })}
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    onValueChange={(next) => patch({ customerBalanceAction: next as RepairDialogState["customerBalanceAction"] })}
+                    className="h-10 border-input px-3 text-sm"
                   >
                     <option value="">اختر بعد مراجعة السجل…</option>
                     <option value="IDENTITY_ONLY">استعادة الهوية فقط — الذمة مسجلة مسبقاً</option>
                     <option value="ADD_OUTSTANDING">استعادة الهوية وإضافة المتبقي — الذمة غير مسجلة</option>
-                  </select>
+                  </AppSelect>
                 </div>
               )}
 

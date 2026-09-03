@@ -2,6 +2,7 @@
 // أين الربح؟ (النبض) · أين النقد؟ (النبض) · أين الخطر؟ وماذا أفعل الآن؟ (لوحة الإجراءات) · من المتأخر؟ (الصدارة).
 // يُركّب endpoints موجودة (profitAndLoss/financialPosition/managementAlerts/arAging/apAging) — بلا خلفية ثقيلة جديدة.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, TrendingUp, TrendingDown, Minus,
@@ -195,13 +196,13 @@ export default function ReportsOverview() {
         description="نظرة واحدة تجيب: أين الخطر؟ أين الربح؟ أين النقد؟ من المتأخر؟"
         actions={
           <div className="flex items-center gap-2">
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">كل الفروع</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
-            <select className={selectCls} value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
+            </AppSelect>
+            <AppSelect className="h-9" value={period} onValueChange={(next) => setPeriod(next as Period)}>
               {(["today", "month", "last30"] as Period[]).map((p) => (<option key={p} value={p}>{PERIOD_AR[p]}</option>))}
-            </select>
+            </AppSelect>
           </div>
         }
       />

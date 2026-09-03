@@ -12,11 +12,14 @@
  *   - فحص التوافق المالي reconcile: admin فقط (adminProcedure) — لغيره إحالة نصية.
  */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SplitCandidatesPanel } from "@/components/stocktake/SplitCandidatesPanel";
 import { AlternativeStockReportPanel } from "@/components/stocktake/AlternativeStockBreakdown";
@@ -130,6 +133,43 @@ function StatusBadge({ status }: { status: StStatus }) {
   );
 }
 
+/* ─────────── مصفوفة الصلاحيات الإدارية (مرجع ثابت — مطبَّقة في الخادم) ─────────── */
+
+type PermissionMatrixRow = { action: string; admin: boolean; manager: boolean; warehouse: boolean; counter: boolean };
+
+const PERMISSION_MATRIX: PermissionMatrixRow[] = [
+  { action: "إنشاء جلسة وتوليد روابط العدّ", admin: true, manager: true, warehouse: true, counter: false },
+  { action: "العدّ وإدخال الكميات", admin: true, manager: true, warehouse: true, counter: true },
+  { action: "رؤية الرصيد الدفتري أثناء العدّ", admin: true, manager: true, warehouse: false, counter: false },
+  { action: "طلب إعادة عدّ ثانٍ", admin: true, manager: true, warehouse: true, counter: false },
+  { action: "تعديل حدود الاعتماد المباشر", admin: true, manager: true, warehouse: false, counter: false },
+  { action: "رؤية قيمة الفروقات بالتكلفة", admin: true, manager: true, warehouse: false, counter: false },
+  { action: "اعتماد التسوية النهائية", admin: true, manager: true, warehouse: false, counter: false },
+  { action: "إلغاء جلسة جارية", admin: true, manager: false, warehouse: false, counter: false },
+];
+
+/** عمود «هل يملك هذا الدور الإجراء؟» — نعم/لا نصّاً للنسخ، وعلامةٌ مرئية في الخليّة. */
+function roleAllowedColumn(id: keyof Omit<PermissionMatrixRow, "action">, header: string): ColumnDef<PermissionMatrixRow, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: (r) => (r[id] ? "نعم" : "لا"),
+    enableSorting: false,
+    meta: { align: "center", width: "status" },
+    cell: ({ row }) =>
+      row.original[id] ? <Check aria-hidden className="mx-auto size-4 text-[var(--status-active)]" /> : <span className="text-border">—</span>,
+  };
+}
+
+const permissionMatrixColumns: ColumnDef<PermissionMatrixRow, unknown>[] = [
+  // مصفوفةٌ مرجعية ترتيبُها يتبع تسلسل العمل — لا تكتسب فرزاً لم يكن لها (كبقية أعمدتها).
+  { id: "action", header: "الإجراء", accessorFn: (r) => r.action, enableSorting: false, meta: { width: "wide", wrap: true }, cell: ({ row }) => row.original.action },
+  roleAllowedColumn("admin", "مدير النظام"),
+  roleAllowedColumn("manager", "مدير فرع"),
+  roleAllowedColumn("warehouse", "أمين مخزن"),
+  roleAllowedColumn("counter", "عامل جرد (رابط خارجي)"),
+];
+
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "blue" | "amber" }) {
   const toneCls = tone === "blue" ? "text-[var(--status-pending)]" : tone === "amber" ? "text-[var(--stock-low)]" : "";
   return (
@@ -199,6 +239,130 @@ export default function Stocktakes() {
     }
     return best;
   }, [rows]);
+
+  /*
+   * أعمدة جلسات الجرد — داخل المكوّن (وقبل الخروج المبكّر للصلاحية) لأنّ زرّ الإجراء ووجهته
+   * وبوّابته تتبع دور المستخدم: `isManagerPlus` يقرّر «مراجعة واعتماد» أم «متابعة/عرض».
+   */
+  const sessionColumns = useMemo<ColumnDef<SessionRow, unknown>[]>(() => [
+    { id: "code", header: "الرقم", accessorFn: (s) => s.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="text-xs">{row.original.code}</span> },
+    {
+      id: "name",
+      header: "الجلسة",
+      accessorFn: (s) => s.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const s = row.original;
+        return (
+          <div>
+            <p className="font-bold">
+              {s.name}
+              {s.sessionType === "OPENING" && (
+                <span className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
+                  افتتاحي
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">{s.branchName} · أنشأها {s.createdByName}</p>
+          </div>
+        );
+      },
+    },
+    {
+      id: "scope",
+      header: "النطاق",
+      accessorFn: (s) => SCOPE_TYPE_LABEL[s.scopeType] ?? s.scopeType,
+      meta: { wrap: true },
+      cell: ({ row }) => {
+        const s = row.original;
+        return (
+          <div>
+            <span className="inline-block rounded-md border bg-muted px-2 py-0.5 text-xs font-semibold">
+              {SCOPE_TYPE_LABEL[s.scopeType] ?? s.scopeType}
+            </span>
+            <p className="mt-1 text-xs text-muted-foreground">{s.scopeLabel}</p>
+          </div>
+        );
+      },
+    },
+    {
+      id: "progress",
+      header: "تقدم العدّ",
+      accessorFn: (s) => `${fmtInt(s.countedCount)}/${fmtInt(s.itemCount)}`,
+      enableSorting: false,
+      cell: ({ row }) => {
+        const s = row.original;
+        const pct = Math.round((s.countedCount / Math.max(s.itemCount, 1)) * 100);
+        return (
+          <div className="flex min-w-[130px] items-center gap-2">
+            <Progress value={pct} className="w-20" />
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {fmtInt(s.countedCount)}/{fmtInt(s.itemCount)}
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية لا الرمز الخامّ.
+      accessorFn: (s) => STATUS_BADGE[s.status]?.label ?? s.status,
+      meta: { kind: "status" },
+      cell: ({ row }) => <StatusBadge status={row.original.status} />,
+    },
+    {
+      id: "dates",
+      header: "التواريخ",
+      accessorFn: (s) => fmtDate(s.createdAt),
+      meta: { width: "date", wrap: true },
+      cell: ({ row }) => {
+        const s = row.original;
+        return (
+          <div className="text-xs text-muted-foreground">
+            <p>إنشاء: {fmtDate(s.createdAt)}</p>
+            {s.submittedAt ? <p>تسليم: {fmtDate(s.submittedAt)}</p> : null}
+            {s.approvedAt ? <p>اعتماد: {fmtDate(s.approvedAt)}</p> : null}
+          </div>
+        );
+      },
+    },
+    {
+      id: "action",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const s = row.original;
+        const action =
+          s.status === "COUNTING"
+            ? { label: "متابعة العدّ", href: `/stocktakes/${s.id}`, primary: false }
+            : s.status === "REVIEW"
+              ? isManagerPlus
+                ? { label: "مراجعة واعتماد", href: `/stocktakes/${s.id}/review`, primary: true }
+                : { label: "متابعة", href: `/stocktakes/${s.id}`, primary: false }
+              : s.status === "APPROVED"
+                ? isManagerPlus
+                  ? { label: "التقرير", href: `/stocktakes/${s.id}/report`, primary: false }
+                  : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false }
+                : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false };
+        return (
+          <RowActions
+            mode="inline"
+            actions={[{
+              key: "open",
+              kind: action.primary ? "approve" : "view",
+              label: action.label,
+              href: action.href,
+              gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
+                ? { roles: ["manager"] }
+                : { roles: ["warehouse", "manager"] },
+            }]}
+          />
+        );
+      },
+    },
+  ], [isManagerPlus]);
 
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
   if (me.data && !canCreate) {
@@ -281,38 +445,40 @@ export default function Stocktakes() {
             loading={listQ.isLoading}
             filters={
               <>
-                <select
-                  className={selectClsSm}
-                  value={status}
-                  onChange={(e) => {
-                    setStatus(e.target.value as "" | StStatus);
-                    setPage(0);
-                  }}
-                  aria-label="الحالة"
-                >
-                  <option value="">كل الحالات</option>
-                  <option value="COUNTING">قيد العدّ</option>
-                  <option value="REVIEW">قيد المراجعة</option>
-                  <option value="APPROVED">معتمدة ومُسوّاة</option>
-                  <option value="CANCELLED">ملغاة</option>
-                </select>
-                {isAdmin && (
-                  <select
-                    className={selectClsSm}
-                    value={branchId}
-                    onChange={(e) => {
-                      setBranchId(Number(e.target.value));
+                <FilterField label="الحالة">
+                  <AppSelect
+                    className="h-8"
+                    value={status}
+                    onValueChange={(v) => {
+                      setStatus(v as "" | StStatus);
                       setPage(0);
                     }}
-                    aria-label="الفرع"
                   >
-                    <option value={0}>كل الفروع</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
+                    <option value="">كل الحالات</option>
+                    <option value="COUNTING">قيد العدّ</option>
+                    <option value="REVIEW">قيد المراجعة</option>
+                    <option value="APPROVED">معتمدة ومُسوّاة</option>
+                    <option value="CANCELLED">ملغاة</option>
+                  </AppSelect>
+                </FilterField>
+                {isAdmin && (
+                  <FilterField label="الفرع">
+                    <AppSelect
+                      className="h-8"
+                      value={String(branchId)}
+                      onValueChange={(v) => {
+                        setBranchId(Number(v));
+                        setPage(0);
+                      }}
+                    >
+                      <option value={0}>كل الفروع</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
                 )}
               </>
             }
@@ -354,113 +520,26 @@ export default function Stocktakes() {
           </p>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr className="text-end text-xs text-muted-foreground">
-                  <th className="p-2.5 font-semibold">الرقم</th>
-                  <th className="p-2.5 font-semibold">الجلسة</th>
-                  <th className="p-2.5 font-semibold">النطاق</th>
-                  <th className="p-2.5 font-semibold">تقدم العدّ</th>
-                  <th className="p-2.5 text-center font-semibold">الحالة</th>
-                  <th className="p-2.5 font-semibold">التواريخ</th>
-                  <th className="p-2.5 text-center font-semibold">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((s) => {
-                  const total = Math.max(s.itemCount, 1);
-                  const pct = Math.round((s.countedCount / total) * 100);
-                  const action =
-                    s.status === "COUNTING"
-                      ? { label: "متابعة العدّ", href: `/stocktakes/${s.id}`, primary: false }
-                      : s.status === "REVIEW"
-                        ? isManagerPlus
-                          ? { label: "مراجعة واعتماد", href: `/stocktakes/${s.id}/review`, primary: true }
-                          : { label: "متابعة", href: `/stocktakes/${s.id}`, primary: false }
-                        : s.status === "APPROVED"
-                          ? isManagerPlus
-                            ? { label: "التقرير", href: `/stocktakes/${s.id}/report`, primary: false }
-                            : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false }
-                          : { label: "عرض", href: `/stocktakes/${s.id}`, primary: false };
-                  return (
-                    <tr key={s.id} className="border-t hover:bg-muted/40">
-                      <td className="p-2.5 font-mono text-xs tabular-nums" dir="ltr">
-                        {s.code}
-                      </td>
-                      <td className="p-2.5">
-                        <p className="font-bold">
-                          {s.name}
-                          {s.sessionType === "OPENING" && (
-                            <span className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
-                              افتتاحي
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {s.branchName} · أنشأها {s.createdByName}
-                        </p>
-                      </td>
-                      <td className="p-2.5">
-                        <span className="inline-block rounded-md border bg-muted px-2 py-0.5 text-xs font-semibold">
-                          {SCOPE_TYPE_LABEL[s.scopeType] ?? s.scopeType}
-                        </span>
-                        <p className="mt-1 text-xs text-muted-foreground">{s.scopeLabel}</p>
-                      </td>
-                      <td className="min-w-[130px] p-2.5">
-                        <div className="flex items-center gap-2">
-                          <Progress value={pct} className="w-20" />
-                          <span className="text-xs tabular-nums text-muted-foreground">
-                            {fmtInt(s.countedCount)}/{fmtInt(s.itemCount)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="p-2.5 text-center">
-                        <StatusBadge status={s.status} />
-                      </td>
-                      <td className="p-2.5 text-xs text-muted-foreground">
-                        <p>إنشاء: {fmtDate(s.createdAt)}</p>
-                        {s.submittedAt ? <p>تسليم: {fmtDate(s.submittedAt)}</p> : null}
-                        {s.approvedAt ? <p>اعتماد: {fmtDate(s.approvedAt)}</p> : null}
-                      </td>
-                      <td className="p-2.5 text-center">
-                        <RowActions
-                          mode="inline"
-                          actions={[{
-                            key: "open",
-                            kind: action.primary ? "approve" : "view",
-                            label: action.label,
-                            href: action.href,
-                            gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
-                              ? { roles: ["manager"] }
-                              : { roles: ["warehouse", "manager"] },
-                          }]}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!listQ.isLoading && rows.length === 0 && (
-                  <TableEmptyRow colSpan={7} message="لا جلسات جرد مطابقة. أنشئ جلسة جديدة أو غيّر الفلاتر." />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/*
+            * الفلاتر في `ListToolbar` أعلاه (خادميّة) ⇒ `searchable={false}`؛ ولا بحثَ خادميّ
+            * في عقد `stocktakes.list` فبحثٌ محلّيّ كان سيرى الصفحة وحدها ويكذب.
+            * الترقيم بلا إجمالي من الخادم ⇒ `hasMore` (صفحة كاملة = قد يوجد بعدها) بدل `total`،
+            * وشريط الترقيم اليدويّ حُذف كي لا يقفز شريطان معاً.
+            */}
+          <DataTable<SessionRow>
+            columns={sessionColumns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={status !== "" || branchId !== 0}
+            loading={listQ.isLoading}
+            errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => listQ.refetch() }}
+            serverPagination={{ page, onPageChange: setPage, pageSize: limit, hasMore: rows.length === limit, isFetching: listQ.isFetching }}
+            emptyState="لا جلسات جرد مطابقة. أنشئ جلسة جديدة أو غيّر الفلاتر."
+            emptyFilteredState="لا جلسات جرد مطابقة. أنشئ جلسة جديدة أو غيّر الفلاتر."
+            viewKey="stocktake-sessions"
+          />
         </CardContent>
       </Card>
-
-      {/* ترقيم الصفحات (لا إجمالي من الخادم — التالي يُعطَّل عند صفحة ناقصة) */}
-      {(page > 0 || rows.length === limit) && (
-        <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            ← السابق
-          </Button>
-          <div className="text-muted-foreground">صفحة {fmtInt(page + 1)}</div>
-          <Button variant="outline" size="sm" disabled={rows.length < limit} onClick={() => setPage((p) => p + 1)}>
-            التالي →
-          </Button>
-        </div>
-      )}
 
       {/* الجرد الدوري + الدقة + ربط التدقيق المالي */}
       <div className="grid gap-4 xl:grid-cols-2">
@@ -501,46 +580,16 @@ export default function Stocktakes() {
           </p>
         </CardHeader>
         <CardContent className="p-2">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-end text-xs text-muted-foreground">
-                  <th className="p-2 font-semibold">الإجراء</th>
-                  <th className="p-2 text-center font-semibold">مدير النظام</th>
-                  <th className="p-2 text-center font-semibold">مدير فرع</th>
-                  <th className="p-2 text-center font-semibold">أمين مخزن</th>
-                  <th className="p-2 text-center font-semibold">عامل جرد (رابط خارجي)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(
-                  [
-                    ["إنشاء جلسة وتوليد روابط العدّ", 1, 1, 1, 0],
-                    ["العدّ وإدخال الكميات", 1, 1, 1, 1],
-                    ["رؤية الرصيد الدفتري أثناء العدّ", 1, 1, 0, 0],
-                    ["طلب إعادة عدّ ثانٍ", 1, 1, 1, 0],
-                    ["تعديل حدود الاعتماد المباشر", 1, 1, 0, 0],
-                    ["رؤية قيمة الفروقات بالتكلفة", 1, 1, 0, 0],
-                    ["اعتماد التسوية النهائية", 1, 1, 0, 0],
-                    ["إلغاء جلسة جارية", 1, 0, 0, 0],
-                  ] as Array<[string, number, number, number, number]>
-                ).map(([label, a, m, w, c]) => (
-                  <tr key={label} className="border-t">
-                    <td className="p-2">{label}</td>
-                    {[a, m, w, c].map((v, i) => (
-                      <td key={i} className="p-2 text-center">
-                        {v ? (
-                          <Check aria-hidden className="mx-auto size-4 text-[var(--status-active)]" />
-                        ) : (
-                          <span className="text-border">—</span>
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* مصفوفة صلاحيات ثابتة (مرجع للقارئ) — مُضمَّنة بلا بحثٍ ولا ترقيم. */}
+          <DataTable<PermissionMatrixRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={permissionMatrixColumns}
+            data={PERMISSION_MATRIX}
+            emptyText="لا صلاحيات معرّفة."
+          />
         </CardContent>
       </Card>
     </div>

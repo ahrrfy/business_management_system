@@ -9,6 +9,9 @@
     "storefront.productReviews",
     "storefront.submitProductReview",
     "storefront.registerPushDevice",
+    "storefront.quoteOrderPrivate",
+    "storefront.trackOrderByToken",
+    "storefront.trackOrderPrivate",
     "storefront.trackPushInteraction"
   ]
 }

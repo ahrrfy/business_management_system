@@ -1,23 +1,5 @@
 {
-  "client/src/pages/AnomalyWatch.tsx": 1,
-  "client/src/pages/BalanceSheet.tsx": 2,
-  "client/src/pages/CashOrphanReport.tsx": 1,
-  "client/src/pages/CustomerEdit.tsx": 1,
-  "client/src/pages/CustomerStatement.tsx": 1,
-  "client/src/pages/DeliveryParties.tsx": 6,
   "client/src/pages/Inbox.tsx": 3,
   "client/src/pages/MobileDesignPreview.tsx": 7,
-  "client/src/pages/OfflineSalesReport.tsx": 2,
-  "client/src/pages/PlatformAdmin.tsx": 1,
-  "client/src/pages/POS.tsx": 1,
-  "client/src/pages/Reconcile.tsx": 3,
-  "client/src/pages/SeasonPlanning.tsx": 1,
-  "client/src/pages/store/BannerManager.tsx": 15,
-  "client/src/pages/store/StoreAnalytics.tsx": 5,
-  "client/src/pages/store/StoreCatalog.tsx": 6,
-  "client/src/pages/store/StoreCategories.tsx": 4,
-  "client/src/pages/store/StoreSettingsPanel.tsx": 9,
-  "client/src/pages/Storefront.tsx": 158,
-  "client/src/pages/SupplierStatement.tsx": 1,
-  "client/src/pages/Users.tsx": 11
+  "client/src/pages/Storefront.tsx": 130
 }

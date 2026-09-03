@@ -7,6 +7,8 @@ import {
   type RoleKey,
 } from "@shared/permissions";
 import { LEAVE_TYPES } from "@shared/hr";
+import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
+import { salesControlFacts } from "@shared/salesControlFacts";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import {
@@ -41,6 +43,7 @@ import {
   giftCampaigns,
   giftVouchers,
   invoices,
+  salesControlRequests,
   leaveRequests,
   onlineOrders,
   payrollItems,
@@ -80,6 +83,7 @@ import {
 import { detectAll as detectCatalogAnomalies } from "../services/catalogAnomalies/detectors";
 import { getTodayNetSales } from "../services/reports/todaySales";
 import { getAPAging } from "../services/reports/apAging";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 
 const leaveTypeKeys = LEAVE_TYPES.map((item) => item.key) as [
   string,
@@ -219,7 +223,10 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       .then((rows) => rows[0]),
     db
       .select({
-        balance: sql<string>`coalesce(sum(greatest(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0)`,
+        // ذمّةُ الفرع سؤالٌ تحصيليّ ⇒ `COLLECTIBLE` (مقصوص) — نفسُ شكل `greatest(…,0)` القائم.
+        // ⚠️ القائمةُ البيضاء أدناه (`PENDING`/`PARTIALLY_PAID`) تُسقِط `CONFIRMED` وتبقى كما
+        // هي: توسيعُها يرفع رقمَ نبض العملاء في التطبيق ⇒ قرارُ سياسة لا توحيدُ مسند (بند د).
+        balance: sql<string>`coalesce(sum(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
@@ -593,17 +600,14 @@ export const superAppRouter = router({
       if (input.moduleKey === "purchases") {
         const [row] = await db
           .select({
-            count: sql<number>`count(*)`,
-            total: sql<string>`coalesce(sum(${purchaseOrders.total} - ${purchaseOrders.paidAmount}), 0)`,
+            count: sql<number>`sum(case when ${purchaseOrders.status} in ('DRAFT', 'SENT', 'CONFIRMED') then 1 else 0 end)`,
+            total: sql<string>`coalesce(sum(case when ${purchaseOrders.status} <> 'CANCELLED' then greatest(${purchaseOrders.total} - ${purchaseOrders.paidAmount}, 0) else 0 end), 0)`,
           })
           .from(purchaseOrders)
           .where(
-            and(
-              inArray(purchaseOrders.status, ["DRAFT", "SENT", "CONFIRMED"]),
-              scopedBranchId == null
-                ? undefined
-                : eq(purchaseOrders.branchId, scopedBranchId),
-            ),
+            scopedBranchId == null
+              ? undefined
+              : eq(purchaseOrders.branchId, scopedBranchId),
           );
         return {
           moduleKey: input.moduleKey,
@@ -1648,7 +1652,7 @@ export const superAppRouter = router({
       const canTreasuryApprove =
         role === "admin" || role === "manager" || role === "accountant";
 
-      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows] =
+      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows, salesControlRows] =
         await Promise.all([
           permissions.inventory === "FULL" && canManage
             ? listStockAdjustmentRequests({
@@ -1757,6 +1761,39 @@ export const superAppRouter = router({
                   ),
                 )
                 .orderBy(desc(giftVouchers.createdAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+          /**
+           * طلبات التحكّم بالبيع (مرتجع/إلغاء/إعادة إصدار/استبدال/استحقاق) — تدقيق ١/٩/٢٦.
+           *
+           * كان الصندوق يجمع خمسة مصادر ليس فيها هذا الجدول ⇒ **الشاشة التي يفتحها المدير
+           * فعلاً (`/my-work` وصندوق موافقات أندرويد) عمياء عن كلّ طلبات المرتجعات**، فتتراكم
+           * صامتةً بينما الموظّف سلّم البضاعة والنقد. وهو جذرُ بلاغ «المرتجع وهميّ ولا أثر له».
+           */
+          permissions.sales === "FULL" && canManage
+            ? db
+                .select({
+                  id: salesControlRequests.id,
+                  requestType: salesControlRequests.requestType,
+                  reason: salesControlRequests.reason,
+                  createdAt: salesControlRequests.createdAt,
+                  requestedBy: salesControlRequests.requestedBy,
+                  invoiceId: salesControlRequests.invoiceId,
+                  invoiceNumber: invoices.invoiceNumber,
+                  invoiceTotal: invoices.total,
+                  invoiceCreatedBy: invoices.createdBy,
+                })
+                .from(salesControlRequests)
+                .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
+                .where(
+                  and(
+                    eq(salesControlRequests.status, "PENDING"),
+                    ...(branchId == null
+                      ? []
+                      : [eq(salesControlRequests.branchId, branchId)]),
+                  ),
+                )
+                .orderBy(desc(salesControlRequests.createdAt))
                 .limit(sourceLimit)
             : Promise.resolve([]),
         ]);
@@ -1874,6 +1911,35 @@ export const superAppRouter = router({
               duplicatePolicy: "state_transition_guard" as const,
             },
           })),
+        ...salesControlRows
+          /**
+           * الفلترةُ تُطابق `assertReviewerSeparation` حرفياً: لا نُظهر للمراجع طلباً يرفضه
+           * الخادمُ حتماً. ⛔ **ولا استثناءَ للأدمن هنا** — بخلاف بقيّة المصادر أعلاه — لأنّ
+           * الحارس الخادميّ نفسه لا يستثنيه؛ وإظهارُ صفٍّ يُرفض قرارُه أسوأ من إخفائه.
+           */
+          .filter((row) =>
+            Number(row.requestedBy) !== ctx.user.id
+            && Number(row.invoiceCreatedBy ?? -1) !== ctx.user.id,
+          )
+          .map((row) => ({
+            kind: "salesControl" as const,
+            id: Number(row.id),
+            title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
+              ?? "طلب تحكّم بالبيع",
+            reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
+            detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
+            href: "/invoices?tab=controls",
+            createdAt: row.createdAt,
+            amount: row.invoiceTotal,
+            canReject: true,
+            capabilities: {
+              canApprove: true,
+              canReject: true,
+              rejectionReason: "required" as const,
+              supportsClientRequestId: false,
+              duplicatePolicy: "state_transition_guard" as const,
+            },
+          })),
       ]
         .sort(
           (a, b) =>
@@ -1887,7 +1953,7 @@ export const superAppRouter = router({
   approvalDetail: superAppProcedure
     .input(
       z.object({
-        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift"]),
+        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift", "salesControl"]),
         id: z.number().int().positive(),
       }),
     )
@@ -2088,6 +2154,72 @@ export const superAppRouter = router({
           createdAt: row.createdAt,
           amount: row.amount,
           paymentMethod: row.paymentMethod,
+          canReject: true,
+          capabilities: {
+            canApprove: true,
+            canReject: true,
+            rejectionReason: "required" as const,
+            supportsClientRequestId: false,
+            duplicatePolicy: "state_transition_guard" as const,
+          },
+        };
+      }
+
+      if (input.kind === "salesControl") {
+        if (
+          permissions.sales !== "FULL" ||
+          !canManage ||
+          (role !== "admin" && (branchId ?? -1) < 0)
+        )
+          return notFound();
+        const [row] = await db
+          .select({
+            id: salesControlRequests.id,
+            requestType: salesControlRequests.requestType,
+            reason: salesControlRequests.reason,
+            createdAt: salesControlRequests.createdAt,
+            requestedBy: salesControlRequests.requestedBy,
+            invoiceId: salesControlRequests.invoiceId,
+            invoiceNumber: invoices.invoiceNumber,
+            invoiceTotal: invoices.total,
+            invoiceCreatedBy: invoices.createdBy,
+            payload: salesControlRequests.payload,
+          })
+          .from(salesControlRequests)
+          .innerJoin(invoices, eq(salesControlRequests.invoiceId, invoices.id))
+          .where(
+            and(
+              eq(salesControlRequests.id, input.id),
+              eq(salesControlRequests.status, "PENDING"),
+              ...(branchId == null
+                ? []
+                : [eq(salesControlRequests.branchId, branchId)]),
+            ),
+          )
+          .limit(1);
+        if (!row) return notFound();
+        // فصلُ المهام يُطبَّق هنا أيضاً — وإلّا صار المخرَج «عرّافَ معرّفات» لطلبٍ لا يُقرَّر.
+        if (
+          Number(row.requestedBy) === ctx.user.id
+          || Number(row.invoiceCreatedBy ?? -1) === ctx.user.id
+        ) return notFound();
+        return {
+          kind: "salesControl" as const,
+          id: Number(row.id),
+          title: SALES_CONTROL_TYPE_LABELS[row.requestType as SalesControlType]
+            ?? "طلب تحكّم بالبيع",
+          reference: row.invoiceNumber || `فاتورة #${row.invoiceId}`,
+          detail: row.reason || "طلب بانتظار مراجعٍ مستقل",
+          createdAt: row.createdAt,
+          amount: row.invoiceTotal,
+          /**
+           * ⭐ **حقائقُ الحمولة تُرسَل للمُعتمِد** (تصويب مراجعة Codex على PR #932، P1).
+           * كان هذا المخرَج يحمل السببَ وإجماليَّ الفاتورة وحدهما، فينفّذ المُعتمِدُ على
+           * الجوّال حركةَ نقدٍ ومخزونٍ ودفترٍ بلا رؤية كمّيةٍ ولا مبلغِ ردٍّ ولا مصيرِ بضاعة —
+           * وهو عينُ عطبِ «مراجعٌ لا يرى ما يراجعه» الذي فتح هذا التدقيق. الاشتقاقُ مشتركٌ
+           * مع شاشة الويب (`@shared/salesControlFacts`) فلا يوجد تعريفان ينجرفان.
+           */
+          facts: salesControlFacts(row.requestType as SalesControlType, row.payload),
           canReject: true,
           capabilities: {
             canApprove: true,

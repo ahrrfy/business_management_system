@@ -21,8 +21,10 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   lt,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -30,6 +32,7 @@ import {
 import {
   commissionRunLines,
   commissionRuns,
+  cashDailyReconciliations,
   employeeAdvanceRepaymentRequests,
   employeeTerminations,
   employees,
@@ -42,7 +45,10 @@ import {
   stocktakeSessions,
 } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
+import { receiptCashEventAtSql } from "../cash/cashEventAt";
+import { getCommissionPayrollReadiness } from "../commissions/payrollReadiness";
 import { money } from "../money";
+import { getPurchaseMonthCloseBlockersTx } from "../purchase/monthCloseBlockers";
 
 export type ReadinessStatus = "OK" | "BLOCK" | "WARN";
 
@@ -119,6 +125,87 @@ async function lockedCountOf(
     .where(where)
     .for("update");
   return rows.length;
+}
+
+/**
+ * أيام المطابقة المطلوبة التي لا تملك شهادة أصلاً. لا تكفي حركة اليوم وحدها: إذا بقي في
+ * الخزينة رصيد مرحّل غير صفري في يوم هادئ، فغياب شهادة «لا نشاط/الرصيد ما زال باليد» فجوة
+ * عهدة حقيقية. لذلك نولّد أيام الشهر لكل فرع ونطلب الشهادة عند نشاط نقدي أو رصيد خزينة EOD.
+ * الصف الموجود بحالة غير مغلقة يُحسب في الاستعلام المنطّق أعلاه، فنستبعده هنا كي لا يُعد مرتين.
+ */
+async function countMissingDailyCashReconciliations(
+  db: QueryExecutor | null,
+  from: string,
+  to: string,
+  branchId: number | null,
+): Promise<number> {
+  if (!db) return 0;
+  const branch = branchId == null ? sql`` : sql`WHERE b.id = ${branchId}`;
+  const cashEventAt = receiptCashEventAtSql("r");
+  const treasuryCashEventAt = receiptCashEventAtSql("tr");
+  const result = await db.execute(sql`
+    WITH RECURSIVE calendar AS (
+      SELECT CAST(${from} AS DATE) AS businessDate
+      UNION ALL
+      SELECT DATE_ADD(businessDate, INTERVAL 1 DAY)
+      FROM calendar
+      WHERE businessDate < CAST(${to} AS DATE)
+    ), branchDays AS (
+      SELECT b.id AS branchId, calendar.businessDate
+      FROM branches b
+      CROSS JOIN calendar
+      ${branch}
+    )
+    SELECT COUNT(*) AS n
+    FROM branchDays requiredCashDays
+    LEFT JOIN cashDailyReconciliations c
+      ON c.branchId = requiredCashDays.branchId
+     AND c.businessDate = requiredCashDays.businessDate
+    LEFT JOIN cashMissedDailyCountExceptions missed
+      ON missed.branchId = requiredCashDays.branchId
+     AND missed.businessDate = requiredCashDays.businessDate
+     AND missed.missedDailyCountExceptionStatus = 'APPROVED'
+    LEFT JOIN cashDailyReconciliations carry
+      ON carry.id = missed.carryForwardReconciliationId
+     AND carry.branchId = missed.branchId
+     AND carry.businessDate = missed.carryForwardBusinessDate
+     AND carry.cashDailyReconciliationStatus = 'CLOSED'
+     AND carry.version = missed.carryForwardVersion
+     AND carry.evidenceHash = missed.carryForwardEvidenceHash
+    WHERE c.id IS NULL
+      AND (missed.id IS NULL OR carry.id IS NULL)
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM receipts r
+          WHERE r.branchId = requiredCashDays.branchId
+            AND r.paymentMethod = 'CASH'
+            AND r.receiptApprovalStatus = 'APPROVED'
+            AND r.receiptStatus IN ('COMPLETED', 'REVERSED')
+            AND ${cashEventAt} >= requiredCashDays.businessDate
+            AND ${cashEventAt} < DATE_ADD(requiredCashDays.businessDate, INTERVAL 1 DAY)
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM shifts s
+          WHERE s.branchId = requiredCashDays.branchId
+            AND s.openedAt >= requiredCashDays.businessDate
+            AND s.openedAt < DATE_ADD(requiredCashDays.businessDate, INTERVAL 1 DAY)
+        )
+        OR ABS(COALESCE((
+          SELECT SUM(CASE WHEN tr.direction = 'IN' THEN tr.amount ELSE -tr.amount END)
+          FROM receipts tr
+          WHERE tr.branchId = requiredCashDays.branchId
+            AND tr.cashBucket = 'TREASURY'
+            AND tr.paymentMethod = 'CASH'
+            AND tr.receiptApprovalStatus = 'APPROVED'
+            AND tr.receiptStatus IN ('COMPLETED', 'REVERSED')
+            AND ${treasuryCashEventAt} < DATE_ADD(requiredCashDays.businessDate, INTERVAL 1 DAY)
+        ), 0)) > 0.005
+      )
+  `);
+  const rows = ((result as any)?.[0] ?? result) as Array<{ n?: number | string }>;
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**
@@ -321,6 +408,26 @@ export async function getMonthCloseReadiness(
     ) as SQL,
     receipts.branchId,
   );
+  const pendingCustodyWhere = withBranch(
+    and(
+      eq(receipts.direction, "IN"),
+      eq(receipts.paymentMethod, "CASH"),
+      eq(receipts.cashBucket, "TREASURY"),
+      eq(receipts.status, "PENDING"),
+      eq(receipts.approvalStatus, "APPROVED"),
+      or(like(receipts.referenceNumber, "CD-%"), like(receipts.referenceNumber, "CH-%")),
+      lt(receipts.createdAt, baghdadMonthUpperExclusive(to)),
+    ) as SQL,
+    receipts.branchId,
+  );
+  const unclosedDailyCashWhere = withBranch(
+    and(
+      gte(cashDailyReconciliations.businessDate, from),
+      lte(cashDailyReconciliations.businessDate, to),
+      ne(cashDailyReconciliations.status, "CLOSED"),
+    ) as SQL,
+    cashDailyReconciliations.branchId,
+  );
 
   // في الاعتماد: القفلان الحاجزان قراءتان حاليتان FOR UPDATE داخل tx نفسها.
   // في شاشة الجاهزية/إنشاء الطلب: تبقى القراءة الخفيفة العادية بلا أقفال.
@@ -341,6 +448,16 @@ export async function getMonthCloseReadiness(
     0,
     allPendingVouchers - accruedSettlementPending,
   );
+  const pendingCustody =
+    options?.tx && options.lockBlockers
+      ? await lockedCountOf(options.tx, receipts, pendingCustodyWhere)
+      : await countOf(db, receipts, pendingCustodyWhere);
+  const unclosedDailyCash =
+    options?.tx && options.lockBlockers
+      ? await lockedCountOf(options.tx, cashDailyReconciliations, unclosedDailyCashWhere)
+      : await countOf(db, cashDailyReconciliations, unclosedDailyCashWhere);
+  const missingDailyCash = await countMissingDailyCashReconciliations(db, from, to, branchId);
+  const unresolvedDailyCash = unclosedDailyCash + missingDailyCash;
   const pendingAdvanceRepaymentWhere = withBranch(
     and(
       eq(employeeAdvanceRepaymentRequests.status, "PENDING"),
@@ -429,6 +546,15 @@ export async function getMonthCloseReadiness(
             .from(commissionRuns)
             .where(eq(commissionRuns.period, input.month))
         : [];
+  const commissionArtifactReadiness = db
+    ? await getCommissionPayrollReadiness(db, input.month)
+    : {
+        required: false,
+        eligibleEmployeeCount: 0,
+        runId: null,
+        status: null,
+        ready: true,
+      };
   const commissionRows =
     options?.tx && options.lockBlockers
       ? await options.tx
@@ -585,17 +711,27 @@ export async function getMonthCloseReadiness(
     unexpectedEmployeeIds.length === 0 &&
     commissionLinkComplete &&
     payrollItemRows.length === snapshottedIds.size;
-  const payrollExpected = eligibleIds.size > 0 || commissionRunRows.length > 0;
+  const payrollExpected =
+    eligibleIds.size > 0 ||
+    commissionRunRows.length > 0 ||
+    commissionArtifactReadiness.required;
   const payrollAccrued =
     !payrollExpected ||
-    (!!approvedRun && payrollCoverageComplete && snapshotHashesComplete);
+    (commissionArtifactReadiness.ready &&
+      !!approvedRun &&
+      payrollCoverageComplete &&
+      snapshotHashesComplete);
   const payrollBlockCount = payrollAccrued ? 0 : 1;
   const payrollDetail = !payrollExpected
     ? "لا موظفون مستحقون للأجر في هذه الفترة."
-    : commissionRunRows.some((run) => run.status === "draft")
-      ? `طھط´ط؛ظٹظ„ط© ط¹ظ…ظˆظ„ط§طھ ${input.month} ظ…ط§ طھط²ط§ظ„ ظ…ط³ظˆط¯ط©ط› ظٹط¬ط¨ ط§ط¹طھظ…ط§ط¯ظ‡ط§ ظˆط±ط¨ط·ظ‡ط§ ط¨ظ†ط³ط®ط© ط§ظ„ظ…ط³ظٹط± ظ‚ط¨ظ„ ط§ظ„ط¥ظ‚ظپط§ظ„.`
+    : commissionArtifactReadiness.required && commissionArtifactReadiness.runId == null
+      ? `تشغيلة عمولات ${input.month} مفقودة مع وجود ${commissionArtifactReadiness.eligibleEmployeeCount} موظف ذي خطة فعالة؛ احتسبها واعتمدها قبل إقفال الشركة.`
+      : commissionArtifactReadiness.required && commissionArtifactReadiness.status === "draft"
+        ? `تشغيلة عمولات ${input.month} ما تزال مسودة؛ يجب اعتمادها وربطها بنسخة المسيّر قبل الإقفال.`
+        : commissionRunRows.some((run) => run.status === "draft")
+          ? `تشغيلة عمولات ${input.month} ما تزال مسودة؛ يجب اعتمادها وربطها بنسخة المسيّر قبل الإقفال.`
       : commissionRunUnresolved
-        ? `طھط´ط؛ظٹظ„ط© ط¹ظ…ظˆظ„ط§طھ ${input.month} ط؛ظٹط± ظ…ط­ط³ظˆظ…ط© ظپظٹ ظ†ط³ط®ط© ط§ظ„ظ…ط³ظٹط± ط§ظ„ظ…ط¹طھظ…ط¯ط©ط› ط£ط¹ط¯ طھظˆظ„ظٹط¯/ط§ط¹طھظ…ط§ط¯ ط§ظ„ظ…ط³ظٹط±.`
+        ? `تشغيلة عمولات ${input.month} غير محسومة في نسخة المسيّر المعتمدة؛ أعد توليد/اعتماد المسيّر.`
         : payrollRows.some((run) => run.status === "draft")
           ? `مسيّر ${input.month} ما يزال مسوّدة — اعتمد الاستحقاق قبل إقفال الشركة.`
           : approvedRun && !snapshotHashesComplete
@@ -638,6 +774,10 @@ export async function getMonthCloseReadiness(
       journalEntries.branchId,
     ),
   );
+  const purchaseBlockers = await getPurchaseMonthCloseBlockersTx(db as Tx, {
+    branchId,
+    cutoffDate: to,
+  });
 
   const items: ReadinessItem[] = [
     mk(
@@ -653,6 +793,20 @@ export async function getMonthCloseReadiness(
       pendingVouchers,
       "BLOCK",
       `${pendingVouchers} سنداً معلَّقاً بتاريخٍ داخل الشهر أو قبله — اعتمادها بعد القفل يتعذّر.`,
+    ),
+    mk(
+      "pendingCashCustody",
+      "عهد نقد بانتظار الاستلام",
+      pendingCustody,
+      "BLOCK",
+      `${pendingCustody} عهدة نقد خرجت من درج ولم تُعدّ وتدخل الخزينة بعد.`,
+    ),
+    mk(
+      "unclosedDailyCashReconciliations",
+      "مطابقات نقد يومية غير مغلقة",
+      unresolvedDailyCash,
+      "BLOCK",
+      `${unresolvedDailyCash} يوم نشاط نقدي بلا شهادة مغلقة (${missingDailyCash} بلا جرد، ${unclosedDailyCash} بفرق أو غير معتمد).`,
     ),
     mk(
       "pendingAdvanceRepayments",
@@ -697,6 +851,16 @@ export async function getMonthCloseReadiness(
       `${ledgerGaps} حدثاً ماليّاً بلا قيدٍ مزدوج في هذا الشهر (نوعٌ غير مُخطَّط بعد).`,
     ),
   ];
+
+  items.push(
+    ...purchaseBlockers.map((blocker) => ({
+      key: blocker.code,
+      label: blocker.message,
+      status: "BLOCK" as const,
+      count: blocker.count,
+      detail: `${blocker.message} (${blocker.count}).`,
+    })),
+  );
 
   return {
     month: input.month,

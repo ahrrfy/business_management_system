@@ -23,7 +23,8 @@ import {
   lockProductUnitsForOnlineAllocation,
 } from "../catalog/variantAvailability";
 import { money } from "../money";
-import { consumeCoupon, lockCouponForSale } from "../couponService";
+import { consumeReservedCoupon, lockCouponForSale, prelockCouponForOnlineDispatch } from "../couponService";
+import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignService";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -92,9 +93,9 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   let notifyInput: Parameters<typeof notifySaleCustomerAfterCommit>[0] | null = null;
   let notifyResult: Parameters<typeof notifySaleCustomerAfterCommit>[1] | null = null;
   const claim = await withTx(async (tx) => {
-    // بروتوكول الأقفال العالمي نفسه في POS/createSale/createOnlineOrder:
-    // customer → productUnit → variant/branchStock → onlineOrder/items. createSale سيعيد قفل العميل
-    // re-entrantly داخل المعاملة نفسها، ولا ينشأ customer↔stock deadlock مع بيع متزامن.
+    // بروتوكول الأقفال العالمي نفسه في createOnlineOrder:
+    // customer → coupon/program (إن وجد) → productUnit → variant/branchStock → onlineOrder/items.
+    // قفل القسيمة المبكر لترتيب الأقفال فقط؛ الفحص المالي الكامل يبقى بعد قفل الطلب الحالي.
     const expectedCustomerId = order.customerId == null ? null : Number(order.customerId);
     if (expectedCustomerId != null) {
       const customer = (
@@ -102,6 +103,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       )[0];
       if (!customer) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "عميل الطلب غير موجود" });
     }
+    if (order.couponCode) await prelockCouponForOnlineDispatch(tx, order.couponCode);
     const allocationItems = await tx
       .select({
         variantId: onlineOrderItems.variantId,
@@ -170,6 +172,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
             branchId,
             customerId: Number(cur.customerId),
             todayYmd: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10),
+            reservationOnlineOrderId: Number(cur.id),
           })
         : null;
       const saleInput = {
@@ -187,11 +190,22 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         clientRequestId: `online-dispatch:${cur.id}`,
         priceOverrideApproved: true,
         creditApproved: false,
+        // إفصاح فقط: الزبون لا يُحمّل الأجرة الموهوبة، والفاتورة تحفظ قيمتها للتقرير.
+        deliveryFree: cur.deliveryFree === true,
+        deliveryWaivedAmount: cur.deliveryFree === true
+          ? String(cur.deliveryWaivedAmount ?? "0")
+          : null,
+        // طلب المتجر نقدي عند الاستلام بطبيعته: الزبون الجديد يُنشأ بحد ائتمان صفري
+        // (نقدي فقط)، لذلك لا يجوز تمرير الفاتورة المؤقتة إلى بوابة الائتمان كبيع آجل.
+        // يبقى المبلغ ذمّة تشغيلية حتى تحصيل المندوب، وتُصفّى ذرياً عند التسليم.
+        paymentMode: "COD" as const,
+        codDispatchPending: true,
         onlineOrderAllocationId: Number(cur.id),
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       if (lockedCoupon) {
-        await consumeCoupon(tx, lockedCoupon, {
+        await consumeReservedCoupon(tx, lockedCoupon, {
+          onlineOrderId: Number(cur.id),
           invoiceId: sale.invoiceId,
           customerId: Number(cur.customerId),
           branchId,
@@ -210,8 +224,12 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
-      deliveryFee: String(cur.shippingCost ?? "0"),
-      feeCollection: "COURIER",
+      // الشحن المجاني = الزبون يدفع صفراً، لكن المندوب يستحق الأجرة الفعلية على المكتبة.
+      // غير المجاني يبقى تمريراً مباشراً: الزبون يدفعها للمندوب ولا تدخل invoice.total.
+      deliveryFee: cur.deliveryFree === true
+        ? String(cur.deliveryWaivedAmount ?? "0")
+        : String(cur.shippingCost ?? "0"),
+      feeCollection: cur.deliveryFree === true ? "SHOP" : "COURIER",
       deliveryAddress: cur.shippingAddress ?? null,
       governorate: cur.governorate ?? null,
       latitude: cur.latitude ?? null,
@@ -220,6 +238,12 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       clientRequestId: `online-parcel:${cur.id}`,
     }, actor);
     await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
+    await enqueueStorefrontOrderStatusPush(tx, {
+      orderId: Number(cur.id),
+      orderNumber: cur.orderNumber,
+      customerId: cur.customerId == null ? null : Number(cur.customerId),
+      status: "SHIPPED",
+    });
     return {
       cancelled: false as const,
       result: { orderId: Number(cur.id), invoiceId, invoiceNumber, partyId: input.partyId, total },

@@ -8,8 +8,19 @@
 // والخسارة على المكتبة، ولا إرسالية زومبي تبقى في شاشة التوريد تقبل توريداً يقلب الرصيد سالباً.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
-import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  accountingEntries,
+  deliveryConsignments,
+  deliveryEvents,
+  deliveryLedgerEntries,
+  deliveryParties,
+  deliveryRemittanceLines,
+  deliveryRemittances,
+  invoices,
+  receipts,
+} from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
@@ -154,15 +165,175 @@ export interface WriteOffInput {
   partyId: number;
   amount: string;
   reason: string;
+  /** إثباتٌ وصفيّ أو رابط مرفق؛ يلزم واحدٌ منهما على الأقل. */
+  evidenceNote?: string | null;
+  attachmentUrl?: string | null;
   /** شطب موجَّه: يقفل الإرسالية WRITTEN_OFF ويقيّد فاتورتها (المندوب حصّل وضيّع). */
   consignmentId?: number | null;
   clientRequestId?: string | null;
 }
 
-export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: DeliveryTxActor) {
-  return withTx(async (tx) => {
-    assertBranchAssigned(input.branchId, "شطب العجز");
+const WRITE_OFF_SOD_EVENT_TYPES = [
+  "ASSIGNED",
+  "OUT_FOR_DELIVERY",
+  "DELIVERED",
+  "SUPPLEMENTARY_COLLECTION",
+  "COUNTER_SETTLED",
+] as const;
+
+const WRITE_OFF_SOD_LEDGER_TYPES = [
+  "COD_ASSIGNED",
+  "COD_COLLECTED",
+  "COD_REMITTED",
+  "SHORTFALL_ASSIGNED",
+] as const;
+
+function normalizedWriteOffEvidence(input: WriteOffInput): {
+  reason: string;
+  evidenceNote: string | null;
+  attachmentUrl: string | null;
+  summary: string;
+} {
+  const reason = input.reason?.trim() ?? "";
+  const evidenceNote = input.evidenceNote?.trim() || null;
+  const attachmentUrl = input.attachmentUrl?.trim() || null;
+  if (reason.length < 3) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الشطب مطلوب (٣ أحرف على الأقل)." });
+  }
+  if (!evidenceNote && !attachmentUrl) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "يلزم إثبات وصفي أو رابط مرفق قبل شطب عهدة COD.",
+    });
+  }
+  const evidence = [evidenceNote ? `إثبات: ${evidenceNote}` : null, attachmentUrl ? `مرفق: ${attachmentUrl}` : null]
+    .filter(Boolean)
+    .join(" | ");
+  return { reason, evidenceNote, attachmentUrl, summary: `${reason} | ${evidence}` };
+}
+
+/**
+ * الحزام الخادمي لفصل مهام الشطب: حتى الأدمن لا يشطب عهدةً كان هو من أنشأها أو
+ * أثبت تسليمها/تحصيلها أو استلم توريدها/سوّاها. لا نعتمد على إخفاء زر الواجهة.
+ */
+async function assertWriteOffSegregation(
+  tx: Tx,
+  input: WriteOffInput,
+  actor: DeliveryTxActor,
+  consignment: typeof deliveryConsignments.$inferSelect | null,
+): Promise<void> {
+  if (consignment) {
+    if (consignment.dispatchedBy != null && Number(consignment.dispatchedBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "من أرسل الإرسالية لا يعتمد شطب عهدتها (فصل مهام)." });
+    }
+    const [eventByActor] = await tx
+      .select({ id: deliveryEvents.id })
+      .from(deliveryEvents)
+      .where(
+        and(
+          eq(deliveryEvents.consignmentId, Number(consignment.id)),
+          eq(deliveryEvents.actorUserId, actor.userId),
+          inArray(deliveryEvents.eventType, [...WRITE_OFF_SOD_EVENT_TYPES]),
+        ),
+      )
+      .limit(1);
+    if (eventByActor) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "من أثبت التسليم أو التحصيل لهذه الإرسالية لا يعتمد شطب عهدتها (فصل مهام).",
+      });
+    }
+    const [ledgerByActor] = await tx
+      .select({ id: deliveryLedgerEntries.id })
+      .from(deliveryLedgerEntries)
+      .where(
+        and(
+          eq(deliveryLedgerEntries.consignmentId, Number(consignment.id)),
+          eq(deliveryLedgerEntries.createdBy, actor.userId),
+          inArray(deliveryLedgerEntries.entryType, [...WRITE_OFF_SOD_LEDGER_TYPES]),
+        ),
+      )
+      .limit(1);
+    if (ledgerByActor) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "من سجّل تحصيل/توريد عهدة الإرسالية لا يعتمد شطبها (فصل مهام).",
+      });
+    }
+    const [remittanceByActor] = await tx
+      .select({ id: deliveryRemittances.id })
+      .from(deliveryRemittanceLines)
+      .innerJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryRemittanceLines.remittanceId))
+      .where(
+        and(
+          eq(deliveryRemittanceLines.consignmentId, Number(consignment.id)),
+          eq(deliveryRemittances.receivedBy, actor.userId),
+        ),
+      )
+      .limit(1);
+    if (remittanceByActor) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "مستلم توريد الإرسالية لا يعتمد شطب عهدتها (فصل مهام).",
+      });
+    }
+    return;
+  }
+
+  const [looseLedgerByActor] = await tx
+    .select({ id: deliveryLedgerEntries.id })
+    .from(deliveryLedgerEntries)
+    .where(
+      and(
+        eq(deliveryLedgerEntries.partyId, input.partyId),
+        isNull(deliveryLedgerEntries.consignmentId),
+        eq(deliveryLedgerEntries.createdBy, actor.userId),
+        inArray(deliveryLedgerEntries.entryType, [...WRITE_OFF_SOD_LEDGER_TYPES]),
+      ),
+    )
+    .limit(1);
+  const [settlementByActor] = await tx
+    .select({ id: receipts.id })
+    .from(receipts)
+    .where(
+      and(
+        eq(receipts.createdBy, actor.userId),
+        eq(receipts.referenceNumber, `DLV-SETTLE-${input.partyId}`),
+      ),
+    )
+    .limit(1);
+  if (looseLedgerByActor || settlementByActor) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "من حصّل/ورّد/سوّى العهدة السائبة لا يعتمد شطبها (فصل مهام).",
+    });
+  }
+}
+
+/**
+ * نواة الشطب داخل معاملة يملكها المستدعي. تستعملها دورة الاعتماد كي يكون ختم الطلب
+ * والأثر المالي/التشغيلي وحدة ذرّية واحدة، ويبقى الغلاف العام متوافقاً مع المستدعين القدماء.
+ */
+export async function writeOffDeliveryShortfallInTx(
+  tx: Tx,
+  input: WriteOffInput,
+  actor: DeliveryTxActor,
+  options: {
+    /** بعد قفل الجهة وقبل أي أثر؛ دورة الاعتماد تقفل الطلب وتطابق نسخته هنا. */
+    beforeApply?: (party: typeof deliveryParties.$inferSelect) => Promise<void>;
+    /** رمز داخلي لا يمرّ من API: الراوتر والخدمة أثبتا طلب تحكم معتمداً. */
+    controlRequestAuthorized?: boolean;
+  } = {},
+) {
+  if (actor.role !== "admin" && options.controlRequestAuthorized !== true) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "شطب عهدة COD يتطلب سلطة المالك/الأدمن.",
+    });
+  }
+  assertBranchAssigned(input.branchId, "شطب العجز");
     const amount = round2(money(input.amount));
+    const evidence = normalizedWriteOffEvidence(input);
     // ٩/٨ — payloadHash (كان findIdempotentRefId بلا hash): إعادة نفس المفتاح بمبلغ/سبب مختلف
     // كانت تعود «نجاحاً» صامتاً دون تطبيق — المدير يظنّ العجز الجديد مشطوباً وهو قائم.
     const payloadHash = idempotencyHash({
@@ -170,7 +341,9 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       partyId: Number(input.partyId),
       amount: toDbMoney(amount),
       consignmentId: input.consignmentId != null ? Number(input.consignmentId) : null,
-      reason: input.reason.trim(),
+      reason: evidence.reason,
+      evidenceNote: evidence.evidenceNote,
+      attachmentUrl: evidence.attachmentUrl,
     });
     if (input.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.writeoff", input.clientRequestId, payloadHash);
@@ -185,7 +358,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الشطب" });
     }
     if (amount.gt(round2(money(party.currentBalance)))) throw new TRPCError({ code: "BAD_REQUEST", message: "الشطب يتجاوز العهدة القائمة" });
-    if (!input.reason || input.reason.trim().length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الشطب مطلوب" });
+    await options.beforeApply?.(party);
 
     let invoiceId: number | null = null;
     if (input.consignmentId != null) {
@@ -199,6 +372,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       if (cn.parcelStatus !== "DELIVERED" || (cn.moneyStatus !== "UNSETTLED" && cn.moneyStatus !== "PARTIAL")) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن شطب ${cn.consignmentNumber} قبل إثبات التسليم الفعلي أو بعد إغلاقها المالي` });
       }
+      await assertWriteOffSegregation(tx, input, actor, cn);
       const remaining = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
       if (!amount.eq(remaining)) {
         throw new TRPCError({
@@ -274,7 +448,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
         entryType: "COD_WRITTEN_OFF",
         amount: toDbMoney(amount),
         actorUserId: actor.userId,
-        notes: input.reason.trim(),
+        notes: evidence.summary.slice(0, 500),
       });
       await appendDeliveryEvent(tx, {
         eventKey: `CN:${cn.id}:MONEY_WRITTEN_OFF`,
@@ -285,7 +459,12 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
         fromMoneyStatus: cn.moneyStatus,
         toMoneyStatus: "WRITTEN_OFF",
         actorUserId: actor.userId,
-        payload: { amount: toDbMoney(amount), reason: input.reason.trim() },
+        payload: {
+          amount: toDbMoney(amount),
+          reason: evidence.reason,
+          evidenceNote: evidence.evidenceNote,
+          attachmentUrl: evidence.attachmentUrl,
+        },
       });
       await postEntry(tx, {
         entryType: "DELIVERY_WRITEOFF",
@@ -298,7 +477,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
         dedupeKey: `DELIVERY_WRITEOFF:CN:${input.consignmentId}`,
         branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
         amount, cost: realLoss, profit: realLoss.neg(),
-        notes: `شطب عهدة: ${input.reason.trim()}${phantomCleared.gt(0) ? ` (منها ${phantomCleared.toFixed(2)} تصفية عهدة زائدة عن الحقيقي — بلا خسارة)` : ""}`,
+        notes: `شطب عهدة: ${evidence.summary}${phantomCleared.gt(0) ? ` (منها ${phantomCleared.toFixed(2)} تصفية عهدة زائدة عن الحقيقي — بلا خسارة)` : ""}`,
       });
       if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.writeoff", input.clientRequestId, input.partyId, payloadHash);
       return { partyId: input.partyId, partyBalanceAfter: round2(money(party.currentBalance).minus(amount)).toFixed(2) };
@@ -313,6 +492,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
           message: `المبلغ يتجاوز العهدة السائبة (${loose.toFixed(2)}) — عجز إرساليةٍ بعينها يُشطَب موجَّهاً باختيار الإرسالية كي تُقفَل وتُقيَّد فاتورتها`,
         });
       }
+      await assertWriteOffSegregation(tx, input, actor, null);
     }
 
     // الشطب المجمّع (السائب): شطبٌ بلا نقد — خسارة فقط (cost-only) ⇒ لا إيصال درج.
@@ -324,17 +504,20 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       entryType: "COD_WRITTEN_OFF",
       amount: toDbMoney(amount),
       actorUserId: actor.userId,
-      notes: input.reason.trim(),
+      notes: evidence.summary.slice(0, 500),
     });
     await postEntry(tx, {
       entryType: "DELIVERY_WRITEOFF",
       postingIntent: deliveryWriteoffIntent(amount),
       branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
-      amount, cost: amount, profit: amount.neg(), notes: `شطب عهدة: ${input.reason.trim()}`,
+      amount, cost: amount, profit: amount.neg(), notes: `شطب عهدة: ${evidence.summary}`,
     });
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.writeoff", input.clientRequestId, input.partyId, payloadHash);
-    return { partyId: input.partyId, partyBalanceAfter: round2(money(party.currentBalance).minus(amount)).toFixed(2) };
-  });
+  return { partyId: input.partyId, partyBalanceAfter: round2(money(party.currentBalance).minus(amount)).toFixed(2) };
+}
+
+export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: DeliveryTxActor) {
+  return withTx((tx) => writeOffDeliveryShortfallInTx(tx, input, actor));
 }
 
 /** استرداد عجز مشطوب: المندوب أعاد نقداً سبق شطبُه — يعكس الخسارة ويُدخل النقد الدرج. */

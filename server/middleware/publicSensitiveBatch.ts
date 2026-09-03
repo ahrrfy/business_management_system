@@ -12,9 +12,12 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "platformAdmin.login",
   "storefront.createOrder",
   "storefront.quoteOrder",
+  "storefront.quoteOrderPrivate",
   "storefront.trackBanner",
   "storefront.trackConversion",
   "storefront.trackOrder",
+  "storefront.trackOrderPrivate",
+  "storefront.trackOrderByToken",
 ]);
 
 const CANONICAL_PROCEDURE = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/;

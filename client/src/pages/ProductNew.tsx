@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,7 +20,7 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
-import { CategoryOptionList } from "@/lib/categoryTree";
+import { categoryOptionElements } from "@/lib/categoryTree";
 import { checkVariantSanity } from "@shared/priceSanity";
 import {
   clampInt,
@@ -44,6 +45,7 @@ import { ImportModal, LabelPrintModal } from "@/components/product/variantModals
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * إضافة منتج بمتغيّرات — كل لون/قياس منتجٌ مخزنيّ مستقل (product-variants).
@@ -597,14 +599,14 @@ export default function ProductNew() {
               <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" />
             </Field>
             <Field label="الفئة / التصنيف">
-              <select
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+              <AppSelect
+                value={String(categoryId)}
+                onValueChange={(next) => setCategoryId(next === "" ? "" : Number(next))}
+                className="h-9 border-input px-3 text-sm"
               >
                 <option value="">— بلا فئة —</option>
-                <CategoryOptionList categories={categoriesQ.data ?? []} />
-              </select>
+                {categoryOptionElements(categoriesQ.data ?? [])}
+              </AppSelect>
             </Field>
             <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">
               <Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" />
@@ -735,15 +737,15 @@ export default function ProductNew() {
           <div className="flex items-center gap-2 flex-wrap">
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               الفرع:
-              <select
-                value={branchId}
-                onChange={(e) => setPickedBranch(Number(e.target.value))}
-                className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground"
+              <AppSelect
+                value={String(branchId)}
+                onValueChange={(next) => setPickedBranch(Number(next))}
+                className="h-8 border-input px-2 text-xs text-foreground"
               >
                 {branches.map((b) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </label>
             <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>استيراد / لصق</Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setPrintOpen(true)} disabled={!variants.length}>طباعة الملصقات</Button>
@@ -815,7 +817,7 @@ export default function ProductNew() {
         <div className="flex gap-2">
           <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
           <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
-            {create.isPending ? "جارٍ الحفظ…" : "حفظ المنتج والمتغيّرات"}
+            {create.isPending ? ACTION_LABELS.saving : "حفظ المنتج والمتغيّرات"}
           </Button>
         </div>
       </div>

@@ -54,10 +54,14 @@ import {
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
+import { recordEffect } from "../reversalEngine"; // ق٧: ربطٌ ظلّيّ لمحرّك العكس (شريحة ٠٣٢٩)
 import { userNameSnapshot } from "../userSnapshot";
 import { nextVoucherNumber } from "../voucher/helpers";
 import { classifyGiftPosting } from "./giftPosting";
+import { assertInvoiceCancellationDeliverySafeTx } from "./invoiceCancellationGuard";
 import { paymentAssetRole } from "./paymentPosting";
+import type { Tx } from "../../db";
+import { assertLockedInvoiceControlSnapshotTx, type InvoiceControlSnapshot } from "./controlSnapshot";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -74,6 +78,8 @@ export interface CancelSaleInput {
   reason?: string | null;
   /** idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId?: string | null;
+  /** تفويض داخلي من طلب التحكم؛ يُطابَق بعد قفل الفاتورة وقبل أول أثر. */
+  controlExpectedSnapshot?: InvoiceControlSnapshot | null;
 }
 
 export interface CancelSaleResult {
@@ -91,7 +97,15 @@ export interface CancelSaleResult {
 }
 
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
-  return withTx(async (tx) => {
+  return withTx((tx) => cancelSaleInTx(tx, input, actor));
+}
+
+/** جسم الإلغاء داخل معاملة قائمة؛ تستخدمه موافقة التحكم كي يكون التنفيذ وختم الطلب ذريَّين. */
+export async function cancelSaleInTx(
+  tx: Tx,
+  input: CancelSaleInput,
+  actor: Actor,
+): Promise<CancelSaleResult> {
     const requestFingerprint = input.clientRequestId?.trim() ? idempotencyHash(input) : null;
     // ═══ Idempotency: تكرار المفتاح ⇒ إرجاع نتيجة الإلغاء الأول (لا استرداد/عكس مزدوج) ═══
     // Codex P2 (١٢/٨): نُعيد بناء تفاصيل الاسترداد الحقيقية من الإيصال الذي كُتب — لا صفراً وهمياً.
@@ -168,6 +182,13 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       });
     }
 
+    // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. الحارس لا يكتفي
+    // بوسم CANCELLED: يثبت أيضاً انعدام الحيازة وCOD والتسوية المفتوحة تحت الأقفال نفسها.
+    await assertInvoiceCancellationDeliverySafeTx(tx, {
+      invoiceId: input.invoiceId,
+      expectedBranchId: Number(invPreview.branchId),
+    });
+
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
@@ -175,6 +196,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء الإلغاء؛ أعد المحاولة" });
     }
+    await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
 
     if (inv.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة مسبقاً" });
@@ -193,9 +215,8 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
     }
-    // Codex P1 (١٢/٨) — فصل المهام Maker/Checker: مُصدِر الفاتورة لا يُلغيها بنفسه (isOwner يعبُر لأنه
-    // السلطة النهائية للتصحيح الإداري؛ admin كذلك بسلطته المتحيّزة الموثّقة عبر أثر تدقيقٍ منفصل).
-    // كان الراوتر يمرّر مديراً باعه ثم ألغاه = فتحُ بابٍ لتنفيذ+إلغاء بيدٍ واحدة (فقد الرقابة الازدواجية).
+    // المسار العام القديم لا يُستدعى من الراوتر بعد 0313. طلب التحكم يفرض SOD بلا استثناء
+    // قبل بلوغ الخدمة؛ نبقي توافق الاستدعاءات الداخلية التاريخية للأدمن/المالك.
     if (actor.role !== "admin" && !actor.isOwner && Number(actor.userId) === Number(inv.createdBy)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -386,7 +407,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     for (const vid of sortedVariantIds) {
       const qty = aggregated.get(vid)!;
       if (qty <= 0) continue;
-      await applyMovement(tx, {
+      const mv = await applyMovement(tx, {
         variantId: vid,
         branchId: Number(inv.branchId),
         baseQuantity: qty,
@@ -396,6 +417,30 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         createdBy: actor.userId,
         notes: "إلغاء فاتورة بيع — إرجاع كامل البضاعة للمخزون",
       });
+      // Codex #957: `applyMovement` يتخطّى المتغيّرات الخدميّة صراحةً ويُرجع
+      // `{ movementId: 0 }` بلا تغييرٍ في المخزون (`inventoryService.ts` ~١٩٥). تسجيلُ
+      // أثرٍ بكمّيةٍ موجبة ومرجعِ صفٍّ `null` كان يبني **أثراً وهمياً** يُطالبه العاكس لاحقاً
+      // بحسمٍ من المخزون لم يحدث. الحلّ: نحترمُ سلوكَ `applyMovement` — لا حركةَ ⇒ لا أثر.
+      if (!mv.movementId) continue;
+      // ═══ ق٧ — ربطٌ ظلّيّ (شريحة ٠٣٢٩): سجلٌّ ماديٌّ لأثرِ إعادة البضاعة إلى المخزون
+      //  عند الإلغاء. يعمل بجانب التنفيذ اليدويّ القائم ولا يستبدله. صفٌّ APPLY لأنّه أثرٌ
+      //  حقيقيٌّ يقع الآن؛ لو أُلغي الإلغاءُ يوماً، محرّكُ العكس سيكتب صفَّ REVERSE مقابل.
+      await recordEffect(
+        tx,
+        {
+          documentType: "INVOICE",
+          documentId: input.invoiceId,
+          effectKind: "INVENTORY",
+          effectTable: "inventoryMovements",
+          effectRowId: mv.movementId || null,
+          signedQuantity: qty,
+          branchId: Number(inv.branchId),
+          reason: "sale.cancel — إرجاع كامل البضاعة",
+          scope: "cancel",
+          payloadJson: { variantId: vid, movementType: "RETURN" },
+        },
+        actor,
+      );
     }
 
     // ═══ ٥) عكس التزام المودِع لبضاعة الأمانة (mirror returnService §٥ حاصرة ١) ═══
@@ -750,5 +795,4 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       refundVoucherNumber: pendingRefundVoucherNumber,
       pendingRefundAmount: pendingRefundAmount.toFixed(2),
     };
-  });
 }

@@ -1029,6 +1029,7 @@ export default function Invoices() {
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
+        getRowSelectionLabel={(r) => `تحديد الفاتورة ${r.invoiceNumber}`}
         getRowClassName={(r) => (isDepositDue(r) ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : undefined)}
         serverSearch={{ value: f.q, onChange: (v) => setF({ q: v }) }}
         serverPagination={{

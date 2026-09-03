@@ -26,7 +26,13 @@ import { AlertTriangle, CheckCircle2, CloudOff, CloudUpload, RefreshCw, Settings
  * الطبيعي. الطبقة z-[140]: فوق محتوى POS وتحت الشريط العلوي (150) وحوار التأكيد (200).
  * المحفّزات هنا أيضاً: عودة الاتصال + عودة رؤية التبويب + نبضة كل ٣٠ث والطابور غير فارغ.
  */
-export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
+export function OfflineSyncChip({
+  userRole,
+  placement = "floating",
+}: {
+  userRole?: string | null;
+  placement?: "floating" | "inline";
+}) {
   const connState = useConnectivity();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
@@ -75,6 +81,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
       SALE: (args) => utils.client.offline.replaySale.mutate(common(args) as never),
       PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(common(args) as never),
       RECEPTION: (args) => utils.client.offline.replayReception.mutate(common(args) as never),
+      // مرتجعٌ نقديّ التُقط أثناء الانقطاع (١/٩/٢٦) — الخادمُ يعيد تقييم سقف الاسترداد
+      // وحالة الفاتورة عند الترحيل، ورفضُه يُعلّق العنصر لمراجعة المدير.
+      RETURN: (args) => utils.client.offline.replayReturn.mutate(common(args) as never),
     };
   }, [utils]);
 
@@ -152,7 +161,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "fixed bottom-3 left-3 z-[140] flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold shadow-lg",
+          placement === "floating"
+            ? "fixed bottom-3 left-3 z-[140] flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold shadow-lg"
+            : "inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-bold",
           chipTone,
         )}
       >
@@ -417,6 +428,14 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                                 SALE: (args) => utils.client.offline.replaySale.mutate(withApproval(args) as never),
                                 PRINT_SALE: (args) => utils.client.offline.replayPrintSale.mutate(withApproval(args) as never),
                                 RECEPTION: (args) => utils.client.offline.replayReception.mutate(withApproval(args) as never),
+                                // ⛔ بلا `managerApproval`: سلطةُ تنفيذ المرتجع تُقرأ من
+                                // `isOwner` داخل معاملة الخادم، فلا يفتحها اعتمادُ مديرٍ هنا.
+                                RETURN: (args) => utils.client.offline.replayReturn.mutate({
+                                  ...(args.payload as never as object),
+                                  capturedAt: args.capturedAt,
+                                  offlineReceiptNumber: args.offlineReceiptNumber,
+                                  deviceId: args.deviceId,
+                                } as never),
                               };
                               void replayParkedWithApproval(item.clientRequestId, approvalApi).then((r) => {
                                 setApprovalBusy(false);

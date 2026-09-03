@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
@@ -534,7 +535,13 @@ export const reportsRouter = router({
             cnt: sql<number>`COUNT(*)`,
             total: sql<string>`CAST(COALESCE(SUM(${invoices.total}), 0) AS CHAR)`,
             paid: sql<string>`CAST(COALESCE(SUM(${invoices.paidAmount}), 0) AS CHAR)`,
-            unpaid: sql<string>`CAST(COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0) AS CHAR)`,
+            // «غير المدفوع» سؤالٌ تحصيليّ ⇒ وضع `COLLECTIBLE` (مقصوصٌ بـ`GREATEST`) — نفسُ
+            // الشكل القائم حرفياً، والقصُّ هو ما يمنع فاتورةً دُفِع فيها زائداً من أن تُنقص
+            // ذمّةَ فاتورةٍ أخرى في نفس المجموع.
+            // ⚠️ فلترُ الحالة يبقى عقدَ التقرير نفسَه (`statuses` من المستعمِل، وإلّا استبعادُ
+            // `SUPERSEDED` وحدها مرآةً لـ`sales.listSummary`) لا مجموعةَ المسند — مقصودٌ:
+            // المستعمِل يختار حالاتِه، والمُوحَّد هنا الحسابُ لا الفلتر.
+            unpaid: sql<string>`CAST(COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0) AS CHAR)`,
           })
           .from(invoices)
           .where(filterWhere)
@@ -1093,7 +1100,15 @@ export const reportsRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getDayCloseReconciliation({ date: input.date, branchId });
+      return getDayCloseReconciliation({
+        date: input.date,
+        branchId,
+        actor: {
+          userId: ctx.user.id,
+          role: ctx.user.role,
+          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+        },
+      });
     }),
 
   /** تقرير الإنتاج — مستندات الإنتاج المؤكَّدة + تفصيل الكلفة. manager + عزل الفرع. */

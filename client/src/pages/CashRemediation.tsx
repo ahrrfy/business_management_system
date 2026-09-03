@@ -1,50 +1,43 @@
 import { useEffect, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle, FileDown, FlaskConical, Printer, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/PageHeader";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printReportDoc, type ReportDocInput } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
+import { CASH_RECEIPT_SOURCE_LABEL_AR } from "@shared/cashReceiptSourceDocument";
+import {
+  NEGATIVE_CASH_CLASSIFICATION_LABEL_AR,
+  NEGATIVE_CASH_CONFIDENCE_LABEL_AR,
+  NEGATIVE_CASH_EVIDENCE_LABEL_AR,
+} from "@shared/negativeCashDiagnosis";
 import type {
   CashRemediationFilters,
   CashRemediationOutRow,
   CashRemediationReport,
+  ClassificationConfidence,
+  EvidenceMissing,
   RemediationClassification,
+  SuggestedClassification,
 } from "../../../server/services/cashRemediation/types";
 
-const CLASSIFICATION_LABEL: Record<string, string> = {
-  TREASURY_PAID: "دفع فعلي من الخزينة",
-  EMPLOYEE_PERSONAL_PAID: "دفع شخصي للموظف",
-  MISSING_INTERNAL_TRANSFER: "تحويل داخلي مفقود",
-  DUPLICATE_OR_ERROR: "تكرار أو خطأ يحتاج عكساً",
-  VERIFIED_INTERNAL_TRANSFER: "تحويل داخلي مثبت",
-  UNVERIFIED_INTERNAL_TRANSFER: "تحويل داخلي غير مكتمل الإثبات",
-  VERIFIED_REVERSAL: "عكس نظامي متصافر",
-  UNVERIFIED_REVERSAL: "عكس غير مكتمل الإثبات",
-  UNRESOLVED: "غير محسوم",
-};
-
-const CONFIDENCE_LABEL: Record<string, string> = {
-  HIGH: "عالٍ",
-  MEDIUM: "متوسط",
-  LOW: "منخفض",
-};
-
-const EVIDENCE_LABEL: Record<string, string> = {
-  SOURCE_DOCUMENT: "المستند المصدر",
-  COUNTERPARTY: "الطرف",
-  PAYMENT_PROOF: "إثبات الدفع/المرفق",
-  LEDGER_ENTRY: "القيد المرتبط",
-  EMPLOYEE_DECLARATION: "إقرار الموظف",
-  TREASURY_HANDOVER_OR_FUNDING_PROOF: "سند خزينة/تحويل",
-  PHYSICAL_CASH_COUNT: "محضر عد النقد",
-  CONFIRM_SINGLE_PHYSICAL_PAYMENT: "تأكيد دفعة فعلية واحدة",
-  MANAGER_DECISION: "اعتماد المدير",
-};
+// المفردات في [`@shared/negativeCashDiagnosis`](../../../shared/negativeCashDiagnosis.ts).
+// وهذه الأسماءُ الثلاثة **ليست قواميسَ محلّية** بل ربطٌ مُنمَّط بتعدادات الخادم: تعدادٌ يكبر
+// هناك بلا تسميةٍ هنا يُسقط `pnpm check` بدل أن يُنتج خانةً فارغةً في صفٍّ ماليّ — وقد كانت
+// القوائم `Record<string, string>` فكان المفتاحُ المفقود يُعرَض فراغاً بلا أيّ إنذار.
+const CLASSIFICATION_LABEL: Record<SuggestedClassification, string> =
+  NEGATIVE_CASH_CLASSIFICATION_LABEL_AR;
+const CONFIDENCE_LABEL: Record<ClassificationConfidence, string> =
+  NEGATIVE_CASH_CONFIDENCE_LABEL_AR;
+const EVIDENCE_LABEL: Record<EvidenceMissing, string> =
+  NEGATIVE_CASH_EVIDENCE_LABEL_AR;
 
 const SIMULATION_OPTIONS: RemediationClassification[] = [
   "TREASURY_PAID",
@@ -200,15 +193,9 @@ function parseIds(value: string): number[] | undefined {
 }
 
 function sourceLabel(row: CashRemediationOutRow): string {
-  const labels: Record<string, string> = {
-    EXPENSE: "مصروف",
-    INVOICE: "فاتورة",
-    WORK_ORDER: "أمر شغل",
-    RESERVATION: "حجز",
-    VOUCHER: "سند",
-    RECEIPT: "إيصال منفرد",
-  };
-  return `${labels[row.source.documentType] ?? row.source.documentType} ${row.source.documentId}`;
+  const label =
+    CASH_RECEIPT_SOURCE_LABEL_AR[row.source.documentType] ?? row.source.documentType;
+  return `${label} ${row.source.documentId}`;
 }
 
 export default function CashRemediation() {
@@ -304,15 +291,20 @@ export default function CashRemediation() {
 
   return (
     <main className="space-y-4 p-4" dir="rtl">
+      {/* عنوان الشاشة انتقل إلى PageHeader (رأس واحد + رجوعٌ لمركز التقارير — الشاشة تُبلَغ من
+          `/reports`). يبقى الشريط أدناه تحذيراً خالصاً بنصّه حرفياً: بلا عنوانٍ فيه لا ينافس الرأس. */}
+      <PageHeader
+        title="تشخيص تاريخي للأرصدة السالبة"
+        backHref="/reports"
+        backLabel="مركز التقارير"
+      />
+
       <section className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)]">
         <div className="flex items-start gap-3">
           <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
-          <div>
-            <h1 className="text-lg font-bold">تشخيص تاريخي للأرصدة السالبة</h1>
-            <p className="mt-1 text-sm">
-              مسودة قراءة ومحاكاة فقط. لا تنشئ إيصالاً أو قيداً أو حركة درج/خزينة، ولا تعتمد أي تسوية.
-            </p>
-          </div>
+          <p className="text-sm">
+            مسودة قراءة ومحاكاة فقط. لا تنشئ إيصالاً أو قيداً أو حركة درج/خزينة، ولا تعتمد أي تسوية.
+          </p>
         </div>
       </section>
 
@@ -378,7 +370,14 @@ export default function CashRemediation() {
                   </div>
                 </div>
 
-                <div className="overflow-x-auto rounded-md border">
+                {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل `AppSelect` لتصنيف
+                    المحاكاة يكتب في حالة `selections` المحلّية (و`disabled` مشتقٌّ من الصفّ نفسه)
+                    — `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد.
+                    لكن قشرتَها مشتركة: `ScrollTableShell` تتولّى التمرير والترويسة اللاصقة بدل
+                    حاوية يدوية. `showColumnVisibility` معطَّل لأنّ إخفاء عمودٍ هنا يُربك ولا يفيد
+                    (المحاكاة قرارٌ يُتَّخذ بالاقتراح والأدلّة الناقصة معاً). و`bordered` باقٍ على
+                    أصله: الحاوية داخل `CardContent` بحشوةٍ فلا يلتصق حدّها بحدّ البطاقة. */}
+                <ScrollTableShell showColumnVisibility={false}>
                   <table className="w-full min-w-[1200px] text-sm">
                     <thead className="bg-muted/60 text-right">
                       <tr>
@@ -396,13 +395,13 @@ export default function CashRemediation() {
                           <td className="p-2"><div className="font-medium">{CLASSIFICATION_LABEL[row.suggestedClassification]}</div><div className="text-xs text-muted-foreground">الثقة: {CONFIDENCE_LABEL[row.confidence]}</div><div className="mt-1 max-w-80 text-xs">{row.rationale}</div></td>
                           <td className="p-2 text-xs">{row.evidenceMissing.length ? row.evidenceMissing.map((item) => EVIDENCE_LABEL[item]).join("، ") : "مكتملة بنيوياً"}</td>
                           <td className="p-2">
-                            <select
+                            <AppSelect
                               className={selectClass}
                               aria-label={`تصنيف محاكاة الإيصال ${row.receiptId}`}
                               disabled={!row.affectsDrawer || row.pairedTreasuryReceiptId != null || row.status === "REVERSED" || row.source.expenseIds.length > 1}
                               value={selectionScope === currentScope ? (selections[row.receiptId] ?? "") : ""}
-                              onChange={(event) => {
-                                const value = event.target.value as RemediationClassification | "";
+                              onValueChange={(next) => {
+                                const value = next as RemediationClassification | "";
                                 setSelections((current) =>
                                   selectionScope === currentScope
                                     ? { ...current, [row.receiptId]: value }
@@ -413,7 +412,7 @@ export default function CashRemediation() {
                             >
                               <option value="">بلا محاكاة</option>
                               {SIMULATION_OPTIONS.map((option) => <option key={option} value={option}>{CLASSIFICATION_LABEL[option]}</option>)}
-                            </select>
+                            </AppSelect>
                             {row.simulation.selectedClassification && <div className="mt-1 text-xs text-muted-foreground">أثر الدرج: {fmtAr(row.simulation.drawerDelta)}</div>}
                           </td>
                         </tr>
@@ -421,7 +420,7 @@ export default function CashRemediation() {
                       {!shift.outflows.length && <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا توجد حركات OUT في الوردية.</td></tr>}
                     </tbody>
                   </table>
-                </div>
+                </ScrollTableShell>
               </CardContent>
             </Card>
           ))}

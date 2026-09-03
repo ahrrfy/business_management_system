@@ -17,6 +17,7 @@ import { money } from "../money";
 import { getRun } from "./queries";
 import { assertPayrollActiveOwnerChecker } from "./settlement";
 import { decodeTerminationWageCoverage } from "./terminationCoverage";
+import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 
 /** اعتماد الاستحقاق الشهري؛ لا نقد ولا إيصال في هذه المرحلة. */
 export async function approveRun(id: number, actor: Actor) {
@@ -49,13 +50,17 @@ export async function approveRun(id: number, actor: Actor) {
         message: "تغيّر المسيّر أثناء التحقق من الاعتماد — أعد المحاولة.",
       });
     }
-    if (run.status === "approved" || run.status === "paid") return true;
+    if (run.status === "paid") return true;
     if (run.status !== "draft") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "يُعتمد المسيّر من حالة المسودة فقط." });
+      if (run.status !== "approved") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يُعتمد المسيّر من حالة المسودة فقط." });
+      }
     }
     if (Number(run.employeeCount) === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
     }
+    await assertCommissionArtifactReadyForPayrollTx(tx, run.period);
+    if (run.status === "approved") return true;
     const [uncaptured] = await tx
       .select({ id: commissionRuns.id, period: commissionRuns.period })
       .from(commissionRuns)

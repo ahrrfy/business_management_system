@@ -425,6 +425,14 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  // مركّبة runtime: deliveryManagerProcedure ثم requireAdmin؛ شرط admin تشديدٌ إضافي.
+  deliveryAdminProcedure: {
+    authority: "module-gate",
+    module: "store",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   deliveryCashierProcedure: {
     authority: "module-gate",
     module: "store",
@@ -561,6 +569,14 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  // الإلغاءُ المباشر لأمر الشغل + تمهيدُ استرداده (١/٩/٢٦): مدير أو فنّي مطبعة — بلا الكاشير.
+  workordersDirectCancelProcedure: {
+    authority: "module-gate",
+    module: "workorders",
+    level: "FULL",
+    roles: ["manager", "print_operator"],
+    branch: "required",
+  },
   treasuryManagerProcedure: {
     authority: "module-gate",
     module: "treasury",
@@ -620,6 +636,13 @@ const PROCEDURES = {
     module: "treasury",
     level: "READ",
     roles: ["cashier", "manager"],
+    branch: "required",
+  },
+  treasuryHandoverRecipientsProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "READ",
+    roles: ["cashier", "manager", "accountant"],
     branch: "required",
   },
   commissionsManagerProcedure: {

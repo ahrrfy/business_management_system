@@ -1,4 +1,5 @@
 import { receptionChannelLabel } from "@shared/receptionChannel";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -159,7 +160,9 @@ function DeliveryMark({ m, onRetry }: { m: Msg; onRetry: (outboxId: number) => v
       );
     }
     return (
-      <span title={m.pending.status === "SENDING" ? "جارٍ الإرسال…" : "قيد الإرسال…"}>
+      // الفرعان حالتان مختلفتان لا صياغتان: SENDING = إرسالٌ جارٍ فعلاً (مفتاح القاموس)،
+      // وغيرُه طابورٌ لمّا يُرسَل بعد، ولا مفتاحَ له في ACTION_LABELS — دمجُهما يُضيّع التمييز.
+      <span title={m.pending.status === "SENDING" ? ACTION_LABELS.sending : "قيد الإرسال…"}>
         <Clock aria-hidden className="size-3 opacity-70" />
       </span>
     );
@@ -316,10 +319,10 @@ function TemplatePicker({
           </button>
         )}
       </div>
-      <select
+      <AppSelect
         value={selectedKey}
-        onChange={(e) => setSelectedKey(e.target.value)}
-        className="w-full h-9 border rounded-md px-2 text-sm bg-background"
+        onValueChange={(next) => setSelectedKey(next)}
+        className="h-9 px-2 text-sm"
       >
         <option value="">اختر قالباً…</option>
         {templates.map((t) => (
@@ -327,7 +330,7 @@ function TemplatePicker({
             {t.name} ({t.language})
           </option>
         ))}
-      </select>
+      </AppSelect>
       {selected && selected.variableCount > 0 && (
         <div className="grid gap-2 sm:grid-cols-2">
           {params.map((v, i) => (
@@ -649,13 +652,13 @@ function NewConversationDialog({ onCreated, onClose, branchId }: { onCreated: (i
         <CardContent className="space-y-3">
           <div>
             <label className="text-xs text-muted-foreground">القناة</label>
-            <select
+            <AppSelect
               value={channel}
-              onChange={(e) => setChannel(e.target.value as typeof channel)}
-              className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
+              onValueChange={(next) => setChannel(next as typeof channel)}
+              className="h-9 px-2 text-sm mt-1"
             >
               {Object.entries(CHANNEL_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground">
@@ -893,7 +896,7 @@ export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderF
               disabled={list.isFetchingNextPage}
             >
               {list.isFetchingNextPage
-                ? (<><Loader2 aria-hidden className="size-4 me-1 animate-spin" /> جارٍ التحميل…</>)
+                ? (<><Loader2 aria-hidden className="size-4 me-1 animate-spin" /> {ACTION_LABELS.loading}</>)
                 : "تحميل المزيد"}
             </Button>
           )}

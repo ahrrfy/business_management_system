@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { InferredBranchField } from "@/components/form/InferredField";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { iqd } from "@/lib/assets/ui";
@@ -9,6 +11,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { ASSET_CATEGORIES, DEPRECIATION_METHODS, categoryDefaultLife } from "@shared/assets";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -111,9 +114,9 @@ export default function AssetNew() {
           <div className="space-y-1"><Label>اسم الأصل *</Label><Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="لابتوب Dell Latitude" /></div>
           <div className="space-y-1">
             <Label>الفئة *</Label>
-            <select className={selectClsFull} value={form.category} onChange={(e) => set({ category: e.target.value, usefulLifeYears: String(categoryDefaultLife(e.target.value)) })}>
+            <AppSelect className="h-9" value={form.category} onValueChange={(next) => set({ category: next, usefulLifeYears: String(categoryDefaultLife(next)) })}>
               {ASSET_CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label>الماركة</Label><Input value={form.brand} onChange={(e) => set({ brand: e.target.value })} dir="auto" placeholder="Dell" /></div>
           <div className="space-y-1"><Label>الرقم التسلسلي</Label><Input value={form.serial} onChange={(e) => set({ serial: e.target.value })} dir="ltr" /></div>
@@ -123,20 +126,22 @@ export default function AssetNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">التصنيف والموقع والعهدة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label>الفرع</Label>
-            <select className={selectClsFull} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}>
-              <option value="">— اختر الفرع —</option>
-              {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-            </select>
-          </div>
+          {/* الفرعُ مُستنتَجٌ من الجلسة — الخادمُ يعرف فرعَ المستخدم من `ctx.user.branchId`، فلا
+              نسأله عنه. الأدمن/المالك يرى «تغيير» لعبور الفروع بقصدٍ مشروع. حقلُ الأصل يبقى
+              نصّاً في الحالة لتوافُق حمولة الحفظ (`Number(form.branchId)`) بلا تغيير عقد. */}
+          <InferredBranchField
+            label="الفرع"
+            value={form.branchId ? Number(form.branchId) : null}
+            onChange={(next) => set({ branchId: next != null ? String(next) : "" })}
+            disabled={create.isPending}
+          />
           <div className="space-y-1"><Label>الموقع</Label><Input value={form.location} onChange={(e) => set({ location: e.target.value })} placeholder="مكتب الإدارة" /></div>
           <div className="space-y-1">
             <Label>العهدة (الموظف المسؤول)</Label>
-            <select className={selectClsFull} value={form.custodianId} onChange={(e) => set({ custodianId: e.target.value })}>
+            <AppSelect className="h-9" value={form.custodianId} onValueChange={(next) => set({ custodianId: next })}>
               <option value="">— بلا عهدة —</option>
               {(opts.data?.employees ?? []).map((emp) => <option key={emp.id} value={String(emp.id)}>{emp.name}{emp.position ? ` — ${emp.position}` : ""}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label>الحالة الفنية</Label><Input value={form.condition} onChange={(e) => set({ condition: e.target.value })} placeholder="ممتاز / جيد / متوسط" /></div>
         </CardContent>
@@ -147,10 +152,10 @@ export default function AssetNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label>المورّد</Label>
-            <select className={selectClsFull} value={form.supplierId} onChange={(e) => set({ supplierId: e.target.value })}>
+            <AppSelect className="h-9" value={form.supplierId} onValueChange={(next) => set({ supplierId: next })}>
               <option value="">— بلا مورّد —</option>
               {(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label>تاريخ الشراء *</Label><Input type="date" dir="ltr" value={form.purchaseDate} onChange={(e) => set({ purchaseDate: e.target.value })} /></div>
           <div className="space-y-1"><Label>قيمة الشراء (د.ع) *</Label><MoneyInput value={form.purchaseValue} onChange={(purchaseValue) => set({ purchaseValue })} decimals={0} placeholder="1,850,000" /></div>
@@ -167,9 +172,9 @@ export default function AssetNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label>الطريقة</Label>
-            <select className={selectClsFull} value={form.method} onChange={(e) => set({ method: e.target.value as "sl" | "db" })}>
+            <AppSelect className="h-9" value={form.method} onValueChange={(next) => set({ method: next as "sl" | "db" })}>
               {DEPRECIATION_METHODS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1"><Label>العمر الإنتاجي (سنوات) *</Label><Input dir="ltr" inputMode="numeric" value={form.usefulLifeYears} onChange={(e) => set({ usefulLifeYears: e.target.value.replace(/\D/g, "") })} /></div>
           <div className="space-y-1"><Label>القيمة التخريدية (د.ع)</Label><MoneyInput value={form.salvageValue} onChange={(salvageValue) => set({ salvageValue })} decimals={0} placeholder="0" /></div>
@@ -188,7 +193,7 @@ export default function AssetNew() {
         </div>
       )}
       <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? "جارٍ الحفظ…" : "حفظ الأصل"}</Button>
+        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? ACTION_LABELS.saving : "حفظ الأصل"}</Button>
         <Link href="/assets/register"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

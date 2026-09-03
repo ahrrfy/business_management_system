@@ -299,6 +299,15 @@ describe("shift.close — يَلتقط expectedCash/variance/handover", () => {
       loginMethod: "local",
       branchId: 1,
     });
+    await d.insert(s.users).values({
+      id: 10,
+      openId: "local_handover_manager",
+      name: "مدير استلام العهدة",
+      email: "handover@t.test",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    });
     const sh = await d.insert(s.shifts).values({
       userId: 9,
       branchId: 1,

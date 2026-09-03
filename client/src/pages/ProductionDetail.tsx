@@ -1,21 +1,68 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Printer } from "lucide-react";
 import { Link, useRoute } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
+
+/**
+ * سطرُ مستند الإنتاج (مدخلاً كان أو مخرجاً). `production.get` يعود `any` في هذه الشاشة،
+ * فنثبّت الشكل هنا كي تستنتج أعمدةُ الجدول أنواعَها بدل `unknown`.
+ */
+type ProductionLine = {
+  id: number | string;
+  productName?: string | null;
+  variantName?: string | null;
+  sku?: string | null;
+  baseQuantity?: string | number | null;
+  unitCost?: string | number | null;
+  lineCost?: string | number | null;
+  allocatedCost?: string | number | null;
+};
+
+/** اسم المادة/المنتَج مع بديله إن وُجد — نصٌّ واحد للعرض وللنسخ معاً. */
+const lineName = (l: ProductionLine) => (l.productName ?? "") + (l.variantName ? " — " + l.variantName : "");
+
+/** الأعمدة المشتركة بين جدولَي المدخلات والمخرجات (الاسم/الرمز/الكمية). */
+function lineHeadColumns(nameHeader: string): ColumnDef<ProductionLine, unknown>[] {
+  return [
+    { id: "name", header: nameHeader, accessorFn: lineName, meta: { width: "wide" }, cell: ({ row }) => lineName(row.original) },
+    { id: "sku", header: "SKU", accessorFn: (l) => l.sku ?? "", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs">{row.original.sku}</span> },
+    {
+      id: "qty",
+      header: "الكمية (أساس)",
+      accessorFn: (l) => fmtInt(l.baseQuantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => fmtInt(row.original.baseQuantity),
+    },
+  ];
+}
+
+/* جدولان مُضمَّنان في بطاقتين تحملان عنوانيهما — شريطُ حالةٍ لكلٍّ منهما ضجيجٌ لا معلومة. */
+const LINE_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 export default function ProductionDetail() {
   const [, params] = useRoute("/production/:id");
   const id = Number(params?.id);
   const me = trpc.auth.me.useQuery();
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const isManager = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "inventory",
+      "FULL",
+      ["manager"],
+    );
   const utils = trpc.useUtils();
 
   const q = trpc.production.get.useQuery({ productionOrderId: id }, { enabled: Number.isFinite(id) && id > 0 });
@@ -44,6 +91,7 @@ export default function ProductionDetail() {
   }
 
   if (q.isLoading) return <LoadingState />;
+  if (q.isError) return <ErrorState message={`تعذّر تحميل مستند الإنتاج: ${q.error.message}`} onRetry={() => void q.refetch()} />;
   if (!doc) return <div className="p-6 text-muted-foreground" dir="rtl">المستند غير موجود.</div>;
 
   const inputs = doc.inputs ?? [];
@@ -115,51 +163,45 @@ export default function ProductionDetail() {
       <Card>
         <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr>
-              <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-right">كلفة الوحدة</th><th className="p-2 text-right">كلفة السطر</th>
-            </tr></thead>
-            <tbody>
-              {inputs.map((l: any) => (
-                <tr key={Number(l.id)} className="border-t">
-                  <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
-                  <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.unitCost)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.lineCost)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DataTable<ProductionLine>
+            {...LINE_TABLE}
+            data={inputs}
+            emptyText="لا مدخلات."
+            columns={[
+              ...lineHeadColumns("المادة"),
+              { id: "unitCost", header: "كلفة الوحدة", accessorFn: (l) => fmt(l.unitCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.unitCost) },
+              { id: "lineCost", header: "كلفة السطر", accessorFn: (l) => fmt(l.lineCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.lineCost) },
+            ]}
+          />
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr>
-              <th className="p-2">المنتَج</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-right">كلفة الوحدة المحتسبة</th><th className="p-2 text-right">الكلفة المُمتصّة</th>
-            </tr></thead>
-            <tbody>
-              {outputs.map((l: any) => (
-                <tr key={Number(l.id)} className="border-t">
-                  <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
-                  <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
-                  <td className="p-2 text-right tabular-nums text-primary" dir="ltr">{fmt(l.unitCost)}</td>
-                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.allocatedCost)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <DataTable<ProductionLine>
+            {...LINE_TABLE}
+            data={outputs}
+            emptyText="لا مخرجات."
+            columns={[
+              ...lineHeadColumns("المنتَج"),
+              {
+                id: "unitCost",
+                header: "كلفة الوحدة المحتسبة",
+                accessorFn: (l) => fmt(l.unitCost),
+                meta: { kind: "money" },
+                cell: ({ row }) => <span className="text-primary">{fmt(row.original.unitCost)}</span>,
+              },
+              { id: "allocatedCost", header: "الكلفة المُمتصّة", accessorFn: (l) => fmt(l.allocatedCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.allocatedCost) },
+            ]}
+          />
         </CardContent>
       </Card>
 
       {isManager && doc.status !== "CANCELLED" && (
         <div>
           <Button variant="destructive" onClick={onCancel} disabled={cancel.isPending}>
-            {cancel.isPending ? "جارٍ الإلغاء…" : "إلغاء المستند (يعكس المخزون)"}
+            {cancel.isPending ? ACTION_LABELS.cancelling : "إلغاء المستند (يعكس المخزون)"}
           </Button>
         </div>
       )}

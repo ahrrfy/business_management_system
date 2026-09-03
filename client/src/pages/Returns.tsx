@@ -9,14 +9,13 @@
 import { CopyInline } from "@/components/CopyButton";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TablePager } from "@/components/table/TablePager";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { INVOICE_STATUSES, invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
@@ -25,6 +24,17 @@ import { Link, useLocation, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { notify } from "@/lib/notify";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /** حالات فلتر الفاتورة — مرآة enum الخادم (`salesListInput.status`) عبر المصدر المشترك.
  *  `SUPERSEDED` كانت مفقودةً من القاموس المحلّي ⇒ يقبلها الخادم ولا سبيل لاختيارها من الشاشة،
@@ -34,6 +44,12 @@ const isInvoiceStatus = (v: string): v is InvoiceStatus =>
 
 /** حجم صفحة قائمة الفواتير — الترقيم خادميّ (نمط Invoices). */
 const PAGE_SIZE = 50;
+
+/** صفُّ قائمة الفواتير — مشتقٌّ من عقد `sales.listPage` فلا ينجرف عن الخادم. */
+type InvoicePickRow = RouterOutputs["sales"]["listPage"]["rows"][number];
+
+/** صفُّ طلبِ إرجاعٍ معلَّق — مشتقٌّ من عقد `returns.requests` فلا ينجرف عنه. */
+type PendingReturnRequestRow = RouterOutputs["returns"]["requests"][number];
 
 export default function Returns() {
   const utils = trpc.useUtils();
@@ -85,12 +101,71 @@ export default function Returns() {
     status: (statusFilter || undefined) as StatusFilter,
   });
   const invoiceRows = invoicesQuery.data?.rows ?? [];
-  // إجمالي المطابق للفلتر (نفس buildSalesListConds خادمياً) — يغذّي TablePager بعدّاد «من N»
+  // إجمالي المطابق للفلتر (نفس buildSalesListConds خادمياً) — يغذّي شريط الترقيم بعدّاد «من N»
   // كنمط شاشة المبيعات؛ عند تأخّره يعمل الترقيم بوضع hasMore (keyset) بلا انتظار.
   const summaryQ = trpc.sales.listSummary.useQuery({
     q: qDebounced || undefined,
     status: (statusFilter || undefined) as StatusFilter,
   });
+
+  // أعمدة منتقي الفاتورة — تقرأ الفاتورة المحدَّدة، فتُبنى في جسم المكوّن.
+  const invoiceColumns: ColumnDef<InvoicePickRow, unknown>[] = [
+    {
+      id: "invoiceNumber",
+      header: "رقم الفاتورة",
+      accessorFn: (r) => r.invoiceNumber,
+      meta: { kind: "code" },
+      cell: ({ row }) => <CopyInline value={row.original.invoiceNumber} />,
+    },
+    {
+      id: "total",
+      header: "الإجمالي",
+      accessorFn: (r) => fmt(r.total),
+      meta: { kind: "money" },
+      cell: ({ row }) => fmt(row.original.total),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      // التسمية العربية من القاموس الموحّد لا الرمز الخامّ (`@shared/invoiceStatus`).
+      accessorFn: (r) => invoiceStatusLabel(r.status),
+      meta: { kind: "status" },
+      cell: ({ row }) => invoiceStatusLabel(row.original.status),
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const id = Number(row.original.id);
+        const isPicked = selectedId === id;
+        return (
+          <RowActions
+            mode="inline"
+            actions={[
+              {
+                key: "pick",
+                kind: "reverse",
+                label: isPicked ? "محدّدة" : "اختيار",
+                disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
+                disabledReason: "الفاتورة محددة بالفعل",
+                onSelect: () => setSelectedId(id),
+                gate: { roles: ["manager"], module: "sales", level: "FULL" },
+              },
+              {
+                key: "view",
+                kind: "view",
+                label: "عرض الفاتورة",
+                href: `/invoices/${id}`,
+                gate: { module: "sales", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -150,73 +225,28 @@ export default function Returns() {
             />
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">رقم الفاتورة</th>
-                    <th className="p-2 text-right">الإجمالي</th>
-                    <th className="p-2 text-start">الحالة</th>
-                    <th className="p-2 text-center">إجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoiceRows.map((inv) => {
-                    const id = Number(inv.id);
-                    const isPicked = selectedId === id;
-                    return (
-                      <tr key={inv.id} className={`border-t ${isPicked ? "bg-muted/40" : ""}`}>
-                        <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.total)}</td>
-                        <td className="p-2">{invoiceStatusLabel(inv.status)}</td>
-                        <td className="p-2 text-center">
-                          <RowActions
-                            mode="inline"
-                            actions={[
-                              {
-                                key: "pick",
-                                kind: "reverse",
-                                label: isPicked ? "محدّدة" : "اختيار",
-                                disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
-                                disabledReason: "الفاتورة محددة بالفعل",
-                                onSelect: () => setSelectedId(id),
-                                gate: { roles: ["manager"], module: "sales", level: "FULL" },
-                              },
-                              {
-                                key: "view",
-                                kind: "view",
-                                label: "عرض الفاتورة",
-                                href: `/invoices/${id}`,
-                                gate: { module: "sales", level: "READ" },
-                              },
-                            ]}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!invoicesQuery.isLoading && invoiceRows.length === 0 && (
-                    <TableEmptyRow
-                      colSpan={4}
-                      // صفر نتائج بلا أي بحث/فلتر وعلى الصفحة الأولى = لا فواتير في النظام أصلاً؛
-                      // غير ذلك فالمجموعة مفلترة خادمياً والرسالة تُوجّه لتغيير الفلتر.
-                      message={!qDebounced && !statusFilter && page === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
-                    />
-                  )}
-                  {invoicesQuery.isLoading && (
-                    <tr><td colSpan={4} className="p-0"><LoadingState /></td></tr>
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-            <TablePager
-              page={page}
-              onPageChange={setPage}
-              pageSize={PAGE_SIZE}
-              rowsOnPage={invoiceRows.length}
-              total={summaryQ.data?.count}
-              hasMore={invoicesQuery.data?.hasMore}
-              isLoading={invoicesQuery.isLoading || invoicesQuery.isFetching}
+            {/* البحث والفلتر في ListToolbar أعلاه (يغذّيان الاستعلام الخادميّ) ⇒ `searchable={false}`
+                وإلّا ظهر حقلا بحثٍ متجاوران. و`externalFiltersActive` يشمل `page > 0` كي تبقى
+                رسالةُ «لا فواتير بعد» محصورةً بالصفحة الأولى بلا فلتر — كما كان الجدول الخامّ.
+                والترقيم يُصيّره DataTable عبر serverPagination (لا TablePager منفصل). */}
+            <DataTable<InvoicePickRow>
+              columns={invoiceColumns}
+              data={invoiceRows}
+              searchable={false}
+              externalFiltersActive={!!qDebounced || !!statusFilter || page > 0}
+              loading={invoicesQuery.isLoading}
+              errorState={{ isError: invoicesQuery.isError, message: invoicesQuery.error?.message, onRetry: () => void invoicesQuery.refetch() }}
+              getRowClassName={(inv) => (selectedId === Number(inv.id) ? "bg-muted/40" : undefined)}
+              serverPagination={{
+                page,
+                onPageChange: setPage,
+                pageSize: PAGE_SIZE,
+                total: summaryQ.data?.count,
+                hasMore: invoicesQuery.data?.hasMore,
+                isFetching: invoicesQuery.isFetching,
+              }}
+              emptyState="لا فواتير بعد."
+              emptyFilteredState="لا فواتير مطابقة. غيّر البحث أو الفلتر."
             />
           </CardContent>
         </Card>
@@ -252,6 +282,12 @@ export default function Returns() {
 function PendingReturnRequests() {
   const utils = trpc.useUtils();
   const [, navigate] = useLocation();
+  // حالة حوار الرفض — تُعلَن هنا (قبل `return null` المشروط أدناه) التزاماً بقاعدة الخطّافات.
+  // الصفُّ المستهدَف منفصلٌ عن راية الفتح عمداً (نفس نمط Reconcile): تصفيرُه عند الإغلاق
+  // كان يُفرغ رقم الفاتورة من العنوان أثناء حركة الخروج فيُقرأ «رفض طلب الإرجاع #».
+  const [rejectTarget, setRejectTarget] = useState<PendingReturnRequestRow | null>(null);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const requests = trpc.returns.requests.useQuery(
     { status: "PENDING_APPROVAL" },
     { refetchInterval: 30_000, retry: false },
@@ -259,23 +295,71 @@ function PendingReturnRequests() {
   const reject = trpc.returns.rejectRequest.useMutation({
     onSuccess: () => {
       notify.ok("رُفض الطلب", "يرى الموظّف السبب في شاشته.");
+      setRejectOpen(false);
+      setRejectReason("");
       utils.returns.requests.invalidate();
     },
     onError: (e) => notify.err(e),
   });
 
+  /**
+   * ⭐ الطابور المحكوم أيضاً (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
+   *
+   * كانت هذه اللوحة تقرأ **الجدول القديم وحده** (`returnRequests`)، بينما ما تُنشئه هذه
+   * الشاشة نفسها عبر `returns.create` يهبط في `salesControlRequests`. فالموظّف يُرسل من هنا
+   * ثمّ لا يجد طلبه هنا — وهو بالضبط ما يُقرأ «النظام بلع المرتجع». والتعليق أعلاه كان يصف
+   * العطب على الطابور القديم ثمّ وقع نفسُه على الجديد.
+   */
+  const governed = trpc.salesControl.list.useQuery(
+    { status: "PENDING" },
+    { refetchInterval: 30_000, retry: false },
+  );
+  const governedReturns = (governed.data ?? []).filter((r) => r.requestType === "SALES_RETURN");
+
   const rows = requests.data ?? [];
-  if (requests.isError || rows.length === 0) return null;
+  // ⛔ لا إخفاء صامت عند فشل الاستعلام: بطاقةٌ تختفي على خطأٍ تُقرأ «لا طلبات» وهي كذبة.
+  if (requests.isError && governed.isError) {
+    return (
+      <Card className="border-destructive/40 bg-destructive/5">
+        <CardContent className="flex flex-wrap items-center gap-2 p-3 text-sm text-destructive">
+          <AlertTriangle aria-hidden className="size-4" />
+          تعذّر تحميل طلبات الإرجاع المعلّقة — قد تكون هناك طلبات لا تراها.
+          <Button size="sm" variant="outline" onClick={() => { void requests.refetch(); void governed.refetch(); }}>
+            إعادة المحاولة
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+  if (rows.length === 0 && governedReturns.length === 0) return null;
 
   return (
     <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">
       <CardHeader className="pb-2">
         <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4" />
-          طلبات إرجاع بانتظار اعتمادك ({rows.length})
+          طلبات إرجاع معلّقة لم تُنفَّذ بعد ({rows.length + governedReturns.length})
         </div>
+        <p className="text-[11px] font-normal text-muted-foreground">
+          الطلب المعلّق صفريّ الأثر: لم يتغيّر المخزون ولا المال. يعتمده مراجعٌ مستقلّ (غير الطالب وغير منشئ الفاتورة).
+        </p>
       </CardHeader>
       <CardContent className="space-y-2 pt-0">
+        {governedReturns.map((r) => (
+          <div key={`gov-${r.id}`} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-black tabular-nums" dir="ltr">{r.invoiceNumber ?? `#${r.invoiceId}`}</span>
+                <span className="text-muted-foreground">طلبه {r.requestedByName ?? `مستخدم ${r.requestedBy}`}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5">طلب تحكّم #{r.id}</span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">السبب: {r.reason}</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => navigate("/invoices?tab=controls")}>
+              افتح شاشة الاعتماد
+            </Button>
+          </div>
+        ))}
         {rows.map((r) => (
           <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-2.5">
             <div className="min-w-0 flex-1">
@@ -301,9 +385,9 @@ function PendingReturnRequests() {
                 variant="outline"
                 disabled={reject.isPending}
                 onClick={() => {
-                  const reason = window.prompt("سبب رفض الطلب (يراه الموظّف):")?.trim();
-                  if (!reason || reason.length < 3) return;
-                  reject.mutate({ requestId: Number(r.id), reason });
+                  setRejectTarget(r);
+                  setRejectReason("");
+                  setRejectOpen(true);
                 }}
               >
                 رفض
@@ -312,6 +396,73 @@ function PendingReturnRequests() {
           </div>
         ))}
       </CardContent>
+
+      {/* حوار رفض الطلب — بديل window.prompt: RTL + هويّة النظام + سببٌ يبقى إلزاميّاً.
+          العقد الخادميّ `returns.rejectRequest` يفرض 3..500 حرفاً، فالحقل يعكسه حرفياً. */}
+      <Dialog
+        open={rejectOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRejectOpen(false);
+            setRejectReason("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              رفض طلب الإرجاع{" "}
+              <span className="font-mono" dir="ltr">
+                {rejectTarget?.invoiceNumber ?? `#${rejectTarget?.invoiceId ?? ""}`}
+              </span>
+            </DialogTitle>
+            <DialogDescription>
+              السبب إلزاميّ ويظهر للموظّف في شاشته — اكتبه واضحاً كي لا يُعيد الطلب نفسه.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <label className="text-sm font-medium" htmlFor="return-reject-reason">
+              سبب الرفض
+            </label>
+            <Textarea
+              id="return-reject-reason"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+              maxLength={500}
+              placeholder="مثال: البضاعة مستعملة ولا تقبل الإرجاع"
+            />
+            <p className="text-[11px] text-muted-foreground">3 أحرف على الأقل.</p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setRejectOpen(false);
+                setRejectReason("");
+              }}
+            >
+              تراجع
+            </Button>
+            <SubmitButton
+              type="button"
+              variant="destructive"
+              pending={reject.isPending}
+              pendingText={ACTION_LABELS.processing}
+              disabled={rejectReason.trim().length < 3}
+              onClick={() => {
+                const reason = rejectReason.trim();
+                // نفس حارس window.prompt السابق: سببٌ فارغ أو أقصر من 3 أحرف لا يُرسَل.
+                if (!rejectTarget || !reason || reason.length < 3) return;
+                reject.mutate({ requestId: Number(rejectTarget.id), reason });
+              }}
+            >
+              تأكيد الرفض
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

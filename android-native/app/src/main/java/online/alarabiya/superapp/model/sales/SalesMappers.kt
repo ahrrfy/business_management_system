@@ -150,12 +150,28 @@ object SalesMappers {
     )
 
     fun returnCreation(root: JSONObject): ReturnCreation = returnCreation(root.toWireMap())
-    internal fun returnCreation(root: Map<String, Any?>): ReturnCreation = ReturnCreation(
-        invoiceId = root.long("invoiceId"),
-        returnedTotal = root.text("returnedTotal", "0"),
-        fullyReturned = root.bool("fullyReturned"),
-        idempotentReplay = root.bool("idempotentReplay"),
-    )
+
+    /**
+     * ⛔ `mode` إلزاميّ ومجهولُه يُرمى: العقدُ السابق كان يقرأ الحقول بلا تمييزٍ فيبتلع تحوّلَ
+     * الخادم إلى «طلب» ويعرضه نجاحاً بقيمة 0 (تدقيق ١/٩/٢٦). فشلٌ صريحٌ أرحمُ من إقرارٍ كاذب.
+     */
+    internal fun returnCreation(root: Map<String, Any?>): ReturnCreation =
+        when (val mode = root.text("mode", "")) {
+            "EXECUTED" -> ReturnCreation.Executed(
+                invoiceId = root.long("invoiceId"),
+                returnedTotal = root.text("returnedTotal", "0"),
+                fullyReturned = root.bool("fullyReturned"),
+                idempotentReplay = root.bool("idempotentReplay"),
+            )
+            "REQUESTED" -> ReturnCreation.Requested(
+                requestId = root.long("requestId"),
+                status = root.text("status", "PENDING"),
+                replayed = root.bool("replayed"),
+            )
+            else -> throw IllegalStateException(
+                "استجابة مرتجع غير معروفة (mode=\"$mode\") — حدّث التطبيق قبل تسجيل مرتجعات",
+            )
+        }
 
     private fun summary(row: Map<String, Any?>) = SaleSummary(
         id = row.long("id"),

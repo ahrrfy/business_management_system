@@ -11,9 +11,14 @@ import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { processPayment } from "../sale/payment";
+import {
+  confirmExternalPaymentAttempt,
+  initiateExternalPaymentAttempt,
+} from "../posExternalPayment";
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const TABLES = [
+  "externalPaymentAttempts",
   "orderPayments", "auditLogs", "idempotencyKeys", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrders", "invoiceItems", "invoices",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
@@ -35,19 +40,25 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "rc1", name: "موظف", email: "r1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1,
+    },
+    { id: 2, openId: "rc1", name: "موظف", email: "r1@t.test", role: "cashier", loginMethod: "local", branchId: 1,
+    },
   ]);
   await d.insert(s.customers).values([
-    { id: 1, name: "عميل موثوق", phone: "+9647701234567", currentBalance: "0.00", creditLimit: "0.00" },
+    { id: 1, name: "عميل موثوق", phone: "+9647701234567", currentBalance: "0.00", creditLimit: "0.00",
+    },
   ]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
-  await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: 1, isBaseUnit: true }]);
+  await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: 1, isBaseUnit: true,
+    },
+  ]);
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" }]);
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 500 }]);
 }
-const openReception = () => openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+const openReception = () => openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 },
+  );
 const LINE = { variantId: 1, productUnitId: 1, quantity: "10" }; // ١٠ × ١٠٠٠ = ١٠٬٠٠٠
 
 async function invoiceOf(id: number) {
@@ -73,7 +84,8 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       // الواجهة لم تعد ترسل طريقةً بلا قبض؛ ونرسلها هنا عمداً لإثبات أنّها **تُهمَل** ولا تُختَم.
       paymentMethod: "CASH", paidAmount: "0", deferredDirect: true, clientRequestId: "truth-deferred",
       regularSale: { lines: [LINE], amount: "10000.00" },
-    }, CASHIER);
+    }, CASHIER,
+    );
     const inv = await invoiceOf(r.regularSale!.invoiceId);
     expect(inv.paidAmount).toBe("0.00");
     expect(inv.paymentMethod).toBeNull();
@@ -86,7 +98,8 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paymentMethod: "CASH", paidAmount: "4000", deferredDirect: true, clientRequestId: "truth-partial",
       regularSale: { lines: [LINE], amount: "10000.00" },
-    }, CASHIER);
+    }, CASHIER,
+    );
     const inv = await invoiceOf(r.regularSale!.invoiceId);
     expect(inv.paidAmount).toBe("4000.00");
     expect(inv.paymentMethod).toBe("CASH");
@@ -99,7 +112,8 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paidAmount: "0", clientRequestId: "truth-wo-nodeposit",
       workOrders: [{ ...WO }],
-    }, CASHIER);
+    }, CASHIER,
+    );
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrders[0].workOrderId)))[0];
     expect(wo.deposit).toBe("0.00");
     expect(wo.paymentMethod).toBeNull();
@@ -111,7 +125,8 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paymentMethod: "CASH", paidAmount: "2000", clientRequestId: "truth-wo-deposit",
       workOrders: [{ ...WO }],
-    }, CASHIER);
+    }, CASHIER,
+    );
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrders[0].workOrderId)))[0];
     expect(wo.deposit).toBe("2000.00");
     expect(wo.paymentMethod).toBe("CASH");
@@ -123,7 +138,9 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paidAmount: "4000", deferredDirect: true, clientRequestId: "truth-nomethod",
       regularSale: { lines: [LINE], amount: "10000.00" },
-    }, CASHIER)).rejects.toThrowError(/طريقة القبض/);
+    }, CASHIER,
+      ),
+    ).rejects.toThrowError(/طريقة القبض/);
   });
 
   it("أوّل تسديدٍ لاحق على فاتورةٍ بلا طريقة ⇒ الطريقة الحقيقية لا MIXED", async () => {
@@ -132,11 +149,38 @@ describe("صدق طريقة الدفع — NULL حين لا قبض", () => {
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paidAmount: "0", deferredDirect: true, clientRequestId: "truth-latepay",
       regularSale: { lines: [LINE], amount: "10000.00" },
-    }, CASHIER);
+    }, CASHIER,
+    );
     const invoiceId = r.regularSale!.invoiceId;
     expect((await invoiceOf(invoiceId)).paymentMethod).toBeNull();
 
-    await processPayment({ invoiceId, amount: "10000.00", method: "CARD", reference: "TX-1", shiftId: shift.shiftId }, CASHIER);
+    const deviceId = "TRUTHFUL-PAY-DEVICE";
+    const attempt = await initiateExternalPaymentAttempt(
+      {
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        method: "CARD",
+        amount: "10000.00",
+        reference: "TX-1",
+        requestId: "truth-latepay-attempt",
+        deviceId,
+      },
+      CASHIER,
+    );
+    await confirmExternalPaymentAttempt(
+      {
+        attemptId: attempt.attemptId,
+        branchId: 1,
+        channel: "SALES_COLLECTION",
+        deviceId,
+      },
+      CASHIER,
+    );
+    await processPayment({ invoiceId, amount: "10000.00", method: "CARD", reference: "TX-1", shiftId: shift.shiftId,
+        externalPaymentAttemptId: attempt.attemptId,
+        externalPaymentDeviceId: deviceId,
+      }, CASHIER,
+    );
     const after = await invoiceOf(invoiceId);
     // قبل الإصلاح كانت تُنشأ «CASH» كاذبة فيقلبها أوّل تسديدٍ إلى MIXED — طيٌّ لكذبةٍ لا لحقيقة.
     expect(after.paymentMethod).toBe("CARD");

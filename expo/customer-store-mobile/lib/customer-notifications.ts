@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
+import { loadVerifiedCustomerSession } from "@/lib/customer-session";
 import { registerStorefrontPushDevice } from "@/lib/storefront-api";
 
 const PREFERENCE_KEY = "customer-store:marketing-push-enabled:v1";
@@ -35,34 +36,34 @@ function nativePlatform(): "IOS" | "ANDROID" | null {
 }
 
 export async function isMarketingPushEnabled(): Promise<boolean> {
-  return (await AsyncStorage.getItem(PREFERENCE_KEY)) === "true";
+  try {
+    return (await AsyncStorage.getItem(PREFERENCE_KEY)) === "true";
+  } catch {
+    return false;
+  }
 }
 
 async function requestExpoPushToken(): Promise<CustomerPushRegistration> {
   const platform = nativePlatform();
   if (!platform) return { ok: false, message: "إشعارات التطبيق متاحة على الهاتف فقط." };
-
-  if (platform === "ANDROID") {
-    await Notifications.setNotificationChannelAsync("store_updates", {
-      name: "عروض وتحديثات مكتبة العربية",
-      importance: Notifications.AndroidImportance.DEFAULT,
-      vibrationPattern: [0, 180, 120, 180],
-      lightColor: "#075B4E",
-    });
-  }
-
-  const current = await Notifications.getPermissionsAsync();
-  const result = current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
-  if (result.status !== "granted") {
-    return { ok: false, message: "لم تُمنح موافقة الإشعارات. يمكنك تفعيلها لاحقاً من إعدادات الهاتف." };
-  }
-
-  const projectId = easProjectId();
-  if (!projectId) {
-    return { ok: false, message: "لم تكتمل تهيئة إشعارات الإصدار الرسمي بعد." };
-  }
-
   try {
+    if (platform === "ANDROID") {
+      await Notifications.setNotificationChannelAsync("store_updates", {
+        name: "عروض وتحديثات مكتبة العربية",
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 180, 120, 180],
+        lightColor: "#075B4E",
+      });
+    }
+    const current = await Notifications.getPermissionsAsync();
+    const result = current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
+    if (result.status !== "granted") {
+      return { ok: false, message: "لم تُمنح موافقة الإشعارات. يمكنك تفعيلها لاحقاً من إعدادات الهاتف." };
+    }
+    const projectId = easProjectId();
+    if (!projectId) {
+      return { ok: false, message: "لم تكتمل تهيئة إشعارات الإصدار الرسمي بعد." };
+    }
     const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
     return token ? { ok: true, token } : { ok: false, message: "تعذر الحصول على رمز جهاز الإشعارات." };
   } catch {
@@ -78,12 +79,14 @@ export async function enableMarketingPush(): Promise<CustomerPushRegistration> {
   if (!platform) return { ok: false, message: "إشعارات التطبيق متاحة على الهاتف فقط." };
 
   try {
+    const session = await loadVerifiedCustomerSession();
     await registerStorefrontPushDevice({
       expoPushToken: registration.token,
       marketingOptIn: true,
       transactionalOptIn: true,
       platform,
       appVersion: Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? "unknown",
+      customerSessionToken: session?.token,
     });
     await AsyncStorage.setItem(PUSH_TOKEN_KEY, registration.token);
     await AsyncStorage.setItem(PREFERENCE_KEY, "true");
@@ -95,21 +98,67 @@ export async function enableMarketingPush(): Promise<CustomerPushRegistration> {
 
 /** لا يلغي رسائل حالة الطلب، وإنما يلغي عروضاً وحملات تسويقية اختيارية فقط على الخادم والجهاز. */
 export async function disableMarketingPush(): Promise<CustomerPushRegistration> {
-  const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
-  const platform = nativePlatform();
-  if (token && platform) {
-    try {
+  try {
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    const platform = nativePlatform();
+    if (token && platform) {
+      const session = await loadVerifiedCustomerSession();
       await registerStorefrontPushDevice({
         expoPushToken: token,
         marketingOptIn: false,
         transactionalOptIn: true,
         platform,
         appVersion: Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? "unknown",
+        customerSessionToken: session?.token,
       });
-    } catch {
-      return { ok: false, message: "تعذر إيقاف الإعلانات في النظام الأساسي حالياً. أعد المحاولة عند توفر الاتصال." };
     }
+    await AsyncStorage.setItem(PREFERENCE_KEY, "false");
+    return { ok: true, token: token ?? "" };
+  } catch {
+    return { ok: false, message: "تعذر إيقاف الإعلانات في النظام الأساسي حالياً. أعد المحاولة عند توفر الاتصال." };
   }
-  await AsyncStorage.setItem(PREFERENCE_KEY, "false");
-  return { ok: true, token: token ?? "" };
+}
+
+/** يطلب إذن الهاتف بعد إنشاء الطلب ويسجّل مسار الحالة فقط، من دون تفعيل التسويق. */
+export async function enableTransactionalPush(customerSessionToken?: string): Promise<CustomerPushRegistration> {
+  const registration = await requestExpoPushToken();
+  if (!registration.ok) return registration;
+  const platform = nativePlatform();
+  if (!platform) return { ok: false, message: "إشعارات التطبيق متاحة على الهاتف فقط." };
+  try {
+    await registerStorefrontPushDevice({
+      expoPushToken: registration.token,
+      marketingOptIn: await isMarketingPushEnabled(),
+      transactionalOptIn: true,
+      platform,
+      appVersion: Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? "unknown",
+      customerSessionToken: customerSessionToken ?? (await loadVerifiedCustomerSession())?.token,
+    });
+    await AsyncStorage.setItem(PUSH_TOKEN_KEY, registration.token);
+    return registration;
+  } catch {
+    return { ok: false, message: "تعذر ربط إشعارات حالة الطلب حالياً. يمكنك تفعيلها لاحقاً من الإعدادات." };
+  }
+}
+
+/** يعيد ربط رمزٍ سبق تسجيله بجلسة العميل بعد تسجيل الدخول أو عند تشغيل التطبيق. */
+export async function syncCustomerPushIdentity(customerSessionToken?: string): Promise<boolean> {
+  try {
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    const platform = nativePlatform();
+    if (!token || !platform) return false;
+    const sessionToken = customerSessionToken ?? (await loadVerifiedCustomerSession())?.token;
+    if (!sessionToken) return false;
+    await registerStorefrontPushDevice({
+      expoPushToken: token,
+      marketingOptIn: await isMarketingPushEnabled(),
+      transactionalOptIn: true,
+      platform,
+      appVersion: Constants.nativeAppVersion ?? Constants.expoConfig?.version ?? "unknown",
+      customerSessionToken: sessionToken,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }

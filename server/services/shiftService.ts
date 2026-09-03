@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { hasCashVariance } from "@shared/cashDailyReconciliation";
+import { and, desc, eq, gt, inArray, like, sql } from "drizzle-orm";
 import {
   expenses,
   invoices,
@@ -19,16 +20,17 @@ import {
   assertCashOutAvailable,
   assertTreasuryOutException,
   computeDrawerCashBalance,
+  lockCashSourceForUpdate,
 } from "./cash/cashAvailability";
 import { utcTodayStart } from "./businessDay";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
 import {
-  IQD_DENOMINATIONS,
   MATERIAL_SHIFT_VARIANCE_IQD,
   SHIFT_VARIANCE_CODES,
   type ShiftVarianceCode,
 } from "@shared/shiftCashGovernance";
+import { validateCashBreakdown } from "./cash/countValidation";
 
 /**
  * نوع الوردية — كلٌّ درجٌ/رصيد افتتاحي/Z-report مستقلّ:
@@ -37,42 +39,6 @@ import {
  *  - PRINT_SERVICES: كاشير خدمات الطباعة والاستنساخ (قرار المالك ٢٣/٧/٢٦: فصلٌ كامل عن التجزئة).
  */
 export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
-
-const VARIANCE_EPSILON = money("0.005");
-const ALLOWED_DENOMINATIONS = new Set<number>(IQD_DENOMINATIONS);
-
-function validateCountedBreakdown(
-  breakdown: Record<string, number> | null | undefined,
-  countedCash: ReturnType<typeof money>,
-) {
-  // كائنٌ فارغ {} = غياب كشفٍ لا كشفٌ مجموعه صفر: المسار الافتراضي الجديد (كتابة المعدود مباشرةً)
-  // قد يمرّر {} فلا يجوز معاملته ككشف فئات حقيقيّ (وإلّا رُفض أيّ معدود موجب بـ«مجموع الفئات 0 ≠ المعدود»).
-  if (!breakdown || Object.keys(breakdown).length === 0) return null;
-  let total = money("0");
-  for (const [rawDenomination, rawCount] of Object.entries(breakdown)) {
-    const denomination = Number(rawDenomination);
-    if (!ALLOWED_DENOMINATIONS.has(denomination)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `فئة نقدية غير معتمدة في العد: ${rawDenomination}`,
-      });
-    }
-    if (!Number.isSafeInteger(rawCount) || rawCount < 0 || rawCount > 10_000) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `عدد الأوراق غير صالح لفئة ${rawDenomination}`,
-      });
-    }
-    total = total.plus(money(String(denomination)).times(rawCount));
-  }
-  if (!total.eq(countedCash)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `مجموع عدّ الفئات (${total.toFixed(2)}) لا يساوي النقد المعدود (${countedCash.toFixed(2)}). أعد العد قبل الإغلاق.`,
-    });
-  }
-  return total;
-}
 
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
@@ -121,6 +87,13 @@ export async function openShift(
     // المدفوعات ويقارنه بالمعدود ⇒ فرق الوردية مسجَّلٌ ومعزولٌ لصاحبها. العمودان openingExpectedCash/
     // openingDiscrepancyReason مُهمَلان الآن (يبقيان null بلا هجرة إسقاط).
     const opening = money(input.openingBalance);
+    // حتى وردية الرصيد الصفري لا يجوز أن تُفتح بعد إقفال مطابقة اليوم؛ قفل الخزينة
+    // المركزي يفرض بوابة اليوم قبل إنشاء صف الوردية، ثم يعاد استعماله لتمويل العهدة إن وجدت.
+    await lockCashSourceForUpdate(tx, {
+      branchId: input.branchId,
+      cashBucket: "TREASURY",
+      shiftId: null,
+    });
     // ترتيب الأقفال الحاكم هو مصدر النقد ثم المستند. إدراج الوردية أولاً يأخذ قفل FK مشتركاً
     // على الفرع، فتستطيع معاملتا فتح متزامنتان أن تتعطلا كلتاهما عند محاولة ترقيته إلى X.
     // لذلك نتحقق من تمويل الخزينة ونقفل حسابها قبل إنشاء صف الوردية نفسه.
@@ -283,6 +256,37 @@ export async function closeShift(
     // اللقطة الملتزمة كما هي (بلا أي كتابة — countedCash الجديدة تُهمَل عمداً: الحقيقة هي أول
     // إغلاق ملتزم، وإعادة العدّ لا تُعدّل Z-report بأثر رجعي). فحوص الملكية أعلاه تسبق هذا.
     if (sh.status !== "OPEN") {
+      const priorOut = (
+        await tx
+          .select({ id: receipts.id, referenceNumber: receipts.referenceNumber })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.shiftId, input.shiftId),
+              eq(receipts.direction, "OUT"),
+              eq(receipts.cashBucket, "DRAWER"),
+              like(receipts.referenceNumber, "CH-%"),
+            ),
+          )
+          .orderBy(desc(receipts.id))
+          .limit(1)
+      )[0];
+      const priorIn = priorOut?.referenceNumber
+        ? (
+            await tx
+              .select({ id: receipts.id })
+              .from(receipts)
+              .where(
+                and(
+                  eq(receipts.branchId, Number(sh.branchId)),
+                  eq(receipts.referenceNumber, priorOut.referenceNumber),
+                  eq(receipts.direction, "IN"),
+                  eq(receipts.cashBucket, "TREASURY"),
+                ),
+              )
+              .limit(1)
+          )[0]
+        : null;
       return {
         shiftId: input.shiftId,
         openingBalance: toDbMoney(money(sh.openingBalance)),
@@ -295,7 +299,14 @@ export async function closeShift(
         requiresManagerReview: money(sh.variance ?? "0")
           .abs()
           .gte(MATERIAL_SHIFT_VARIANCE_IQD),
-        treasuryReturn: null,
+        treasuryReturn:
+          priorOut?.referenceNumber && priorIn
+            ? {
+                handoverNumber: priorOut.referenceNumber,
+                outReceiptId: Number(priorOut.id),
+                inReceiptId: Number(priorIn.id),
+              }
+            : null,
         alreadyClosed: true as const,
       };
     }
@@ -307,7 +318,7 @@ export async function closeShift(
     );
     const counted = money(input.countedCash);
     const variance = counted.minus(expected);
-    const hasVariance = variance.abs().gt(VARIANCE_EPSILON);
+    const hasVariance = hasCashVariance(variance);
     const isMaterialVariance = variance.abs().gte(MATERIAL_SHIFT_VARIANCE_IQD);
     const reason = (input.varianceReason ?? "").trim();
     const reasonCode = input.varianceReasonCode ?? null;
@@ -319,7 +330,7 @@ export async function closeShift(
     // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
     // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
     // النظامية من وحدتها المختصة أولاً، ثم يعاد احتساب المتوقع وتتم المطابقة.
-    validateCountedBreakdown(input.countedBreakdown, counted);
+    validateCashBreakdown(input.countedBreakdown, counted);
     if (input.enforceCashGovernance && hasVariance) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

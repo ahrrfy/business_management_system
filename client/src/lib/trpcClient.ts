@@ -3,8 +3,12 @@ import {
   noteRequestSuccess,
 } from "@/lib/offline/connectivity";
 import { screenAttributionHeaders } from "@/lib/screenAttribution";
+import {
+  fetchWithStorefrontDeadline,
+  shouldRetryStorefrontCreateOrder,
+} from "@/lib/storefrontRequestPolicy";
 import { trpc } from "@/lib/trpc";
-import { httpBatchLink } from "@trpc/client";
+import { httpBatchLink, retryLink } from "@trpc/client";
 import superjson from "superjson";
 
 /** ناقل tRPC الواحد للمتصفح؛ مفصول عن نقطة الرسم كي يُختبر بعقد HTTP حقيقي. */
@@ -13,6 +17,19 @@ export function createErpTrpcClient(
 ) {
   return trpc.createClient({
     links: [
+      retryLink({
+        retry({ op, attempts, error }) {
+          const httpStatus = (
+            error.data as { httpStatus?: number } | null | undefined
+          )?.httpStatus;
+          return shouldRetryStorefrontCreateOrder({
+            path: op.path,
+            attempts,
+            httpStatus,
+          });
+        },
+        retryDelayMs: () => 600,
+      }),
       httpBatchLink({
         url: "/api/trpc",
         transformer: superjson,
@@ -29,7 +46,15 @@ export function createErpTrpcClient(
         // كل نداء tRPC يغذّي كاشف الاتصال: وصول أي ردّ HTTP (ولو 4xx/5xx) = الشبكة والخادم
         // موصولان؛ رفض fetch نفسه (بلا ردّ) = انقطاع. AbortError إلغاء داخلي لا إشارة شبكة.
         fetch(input, init) {
-          return fetch(input, { ...(init ?? {}), credentials: "include" }).then(
+          return fetchWithStorefrontDeadline(
+            (target, requestInit) =>
+              globalThis.fetch(target, {
+                ...(requestInit ?? {}),
+                credentials: "include",
+              }),
+            input,
+            init,
+          ).then(
             (res) => {
               noteRequestSuccess();
               return res;

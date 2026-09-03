@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,10 +13,12 @@ import {
 } from "@/components/form/AccountFields";
 import { SmartUserInput, type SmartUserValue } from "@/components/form/SmartUserInput";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES,
   type EmployeeEducation,
@@ -24,7 +27,6 @@ import { AlertCircle, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
-import { selectClsFull } from "@/lib/ui/formStyles";
 
 type AccountMode = "none" | "new" | "link";
 const roleLabelOf = (r: string) => ROLE_OPTIONS.find((o) => o.value === r)?.label ?? r;
@@ -247,7 +249,7 @@ export default function EmployeeNew() {
   const isDirty = !!initialSnapshotRef.current && dirtySnapshot() !== initialSnapshotRef.current;
   useUnsavedGuard(isDirty && !createdInfo);
 
-  // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بـ<select> أصليّة، راجع تحذير الهوك).
+  // اختصار: Ctrl+S حفظ — بلا Esc (النموذج مكتظّ بقوائم منسدلة، راجع تحذير الهوك).
   useSaveShortcuts({ onSave: submit, enabled: !pending });
 
   /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
@@ -324,7 +326,7 @@ export default function EmployeeNew() {
       <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="text-lg font-semibold text-muted-foreground">{isEdit ? "تعديل موظف" : "إضافة موظف"}</div>
         <div className="flex items-center gap-2">
-          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+          <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
           <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
         </div>
       </div>
@@ -359,11 +361,11 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">المعلومات الشخصية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="gender">الجنس</Label>
-            <select id="gender" className={selectClsFull} value={form.gender} onChange={(e) => set({ gender: e.target.value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</select>
+            <AppSelect id="gender" value={form.gender} onValueChange={(value) => set({ gender: value })}>{GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="birth">تاريخ الميلاد</Label><Input id="birth" type="date" dir="ltr" value={form.birthDate} onChange={(e) => set({ birthDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="marital">الحالة الاجتماعية</Label>
-            <select id="marital" className={selectClsFull} value={form.maritalStatus} onChange={(e) => set({ maritalStatus: e.target.value })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</select>
+            <AppSelect id="marital" value={form.maritalStatus} onValueChange={(next) => set({ maritalStatus: next })}><option value="">—</option>{MARITAL_STATUSES.map((m) => <option key={m} value={m}>{m}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="nat">الجنسية</Label><Input id="nat" value={form.nationality} onChange={(e) => set({ nationality: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="nid">رقم الهوية الوطنية</Label><Input id="nid" dir="ltr" value={form.nationalId} onChange={(e) => set({ nationalId: e.target.value })} /></div>
@@ -387,19 +389,19 @@ export default function EmployeeNew() {
         <CardHeader><CardTitle className="text-base">الوظيفة والأجر</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
-            <select id="dept" className={selectClsFull} value={form.department} onChange={(e) => set({ department: e.target.value })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</select>
+            <AppSelect id="dept" value={form.department} onValueChange={(next) => set({ department: next })}>{HR_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="pos">المسمى الوظيفي</Label><Input id="pos" value={form.position} onChange={(e) => set({ position: e.target.value })} placeholder="مدير المبيعات" /></div>
           <div className="space-y-1"><Label htmlFor="br">الفرع</Label>
-            <select id="br" className={selectClsFull} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</select>
+            <AppSelect id="br" value={form.branchId} onValueChange={(next) => set({ branchId: next })}><option value="">—</option>{(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="mgr">المدير المباشر</Label>
-            <select id="mgr" className={selectClsFull} value={form.managerId} onChange={(e) => set({ managerId: e.target.value })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</select>
+            <AppSelect id="mgr" value={form.managerId} onValueChange={(next) => set({ managerId: next })}><option value="">—</option>{(opts.data?.managers ?? []).filter((m) => m.id !== editId).map((m) => <option key={m.id} value={String(m.id)}>{m.name}{m.position ? ` — ${m.position}` : ""}</option>)}</AppSelect>
           </div>
           <div className="space-y-1"><Label htmlFor="hire">تاريخ المباشرة</Label><Input id="hire" type="date" dir="ltr" value={form.hireDate} onChange={(e) => set({ hireDate: e.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor="pt">طريقة الأجر</Label>
             {/* جزءٌ من البصمة الأجرية (يبدّل نموذج الاحتساب كلَّه) ⇒ يتبع قفل الحزمة. */}
-            <select id="pt" className={selectClsFull} disabled={payLocked} value={form.payType} onChange={(e) => set({ payType: e.target.value as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
+            <AppSelect id="pt" disabled={payLocked} value={form.payType} onValueChange={(next) => set({ payType: next as "monthly" | "hourly" })}>{PAY_TYPES.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}</AppSelect>
           </div>
 
           {/*
@@ -473,7 +475,18 @@ export default function EmployeeNew() {
                 <Button
                   variant="ghost" size="sm" className="text-destructive shrink-0"
                   disabled={unlinkAccountM.isPending}
-                  onClick={() => { if (window.confirm("هل تريد إلغاء ربط هذا الحساب بالموظف؟ سيبقى الحساب فعّالاً لكن غير مرتبط.")) unlinkAccountM.mutate({ employeeId: editId! }); }}
+                  /* حوار التأكيد الموحّد **غير متزامن** ⇒ المعالج نفسه صار async، وفكّ الربط
+                   * لا يقع إلّا بعد `await` صريح (الحوار المتزامن السابق كان يحجب الخيط). */
+                  onClick={async () => {
+                    const ok = await confirm({
+                      variant: "warning",
+                      title: "إلغاء ربط الحساب",
+                      description: "سيبقى الحساب فعّالاً لكن غير مرتبط بهذا الموظف. هل تتابع؟",
+                      confirmText: "إلغاء الربط",
+                    });
+                    if (!ok) return;
+                    unlinkAccountM.mutate({ employeeId: editId! });
+                  }}
                 >إلغاء الربط</Button>
               </div>
             ) : (
@@ -512,7 +525,7 @@ export default function EmployeeNew() {
           {edu.map((e) => (
             <div key={e.key} className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end border-t pt-3">
               <div className="space-y-1"><Label className="text-xs">الشهادة</Label>
-                <select className={selectClsFull} value={e.degree} onChange={(ev) => patchEdu(e.key, { degree: ev.target.value })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</select>
+                <AppSelect aria-label="الشهادة" value={e.degree} onValueChange={(next) => patchEdu(e.key, { degree: next })}>{DEGREES.map((d) => <option key={d} value={d}>{d}</option>)}</AppSelect>
               </div>
               <div className="space-y-1"><Label className="text-xs">التخصص</Label><Input value={e.major ?? ""} onChange={(ev) => patchEdu(e.key, { major: ev.target.value })} /></div>
               <div className="space-y-1 md:col-span-2"><Label className="text-xs">الجهة</Label><Input value={e.school ?? ""} onChange={(ev) => patchEdu(e.key, { school: ev.target.value })} /></div>
@@ -542,7 +555,7 @@ export default function EmployeeNew() {
         </div>
       )}
       <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? "جارٍ الحفظ…" : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
+        <Button onClick={submit} disabled={pending} title="Ctrl+S">{pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "حفظ الموظف"}</Button>
         <Link href="/hr/employees"><Button variant="outline">إلغاء</Button></Link>
       </div>
     </div>

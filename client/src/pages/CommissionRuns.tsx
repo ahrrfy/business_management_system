@@ -6,9 +6,12 @@
  * ممنوع بعد الالتقاط أو وجود شهر أحدث (سلسلة الترحيل). كل الأرقام من الخادم (لقطات).
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { CommissionGuide } from "@/components/commissions/CommissionGuide";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -22,10 +25,9 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { printCommissionStatementV2 } from "@/lib/printing/printCommissionV2";
-import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, Trash2, TrendingUp, Undo2, Wallet } from "lucide-react";
+import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, ShieldCheck, Trash2, TrendingUp, Undo2, Wallet, XCircle } from "lucide-react";
 import { Link } from "wouter";
 import { useMemo, useState } from "react";
-import { selectClsSm } from "@/lib/ui/formStyles";
 
 
 const STATUS_LABEL: Record<string, string> = { draft: "مسوّدة", approved: "معتمدة" };
@@ -78,11 +80,15 @@ type RunLine = RunDetail["lines"][number];
 
 export default function CommissionRuns() {
   const utils = trpc.useUtils();
-  // بوّابة عرض مطابقة للخادم: الكتابة (احتساب/اعتماد/حذف) commissionsManagerProcedure(["manager"],"commissions","FULL")
-  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) عرض وكشوف فقط.
+  // FULL يفتح احتساب الفرع لمديره، لكنه لا يمنح اعتماد/إلغاء/حذف كشف الشركة.
+  // سلطة الشركة = owner/admin أو مالية مركزية بلا فرع وممنوحة commissions=FULL.
   const me = trpc.auth.me.useQuery();
-  const canWrite = !!me.data?.role &&
+  const hasFull = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
+  const isCompanyAuthority = me.data?.role === "admin" || me.data?.isOwner === true ||
+    (me.data?.role === "accountant" && me.data?.branchId == null);
+  const canCompute = hasFull && (isCompanyAuthority || (me.data?.role === "manager" && me.data?.branchId != null));
+  const canApproveCompany = hasFull && isCompanyAuthority;
   const runsQ = trpc.commissions.runs.list.useQuery();
   const runs = runsQ.data ?? [];
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -93,9 +99,15 @@ export default function CommissionRuns() {
   const [computeOpen, setComputeOpen] = useState(false);
   const [computePeriod, setComputePeriod] = useState(thisMonth());
   const [detailLine, setDetailLine] = useState<RunLine | null>(null);
+  const [approvalReason, setApprovalReason] = useState("");
+  const [approvalRequestKey, setApprovalRequestKey] = useState(() => crypto.randomUUID());
 
   const refresh = async () => {
-    await Promise.all([utils.commissions.runs.list.invalidate(), utils.commissions.runs.get.invalidate()]);
+    await Promise.all([
+      utils.commissions.runs.list.invalidate(),
+      utils.commissions.runs.get.invalidate(),
+      utils.commissions.runs.approvalRequests.invalidate(),
+    ]);
   };
 
   const compute = trpc.commissions.runs.compute.useMutation({
@@ -108,20 +120,12 @@ export default function CommissionRuns() {
     onError: (e) => notify.err(e),
   });
   const approve = trpc.commissions.runs.approve.useMutation({
-    onSuccess: async (r) => {
-      notify.ok("اعتُمد كشف العمولات");
-      if (r.requiresPayrollRegeneration) {
-        notify.errBig(
-          "مسيّر رواتب هذا الشهر ما يزال مسوّدة",
-          "أعد توليد المسيّر من تبويب «الرواتب» كي يظهر فيه بند العمولة (احذف المسوّدة ثم ولّدها مجدداً).",
-        );
-      }
+    onSuccess: async () => {
+      notify.ok("أُرسل طلب الاعتماد بانتظار مراجع مستقل");
+      setApprovalReason("");
+      setApprovalRequestKey(crypto.randomUUID());
       await refresh();
     },
-    onError: (e) => notify.err(e),
-  });
-  const unapprove = trpc.commissions.runs.unapprove.useMutation({
-    onSuccess: async () => { notify.ok("أُلغي الاعتماد — عاد الكشف مسوّدةً"); await refresh(); },
     onError: (e) => notify.err(e),
   });
   const remove = trpc.commissions.runs.remove.useMutation({
@@ -131,8 +135,7 @@ export default function CommissionRuns() {
 
   const lines = run?.lines ?? [];
   const isDraft = run?.status === "draft";
-  const isApproved = run?.status === "approved";
-  const busy = compute.isPending || approve.isPending || unapprove.isPending || remove.isPending;
+  const busy = compute.isPending || approve.isPending || remove.isPending;
 
   const stats = useMemo(() => {
     const netBase = run ? round2(D(run.totalBaseSales).minus(D(run.totalBaseReturns))).toFixed(2) : "0";
@@ -208,6 +211,146 @@ export default function CommissionRuns() {
     });
   }
 
+  /*
+   * أعمدة كشف العمولات — تُبنى في العَرض لأنّها تُغلِق على `run`/`stats` (صفّ الإجماليات)
+   * وعلى `printStatement`/`setDetailLine`. صفُّ الإجماليات صار `footer` على الأعمدة
+   * فيُصيَّر في `<tfoot>` محاذياً لأعمدته بدل صفٍّ يدويّ داخل `<tbody>`.
+   */
+  const columns: ColumnDef<RunLine, unknown>[] = [
+    {
+      id: "employee",
+      header: "الموظف",
+      accessorFn: (l) => l.employeeName,
+      cell: ({ row }) => {
+        const l = row.original;
+        const detail = (l.detail ?? {}) as { planName?: string };
+        return (
+          <div className="flex items-center gap-2.5">
+            <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={32} />
+            <div className="min-w-0">
+              <div className="font-medium text-[13px] whitespace-nowrap">{l.employeeName}</div>
+              {/* اسم الخطة قد يطول — يُقصّ بدل توسيع العمود ودفع الجدول خارج الشاشة. */}
+              <div className="max-w-[11rem] truncate text-[11px] text-muted-foreground" title={l.planName ?? detail.planName ?? undefined}>
+                {l.planName ?? detail.planName ?? "—"}
+              </div>
+            </div>
+          </div>
+        );
+      },
+      footer: () => "الإجمالي",
+    },
+    {
+      id: "baseSales",
+      header: "المبيعات",
+      accessorFn: (l) => iqd(l.baseSales),
+      meta: { kind: "money" },
+      cell: ({ row }) => iqd(row.original.baseSales),
+      footer: () => (run ? iqd(run.totalBaseSales) : null),
+    },
+    {
+      id: "baseReturns",
+      header: "المرتجعات",
+      accessorFn: (l) => (D(l.baseReturns).gt(0) ? `−${iqd(l.baseReturns)}` : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="text-money-negative">{D(row.original.baseReturns).gt(0) ? `−${iqd(row.original.baseReturns)}` : "—"}</span>
+      ),
+      footer: () => (run ? <span className="text-money-negative">−{iqd(run.totalBaseReturns)}</span> : null),
+    },
+    {
+      // بلا اختصارٍ غامض: تسميةٌ مفهومة تُلَفّ خيرٌ من ترويسةٍ مبتورة.
+      id: "carryIn",
+      header: "مرحَّل من السابق",
+      accessorFn: (l) => (D(l.carryIn).isZero() ? "—" : iqd(l.carryIn)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{D(row.original.carryIn).isZero() ? "—" : iqd(row.original.carryIn)}</span>,
+    },
+    {
+      id: "effectiveBase",
+      header: "المبلغ المحتسَب عليه",
+      accessorFn: (l) => iqd(l.effectiveBase),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-medium">{iqd(row.original.effectiveBase)}</span>,
+      footer: () => (run ? iqd(stats.effectiveSum) : null),
+    },
+    {
+      id: "targetAmount",
+      header: "هدفه",
+      accessorFn: (l) => (l.targetAmount != null ? iqd(l.targetAmount) : "—"),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.targetAmount != null ? iqd(row.original.targetAmount) : "—"}</span>,
+    },
+    {
+      id: "achievementPct",
+      header: "نسبة التحقيق",
+      accessorFn: (l) => {
+        const detail = (l.detail ?? {}) as { noTarget?: boolean };
+        if (l.achievementPct != null) return `${fmtAr(l.achievementPct)}%`;
+        return detail.noTarget ? "بلا هدف" : "—";
+      },
+      meta: { align: "center" },
+      cell: ({ row }) => {
+        const l = row.original;
+        const detail = (l.detail ?? {}) as { noTarget?: boolean };
+        return l.achievementPct != null ? (
+          <AchievementBar pct={Number(l.achievementPct)} />
+        ) : detail.noTarget ? (
+          <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>
+        ) : (
+          <span className="text-muted-foreground text-xs">—</span>
+        );
+      },
+    },
+    {
+      id: "tier",
+      header: "المستوى المطبَّق",
+      accessorFn: (l) => (l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => {
+        const l = row.original;
+        return (
+          <span className="text-xs">
+            {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
+          </span>
+        );
+      },
+    },
+    {
+      id: "commissionAmount",
+      header: "عمولته",
+      accessorFn: (l) => iqd(l.commissionAmount),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="font-bold">{iqd(row.original.commissionAmount)}</span>,
+      footer: () => (run ? iqd(run.totalCommission) : null),
+    },
+    {
+      id: "carryOut",
+      header: "يُرحَّل للقادم",
+      accessorFn: (l) => (D(l.carryOut).isZero() ? "—" : iqd(l.carryOut)),
+      meta: { kind: "money" },
+      cell: ({ row }) => <span className="text-money-negative">{D(row.original.carryOut).isZero() ? "—" : iqd(row.original.carryOut)}</span>,
+      footer: () => (run ? <span className="text-money-negative">{iqd(stats.carryNeg)}</span> : null),
+    },
+    {
+      /* ترويسةٌ مسمّاة لا فارغة: الجدول أحدَ عشرَ عموداً ⇒ يظهر منتقي أعمدة DataTable،
+         وعمودٌ بترويسةٍ فارغة يُصيَّر فيه بنداً بلا اسم يُخفي «كشف/تفاصيل» بلا دليلٍ لإعادته. */
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap">
+          <button onClick={() => printStatement(row.original)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
+            <Printer className="size-3.5" aria-hidden /> كشف
+          </button>
+          <button onClick={() => setDetailLine(row.original)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
+            تفاصيل
+          </button>
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -215,10 +358,10 @@ export default function CommissionRuns() {
         description="في نهاية كل شهر يجمع النظام مبيعات كل بائع من الفواتير، يطرح مرتجعاته، ثم يطبّق خطته ويخرج عمولته. يبدأ الكشف «مسوّدة» قابلة للتعديل، ويعتمده شخص غير الذي احتسبه، ثم يُصرَف بنداً في مسيّر رواتب الشهر نفسه."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              className={selectClsSm}
+            <AppSelect
+              className="h-9"
               value={effectiveId != null ? String(effectiveId) : ""}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              onValueChange={(next) => setSelectedId(next ? Number(next) : null)}
               aria-label="كشف الشهر"
             >
               {runs.length === 0 && <option value="">لا كشوف بعد</option>}
@@ -227,8 +370,8 @@ export default function CommissionRuns() {
                   عمولات {r.period} — {STATUS_LABEL[r.status]}
                 </option>
               ))}
-            </select>
-            {canWrite && (
+            </AppSelect>
+            {canCompute && (
               <Button onClick={() => setComputeOpen(true)} disabled={busy}>
                 <Calculator className="size-4" /> احتساب شهر
               </Button>
@@ -238,6 +381,13 @@ export default function CommissionRuns() {
       />
 
       <CommissionGuide />
+
+      {canApproveCompany && (
+        <CommissionApprovalQueue
+          userId={Number(me.data?.id ?? 0)}
+          onChanged={refresh}
+        />
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="المبيعات المحتسَبة" value={iqd(stats.netBase)} sub="المبيعات بعد خصم المرتجعات (د.ع)" icon={<Wallet className="size-4" />} />
@@ -259,56 +409,62 @@ export default function CommissionRuns() {
           <Button variant="outline" size="sm" onClick={exportExcel} disabled={lines.length === 0}>
             <FileDown className="size-4" /> Excel
           </Button>
-          {isDraft && canWrite && (
+          {isDraft && canCompute && (
             <>
               <Button
                 variant="outline"
                 size="sm"
                 disabled={busy}
                 onClick={async () => {
-                  if (!(await confirm({ variant: "warning", title: `إعادة احتساب عمولات ${run.period}`, description: "ستُستبدل كل الأسطر بأرقام المبيعات والخطط والأهداف كما هي الآن. متابعة؟", confirmText: "إعادة الاحتساب" }))) return;
+                  if (!(await confirm({ variant: "warning", title: `إعادة احتساب عمولات ${run.period}`, description: `${canApproveCompany ? "ستُستبدل كل أسطر الشركة" : "ستُستبدل أسطر فرعك فقط"} بأرقام المبيعات والخطط والأهداف كما هي الآن. متابعة؟`, confirmText: "إعادة الاحتساب" }))) return;
                   compute.mutate({ period: run.period });
                 }}
               >
                 <RotateCcw className="size-4" /> إعادة الاحتساب
               </Button>
+              <Input
+                value={approvalReason}
+                onChange={(e) => setApprovalReason(e.target.value)}
+                className="h-9 w-56"
+                placeholder={canApproveCompany ? "سبب طلب اعتماد الشركة" : "سبب طلب اعتماد الفرع"}
+              />
               <Button
                 size="sm"
-                disabled={busy}
+                disabled={busy || approvalReason.trim().length < 3}
                 onClick={async () => {
-                  if (!(await confirm({ variant: "warning", title: `اعتماد عمولات ${run.period}`, description: `سيُقفل التعديل ويصبح الكشف جاهزاً للإدراج في مسيّر رواتب ${run.period} (إجمالي العمولات ${iqd(run.totalCommission)} د.ع). يشترط النظام أن يعتمده شخص غير الذي احتسبه.`, confirmText: "اعتماد" }))) return;
-                  approve.mutate({ id: Number(run.id) });
+                  const scopeLabel = canApproveCompany ? "الشركة" : "الفرع";
+                  if (!(await confirm({
+                    variant: "warning",
+                    title: `طلب اعتماد ${scopeLabel} لعمولات ${run.period}`,
+                    description: `سينشأ طلب صفر الأثر بإجمالي ظاهر ${iqd(run.totalCommission)} د.ع. لا تُقفل التشغيلة ولا تنتقل للرواتب قبل قرار مراجع شركة مستقل.`,
+                    confirmText: "إرسال الطلب",
+                  }))) return;
+                  approve.mutate({
+                    id: Number(run.id),
+                    requestKey: approvalRequestKey,
+                    reason: approvalReason.trim(),
+                  });
                 }}
               >
-                <Check className="size-4" /> اعتماد
+                <ShieldCheck className="size-4" /> {canApproveCompany ? "طلب اعتماد الشركة" : "طلب اعتماد الفرع"}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive"
-                disabled={busy}
-                onClick={async () => {
-                  if (!(await confirmDelete({ description: `حذف مسوّدة عمولات ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
-                  remove.mutate({ id: Number(run.id) });
-                }}
-              >
-                <Trash2 className="size-4" /> حذف المسوّدة
-              </Button>
+              {canApproveCompany && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive"
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!(await confirmDelete({ description: `حذف مسوّدة عمولات ${run.period} وكل أسطرها (${run.employeeCount} موظف)؟` }))) return;
+                      remove.mutate({ id: Number(run.id) });
+                    }}
+                  >
+                    <Trash2 className="size-4" /> حذف مسوّدة الشركة
+                  </Button>
+                </>
+              )}
             </>
-          )}
-          {isApproved && canWrite && run.payrollRunId == null && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive"
-              disabled={busy}
-              onClick={async () => {
-                if (!(await confirm({ variant: "danger", title: `إلغاء اعتماد عمولات ${run.period}`, description: "يعود الكشف مسوّدةً قابلة لإعادة الاحتساب. ممنوع إن أُدرج في مسيّر رواتب أو وُجد كشف لشهر أحدث.", confirmText: "إلغاء الاعتماد" }))) return;
-                unapprove.mutate({ id: Number(run.id) });
-              }}
-            >
-              <Undo2 className="size-4" /> إلغاء الاعتماد
-            </Button>
           )}
         </div>
       )}
@@ -318,105 +474,17 @@ export default function CommissionRuns() {
           <CardTitle>{run ? `عمولات ${run.period} — ${lines.length} موظف` : "احتساب العمولات الشهري"}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5 text-start">الموظف</th>
-                  <th className="p-2.5 text-right">المبيعات</th>
-                  <th className="p-2.5 text-right">المرتجعات</th>
-                  {/* بلا whitespace-nowrap: تسميات مفهومة تُلَفّ على سطرين أفضل من ترويسة
-                      مختصرة غامضة أو من جدول يتجاوز عرض الشاشة. */}
-                  <th className="p-2.5 text-right">مرحَّل من السابق</th>
-                  <th className="p-2.5 text-right">المبلغ المحتسَب عليه</th>
-                  <th className="p-2.5 text-right">هدفه</th>
-                  <th className="p-2.5">نسبة التحقيق</th>
-                  <th className="p-2.5 text-center">المستوى المطبَّق</th>
-                  <th className="p-2.5 text-right">عمولته</th>
-                  <th className="p-2.5 text-right">يُرحَّل للقادم</th>
-                  <th className="p-2.5 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((l) => {
-                  const detail = (l.detail ?? {}) as { noTarget?: boolean; planName?: string };
-                  return (
-                    <tr key={l.id} className="border-t hover:bg-accent/40">
-                      <td className="p-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <EmpAvatar name={l.employeeName} color={l.colorTag} photoUrl={l.photoUrl} sizePx={32} />
-                          <div className="min-w-0">
-                            <div className="font-medium text-[13px] whitespace-nowrap">{l.employeeName}</div>
-                            {/* اسم الخطة قد يطول — يُقصّ بدل توسيع العمود ودفع الجدول خارج الشاشة. */}
-                            <div
-                              className="max-w-[11rem] truncate text-[11px] text-muted-foreground"
-                              title={l.planName ?? detail.planName ?? undefined}
-                            >
-                              {l.planName ?? detail.planName ?? "—"}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(l.baseSales)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                        {D(l.baseReturns).gt(0) ? `−${iqd(l.baseReturns)}` : "—"}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {D(l.carryIn).isZero() ? "—" : iqd(l.carryIn)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{iqd(l.effectiveBase)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {l.targetAmount != null ? iqd(l.targetAmount) : "—"}
-                      </td>
-                      <td className="p-2.5">
-                        {l.achievementPct != null ? (
-                          <AchievementBar pct={Number(l.achievementPct)} />
-                        ) : detail.noTarget ? (
-                          <span className="inline-block rounded-full px-2 py-0.5 text-[11px] badge-stock-low">بلا هدف</span>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">—</span>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-center tabular-nums text-xs" dir="ltr">
-                        {l.tierIndex != null ? `${fmtAr(l.ratePct)}%${D(l.fixedBonus).gt(0) ? ` +${iqd(l.fixedBonus)}` : ""}` : "—"}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(l.commissionAmount)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                        {D(l.carryOut).isZero() ? "—" : iqd(l.carryOut)}
-                      </td>
-                      <td className="p-2.5 text-center whitespace-nowrap">
-                        <button onClick={() => printStatement(l)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
-                          <Printer className="size-3.5" aria-hidden /> كشف
-                        </button>
-                        <button onClick={() => setDetailLine(l)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
-                          تفاصيل
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {lines.length > 0 && run && (
-                  <tr className="border-t-2 bg-muted/40 font-bold">
-                    <td className="p-2.5">الإجمالي</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(run.totalBaseSales)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">−{iqd(run.totalBaseReturns)}</td>
-                    <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(stats.effectiveSum)}</td>
-                    <td colSpan={3}></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(run.totalCommission)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{iqd(stats.carryNeg)}</td>
-                    <td></td>
-                  </tr>
-                )}
-                {runQ.isLoading && effectiveId != null && (
-                  <tr><td colSpan={11}><LoadingState /></td></tr>
-                )}
-                {!runQ.isLoading && lines.length === 0 && (
-                  <TableEmptyRow colSpan={11} message={runs.length === 0 ? "لا كشوف عمولات بعد — اضغط «احتساب شهر» للبدء." : "لا أسطر في كشف هذا الشهر."} />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* كل الأسطر معروضةٌ دفعةً واحدة (pageSize=Infinity) كما كانت: صفُّ الإجماليات
+              يخصّ الكشف كلَّه، وترقيمُه إلى صفحاتٍ يجعل الإجماليّ يبدو إجماليَّ صفحة. */}
+          <DataTable<RunLine>
+            columns={columns}
+            data={lines}
+            pageSize={Infinity}
+            loading={runQ.isLoading && effectiveId != null}
+            errorState={{ isError: runQ.isError, message: runQ.error?.message, onRetry: () => void runQ.refetch() }}
+            emptyText={runs.length === 0 ? "لا كشوف عمولات بعد — اضغط «احتساب شهر» للبدء." : "لا أسطر في كشف هذا الشهر."}
+            searchPlaceholder="بحث باسم الموظف…"
+          />
         </CardContent>
       </Card>
 
@@ -487,5 +555,111 @@ export default function CommissionRuns() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function CommissionApprovalQueue({ userId, onChanged }: { userId: number; onChanged: () => Promise<void> }) {
+  const pending = trpc.commissions.runs.approvalRequests.useQuery({ status: "PENDING" });
+  const [rejectReasons, setRejectReasons] = useState<Record<number, string>>({});
+  const approve = trpc.commissions.runs.approveRequest.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.request.scopeBranchId == null ? "اعتُمد طلب الشركة وأُقفلت التشغيلة" : "اعتُمد نطاق الفرع بلا تغيير تشغيلة الشركة");
+      if (result.runApproval?.requiresPayrollRegeneration) {
+        notify.errBig(
+          "مسيّر رواتب هذا الشهر ما يزال مسوّدة",
+          "أعد توليد المسيّر من تبويب «الرواتب» كي يلتقط العمولة المعتمدة.",
+        );
+      }
+      await onChanged();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const reject = trpc.commissions.runs.rejectRequest.useMutation({
+    onSuccess: async () => { notify.ok("رُفض طلب الاعتماد بلا تغيير للتشغيلة"); await onChanged(); },
+    onError: (e) => notify.err(e),
+  });
+  const rows = pending.data ?? [];
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center justify-between gap-3 text-base">
+          <span className="flex items-center gap-2"><ShieldCheck className="size-4" aria-hidden /> طلبات اعتماد العمولات</span>
+          {!pending.isError ? <span className="rounded-full border px-2 py-0.5 text-xs">{rows.length} معلّق</span> : null}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {pending.isLoading ? (
+          <p className="text-sm text-muted-foreground">جارٍ تحميل الطلبات…</p>
+        ) : pending.isError ? (
+          <ErrorState onRetry={() => void pending.refetch()} />
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">لا طلبات اعتماد معلقة.</p>
+        ) : (
+          <div className="space-y-3">
+            {rows.map((row) => {
+              const own = Number(row.requestedBy) === userId;
+              const reason = rejectReasons[Number(row.id)] ?? "";
+              const payload = (row.payload ?? {}) as { totalCommission?: string; employeeCount?: number };
+              return (
+                <article key={row.id} className="rounded-lg border p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-bold">#{row.id} — عمولات {row.period} — {row.scopeBranchId == null ? "الشركة" : `الفرع #${row.scopeBranchId}`}</p>
+                      <p className="text-xs text-muted-foreground">{payload.employeeCount ?? 0} موظف · {iqd(payload.totalCommission ?? "0")} د.ع · الطالب: {row.requesterName}</p>
+                      <p className="mt-1 text-sm">{row.reason}</p>
+                    </div>
+                    {own && <span className="rounded-full border px-2 py-0.5 text-xs">طلبك — يلزم مراجع آخر</span>}
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]">
+                    <Input
+                      value={reason}
+                      onChange={(e) => setRejectReasons((old) => ({ ...old, [Number(row.id)]: e.target.value }))}
+                      placeholder="سبب الرفض (عند الرفض)"
+                      disabled={own}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={own || approve.isPending || reject.isPending}
+                      onClick={async () => {
+                        const companyEffect = row.scopeBranchId == null;
+                        const ok = await confirm({
+                          variant: "warning",
+                          title: `اعتماد طلب العمولات #${row.id}`,
+                          description: companyEffect
+                            ? "سيُقفل كشف الشركة ويصبح قابلاً للالتقاط في الرواتب، بعد مطابقة النسخة وفصل المهام داخل معاملة واحدة."
+                            : "سيُعتمد طلب نطاق الفرع فقط؛ لا تُقفل تشغيلة الشركة ولا تنتقل للرواتب حتى اعتماد طلب الشركة المستقل.",
+                          confirmText: "اعتماد",
+                        });
+                        if (ok) approve.mutate({
+                          id: Number(row.id),
+                          expectedVersion: Number(row.baseRunVersion),
+                          decisionKey: `commission-approve-${row.id}-${userId}`,
+                        });
+                      }}
+                    >
+                      <ShieldCheck className="size-4" aria-hidden /> اعتماد
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive"
+                      disabled={own || reason.trim().length < 3 || approve.isPending || reject.isPending}
+                      onClick={() => reject.mutate({
+                        id: Number(row.id),
+                        expectedVersion: Number(row.baseRunVersion),
+                        decisionKey: `commission-reject-${row.id}-${userId}`,
+                        reason: reason.trim(),
+                      })}
+                    >
+                      <XCircle className="size-4" aria-hidden /> رفض
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -6,10 +6,19 @@ import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { FinancialSourceBadge } from "@/components/financial";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { hasModuleAccess } from "@shared/permissions";
+import { moduleAccessAllowed } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PageHeader } from "@/components/PageHeader";
+import { CashCounter } from "@/components/CashCounter";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmtAr, sum } from "@/lib/money";
@@ -17,16 +26,18 @@ import { notify } from "@/lib/notify";
 import { newClientRequestId } from "@/lib/countQueue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { exportRows } from "@/lib/export";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { type ColumnDef } from "@tanstack/react-table";
 import {
   ArrowDownLeft,
   ArrowRight,
   ArrowUpRight,
+  AlertTriangle,
   Building2,
   CheckCircle2,
   Clock3,
   Layers,
+  Loader2,
   Receipt as ReceiptIcon,
   RefreshCcw,
   Vault,
@@ -37,6 +48,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 type Period = "today" | "yesterday" | "week" | "month";
+type PendingHandover = RouterOutputs["treasury"]["pendingHandoverReceipts"][number];
 
 const PERIOD_AR: Record<Period, string> = {
   today: "اليوم",
@@ -60,6 +72,41 @@ const fmtRelativeShort = (iso: string) => {
   if (h < 24) return `منذ ${h.toLocaleString("ar-IQ-u-nu-latn")} س`;
   return fmtDT(iso);
 };
+
+function CustodyQueryNotice({
+  loading,
+  error,
+  loadingLabel,
+  errorLabel,
+  onRetry,
+}: {
+  loading: boolean;
+  error: boolean;
+  loadingLabel: string;
+  errorLabel: string;
+  onRetry: () => void;
+}) {
+  if (loading) {
+    return (
+      <div role="status" className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        <Loader2 aria-hidden className="size-3.5 animate-spin" />
+        {loadingLabel}
+      </div>
+    );
+  }
+  if (!error) return null;
+  return (
+    <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+      <span className="flex items-center gap-2">
+        <AlertTriangle aria-hidden className="size-3.5" />
+        {errorLabel}
+      </span>
+      <Button type="button" size="sm" variant="outline" className="h-7 gap-1.5" onClick={onRetry}>
+        <RefreshCcw aria-hidden className="size-3.5" /> إعادة المحاولة
+      </Button>
+    </div>
+  );
+}
 
 interface MovementRow {
   id: string;
@@ -170,12 +217,25 @@ export default function Treasury() {
     undefined,
     { refetchInterval: 15_000 },
   );
+  const [acceptTarget, setAcceptTarget] = useState<PendingHandover | null>(null);
+  const [acceptBreakdown, setAcceptBreakdown] = useState<Record<number, number>>({});
+  const [acceptCounted, setAcceptCounted] = useState("0.00");
+  const [acceptRequestId, setAcceptRequestId] = useState("");
   const acceptHandover = trpc.treasury.acceptHandoverReceipt.useMutation({
     onSuccess: (result) => {
-      notify.ok(
-        result.idempotent ? "العهدة مقبولة مسبقاً" : "تم قبول عهدة النقد",
-        `السند ${result.referenceNumber} — ${fmtAr(result.amount)} د.ع`,
-      );
+      if (result.accepted) {
+        notify.ok(
+          result.idempotent ? "العهدة مقبولة مسبقاً" : "تم قبول عهدة النقد",
+          `السند ${result.referenceNumber} — ${fmtAr(result.countedCash)} د.ع`,
+        );
+        setAcceptTarget(null);
+      } else {
+        notify.warn(
+          `فرق عهدة ${fmtAr(result.variance)} د.ع`,
+          "حُفظ العد وبقيت العهدة معلّقة. أعد إسنادها إلى مستلم مستقل لإعادة العد؛ لم يدخل أي مبلغ إلى الخزينة.",
+        );
+        setAcceptTarget(null);
+      }
       void utils.treasury.pendingHandoverReceipts.invalidate();
       void utils.treasury.getDashboard.invalidate();
       void utils.treasury.getKpiTrends.invalidate();
@@ -194,12 +254,13 @@ export default function Treasury() {
   // بدونه يبقى نقدُ مستلمٍ غائب خارج رصيد الخزينة بلا أن يراه أحد (٥٠٬٠٠٠ د.ع ظلّت أربعة أيام).
   // بوّابة الشاشة تُطابق بوّابة الخادم (خريطة الصلاحيات: treasury=FULL) لا دوراً خاماً —
   // وإلّا صار المنح الصريح معلَناً في جرد الصلاحيات وغير قابلٍ للاستعمال فعلياً.
-  const canGovernHandovers = hasModuleAccess(
+  const canGovernHandovers = moduleAccessAllowed(
     userRole,
     (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)
       ?.permissionsOverride ?? null,
     "treasury",
     "FULL",
+    ["manager", "accountant"],
   );
   const pendingQueue = trpc.treasury.pendingHandoverQueue.useQuery(undefined, {
     enabled: canGovernHandovers,
@@ -209,7 +270,7 @@ export default function Treasury() {
     onSuccess: (result) => {
       notify.ok(
         "أُعيد إسناد العهدة",
-        `السند ${result.referenceNumber} — ${fmtAr(result.amount)} د.ع`,
+        `السند ${result.referenceNumber} أُسند إلى المستلم الجديد دون كشف المبلغ قبل العد.`,
       );
       void utils.treasury.pendingHandoverQueue.invalidate();
       void utils.treasury.pendingHandoverReceipts.invalidate();
@@ -217,7 +278,7 @@ export default function Treasury() {
     onError: (error) => notify.err(error),
   });
   const handoverRecipients = trpc.shifts.handoverRecipients.useQuery(undefined, {
-    enabled: isAdmin || isManager,
+    enabled: canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0,
   });
   const canChooseBranch = isAdmin || isManager;
   const hideTreasury = dashboard.data?.hideTreasury ?? false;
@@ -647,62 +708,69 @@ export default function Treasury() {
   return (
     <div className="mx-auto max-w-[1600px] space-y-4" dir="rtl">
       {/* ═══ Header / Toolbar ═══ */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-            <Vault className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold leading-tight">لوحة الخزينة</h1>
-            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-              {dashboard.data?.generatedAt && (
-                <span className="tabular-nums" dir="ltr">
-                  آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="mr-auto flex flex-wrap items-center gap-2">
-          {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) =>
-                setBranchId(e.target.value ? Number(e.target.value) : "")
-              }
+      {/* رأسٌ يدويّ (أيقونة + h1 + آخر تحديث + شريط أدوات بـ`mr-auto`) ⇐ PageHeader الموحّد.
+          هذه الصفحة تبويبُ «لوحة الخزينة» داخل TreasuryHub، وPageTabs لا يرسم h1 بنفسه
+          (كل صفحة مُضمَّنة تحمل رأسها) — فالرأس هنا رأسُ الشاشة لا عنوانَ قسم.
+          حاوية `actions` في PageHeader هي نفسها `flex flex-wrap items-center gap-2`، فسقط
+          الغلاف و`mr-auto` معاً (المحاذاة صارت بـ`justify-between` من الرأس). */}
+      {/* الأيقونة رمزٌ عارٍ `h-5 w-5 text-primary` — لا رقاقة ٤٠px كما كان الرأس اليدويّ.
+          `icon` يُصيَّر **داخل `<h1>`**، فرقاقةٌ بخلفيةٍ ترفع سطر العنوان إلى ٤٠px بينما
+          أشقّاء التبويب في TreasuryHub بين بلا أيقونة (المصروفات/السندات/الورديات/الفئتين)
+          وبين رمزٍ عارٍ بنفس المقاس (TreasuryTransfers: `<Send className="h-5 w-5 text-primary" />`)
+          ⇒ التنقّل بين تبويبات الوحدة نفسها كان يُقفز المحتوى رأسياً. ولا نظيرَ للرقاقة في
+          أيّ استعمالٍ آخر لـ`PageHeader` في المستودع — وإبقاؤها يُبقي زخرفةَ الرأس اليدويّ
+          داخل المكوّن الموحّد، وهو عين ما يُلغيه العقد. */}
+      <PageHeader
+        icon={<Vault aria-hidden className="h-5 w-5 text-primary" />}
+        title="لوحة الخزينة"
+        description={
+          dashboard.data?.generatedAt ? (
+            <span className="tabular-nums" dir="ltr">
+              آخر تحديث: {fmtRelativeShort(dashboard.data.generatedAt)}
+            </span>
+          ) : undefined
+        }
+        actions={
+          <>
+            {canChooseBranch && (branches.data?.length ?? 0) > 1 && (
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) =>
+                  setBranchId(value ? Number(value) : "")
+                }
+              >
+                <option value="">كل الفروع</option>
+                {branches.data?.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </AppSelect>
+            )}
+            <AppSelect
+              className="h-9"
+              value={period}
+              onValueChange={(value) => setPeriod(value as Period)}
             >
-              <option value="">كل الفروع</option>
-              {branches.data?.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
+              {(["today", "yesterday", "week", "month"] as const).map((p) => (
+                <option key={p} value={p}>
+                  {PERIOD_AR[p]}
                 </option>
               ))}
-            </select>
-          )}
-          <select
-            className={selectCls}
-            value={period}
-            onChange={(e) => setPeriod(e.target.value as Period)}
-          >
-            {(["today", "yesterday", "week", "month"] as const).map((p) => (
-              <option key={p} value={p}>
-                {PERIOD_AR[p]}
-              </option>
-            ))}
-          </select>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={refreshAll}
-            title="تحديث"
-          >
-            <RefreshCcw className="h-3.5 w-3.5 me-1" />
-            تحديث
-          </Button>
-        </div>
-      </div>
+            </AppSelect>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={refreshAll}
+              title="تحديث"
+            >
+              <RefreshCcw className="h-3.5 w-3.5 me-1" />
+              تحديث
+            </Button>
+          </>
+        }
+      />
 
       {/* ═══ شريط أزرار سريعة ═══ */}
       <div className="flex flex-wrap gap-2">
@@ -745,7 +813,10 @@ export default function Treasury() {
         )}
       </div>
 
-      {canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0 && (
+      {canGovernHandovers &&
+        (pendingQueue.isLoading ||
+          pendingQueue.isError ||
+          (pendingQueue.data?.length ?? 0) > 0) && (
         <section className="rounded-md border p-4">
           <div className="mb-3 flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-muted-foreground" />
@@ -757,56 +828,97 @@ export default function Treasury() {
               </p>
             </div>
           </div>
-          <div className="grid gap-2">
-            {pendingQueue.data?.map((row) => (
-              <div key={row.id} className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold tabular-nums" dir="ltr">{row.referenceNumber}</span>
-                    {row.ageDays >= 2 && (
-                      <span className="rounded bg-[var(--sem-warn)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warn)]">
-                        معلَّقة منذ {row.ageDays} يوماً
-                      </span>
-                    )}
-                    {!row.assignedToActive && (
-                      <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
-                        المستلم معطَّل
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    مُسنَدة إلى:{" "}
-                    <span className="font-medium text-foreground">{row.assignedToName ?? `#${row.assignedToId}`}</span>
-                    {row.sourceEmployeeName ? <> · من وردية {row.sourceEmployeeName}</> : null}
-                  </div>
+          <div className="space-y-3">
+            <CustodyQueryNotice
+              loading={pendingQueue.isLoading}
+              error={pendingQueue.isError}
+              loadingLabel="جارٍ تحميل طابور عهد الاستلام…"
+              errorLabel="تعذّر تحميل طابور عهد الاستلام؛ لا يمكن افتراض عدم وجود عهد معلّقة."
+              onRetry={() => void pendingQueue.refetch()}
+            />
+            {!pendingQueue.isLoading && !pendingQueue.isError && (
+              <>
+                <CustodyQueryNotice
+                  loading={handoverRecipients.isLoading}
+                  error={handoverRecipients.isError}
+                  loadingLabel="جارٍ تحميل المستلمين المؤهلين…"
+                  errorLabel="تعذّر تحميل قائمة المستلمين؛ أُوقفت إعادة الإسناد لحين نجاح التحميل."
+                  onRetry={() => void handoverRecipients.refetch()}
+                />
+                <div className="grid gap-2">
+                  {pendingQueue.data?.map((row) => (
+                    <div
+                      key={row.id}
+                      className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold tabular-nums" dir="ltr">
+                            {row.referenceNumber}
+                          </span>
+                          {row.ageDays >= 2 && (
+                            <span className="rounded bg-[var(--sem-warn)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warn)]">
+                              معلَّقة منذ {row.ageDays} يوماً
+                            </span>
+                          )}
+                          {!row.assignedToActive && (
+                            <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+                              المستلم معطَّل
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          مُسنَدة إلى:{" "}
+                          <span className="font-medium text-foreground">
+                            {row.assignedToName ?? `#${row.assignedToId}`}
+                          </span>
+                          {row.sourceEmployeeName ? <> · من وردية {row.sourceEmployeeName}</> : null}
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        المبلغ مخفي لحماية العد المستقل
+                      </div>
+                      <AppSelect
+                        value=""
+                        onValueChange={(v) => {
+                          if (v) {
+                            reassignHandover.mutate({ receiptId: row.id, toUserId: Number(v) });
+                          }
+                        }}
+                        disabled={
+                          reassignHandover.isPending ||
+                          handoverRecipients.isLoading ||
+                          handoverRecipients.isError
+                        }
+                        placeholder="إعادة إسناد إلى…"
+                        className="w-48"
+                        aria-label={`إعادة إسناد العهدة ${row.referenceNumber}`}
+                      >
+                        {(handoverRecipients.data ?? [])
+                          // الخادم يحصر القائمة في فرع القارئ، والفلتر يبقيها مطابقةً لفرع العهدة أيضاً.
+                          .filter(
+                            (u) =>
+                              Number(u.id) !== row.assignedToId &&
+                              Number(u.branchId) === row.branchId,
+                          )
+                          .map((u) => (
+                            <option key={u.id} value={String(u.id)}>
+                              {u.name ?? `#${u.id}`}
+                            </option>
+                          ))}
+                      </AppSelect>
+                    </div>
+                  ))}
                 </div>
-                <div className="text-base font-bold tabular-nums" dir="ltr">{fmtAr(row.amount)} د.ع</div>
-                <AppSelect
-                  value=""
-                  onValueChange={(v) => {
-                    if (v) reassignHandover.mutate({ receiptId: row.id, toUserId: Number(v) });
-                  }}
-                  disabled={reassignHandover.isPending}
-                  placeholder="إعادة إسناد إلى…"
-                  className="w-48"
-                  aria-label={`إعادة إسناد العهدة ${row.referenceNumber}`}
-                >
-                  {(handoverRecipients.data ?? [])
-                    // القائمة عابرةٌ للفروع؛ الخادم يرفض من هو خارج فرع العهدة ⇒ عرضُه خيارٌ ميّت.
-                    .filter((u) => Number(u.id) !== row.assignedToId && Number(u.branchId) === row.branchId)
-                    .map((u) => (
-                      <option key={u.id} value={String(u.id)}>
-                        {u.name ?? `#${u.id}`}
-                      </option>
-                    ))}
-                </AppSelect>
-              </div>
-            ))}
+              </>
+            )}
           </div>
         </section>
       )}
 
-      {(pendingHandovers.data?.length ?? 0) > 0 && (
+      {(pendingHandovers.isLoading ||
+        pendingHandovers.isError ||
+        (pendingHandovers.data?.length ?? 0) > 0) && (
         <section className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn)]/5 p-4">
           <div className="mb-3 flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-[var(--sem-warn)]" />
@@ -817,62 +929,110 @@ export default function Treasury() {
               </p>
             </div>
           </div>
-          <div className="grid gap-2">
-            {pendingHandovers.data?.map((handover) => {
-              const accepting =
-                acceptHandover.isPending &&
-                acceptHandover.variables?.receiptId === handover.id;
-              return (
-                <div
-                  key={handover.id}
-                  className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold tabular-nums" dir="ltr">
-                        {handover.referenceNumber}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {handover.source === "CASH_DROP"
-                          ? "سحب أثناء الوردية"
-                          : "تسليم إغلاق وردية"}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      <div>
-                        الموظف الذي سُحب من ورديته:{" "}
-                        <span className="font-medium text-foreground">
-                          {handover.sourceEmployeeName ?? "غير مسجّل"}
-                        </span>
-                        {handover.sourceShiftId != null && (
-                          <> · وردية #{handover.sourceShiftId}</>
-                        )}
-                      </div>
-                      <div className="mt-0.5 tabular-nums" dir="ltr">
-                        وقت السحب: {fmtDT(handover.createdAt)}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-base font-bold tabular-nums" dir="ltr">
-                    {fmtAr(handover.amount)} د.ع
-                  </div>
-                  <Button
-                    size="sm"
-                    onClick={() =>
-                      acceptHandover.mutate({ receiptId: handover.id })
-                    }
-                    disabled={acceptHandover.isPending}
-                    className="gap-1.5"
+          <CustodyQueryNotice
+            loading={pendingHandovers.isLoading}
+            error={pendingHandovers.isError}
+            loadingLabel="جارٍ تحميل عهد النقد المسندة إليك…"
+            errorLabel="تعذّر تحميل عهد الاستلام المسندة إليك؛ لا يمكن افتراض عدم وجود عهد."
+            onRetry={() => void pendingHandovers.refetch()}
+          />
+          {!pendingHandovers.isLoading && !pendingHandovers.isError && (
+            <div className="grid gap-2">
+              {pendingHandovers.data?.map((handover) => {
+                const accepting =
+                  acceptHandover.isPending &&
+                  acceptHandover.variables?.receiptId === handover.id;
+                return (
+                  <div
+                    key={handover.id}
+                    className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5"
                   >
-                    <CheckCircle2 className="h-4 w-4" />
-                    {accepting ? "جارٍ القبول…" : "تأكيد الاستلام"}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold tabular-nums" dir="ltr">
+                          {handover.referenceNumber}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {handover.source === "CASH_DROP"
+                            ? "سحب أثناء الوردية"
+                            : "تسليم إغلاق وردية"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        <div>
+                          الموظف الذي سُحب من ورديته:{" "}
+                          <span className="font-medium text-foreground">
+                            {handover.sourceEmployeeName ?? "غير مسجّل"}
+                          </span>
+                          {handover.sourceShiftId != null && (
+                            <> · وردية #{handover.sourceShiftId}</>
+                          )}
+                        </div>
+                        <div className="mt-0.5 tabular-nums" dir="ltr">
+                          وقت السحب: {fmtDT(handover.createdAt)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      المبلغ المعلن مخفي حتى العد المستقل
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setAcceptTarget(handover);
+                        setAcceptBreakdown({});
+                        setAcceptCounted("0.00");
+                        setAcceptRequestId(newClientRequestId());
+                      }}
+                      disabled={acceptHandover.isPending}
+                      className="gap-1.5"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      {accepting ? "جارٍ القبول…" : "عدّ واستلام"}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
+
+      <Dialog open={acceptTarget != null} onOpenChange={(open) => { if (!open && !acceptHandover.isPending) setAcceptTarget(null); }}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>عدّ عهدة النقد {acceptTarget?.referenceNumber}</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            عدّ الفئات فعلياً قبل المقارنة. إذا اختلف المجموع سيُحفظ الفرق وتبقى العهدة خارج الخزينة.
+          </p>
+          <CashCounter
+            value={acceptBreakdown}
+            onChange={(counts, total) => {
+              setAcceptBreakdown(counts);
+              setAcceptCounted(total);
+            }}
+            disabled={acceptHandover.isPending}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAcceptTarget(null)} disabled={acceptHandover.isPending}>إلغاء</Button>
+            <Button
+              disabled={!acceptTarget || !acceptRequestId || acceptHandover.isPending}
+              onClick={() => {
+                if (!acceptTarget) return;
+                acceptHandover.mutate({
+                  receiptId: acceptTarget.id,
+                  countedCash: acceptCounted,
+                  countedBreakdown: Object.fromEntries(Object.entries(acceptBreakdown).map(([key, value]) => [String(key), value])),
+                  clientRequestId: acceptRequestId,
+                });
+              }}
+            >
+              {acceptHandover.isPending ? "جارٍ حفظ العد…" : "حفظ العد ومحاولة القبول"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ═══ صف ١: KPI cards ═══ */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1153,12 +1313,12 @@ export default function Treasury() {
                   الفرع
                 </label>
                 {isAdmin ? (
-                  <select
+                  <AppSelect
                     className={selectCls + " w-full"}
-                    value={fundBranch}
-                    onChange={(e) =>
+                    value={String(fundBranch)}
+                    onValueChange={(value) =>
                       setFundBranch(
-                        e.target.value ? Number(e.target.value) : "",
+                        value ? Number(value) : "",
                       )
                     }
                   >
@@ -1168,7 +1328,7 @@ export default function Treasury() {
                         {b.name}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 ) : (
                   <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
                     {(branches.data ?? []).find(

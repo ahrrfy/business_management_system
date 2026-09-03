@@ -14,7 +14,7 @@ function db() {
   return value;
 }
 
-function payload(id: string) {
+function payload(id: string, family: "OPERATIONS" | "ADMIN" = "OPERATIONS") {
   return normalizeNativePushPayload({
     notificationId: id,
     kind: "TASK_ASSIGNED",
@@ -23,6 +23,7 @@ function payload(id: string) {
     destination: "alrueya://app/tasks",
     urgency: "action",
     sensitive: false,
+    family,
   });
 }
 
@@ -47,7 +48,7 @@ describe("nativePushOutboxWorker", () => {
       .values({
         userId: 52,
         eventKey: "native:success:1",
-        payload: payload("native_success_1"),
+        payload: payload("native_success_1", "ADMIN"),
         environment: "dev",
       });
     const deliver = vi.fn(async () => ({ sent: 1, goneRevoked: 0, failed: 0 }));
@@ -64,6 +65,7 @@ describe("nativePushOutboxWorker", () => {
     expect(first).toMatchObject({ claimed: 1, sent: 1, retried: 0, dead: 0 });
     expect(second.claimed).toBe(0);
     expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[1]).toMatchObject({ family: "ADMIN" });
     const [row] = await db().select().from(nativePushOutbox);
     expect(row.status).toBe("SENT");
     expect(row.attemptCount).toBe(1);

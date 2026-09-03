@@ -1,5 +1,6 @@
 /**
- * رافدا ردّ المرتجع: **نقدٌ أو بطاقة، مهما كان رافد القبض** (قرار المالك ١٧/٨/٢٦).
+ * سقوف ردّ المرتجع تبقى عابرةً للطرق للعملاء المسجّلين، بينما الزبون العابر يخضع لعقد P0:
+ * `resolution` نقدي فوري كامل فقط. اختبارات البطاقة أدناه تربط الفاتورة بعميل مسجّل عمداً.
  *
  * العلّة الواقعية (INV-1-20260816-00118): فاتورةٌ مدفوعةٌ بالبطاقة لزبونٍ عابر (بلا عميل مسجَّل)
  * كانت **بلا أيّ مسار استرداد بنيوياً**:
@@ -53,6 +54,7 @@ async function seedBase() {
     { id: 1, openId: "mgr", name: "مديرة الفرع", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "cashier1", name: "كاشير أحمد", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.customers).values({ id: 1, name: "عميل بطاقة مسجّل", currentBalance: "0.00" });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
@@ -66,10 +68,10 @@ async function openShiftFor(userId: number, opening = "0"): Promise<number> {
 }
 
 /** بيعٌ نقديّ ثمّ إعادة وسم إيصال القبض بطاقةً — يحاكي فاتورة بطاقةٍ لزبونٍ عابر بلا فتح مسار قبضٍ حيّ. */
-async function sellPaidByCard(shiftId: number, qty: number) {
+async function sellPaidByCard(shiftId: number, qty: number, customerId?: number) {
   const sale = await createSale(
     {
-      branchId: 1, shiftId, sourceType: "POS",
+      branchId: 1, shiftId, sourceType: "POS", customerId,
       lines: [{ variantId: 1, productUnitId: 1, quantity: String(qty) }],
       payment: { amount: `${qty * 10}.00`, method: "CASH" },
     },
@@ -87,6 +89,15 @@ async function outReceipts(invoiceId: number) {
     eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
   ));
 }
+
+const walkInCashResolution = (amount: string, shiftId: number) => ({
+  kind: "IMMEDIATE_REFUND" as const,
+  method: "CASH" as const,
+  amount,
+  shiftId,
+  reason: "رد نقدي لزبون عابر",
+  disposition: "RESTOCK" as const,
+});
 
 beforeEach(async () => {
   await reset();
@@ -115,8 +126,7 @@ describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
       {
         invoiceId,
         lines: [{ invoiceItemId: itemId, baseQuantity: 5 }],
-        refund: { amount: "50.00", method: "CASH", shiftId: shift },
-        restock: true,
+        resolution: walkInCashResolution("50.00", shift),
       },
       manager,
     );
@@ -132,7 +142,7 @@ describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
 
   it("الوعاء يمنع الاسترداد المزدوج: ردٌّ نقديّ ثمّ محاولةُ ردٍّ بالبطاقة على ما تبقّى", async () => {
     const shift = await openShiftFor(2, "1000.00");
-    const { invoiceId, itemId } = await sellPaidByCard(shift, 10); // 100.00 بالبطاقة
+    const { invoiceId, itemId } = await sellPaidByCard(shift, 10, 1); // عميل مسجّل، 100.00 بالبطاقة
 
     // مرتجعٌ جزئيّ ٥ قطع (50.00) نقداً ⇒ يستهلك نصف الوعاء.
     await returnSale(
@@ -165,7 +175,7 @@ describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
 describe("الردّ بالبطاقة — إثباتٌ لا إقفال، وأثرٌ حقيقيّ لا سندٌ معلَّق", () => {
   it("بلا مرجع الجهاز يُرفض", async () => {
     const shift = await openShiftFor(2, "1000.00");
-    const { invoiceId, itemId } = await sellPaidByCard(shift, 5);
+    const { invoiceId, itemId } = await sellPaidByCard(shift, 5, 1);
 
     await expect(returnSale(
       {
@@ -182,7 +192,7 @@ describe("الردّ بالبطاقة — إثباتٌ لا إقفال، وأث�
 
   it("بمرجعٍ صحيح: إيصالٌ منفَّذٌ بلا دلو، يُنقص المقبوض، ولا يمسّ الدرج", async () => {
     const shift = await openShiftFor(2, "1000.00");
-    const { invoiceId, itemId } = await sellPaidByCard(shift, 5);
+    const { invoiceId, itemId } = await sellPaidByCard(shift, 5, 1);
 
     const res = await returnSale(
       {

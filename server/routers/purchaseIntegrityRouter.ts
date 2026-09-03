@@ -1,0 +1,18 @@
+import { z } from "zod";
+import { nonNegMoneyString } from "../lib/schemas";
+import { decidePurchaseIntegrityResolution, getPurchaseIntegrityCase, listPurchaseIntegrityCases, listResolutionCandidates, openPurchaseIntegrityCase, requestPurchaseIntegrityResolution } from "../services/purchase/integrityCases";
+import { getPurchaseMonthCloseBlockers } from "../services/purchase/monthCloseBlockers";
+import { purchasesManagerProcedure, purchasesReadProcedure, router } from "../trpc";
+
+const actor = (ctx: { user: { id: number; branchId?: number | null; role?: string } }) => ({ userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role }); const key120 = z.string().trim().min(1).max(120); const reason = z.string().trim().min(3).max(1000);
+const code = z.enum(["GRN_WITHOUT_POSTED_INVOICE", "INVOICE_WITHOUT_GRN", "UNMATCHED_POSTED_INVOICE", "PAYMENT_EXCEEDS_INVOICE", "RETURN_EXCEEDS_MATCH", "RETURN_WITHOUT_SOURCE", "CHARGE_WITHOUT_EVIDENCE", "AP_LEDGER_MISMATCH", "GRNI_AGING", "DUPLICATE_SUPPLIER_DOCUMENT", "PERIOD_CLOSE_BLOCKER", "LEGACY_AP_CLASSIFICATION", "LEGACY_PAYMENT_ALLOCATION_AMBIGUOUS", "LEGACY_PAYMENT_EVIDENCE_INVALID", "LEGACY_PAYMENT_EXCEEDS_INVOICE", "OTHER"]);
+
+export const purchaseIntegrityRouter = router({
+  open: purchasesManagerProcedure.input(z.object({ caseKey: z.string().trim().min(1).max(180), branchId: z.number().int().positive(), supplierId: z.number().int().positive().nullish(), purchaseOrderId: z.number().int().positive().nullish(), goodsReceiptId: z.number().int().positive().nullish(), supplierInvoiceId: z.number().int().positive().nullish(), purchaseReturnId: z.number().int().positive().nullish(), supplierPaymentId: z.number().int().positive().nullish(), purchaseChargeId: z.number().int().positive().nullish(), code, severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]), title: z.string().trim().min(1).max(255), description: z.string().trim().min(1).max(1000), detectedAmount: nonNegMoneyString.nullish(), evidence: z.unknown(), reason })).mutation(({ input, ctx }) => openPurchaseIntegrityCase(input, actor(ctx))),
+  requestResolution: purchasesManagerProcedure.input(z.object({ caseId: z.number().int().positive(), requestKey: key120, reason, evidenceReference: z.string().trim().min(1).max(500) })).mutation(({ input, ctx }) => requestPurchaseIntegrityResolution(input, actor(ctx))),
+  decideResolution: purchasesManagerProcedure.input(z.object({ caseId: z.number().int().positive(), decisionKey: key120, decision: z.enum(["APPROVE_RESOLVED", "APPROVE_DISMISSED", "REJECT"]), reason })).mutation(({ input, ctx }) => decidePurchaseIntegrityResolution(input, actor(ctx))),
+  list: purchasesReadProcedure.input(z.object({ branchId: z.number().int().positive(), status: z.enum(["OPEN", "IN_REVIEW", "PENDING_RESOLUTION", "RESOLVED", "DISMISSED"]).optional(), severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(), limit: z.number().int().positive().max(200).optional() })).query(({ input, ctx }) => listPurchaseIntegrityCases(input, actor(ctx))),
+  get: purchasesReadProcedure.input(z.object({ caseId: z.number().int().positive() })).query(({ input, ctx }) => getPurchaseIntegrityCase(input.caseId, actor(ctx))),
+  resolutionSources: purchasesReadProcedure.input(z.object({ branchId: z.number().int().positive() })).query(({ input, ctx }) => listResolutionCandidates(input.branchId, actor(ctx))),
+  monthCloseBlockers: purchasesReadProcedure.input(z.object({ branchId: z.number().int().positive(), cutoffDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })).query(({ input, ctx }) => getPurchaseMonthCloseBlockers(input, actor(ctx))),
+});

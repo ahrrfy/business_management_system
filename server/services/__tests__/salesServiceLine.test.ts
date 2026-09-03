@@ -168,9 +168,15 @@ describe("createSale — خدمة كسطر فاتورة متقدّمة", () => {
         invoiceItemId: Number(item.id),
         baseQuantity: Number(item.baseQuantity),
       })),
-      restock: true,
-      // زبونٌ عابر مدفوعٌ نقداً: المرتجع الكامل يستوجب ردّ ما دفعه (حارس ١٧/٨ — لا ذمّة تستوعبه).
-      refund: { amount: "2750.00", method: "CASH" as const },
+      // زبونٌ عابر مدفوعٌ نقداً: قرارٌ صريح كامل يثبت الرد وحالة البضاعة.
+      resolution: {
+        kind: "IMMEDIATE_REFUND",
+        method: "CASH",
+        amount: "2750.00",
+        shiftId: 1,
+        reason: "مرتجع سلّة مختلطة كامل مع إعادة السلعة المملوكة فقط",
+        disposition: "RESTOCK",
+      },
     }, actor);
 
     // القلم أصل مملوك عاد للرف؛ مواد وصفة الخدمة استُهلكت فعلاً ولا تنشأ من المرتجع.

@@ -1,19 +1,79 @@
 /** كشف تشغيلي للمنتجات غير المعدودة — شاشة توجيه العمال والطباعة والتصدير. */
 import { useDeferredValue, useEffect, useState } from "react";
+import { FilterField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link, useParams } from "wouter";
 import { Download, Printer, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
-import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { trpc } from "@/lib/trpc";
+import { ErrorState, LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { notify } from "@/lib/notify";
 import { fmtInt } from "@/lib/money";
 
 const PAGE = 250;
+
+/** صفُّ الكشف — مشتقٌّ من عقد `stocktakes.remaining` فلا ينجرف عن الخادم. */
+type RemainingRow = RouterOutputs["stocktakes"]["remaining"]["items"][number];
+
+const remainingColumns: ColumnDef<RemainingRow, unknown>[] = [
+  {
+    id: "product",
+    header: "المنتج",
+    accessorFn: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+    meta: { width: "wide" },
+    cell: ({ row }) => (
+      <>
+        <p className="font-bold">{row.original.productName}</p>
+        {row.original.variantName && <p className="text-xs text-muted-foreground">{row.original.variantName}</p>}
+      </>
+    ),
+  },
+  {
+    id: "sku",
+    header: "SKU / الباركود",
+    accessorFn: (r) => `${r.sku}${r.barcode ? ` / ${r.barcode}` : ""}`,
+    // kind: "code" يتكفّل بالخطّ الأحاديّ وعزل اتّجاه الأرقام ⇒ لا dir="ltr" ولا font-mono يدويّين.
+    meta: { kind: "code" },
+    cell: ({ row }) => (
+      <div className="text-xs">
+        <p>{row.original.sku}</p>
+        <p className="text-muted-foreground">{row.original.barcode ?? "—"}</p>
+      </div>
+    ),
+  },
+  {
+    id: "unit",
+    header: "الوحدة",
+    accessorFn: (r) => r.baseUnit ?? "—",
+    cell: ({ row }) => row.original.baseUnit ?? "—",
+  },
+  {
+    id: "assignment",
+    header: "مجموعة التوجيه المقترحة",
+    accessorFn: (r) => r.assignmentName,
+    cell: ({ row }) => <span className="font-semibold">{row.original.assignmentName}</span>,
+  },
+  {
+    id: "zone",
+    header: "المنطقة",
+    accessorFn: (r) => r.zone ?? "—",
+    cell: ({ row }) => row.original.zone ?? "—",
+  },
+  {
+    // خانةُ علامةٍ ميدانية للعدّ اليدويّ — بلا قيمةٍ تُنسَخ فلا accessorFn لها.
+    id: "fieldMark",
+    header: "علامة ميدانية",
+    enableSorting: false,
+    meta: { align: "center", width: "status" },
+    cell: () => <span className="text-xl text-muted-foreground">□</span>,
+  },
+];
 
 export default function StocktakeRemaining() {
   const params = useParams();
@@ -198,73 +258,34 @@ export default function StocktakeRemaining() {
               className="h-9 w-full rounded-md border bg-card pe-3 ps-9 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
             />
           </label>
-          <select
-            value={assignmentId}
-            onChange={(e) => setAssignmentId(e.target.value)}
-            className="h-9 min-w-52 rounded-md border bg-card px-3 text-sm"
-            aria-label="تصفية حسب العامل أو الفريق"
-          >
-            <option value="">كل العمال والمناطق</option>
-            {assignments.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}{a.zone ? ` — ${a.zone}` : ""}</option>
-            ))}
-          </select>
+          <FilterField label="العامل / المنطقة" className="min-w-52">
+            <AppSelect
+              value={assignmentId}
+              onValueChange={setAssignmentId}
+            >
+              <option value="">كل العمال والمناطق</option>
+              {assignments.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.zone ? ` — ${a.zone}` : ""}</option>
+              ))}
+            </AppSelect>
+          </FilterField>
           <span className="me-auto text-xs text-muted-foreground">
             {remaining.isFetching ? "يُحدَّث…" : `${fmtInt(total)} منتج متبقٍ`}
           </span>
         </div>
 
-        <ScrollTableShell bordered={false}>
-          <table className="w-full min-w-[900px] text-sm">
-            <thead className="bg-muted/60 text-xs text-muted-foreground">
-              <tr>
-                <th className="p-2.5 text-start font-semibold">المنتج</th>
-                <th className="p-2.5 text-start font-semibold">SKU / الباركود</th>
-                <th className="p-2.5 text-start font-semibold">الوحدة</th>
-                <th className="p-2.5 text-start font-semibold">مجموعة التوجيه المقترحة</th>
-                <th className="p-2.5 text-start font-semibold">المنطقة</th>
-                <th className="p-2.5 text-center font-semibold">علامة ميدانية</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((r) => (
-                <tr key={r.variantId} className="border-t">
-                  <td className="p-2.5">
-                    <p className="font-bold">{r.productName}</p>
-                    {r.variantName && <p className="text-xs text-muted-foreground">{r.variantName}</p>}
-                  </td>
-                  <td className="p-2.5 font-mono text-xs" dir="ltr">
-                    <p>{r.sku}</p>
-                    <p className="text-muted-foreground">{r.barcode ?? "—"}</p>
-                  </td>
-                  <td className="p-2.5">{r.baseUnit ?? "—"}</td>
-                  <td className="p-2.5 font-semibold">{r.assignmentName}</td>
-                  <td className="p-2.5">{r.zone ?? "—"}</td>
-                  <td className="p-2.5 text-center text-xl text-muted-foreground">□</td>
-                </tr>
-              ))}
-              {items.length === 0 && <TableEmptyRow colSpan={6} message="لا توجد منتجات متبقية ضمن هذا الفلتر." />}
-            </tbody>
-          </table>
-        </ScrollTableShell>
-        {total > PAGE && (
-          <div className="flex items-center justify-center gap-3 border-t p-3">
-            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-              السابق
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              صفحة {fmtInt(page + 1)} من {fmtInt(Math.ceil(total / PAGE))} · المعروض {fmtInt(items.length)}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={(page + 1) * PAGE >= total}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              التالي
-            </Button>
-          </div>
-        )}
+        <DataTable<RemainingRow>
+          columns={remainingColumns}
+          data={items}
+          /* البحث والفلتر في شريط البطاقة أعلاه (يغذّيان الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+          searchable={false}
+          externalFiltersActive={qDeferred !== "" || assignmentId !== ""}
+          loading={remaining.isLoading}
+          /* الخطأ يُعالَج بعودةٍ مبكّرة أعلاه (ErrorState لكامل الشاشة) ⇒ لا حاجة لـerrorState هنا. */
+          /* الترقيم خادميّ (limit/offset) ⇒ شريطٌ واحد داخل الجدول بدل شريطٍ يدويّ تحته. */
+          serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total }}
+          emptyText="لا توجد منتجات متبقية ضمن هذا الفلتر."
+        />
       </Card>
     </div>
   );

@@ -2,10 +2,15 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). فلتر فرع.
 // ⚠️ القيمة بالتكلفة (آخر تكلفة، قرار المالك)؛ الكمية بالوحدة الأساس.
 import { useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { useMemo } from "react";
+import { FilterField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
+
 import { fmtAr, fmtInt } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -15,8 +20,6 @@ type Row = RouterOutputs["reports"]["inventoryValuation"]["rows"][number];
 
 const NOTE =
   "القيمة بالتكلفة (آخر تكلفة) لكل وحدة أساس × الكمية الحالية في المخزون؛ الكمية بالوحدة الأساس. لقطة لحظية للرصيد الحالي.";
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function InventoryValuation() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -77,6 +80,36 @@ export default function InventoryValuation() {
         : undefined,
     });
   }
+  /** أعمدة تقييم المخزون + ذيل الإجماليات (دعم tfoot في DataTable). */
+  const valuationColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    {
+      id: "categoryName", header: "الفئة",
+      accessorFn: (r) => r.categoryName,
+      footer: () => (totals ? "الإجمالي" : null),
+      meta: { kind: "text", wrap: true },
+    },
+    {
+      id: "items", header: "عدد المنتجات",
+      accessorFn: (r) => Number(r.items),
+      cell: ({ row }) => fmtInt(row.original.items),
+      footer: () => (totals ? fmtInt(totals.items) : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "totalQty", header: "إجمالي الكمية",
+      accessorFn: (r) => Number(r.totalQty),
+      cell: ({ row }) => fmtInt(row.original.totalQty),
+      footer: () => (totals ? fmtInt(totals.totalQty) : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "totalValue", header: "القيمة بالتكلفة",
+      accessorFn: (r) => Number(r.totalValue),
+      cell: ({ row }) => <span className="font-medium">{fmtAr(row.original.totalValue)}</span>,
+      footer: () => (totals ? fmtAr(totals.totalValue) : null),
+      meta: { kind: "money" },
+    },
+  ], [totals]);
 
   return (
     <ReportShell
@@ -89,57 +122,24 @@ export default function InventoryValuation() {
       exportDisabled={!rows.length}
       printDisabled={!rows.length}
       filters={
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] text-muted-foreground">الفرع</label>
-          <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+        <FilterField label="الفرع">
+          <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
             <option value="">الكل</option>
             {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-          </select>
-        </div>
+          </AppSelect>
+        </FilterField>
       }
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مخزون في هذا النطاق.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">الفئة</th>
-                    <th className="p-2.5 text-right font-medium">عدد المنتجات</th>
-                    <th className="p-2.5 text-right font-medium">إجمالي الكمية</th>
-                    <th className="p-2.5 text-right font-medium">القيمة بالتكلفة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.categoryId ?? "none"} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-end">{r.categoryName}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.items)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.totalQty)}</td>
-                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtAr(r.totalValue)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-                {totals && (
-                  <tfoot>
-                    <tr className="border-t-2 font-bold bg-muted/30">
-                      <td className="p-2.5 text-end">الإجمالي</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(totals.items)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(totals.totalQty)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(totals.totalValue)}</td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </div>
-          )}
+          <DataTable
+            columns={valuationColumns}
+            data={rows}
+            loading={q.isLoading}
+            searchable={false}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا مخزون في هذا النطاق."
+          />
         </CardContent>
       </Card>
     </ReportShell>

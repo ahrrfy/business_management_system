@@ -33,6 +33,7 @@ import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
+import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const ForceTwoFactorEnroll = lazy(() =>
@@ -88,9 +89,12 @@ const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
 const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
-const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
+const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
+const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
+const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
+const PurchaseIntegrityCases = lazy(() => import("@/pages/PurchaseIntegrityCases"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
@@ -360,32 +364,40 @@ export default function App() {
       <Route path="/labels/print"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
-      <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
+      <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
       <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
-      <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
+      <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
       <Route path="/quotations/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id/edit"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
       <Route path="/crm"><Shell><CrmHub /></Shell></Route>
+      <Route path="/sales-pipeline"><Redirect to="/crm?tab=pipeline" /></Route>
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
-      <Route path="/sales-returns/new"><Shell><SalesReturnNew /></Shell></Route>
+      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
       <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
-      <Route path="/purchase-returns/new"><Shell><PurchaseReturnNew /></Shell></Route>
-      <Route path="/purchase-returns/:id"><Shell><PurchaseReturnDetail /></Shell></Route>
+      <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
+      <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
       <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
-      <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
-      <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
-      <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
-      <Route path="/purchases/:id/edit"><Shell><PurchaseEdit /></Shell></Route>
-      {/* بعد /purchases/new و/:id/receive و/:id/edit عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
-      <Route path="/purchases/:id"><Shell><PurchaseOrderDetail /></Shell></Route>
+      <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
+      <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
+      {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}
+      <Route path="/purchases/:id/receive">{(params) => <Redirect to={`/purchases/${params.id}`} />}</Route>
+      <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
+      <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
+      <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
+      <Route path="/purchases/returns-governance"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
+      {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
+      <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
@@ -396,7 +408,7 @@ export default function App() {
       <Route path="/stocktakes/:id"><Shell><StocktakeMonitor /></Shell></Route>
       <Route path="/inventory-movements"><RedirectKeepQuery to="/inventory?tab=movements" /></Route>
       <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
-      <Route path="/work-orders"><Shell><PrintHub /></Shell></Route>
+      <Route path="/work-orders"><Shell><RequireRole gate={WORK_ORDERS_HUB_GATE}><PrintHub /></RequireRole></Shell></Route>
       {/* إنشاء الخدمة دُمج في شاشة الاستقبال؛ الرابط القديم لا يفتح بوابة ثانية. */}
       <Route path="/work-orders/new"><Redirect to="/pos?mode=RECEPTION" /></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
@@ -404,7 +416,7 @@ export default function App() {
       <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
       <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
-      <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
+      <Route path="/work-orders/:id"><Shell><RequireRole module="workorders" level="READ"><WorkOrderDetail /></RequireRole></Shell></Route>
       {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
           الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
       <Route path="/tasks">
@@ -432,8 +444,8 @@ export default function App() {
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
-      <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
-      <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
+      <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
+      <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
       <Route path="/production-recipes"><Redirect to="/work-orders?tab=recipes" /></Route>
       <Route path="/assets"><Shell><RequireRole roles={["admin","manager"]}><AssetsHub /></RequireRole></Shell></Route>
       <Route path="/assets/new"><Shell><RequireRole roles={["admin","manager"]}><AssetNew /></RequireRole></Shell></Route>
@@ -510,7 +522,7 @@ export default function App() {
       <Route path="/reports/offline-sales"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><OfflineSalesReport /></RequireRole></Shell></Route>
       <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
       <Route path="/reports/cash-remediation"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashRemediation /></RequireRole></Shell></Route>
-      <Route path="/reports/day-close"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><DayCloseReport /></RequireRole></Shell></Route>
+      <Route path="/reports/day-close"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><RequireRole roles={["admin","manager","accountant","auditor"]} module="treasury"><DayCloseReport /></RequireRole></RequireRole></Shell></Route>
       {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
@@ -528,7 +540,7 @@ export default function App() {
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
       {/* لوحة المؤشّرات التنفيذية أُدمجت في كوكبِت «مركز التقارير» (ReportsOverview) — إعادة توجيه تَحفظ الروابط القديمة. */}
       <Route path="/reports/executive"><Redirect to="/reports" /></Route>
-      <Route path="/sales-report"><Redirect to="/invoices?tab=report" /></Route>
+      <Route path="/sales-report"><Redirect to="/reports/sales-hub" /></Route>
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AgingReportsHub /></RequireRole></Shell></Route>
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
