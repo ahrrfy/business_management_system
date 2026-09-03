@@ -1,11 +1,10 @@
-// نافذة خطوات التنفيذ الخارجيّ (ش٧). تُفتح بعد `prepare` وتعرض الكروت **واحداً واحداً**:
-// الموظّف يُصدر الكرت من جهاز المزوّد، يُدخل المرجع إن لزم، ثم يضغط «نجح التنفيذ» فيُسجَّل فوراً.
+// تعرض سلة عملية المزوّد كاملة؛ الحجز والتأكيد ذرّيان لكل بطاقاتها.
 //
 // الضمان الحاكم (§٨.٧): بعد تسجيل نجاحٍ واحد **لا يُتجاهَل شيء**. Escape لا يُغلق النافذة بصمت،
 // بل يعرض تحذير المراجعة — لأن الكرت صدر فعلاً وله أثرٌ ماليّ مستحقّ.
 import { notify } from "@/lib/notify";
+import { D, fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { digitalSaleReferenceLabel } from "@shared/digitalSale";
 import { AlertTriangle, Check, CircleHelp, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -30,8 +29,6 @@ const C = {
   overlay: "var(--pos-overlay)",
 } as const;
 
-const fmt = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
-
 const STATUS_LABEL: Record<string, string> = {
   PENDING: "بانتظار التنفيذ",
   SUCCESS: "نُفِّذ",
@@ -41,10 +38,12 @@ const STATUS_LABEL: Record<string, string> = {
 
 export function DigitalFulfillmentDialog({
   intentId,
+  finalizing = false,
   onClose,
   onAllExecuted,
 }: {
   intentId: number | null;
+  finalizing?: boolean;
   /** يُستدعى فقط حين يجوز الإغلاق (لا كرت نُفِّذ بعد، أو بعد إقرار المراجعة). */
   onClose: () => void;
   /** كل البنود نُفِّذت بنجاح — تثبيت الفاتورة يتولّاه المستدعي. */
@@ -89,6 +88,9 @@ export function DigitalFulfillmentDialog({
 
   const items = q.data?.items ?? [];
   const current = items.find((i) => i.fulfillmentStatus === "PENDING") ?? null;
+  const currentGroup = current ? items.filter((item) => current.providerBasketKey
+    ? item.providerBasketKey === current.providerBasketKey
+    : item.id === current.id) : [];
   const anySuccess = items.some((i) => i.fulfillmentStatus === "SUCCESS");
   const allSuccess = items.length > 0 && items.every((i) => i.fulfillmentStatus === "SUCCESS");
   const settledNotAllSuccess = items.length > 0 && !current && !allSuccess;
@@ -103,6 +105,7 @@ export function DigitalFulfillmentDialog({
   }, [allSuccess, intentId]);
 
   function attemptClose() {
+    if (finalizing) return;
     // §٨.٧: قبل أيّ تنفيذ يجوز التراجع؛ بعده لا تجاهُل — تحذير مراجعة صريح.
     if (anySuccess || activeClaim != null) { setWarnLeave(true); return; }
     if (intentId != null) cancel.mutate({ intentId, reason: "cashier-cancel" });
@@ -155,7 +158,7 @@ export function DigitalFulfillmentDialog({
     >
       <div style={{ width: "min(720px, 100%)", maxHeight: "min(90vh, 880px)", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 14, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: C.card }}>
-          <span style={{ fontWeight: 800, fontSize: 16, color: C.fg }}>تنفيذ الكروت من جهاز المزوّد</span>
+          <span style={{ fontWeight: 800, fontSize: 16, color: C.fg }}>تأكيد عمليات المزوّد</span>
           <div style={{ flex: 1 }} />
           <span style={{ fontSize: 12.5, color: C.mutedFg }}>
             {items.filter((i) => i.fulfillmentStatus !== "PENDING").length} / {items.length}
@@ -170,32 +173,33 @@ export function DigitalFulfillmentDialog({
 
           {current && (
             <div style={{ background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-              <span style={{ fontSize: 12.5, color: C.mutedFg, fontWeight: 700 }}>الكرت الحالي</span>
+              <span style={{ fontSize: 12.5, color: C.mutedFg, fontWeight: 700 }}>سلة العملية الحالية — {currentGroup.length} بطاقة</span>
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 19, fontWeight: 900, color: C.fg }}>{current.name}</span>
+                <span style={{ fontSize: 19, fontWeight: 900, color: C.fg }}>{current.providerName}</span>
                 <span style={{ fontSize: 13, color: C.mutedFg }}>{current.providerName}</span>
                 <div style={{ flex: 1 }} />
-                <span style={{ fontSize: 22, fontWeight: 900, color: C.fg, direction: "ltr" }}>{fmt(Number(current.sellPrice))}</span>
+                <span style={{ fontSize: 22, fontWeight: 900, color: C.fg, direction: "ltr" }}>{fmtAr(currentGroup.reduce((sum, item) => sum.plus(item.sellPrice), D(0)).toFixed(2))} د.ع</span>
               </div>
-              {current.studentName && (
-                <span style={{ fontSize: 13, color: C.fg }}>الطالب: {current.studentName}</span>
-              )}
+              {currentGroup.map((item) => <div key={item.id} style={{ display: "flex", gap: 8, flexWrap: "wrap", borderBottom: `1px solid ${C.border}`, paddingBottom: 6 }}>
+                <strong style={{ flex: 1 }}>{item.name}{item.studentName ? ` — ${item.studentName}` : ""}</strong>
+                <span>الكمية 1 · السعر والإجمالي {fmtAr(item.sellPrice)} د.ع</span>
+              </div>)}
               <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 9, padding: "9px 11px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>{digitalSaleReferenceLabel(current.offeringType)}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 800, color: C.mutedFg }}>رقم عملية المزوّد</span>
                 <strong style={{ fontSize: 15, color: C.fg, direction: "ltr" }}>{current.providerReference}</strong>
               </div>
 
               {!activeClaim && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <span style={{ fontSize: 13.5, color: C.fg, lineHeight: 1.6 }}>
-                    اضغط البدء أولاً، ثم أصدر هذه البطاقة مرة واحدة فقط من جهاز المزوّد. إذا كانت مفتوحة في نافذة أخرى سيمنعك النظام.
+                    طابِق رقم العملية وبطاقاتها مع جهاز المزوّد. التأكيد يشمل كل بطاقات هذه السلة؛ لا تُعِد إصدار عملية منفّذة. يمنع النظام تأكيدها من نافذتين.
                   </span>
                   <button
                     onClick={beginIssuance}
                     disabled={claim.isPending}
                     style={{ height: 52, borderRadius: 10, border: "none", background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: claim.isPending ? "not-allowed" : "pointer" }}
                   >
-                    {claim.isPending ? "جارٍ حجز الإصدار…" : "ابدأ إصدار البطاقة"}
+                    {claim.isPending ? "جارٍ حجز التأكيد…" : "ابدأ تأكيد عملية المزوّد"}
                   </button>
                 </div>
               )}
@@ -206,14 +210,14 @@ export function DigitalFulfillmentDialog({
                   disabled={mark.isPending}
                   style={{ flex: 2, minWidth: 160, height: 50, borderRadius: 10, border: "none", background: C.success, color: "#fff", fontFamily: "inherit", fontSize: 15.5, fontWeight: 800, cursor: mark.isPending ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7 }}
                 >
-                  <Check aria-hidden size={18} /> نجح التنفيذ
+                  <Check aria-hidden size={18} /> نُفّذت جميع بطاقات العملية
                 </button>
                 <button
                   onClick={() => submit("FAILED")}
                   disabled={mark.isPending}
                   style={{ flex: 1, minWidth: 120, height: 50, borderRadius: 10, border: `1.5px solid ${C.danger}`, background: C.card, color: C.danger, fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer" }}
                 >
-                  فشل
+                  فشلت العملية كاملة
                 </button>
                 <button
                   onClick={() => submit("UNKNOWN")}
@@ -221,7 +225,7 @@ export function DigitalFulfillmentDialog({
                   title="الجهاز لم يُظهر نتيجة واضحة — تُراجَع إدارياً"
                   style={{ flex: 1, minWidth: 120, height: 50, borderRadius: 10, border: `1.5px solid ${C.amber}`, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6 }}
                 >
-                  <CircleHelp aria-hidden size={16} /> غير مؤكَّد
+                  <CircleHelp aria-hidden size={16} /> العملية غير مؤكّدة
                 </button>
               </div>}
             </div>
@@ -231,6 +235,7 @@ export function DigitalFulfillmentDialog({
             <div style={{ background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={{ fontSize: 15.5, fontWeight: 800, color: C.fg }}>كل الكروت نُفِّذت بنجاح</span>
               <span style={{ fontSize: 13, color: C.mutedFg }}>جارٍ تثبيت الفاتورة وتحصيل المبلغ…</span>
+              <button disabled={finalizing} onClick={() => intentId != null && onAllExecuted(intentId)} style={{ padding: 10, border: `1px solid ${C.border}`, background: C.card, color: C.fg }}>إعادة محاولة تثبيت الفاتورة عند تعذّر الاتصال</button>
             </div>
           )}
 
@@ -264,6 +269,7 @@ export function DigitalFulfillmentDialog({
                   <span style={{ fontSize: 14, fontWeight: 700, color: C.fg, flex: 1, minWidth: 0 }}>
                     {it.name}
                     {it.studentName ? ` — ${it.studentName}` : ""}
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 500 }}>الكمية 1 · سعر البيع {fmtAr(it.sellPrice)} د.ع</span>
                   </span>
                   {it.providerReference && (
                     <span style={{ fontSize: 11.5, color: C.mutedFg, direction: "ltr", fontFamily: "monospace" }}>{it.providerReference}</span>
@@ -280,7 +286,7 @@ export function DigitalFulfillmentDialog({
         <div style={{ display: "flex", gap: 8, padding: 16, borderTop: `1px solid ${C.border}`, background: C.card }}>
           <button
             onClick={attemptClose}
-            disabled={cancel.isPending}
+            disabled={cancel.isPending || finalizing}
             style={{ flex: 1, height: 48, borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer" }}
           >
             {anySuccess || activeClaim ? "إنهاء ونقل للمراجعة" : "إلغاء العملية"}

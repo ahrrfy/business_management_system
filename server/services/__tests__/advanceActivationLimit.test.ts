@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { grantAdvance } from "../advancesService";
+import { grantAdvance } from "../advances";
 import { approveVoucher } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
 

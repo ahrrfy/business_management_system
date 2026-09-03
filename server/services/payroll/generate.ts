@@ -17,7 +17,7 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { suggestDeductionsTx } from "../advancesService";
+import { suggestDeductionsTx } from "../advances";
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";

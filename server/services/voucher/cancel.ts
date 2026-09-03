@@ -19,10 +19,10 @@ import {
   isSystemPaymentReference,
   parseSystemPaymentRequest,
 } from "./create";
-import { assertEmployeeAdvanceVoucherRequestTx } from "../advancesService";
+import { assertEmployeeAdvanceVoucherRequestTx } from "../advances";
 import type { PartyType, PaymentMethod } from "./types";
 import { loadVoucherCategoryForPosting } from "./categoryAccounting";
-import { lockUntouchedEmployeeAdvanceForCancellationTx } from "./employeeAdvanceCancellation";
+import { lockUntouchedEmployeeAdvanceForCancellationTx } from "../advances";
 import {
   assertPurchaseUsdSettlementMaterializedTx,
   repairLegacyPurchaseUsdSettlementReceiptTx,
