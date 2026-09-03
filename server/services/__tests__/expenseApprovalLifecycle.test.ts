@@ -619,7 +619,7 @@ describe("دورة اعتماد المصروفات", () => {
     ).toBe(true);
   });
 
-  it("غير المالك والمالك المعطل لا يستطيعان الرفض، والمالك المنشئ لا يعتمد نفسه", async () => {
+  it("غير المالك والمالك المعطل لا يستطيعان الرفض، والمالك المنشئ يعتمد ويرفض نفسه (قرار المالك ٣/٩/٢٦)", async () => {
     const request = await pendingExpense();
     await expect(
       rejectExpense(
@@ -645,7 +645,7 @@ describe("دورة اعتماد المصروفات", () => {
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-    const selfRequest = await createExpense(
+    const selfApproveRequest = await createExpense(
       {
         branchId: 1,
         category: "RENT",
@@ -656,11 +656,22 @@ describe("دورة اعتماد المصروفات", () => {
       ownerA,
     );
     await expect(
-      approveExpense(selfRequest.expenseId, ownerA),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      approveExpense(selfApproveRequest.expenseId, ownerA),
+    ).resolves.toMatchObject({ status: "ACTIVE" });
+
+    const selfRejectRequest = await createExpense(
+      {
+        branchId: 1,
+        category: "RENT",
+        amount: "500000.00",
+        paymentMethod: "TRANSFER",
+        description: "طلب أنشأه المالك — يسحبه بنفسه",
+      },
+      ownerA,
+    );
     await expect(
-      rejectExpense(selfRequest.expenseId, ownerA, "طلب ذاتي"),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      rejectExpense(selfRejectRequest.expenseId, ownerA, "طلب ذاتي"),
+    ).resolves.toMatchObject({ status: "REJECTED" });
   });
 
   it("اعتمادان متزامنان يصنعان أثراً مالياً واحداً فقط", async () => {
