@@ -23,7 +23,7 @@ import { logAuditTx, type AuditMetadata } from "../auditService";
 import { todayUtcDate, utcDayRange } from "../businessDay";
 import { cashEventAtSql } from "./cashEventAt";
 import { buildDailyCashEvidenceTx } from "../cashDailyReconciliationService";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, toDbMoney } from "../money";
 import { canonicalCloseJson, closeSha256 } from "../reports/monthCloseSequence";
 import { withTx, type Actor } from "../tx";
@@ -417,7 +417,7 @@ export async function requestMissedDailyCountException(
       )
       .limit(1);
     if (replay) {
-      if (replay.requestHash !== requestHash) {
+      if (!payloadHashMatches(requestHash, replay.requestHash)) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل لاستثناء جرد مختلف",
@@ -576,7 +576,7 @@ export async function decideMissedDailyCountException(
       .limit(1);
     if (replayEvent) {
       if (
-        replayEvent.requestHash !== requestHash ||
+        !payloadHashMatches(requestHash, replayEvent.requestHash) ||
         replayEvent.eventType !== input.decision
       ) {
         throw new TRPCError({

@@ -69,10 +69,21 @@ const LEGACY_HASH_CACHE_LIMIT = 4096;
  * `{}` بعد التطبيع)، فقيمةٌ واحدة قابلة للاستبدال كانت تُسقط مفتاحاً صالحاً تحت طلبين متزامنين.
  */
 const legacyHashesByCurrent = new Map<string, Set<string>>();
+/**
+ * سقفُ المرشّحات لكلّ بصمةٍ حالية (Codex، جولة ٣): حمولاتٌ متطابقة JSON تختلف في مواضع
+ * `undefined` (عقد طلب الشراء: ثلاثة حقول nullish × ٢٠٠ سطر) كانت تُنمّي مجموعةً واحدة بلا حدّ.
+ * الأقدم يُطرَح أوّلاً؛ الاستعمال الفعليّ قراءةٌ في الطلب نفسه، فالسقف الصغير كافٍ.
+ */
+const LEGACY_CANDIDATES_PER_HASH = 8;
 function rememberLegacyHash(current: string, legacy: string): void {
   if (current === legacy) return;
   const existing = legacyHashesByCurrent.get(current);
   if (existing) {
+    if (existing.has(legacy)) return;
+    if (existing.size >= LEGACY_CANDIDATES_PER_HASH) {
+      const oldest = existing.values().next().value;
+      if (oldest !== undefined) existing.delete(oldest);
+    }
     existing.add(legacy);
     return;
   }

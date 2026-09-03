@@ -72,6 +72,16 @@ describe("idempotencyHash — مستقرّ عبر رحلة التخزين في �
     expect(payloadHashMatches(currentA, null)).toBe(false);
   });
 
+  it("سقفُ المرشّحات لكلّ بصمة حالية: الأحدث يبقى والأقدم يُطرَح — لا نموّ بلا حدّ", () => {
+    // ٣٠ حمولة كلّها {} بعد التطبيع لكن ببصمات قديمة مختلفة (مفتاح undefined مختلف كلّ مرّة).
+    const payloads = Array.from({ length: 30 }, (_, i) => ({ [`k${i}`]: undefined }));
+    const current = idempotencyHash(payloads[0]);
+    for (const p of payloads) expect(idempotencyHash(p)).toBe(current);
+    expect(payloadHashMatches(current, legacyIdempotencyHash(payloads[29]))).toBe(true);
+    expect(payloadHashMatches(current, legacyIdempotencyHash(payloads[22]))).toBe(true); // ضمن آخر ٨
+    expect(payloadHashMatches(current, legacyIdempotencyHash(payloads[0]))).toBe(false); // طُرح
+  });
+
   it("متّجه مثبَّت: قيمة JSON خالصة تحتفظ ببصمتها القديمة — البصمات المخزَّنة قبل الإصلاح تبقى صالحة", () => {
     // sha256 لـ {"a":1,"b":[1,2]} كما كانت الدالّة القديمة تُنتجه حرفياً.
     expect(idempotencyHash({ b: [1, 2], a: 1 })).toBe(
