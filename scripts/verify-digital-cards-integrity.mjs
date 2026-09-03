@@ -397,8 +397,31 @@ const AUDITS = [
       FROM digitalSaleIntentItems item
       JOIN digitalOfferings o ON o.id = item.offeringId
       WHERE NULLIF(TRIM(item.providerReference), '') IS NOT NULL
+        AND item.referenceOwnerItemId IS NULL
       GROUP BY o.providerId, UPPER(TRIM(item.providerReference))
       HAVING COUNT(*) > 1
+    `,
+  },
+  {
+    id: "provider_basket_ownership",
+    label: "سلامة ارتباط بطاقات سلة المزوّد ومرجعها",
+    sampleColumns: ["intentItemId", "intentId", "basketOwnerId"],
+    sql: `
+      SELECT item.id AS intentItemId, item.intentId AS intentId,
+        item.referenceOwnerItemId AS basketOwnerId
+      FROM digitalSaleIntentItems item
+      LEFT JOIN digitalSaleIntentItems owner ON owner.id = item.referenceOwnerItemId
+      WHERE (item.referenceOwnerItemId IS NOT NULL AND
+        (item.providerBasketKey IS NULL OR owner.id IS NULL
+         OR owner.referenceOwnerItemId IS NOT NULL
+         OR owner.intentId <> item.intentId OR owner.providerId <> item.providerId
+         OR NOT (owner.providerBasketKey <=> item.providerBasketKey)
+         OR (item.providerReference IS NOT NULL AND NOT (owner.providerReference <=> item.providerReference))))
+        OR (item.providerBasketKey IS NOT NULL AND item.referenceOwnerItemId IS NULL AND
+          EXISTS (SELECT 1 FROM digitalSaleIntentItems otherOwner
+            WHERE otherOwner.intentId = item.intentId
+              AND otherOwner.providerBasketKey = item.providerBasketKey
+              AND otherOwner.referenceOwnerItemId IS NULL AND otherOwner.id <> item.id))
     `,
   },
   {

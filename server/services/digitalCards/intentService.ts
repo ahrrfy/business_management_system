@@ -13,6 +13,7 @@
  *   • تكرار مرجع التنفيذ لدى المزوّد نفسه يمنعه **قيدٌ في القاعدة** (هجرة 0127) لا فحصٌ تطبيقيّ.
  */
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import {
   auditLogs,
@@ -32,6 +33,9 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { normalizeDigitalSaleReference } from "../../../shared/digitalSale";
+import type { DigitalCheckoutRegularLineInput } from "../../../shared/digitalSale";
+import type { PriceTier } from "../pricing";
+import { appErrorMessage } from "../../../shared/errors";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../../lib/phone";
@@ -39,6 +43,7 @@ import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
+import { assertCheckoutReplay, prepareCheckoutSnapshot } from "./mixedCartService";
 
 /* ────────── الأنواع ────────── */
 
@@ -52,6 +57,8 @@ export interface PrepareLine {
   expectedSellPrice: string;
   /** الرقم الذي أدخله/مسحه الموظف قبل إضافة السطر للسلة؛ سجل داخلي بلا تحقق خارجي. */
   providerReference: string;
+  /** بطاقات عملية مزوّد واحدة؛ غيابه يبقي عقد البطاقة المنفردة القديم. */
+  providerBasketKey?: string;
   student?: SaleStudentSnapshot | null;
 }
 
@@ -75,6 +82,9 @@ export interface PrepareInput {
   externalPaymentDeviceId?: string | null;
   cartFingerprint: string;
   lines: PrepareLine[];
+  customerId?: number | null;
+  priceTier?: PriceTier | null;
+  regularLines?: DigitalCheckoutRegularLineInput[];
 }
 
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
@@ -139,13 +149,14 @@ export async function prepare(
       expectedTotal: digitalSaleIntents.expectedTotal,
       externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
       externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
+      checkoutSnapshot: digitalSaleIntents.checkoutSnapshot,
     })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
     .limit(1);
   if (existing) {
     if (
-      existing.fp !== input.cartFingerprint ||
+      existing.fp !== (existing.checkoutSnapshot == null ? input.cartFingerprint : digitalCartFingerprint(input)) ||
       Number(existing.branchId) !== input.branchId ||
       Number(existing.shiftId) !== input.shiftId ||
       existing.paymentMethod !== input.paymentMethod ||
@@ -158,6 +169,7 @@ export async function prepare(
         message: "نفس مفتاح الطلب استُعمل لسلّةٍ مختلفة أو سياق بيع مختلف — ابدأ طلباً جديداً",
       });
     }
+    assertCheckoutReplay(existing.checkoutSnapshot, input);
     if (!["PREPARED", "EXECUTING", "EXECUTED"].includes(existing.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -352,7 +364,22 @@ export async function prepare(
   }
 
   const referenceKeys = new Set<string>();
+  const baskets = new Map<string, { providerId: number; providerReference: string }>();
   for (const r of resolved) {
+    const basketKey = r.line.providerBasketKey?.toLowerCase();
+    if (basketKey != null) {
+      if (!basketKey.trim() || basketKey.length > 64 || basketKey !== basketKey.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تجميع البطاقات", why: "معرّف السلة غير صالح", doThis: "أعد إضافة السلة" }) });
+      }
+      const basket = baskets.get(basketKey);
+      if (basket) {
+        if (basket.providerId !== r.providerId || basket.providerReference !== r.providerReference) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر تجميع البطاقات", why: "كل سلة تتطلب مزوّداً واحداً ورقم عملية واحداً", doThis: "افصل عمليات المزوّدين في سلال مستقلة" }) });
+        }
+        continue;
+      }
+      baskets.set(basketKey, { providerId: r.providerId, providerReference: r.providerReference });
+    }
     const key = `${r.providerId}:${r.providerReference.toLocaleLowerCase("en")}`;
     if (referenceKeys.has(key)) {
       throw new TRPCError({ code: "CONFLICT", message: "الرقم نفسه مضاف مرتين للمزوّد نفسه في السلة" });
@@ -387,7 +414,8 @@ export async function prepare(
   }
 
   const expiresAt = new Date(Date.now() + INTENT_TTL_MINUTES * 60_000);
-  const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)));
+  const checkoutSnapshot = await prepareCheckoutSnapshot(tx, input, actor);
+  const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)).plus(money(checkoutSnapshot.expectedSubtotal)));
 
   if (input.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
     await lockConfirmedExternalPaymentAttempt(tx, {
@@ -406,7 +434,8 @@ export async function prepare(
     shiftId: input.shiftId,
     createdBy: actor.userId,
     status: "PREPARED",
-    cartFingerprint: input.cartFingerprint,
+    cartFingerprint: digitalCartFingerprint(input),
+    checkoutSnapshot,
     paymentMethod: input.paymentMethod,
     externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
     externalPaymentDeviceId: input.externalPaymentDeviceId?.trim() || null,
@@ -465,10 +494,15 @@ export async function prepare(
   }
 
   try {
+    const referenceOwners = new Map<string, number>();
     for (const r of resolved) {
-      await tx.insert(digitalSaleIntentItems).values({
+      const providerBasketKey = r.line.providerBasketKey?.toLowerCase() ?? null;
+      const referenceOwnerItemId = providerBasketKey == null ? null : referenceOwners.get(providerBasketKey) ?? null;
+      const itemResult = await tx.insert(digitalSaleIntentItems).values({
         intentId,
         lineKey: r.line.lineKey,
+        providerBasketKey,
+        referenceOwnerItemId,
         offeringId: r.offeringId,
         providerId: r.providerId,
         priceVersionId: r.priceVersionId,
@@ -483,6 +517,9 @@ export async function prepare(
         guardianPhoneSnapshot: r.student?.guardianPhone ?? null,
         studentAddressSnapshot: r.student?.address ?? null,
       });
+      if (providerBasketKey != null && referenceOwnerItemId == null) {
+        referenceOwners.set(providerBasketKey, extractInsertId(itemResult));
+      }
     }
   } catch (e) {
     if (isDupProviderRef(e)) {
@@ -520,6 +557,7 @@ type ExecutionClaimRow = {
 
 export interface ClaimExecutionResult {
   intentItemId: number;
+  intentItemIds: number[];
   claimToken: string;
   providerIdempotencyKey: string;
   expiresAt: Date;
@@ -527,8 +565,8 @@ export interface ClaimExecutionResult {
 }
 
 /**
- * Claims the right to touch the provider terminal for one item. Locking the
- * item first serialises two browser windows even for the same cashier.
+ * Claims one provider operation: an explicit basket, or one legacy item.
+ * Every member resolves to the same owner lease, including competing windows.
  */
 export async function claimExecution(
   tx: Tx,
@@ -545,16 +583,13 @@ export async function claimExecution(
     throw new TRPCError({ code: "FORBIDDEN", message: "تحتاج هذه العملية إلى مراجعة المدير قبل إعادة الإصدار" });
   }
 
-  const [item] = await tx
-    .select({ id: digitalSaleIntentItems.id, fulfillmentStatus: digitalSaleIntentItems.fulfillmentStatus })
-    .from(digitalSaleIntentItems)
-    .where(and(eq(digitalSaleIntentItems.id, input.intentItemId), eq(digitalSaleIntentItems.intentId, input.intentId)))
-    .for("update");
-  if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند التنفيذ غير موجود" });
-  if (item.fulfillmentStatus === "SUCCESS") {
+  const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
+  const intentItemId = Number(item.id);
+  const intentItemIds = items.map((member) => Number(member.id));
+  if (items.some((member) => member.fulfillmentStatus === "SUCCESS")) {
     throw new TRPCError({ code: "CONFLICT", message: "هذه البطاقة صدرت وسُجلت بنجاح بالفعل" });
   }
-  if (item.fulfillmentStatus !== "PENDING" && !elevated) {
+  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !elevated) {
     throw new TRPCError({ code: "FORBIDDEN", message: "إعادة محاولة هذه البطاقة تحتاج إلى مراجعة المدير" });
   }
 
@@ -562,11 +597,12 @@ export async function claimExecution(
   if (intent.expiresAt.getTime() <= now.getTime()) {
     throw new TRPCError({ code: "CONFLICT", message: "انتهت مهلة عملية البيع؛ ابدأ عملية جديدة أو راجع المدير" });
   }
-  const claim = await lockExecutionClaim(tx, input.intentItemId);
+  const claim = await lockExecutionClaim(tx, intentItemId);
   if (claim && claim.completedAt == null && Number(claim.isActive) === 1) {
     if (claim.claimToken === input.claimToken && Number(claim.claimedBy) === actor.userId) {
       return {
         intentItemId: Number(claim.intentItemId),
+        intentItemIds,
         claimToken: claim.claimToken,
         providerIdempotencyKey: claim.providerIdempotencyKey,
         expiresAt: asDate(claim.expiresAt),
@@ -583,21 +619,21 @@ export async function claimExecution(
   }
 
   const expiresAt = new Date(now.getTime() + EXECUTION_CLAIM_TTL_MINUTES * 60_000);
-  const providerIdempotencyKey = claim?.providerIdempotencyKey ?? `digital-issue:${input.intentId}:${input.intentItemId}`;
+  const providerIdempotencyKey = claim?.providerIdempotencyKey ?? `digital-issue:${input.intentId}:${intentItemId}`;
   try {
     if (claim) {
       await tx.execute(sql`
         UPDATE digitalSaleExecutionClaims
         SET claimToken = ${input.claimToken}, claimedBy = ${actor.userId}, claimedAt = ${now},
             expiresAt = ${expiresAt}, completedAt = NULL
-        WHERE intentItemId = ${input.intentItemId}
+        WHERE intentItemId = ${intentItemId}
       `);
     } else {
       await tx.execute(sql`
         INSERT INTO digitalSaleExecutionClaims
           (intentItemId, claimToken, claimedBy, claimedAt, expiresAt, providerIdempotencyKey, completedAt)
         VALUES
-          (${input.intentItemId}, ${input.claimToken}, ${actor.userId}, ${now}, ${expiresAt}, ${providerIdempotencyKey}, NULL)
+          (${intentItemId}, ${input.claimToken}, ${actor.userId}, ${now}, ${expiresAt}, ${providerIdempotencyKey}, NULL)
       `);
     }
   } catch (e) {
@@ -611,18 +647,19 @@ export async function claimExecution(
     await tx.update(digitalSaleIntents).set({ status: "EXECUTING" }).where(eq(digitalSaleIntents.id, input.intentId));
   }
   await auditLog(tx, actor, "digitalCards.intent.executionClaimed", input.intentId, {
-    itemId: input.intentItemId,
+    itemId: intentItemId,
+    itemIds: intentItemIds,
     providerIdempotencyKey,
     expiresAt,
   });
-  return { intentItemId: input.intentItemId, claimToken: input.claimToken, providerIdempotencyKey, expiresAt, replay: false };
+  return { intentItemId, intentItemIds, claimToken: input.claimToken, providerIdempotencyKey, expiresAt, replay: false };
 }
 
 export async function markExecution(
   tx: Tx,
   input: { intentId: number; intentItemId: number; claimToken: string; status: ExecutionStatus; providerReference?: string | null },
   actor: Actor,
-): Promise<{ itemId: number; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
+): Promise<{ itemId: number; itemIds: number[]; status: ExecutionStatus; allSettled: boolean; idempotent: boolean }> {
   const intent = await lockIntent(tx, input.intentId);
   assertActorOwnsIntent(intent, actor);
   if (!["PREPARED", "EXECUTING", "EXECUTED", "NEEDS_REVIEW"].includes(intent.status)) {
@@ -630,12 +667,9 @@ export async function markExecution(
   }
   const elevated = actor.role === "admin" || actor.role === "manager";
 
-  const [item] = await tx
-    .select()
-    .from(digitalSaleIntentItems)
-    .where(and(eq(digitalSaleIntentItems.id, input.intentItemId), eq(digitalSaleIntentItems.intentId, input.intentId)))
-    .for("update");
-  if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند التنفيذ غير موجود" });
+  const { item, items } = await lockExecutionItems(tx, input.intentId, input.intentItemId);
+  const intentItemId = Number(item.id);
+  const itemIds = items.map((member) => Number(member.id));
 
   const capturedRef = normalizeDigitalSaleReference(item.providerReference);
   const submittedRef = normalizeDigitalSaleReference(input.providerReference);
@@ -646,14 +680,14 @@ export async function markExecution(
     });
   }
   const ref = capturedRef || submittedRef || null;
-  const claim = await lockExecutionClaim(tx, input.intentItemId);
+  const claim = await lockExecutionClaim(tx, intentItemId);
   if (!claim || claim.claimToken !== input.claimToken || Number(claim.claimedBy) !== actor.userId) {
     throw new TRPCError({ code: "CONFLICT", message: "ابدأ إصدار البطاقة من هذه النافذة قبل تسجيل النتيجة" });
   }
 
   // A completed claim can only replay its exact recorded result.
-  if (claim.completedAt != null && item.fulfillmentStatus === input.status && (item.providerReference ?? null) === ref) {
-    return { itemId: Number(item.id), status: input.status, allSettled: await allItemsSettled(tx, input.intentId), idempotent: true };
+  if (claim.completedAt != null && items.every((member) => member.fulfillmentStatus === input.status && (member.providerReference ?? null) === ref)) {
+    return { itemId: intentItemId, itemIds, status: input.status, allSettled: await allItemsSettled(tx, input.intentId), idempotent: true };
   }
   if (claim.completedAt != null) {
     throw new TRPCError({ code: "CONFLICT", message: "نتيجة مطالبة الإصدار هذه سُجلت بالفعل ولا يمكن تغييرها" });
@@ -666,13 +700,13 @@ export async function markExecution(
   }
 
   // **لا رجوع عن النجاح من الكاشير**: الكرت صدر فعلاً؛ التصحيح قرارٌ إداريّ (عكسٌ موثَّق).
-  if (item.fulfillmentStatus === "SUCCESS") {
+  if (items.some((member) => member.fulfillmentStatus === "SUCCESS")) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "A successful issued card is immutable; finalize, write off, or reverse it",
     });
   }
-  if (item.fulfillmentStatus !== "PENDING" && !elevated) {
+  if (items.some((member) => member.fulfillmentStatus !== "PENDING") && !elevated) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Manager review is required to correct a recorded result" });
   }
 
@@ -696,11 +730,11 @@ export async function markExecution(
         confirmedBy: actor.userId,
         confirmedAt: new Date(),
       })
-      .where(eq(digitalSaleIntentItems.id, input.intentItemId));
+      .where(inArray(digitalSaleIntentItems.id, itemIds));
     await tx.execute(sql`
       UPDATE digitalSaleExecutionClaims
       SET completedAt = ${new Date()}
-      WHERE intentItemId = ${input.intentItemId} AND claimToken = ${input.claimToken} AND completedAt IS NULL
+      WHERE intentItemId = ${intentItemId} AND claimToken = ${input.claimToken} AND completedAt IS NULL
     `);
   } catch (e) {
     // القيد الفريد `uq_dsii_provider_ref` (هجرة 0127). drizzle يغلّف خطأ السائق ⇒ نفكّ
@@ -728,12 +762,13 @@ export async function markExecution(
   }
 
   await auditLog(tx, actor, "digitalCards.intent.execution", input.intentId, {
-    itemId: input.intentItemId,
+    itemId: intentItemId,
+    itemIds,
     status: input.status,
     hasReference: ref != null,
   });
 
-  return { itemId: Number(item.id), status: input.status, allSettled, idempotent: false };
+  return { itemId: intentItemId, itemIds, status: input.status, allSettled, idempotent: false };
 }
 
 /* ────────── الإلغاء والانتهاء ────────── */
@@ -836,6 +871,8 @@ export async function getIntent(db: DB, intentId: number) {
     .select({
       id: digitalSaleIntentItems.id,
       lineKey: digitalSaleIntentItems.lineKey,
+      providerBasketKey: digitalSaleIntentItems.providerBasketKey,
+      referenceOwnerItemId: digitalSaleIntentItems.referenceOwnerItemId,
       offeringId: digitalSaleIntentItems.offeringId,
       offeringType: digitalOfferings.offeringType,
       name: products.name,
@@ -958,6 +995,43 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
 }
 
 /* ────────── مساعدات داخلية ────────── */
+
+/** Never trust a caller-supplied fingerprint to identify the captured digital contents. */
+function digitalCartFingerprint(input: PrepareInput): string {
+  return createHash("sha256").update(JSON.stringify({
+    fingerprint: input.cartFingerprint,
+    lines: input.lines.map((line) => ({
+      lineKey: line.lineKey,
+      offeringId: line.offeringId,
+      priceVersionId: line.priceVersionId,
+      expectedSellPrice: toDbMoney(money(line.expectedSellPrice)),
+      providerReference: normalizeDigitalSaleReference(line.providerReference),
+      providerBasketKey: line.providerBasketKey?.toLowerCase() ?? null,
+      student: line.student ? normalizeSaleStudent(line.student) : null,
+    })),
+  })).digest("hex");
+}
+
+/** The intent lock serializes the whole provider operation, including calls through a member. */
+async function lockExecutionItems(tx: Tx, intentId: number, intentItemId: number) {
+  const all = await tx.select().from(digitalSaleIntentItems)
+    .where(eq(digitalSaleIntentItems.intentId, intentId))
+    .orderBy(asc(digitalSaleIntentItems.id)).for("update");
+  const selected = all.find((row) => Number(row.id) === intentItemId);
+  if (!selected) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "بند التنفيذ غير موجود", why: "البند لا يتبع هذه العملية", doThis: "حدّث عملية البيع" }) });
+  if (selected.providerBasketKey == null) return { item: selected, items: [selected] };
+  const items = all.filter((row) => row.providerBasketKey === selected.providerBasketKey);
+  const owners = items.filter((row) => row.referenceOwnerItemId == null);
+  const item = owners[0];
+  if (owners.length !== 1 || items.some((row) =>
+    row.providerId !== item.providerId ||
+    (row.id !== item.id && row.referenceOwnerItemId !== item.id) ||
+    (row.providerReference != null && normalizeDigitalSaleReference(row.providerReference) !== normalizeDigitalSaleReference(item.providerReference))
+  )) {
+    throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: "تعذّر تنفيذ السلة", why: "ارتباط بنود عملية المزوّد غير متسق", doThis: "أوقف الإصدار وراجع المدير" }) });
+  }
+  return { item, items };
+}
 
 /** هل الخطأ تكرارٌ على قيد مرجع المزوّد؟ (نمط `isDupUserId` في employeeService — فكّ سلسلة cause.) */
 function isDupProviderRef(e: unknown): boolean {
