@@ -345,6 +345,28 @@ describe("durable mixed digital/ordinary checkout", () => {
     expect(await db().select().from(s.invoices)).toHaveLength(1);
   });
 
+  it("preserves a full 255-character card identity together with its receipt descriptor", async () => {
+    const f = await fixture();
+    const longName = "ك".repeat(255);
+    const [offering] = await db()
+      .select()
+      .from(s.digitalOfferings)
+      .where(eq(s.digitalOfferings.id, f.offeringId));
+    await db()
+      .update(s.products)
+      .set({ name: longName })
+      .where(eq(s.products.id, Number(offering.productId)));
+    const result = await withTx((tx) =>
+      finalizeService.finalize(tx, f.input, cashier),
+    );
+    const line = result.receiptLines.find(
+      (row) => row.invoiceItemId === result.printDetails[0].invoiceItemId,
+    )!;
+    expect(line.name.startsWith(`${longName} — `)).toBe(true);
+    expect(line.name).toContain("القيمة الاسمية: 10000.00");
+    expect(line.name.length).toBeGreaterThan(255);
+  });
+
   it("binds customer and amount both before finalize and on cash replay", async () => {
     const f = await fixture();
     await expect(

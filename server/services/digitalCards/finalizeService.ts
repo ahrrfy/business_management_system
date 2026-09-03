@@ -525,7 +525,9 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
     const [invoiceLine] = await tx.select({ name: invoiceItems.itemNameSnapshot }).from(invoiceItems)
       .where(eq(invoiceItems.id, invoiceItemId)).limit(1);
     const description = digitalOfferingDescription(m);
-    const name = (invoiceLine?.name ?? "بطاقة رقمية").slice(0, Math.max(0, 252 - description.length));
+    // Product name (<=255) plus the bounded descriptor fits the 512-char snapshot;
+    // never shorten the course/card identity to make room for display metadata.
+    const name = invoiceLine?.name ?? "بطاقة رقمية";
     await tx.update(invoiceItems).set({ itemNameSnapshot: `${name} — ${description}` })
       .where(eq(invoiceItems.id, invoiceItemId));
 
