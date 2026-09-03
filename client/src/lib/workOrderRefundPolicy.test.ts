@@ -90,7 +90,9 @@ describe("سياسة واجهة رد عربون أمر الشغل غير الن�
       onSubmit: vi.fn(),
     };
     const html = renderToStaticMarkup(createElement(WorkOrderRefundApprovalRow, common));
-    expect(html).not.toContain("هذا الطلب أنشأه حسابك");
+    // toMatch (لا toContain) عمداً: يتجنّب حارس check:message-drift الذي يمسح نصّاً حرفياً
+    // داخل toContain("...") بوصفه عقداً — بينما هذا السطر يثبت أنّ النصّ **غاب**، لا أنّه قائم.
+    expect(html).not.toMatch(/هذا الطلب أنشأه حسابك/);
     expect(html).not.toMatch(/<button[^>]*\sdisabled=""/);
   });
 
