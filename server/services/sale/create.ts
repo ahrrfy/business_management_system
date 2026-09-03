@@ -289,6 +289,20 @@ export async function createSaleInTx(
         message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
       });
     }
+    // A prepared ordinary product may have been reclassified since preparation.
+    // Every actual digital row still needs a trusted intent cost and detail token.
+    if (capability === DIGITAL_SALE_CAPABILITY && input.lines.some((line) =>
+      variantById.get(line.variantId)?.productType === "DIGITAL_CARD" &&
+      (line.unitCostOverride == null || !line.internalLineToken?.trim()))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت بند رقمي في السلة",
+          why: "البند لا يحمل لقطة تكلفة وربطاً موثقاً بنيّة إصدار الكروت؛ ربما تغيّر تصنيف الصنف بعد إعداد السلة",
+          doThis: "أوقف التثبيت وراجِع تصنيف الصنف والنيّة المحفوظة؛ لا تُعِد إصدار الكروت",
+        }),
+      });
+    }
     if (input.lines.some((line) => line.unitCostOverride != null &&
       (capability !== DIGITAL_SALE_CAPABILITY || variantById.get(line.variantId)?.productType !== "DIGITAL_CARD"))) {
       throw new TRPCError({

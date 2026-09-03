@@ -408,6 +408,45 @@ describe("durable mixed digital/ordinary checkout", () => {
     expect(invoice.costTotal).toBe("13800.00");
   });
 
+  it("rejects an ordinary item reclassified digital after preparation without recording a partial sale", async () => {
+    const f = await fixture();
+    await db()
+      .update(s.products)
+      .set({ productType: "DIGITAL_CARD", isService: true })
+      .where(eq(s.products.id, 1));
+    await expect(
+      withTx((tx) => finalizeService.finalize(tx, f.input, cashier)),
+    ).rejects.toThrow(/لقطة تكلفة وربطاً/);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.digitalWalletTransactions)).toHaveLength(
+      0,
+    );
+    await expect(
+      withTx((tx) =>
+        createSaleInTx(
+          tx,
+          {
+            branchId: 1,
+            shiftId: 1,
+            sourceType: "POS",
+            lines: [
+              {
+                variantId: 1,
+                productUnitId: 1,
+                quantity: "1",
+                unitCostOverride: "1000",
+              },
+            ],
+            payment: { amount: "2000", method: "CASH" },
+          },
+          cashier,
+          DIGITAL_SALE_CAPABILITY,
+        ),
+      ),
+    ).rejects.toThrow(/لقطة تكلفة وربطاً/);
+  });
+
   it("CARD evidence must cover the whole basket and consumes only once", async () => {
     const f = await fixture();
     const attemptId = extractInsertId(
@@ -418,8 +457,8 @@ describe("durable mixed digital/ordinary checkout", () => {
           channel: "POS",
           paymentMethod: "CARD",
           amount: "10850",
-          providerCode: "POS_TERMINAL",
-          accountReference: "mixed-terminal",
+          providerCode: "CARD",
+          accountReference: "BRANCH:1:CARD",
           deviceId: "mixed-device",
           externalReference: "MIXED-CARD-PAY",
           normalizedReference: "MIXED-CARD-PAY",
