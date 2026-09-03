@@ -51,6 +51,7 @@ import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailabil
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { appErrorMessage } from "@shared/errors";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
 // البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
@@ -288,10 +289,15 @@ export async function createSaleInTx(
         message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
       });
     }
-    if (capability === DIGITAL_SALE_CAPABILITY && Array.from(variantById.values()).some((v) => v.productType !== "DIGITAL_CARD")) {
+    if (input.lines.some((line) => line.unitCostOverride != null &&
+      (capability !== DIGITAL_SALE_CAPABILITY || variantById.get(line.variantId)?.productType !== "DIGITAL_CARD"))) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "مسار تثبيت البطاقات الرقمية لا يقبل أصنافاً عادية",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت تكلفة البيع",
+          why: "التكلفة المفروضة مخصصة للكرت الرقمي الموثق فقط؛ الأصناف العادية تتبع تكلفة المخزون",
+          doThis: "أعِد إتمام البيع من نقطة البيع؛ لا ترسل تكلفة يدوية مع البنود العادية",
+        }),
       });
     }
     // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
