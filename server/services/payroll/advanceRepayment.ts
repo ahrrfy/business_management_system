@@ -734,7 +734,7 @@ export async function approveAdvanceRepaymentRequest(id: number, actor: Actor) {
         message: appErrorMessage({
           what: "تعذّر اعتماد طلب سداد السلفة",
           why: "الموظّف المرتبط بالطلب لم يعد موجوداً — حُذف أو نُقل بمعرّفٍ جديد بعد إنشاء الطلب",
-          doThis: "ارفض هذا الطلب واطلب من الموظّف إعادة إنشائه بحسابه الحاليّ من شاشة سداد السلف",
+          doThis: "ارفض هذا الطلب وأبلغ **مدير الموارد البشرية** — الطلبُ يُنشئه HR لموظفٍ يختاره، فاستعادةُ سجلّ الموظّف (أو معرّفه الجديد) شرطُ إنشاءِ طلبٍ بديل، والموظّفُ لا يستطيع فعل ذلك من شاشته",
         }),
       });
     const employeeName = fullEmployeeName(employee) || `موظف #${request.employeeId}`;

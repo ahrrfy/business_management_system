@@ -224,7 +224,7 @@ function usdCreditBalanceAtIqd(
       message: appErrorMessage({
         what: "تعذّر حساب رصيد المرتجع بالدولار",
         why: "فاتورة المورد بالدولار بلا لقطةِ المبلغ الدولاريّ الأصليّ عند الترحيل، والاشتقاق يحتاجها",
-        doThis: "افتح فاتورة المورد وأعد ترحيلها بحضور المبلغ الدولاريّ في حقل «القيمة USD»",
+        doThis: "الفاتورة المرحَّلة لا تُعدَّل مباشرة (`assertDraftMutableTx` يقبل DRAFT فقط). أنشئ **تصحيحَ استحقاقٍ** على الفاتورة عبر مسار حوكمة الفواتير لإدخال قيمة USD، ثم أعد محاولة المرتجع",
       }),
     });
   }
@@ -920,12 +920,15 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
       creditOffsetAmount: request.settlement === "CREDIT" ? toDbMoney(total) : "0.00",
     }).where(eq(purchaseReturns.id, purchaseReturnId));
     if (extractAffectedRows(finalized) !== 1) {
+      // Codex #965 P2: الشرط هنا يقيس `UPDATE purchaseReturns` (صفّ المرتجع نفسه)، لا
+      // أرصدة المورّد أو الفاتورة. صياغةُ `doThis` القديمة كانت تُرسل الموظّف إلى المكان
+      // الخطأ. الرسالةُ الآن تُشير إلى ما فشل فعلاً.
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
           what: "تعذّر تثبيت تسوية مرتجع الشراء",
-          why: "لم تُحدَّث ذمّة المورد على أمر الشراء أو الفاتورة بعد الاعتماد (تغيّرت الأرصدة بين لحظة الحساب والحفظ)",
-          doThis: "ارفض هذا الطلب واطلب من المدير مراجعة أرصدة المورد قبل إعادة إنشاء المرتجع",
+          why: "لم يُحدَّث صفّ `purchaseReturns` بعد اعتماد التسوية — التزامنُ سباقٌ نادر أو الصفّ اختفى بين لحظة الإدخال والحفظ",
+          doThis: "أعد إنشاء مرتجع الشراء من نفس أمر الشراء وفاتورته، وإن تكرّر الخطأ ارفض هذا الطلب وأبلغ فريق الدعم",
         }),
       });
     }
