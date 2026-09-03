@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
@@ -108,7 +109,12 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         if (Number(existingRefId) !== Number(input.invoiceId)) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لمرتجع على فاتورة مختلفة",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل المرتجع",
+              // تعارض idempotency: الرقمان يقولان للموظّف أيّ فاتورةٍ أمامه وأيّها سجّلها المفتاح.
+              why: `مفتاح هذا الطلب مستعمَلٌ سلفاً لمرتجعٍ على الفاتورة ${Number(existingRefId)}، وأنت تُرجِع من الفاتورة ${Number(input.invoiceId)} — الصفحة على الأرجح مفتوحةٌ منذ مرتجعٍ سابق`,
+              doThis: "أغلق الصفحة وافتح المرتجع من الفاتورة التي أمامك من جديد، ثمّ أعِد إدخال الأصناف",
+            }),
           });
         }
         const replayInvRows = await tx
@@ -117,7 +123,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           .where(eq(invoices.id, input.invoiceId))
           .limit(1);
         const replayInv = replayInvRows[0];
-        if (!replayInv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+        if (!replayInv) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "تعذّر إعادة عرض نتيجة المرتجع",
+              why: `الفاتورة رقم ${Number(input.invoiceId)} لم تعد موجودة رغم أنّ مفتاح الطلب مسجَّلٌ عليها — حُذفت أو أنّ الرابط يشير إلى قاعدة بيانات أخرى`,
+              doThis: "ابحث عن الفاتورة برقمها في قائمة المبيعات؛ وإن لم تظهر فأبلِغ مسؤول النظام بالرقم قبل تكرار المحاولة",
+            }),
+          });
+        }
         // بصمة الكمية الإجمالية للأسطر المطلوبة — إن جاء المفتاح نفسه بأسطر مختلفة فالعملية مختلفة.
         const replayItems = await tx
           .select()
@@ -130,11 +145,23 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           if (!it) {
             throw new TRPCError({
               code: "CONFLICT",
-              message: "تعارض idempotency: المفتاح مستعمَل لمرتجع بأسطر مختلفة",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل المرتجع",
+                // تعارض idempotency: نفس المفتاح بأسطرَ مختلفة = عمليةٌ أخرى، لا إعادةَ إرسالٍ للأولى.
+                why: `مفتاح هذا الطلب سُجِّل سلفاً بأصنافٍ أخرى: البند ${Number(l.invoiceItemId)} ليس ضمن أصناف الفاتورة ${Number(input.invoiceId)}`,
+                doThis: "أغلق الصفحة وافتح مرتجعاً جديداً من الفاتورة، ثمّ اختر الأصناف المطلوبة فيه",
+              }),
             });
           }
           if (!Number.isInteger(l.baseQuantity) || l.baseQuantity <= 0) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الإرجاع يجب أن تكون صحيحة موجبة" });
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "تعذّر تسجيل المرتجع",
+                why: `كمية الإرجاع للبند ${Number(l.invoiceItemId)} وصلت «${l.baseQuantity}» — والكمية عددٌ صحيحٌ أكبر من صفر بالوحدة الأساس`,
+                doThis: "صحّح الكمية في سطر البند إلى عددٍ صحيحٍ موجب، أو احذف السطر إن لم يكن هناك ما يُرجَع منه",
+              }),
+            });
           }
           const portion = new Decimal(l.baseQuantity).dividedBy(it.baseQuantity);
           expectedGrossNet = expectedGrossNet.plus(money(it.total).times(portion));
@@ -156,7 +183,12 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         if (cumulativeReturned.lt(replayOperationTotal)) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لمرتجع بقيمة مختلفة",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل المرتجع",
+              // تعارض idempotency رقميّ: الرقمان يُظهران أنّ المفتاح لا يخصّ هذه القيمة.
+              why: `مفتاح هذا الطلب سُجِّل سلفاً بقيمةٍ أخرى: المُرجَع فعلياً على الفاتورة ${cumulativeReturned.toFixed(2)} د.ع بينما هذا الطلب قيمته ${replayOperationTotal.toFixed(2)} د.ع`,
+              doThis: "افتح الفاتورة وراجع مرتجعاتها المسجَّلة؛ ثمّ سجّل الفرق في مرتجعٍ جديد من الصفحة بدل إعادة إرسال هذا الطلب",
+            }),
           });
         }
         const fullyReturnedReplay =
@@ -196,9 +228,26 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     const invPreview = (
       await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
     )[0];
-    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (!invPreview) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح المرتجع",
+          why: `لا فاتورة بالرقم ${Number(input.invoiceId)} في النظام — الرابط قديم أو الرقم المُدخَل ليس رقم الفاتورة`,
+          doThis: "ابحث عن الفاتورة برقمها المطبوع على الإيصال من قائمة المبيعات، وافتح المرتجع من صفحتها",
+        }),
+      });
+    }
     if (actor.role !== "admin" && Number(invPreview.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          // «الفاتورة لا تخصّ فرعك» وحدَها كانت تقف هنا: صحيحةٌ والزبون واقفٌ ولا بديل.
+          why: `الفاتورة صادرة من الفرع ${Number(invPreview.branchId)} وأنت على الفرع ${Number(actor.branchId)} — والمرتجع يُخرِج نقداً من صندوق الفرع الذي باع`,
+          doThis: "أحِل الزبون إلى الفرع الذي أصدر الفاتورة، أو اطلب من المدير تنفيذ المرتجع فصلاحيتُه تعبر الفروع",
+        }),
+      });
     }
     const deliveryPreview = (
       await tx
@@ -274,7 +323,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         await tx.select({ id: deliveryParties.id }).from(deliveryParties)
           .where(eq(deliveryParties.id, Number(deliveryPreview.partyId))).for("update").limit(1)
       )[0];
-      if (!party) throw new TRPCError({ code: "CONFLICT", message: "جهة توصيل الفاتورة غير موجودة" });
+      if (!party) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة مرتبطة بإرسالية توصيلٍ جهتُها (رقم ${Number(deliveryPreview.partyId)}) لم تعد موجودة في سجلّ جهات التوصيل`,
+            doThis: "افتح صفحة جهات التوصيل وأعِد إنشاء الجهة أو أعِد ربط الإرسالية بجهةٍ قائمة، ثمّ أعِد المرتجع — لا تُترك بضاعةٌ راجعة بلا جهةٍ منسوبةٍ إليها",
+          }),
+        });
+      }
       const lockedDelivery = (
         await tx.select({
           id: deliveryConsignments.id,
@@ -290,7 +348,14 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         Number(lockedDelivery.branchId) !== Number(deliveryPreview.branchId) ||
         Number(lockedDelivery.invoiceId) !== Number(input.invoiceId)
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت إرسالية الفاتورة أثناء المرتجع؛ أعد المحاولة" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: "إرسالية التوصيل المرتبطة بالفاتورة تغيّرت في اللحظة نفسها (جهةٌ أو فرعٌ أو فاتورةٌ أخرى) — موظّفٌ آخر يعمل على الطرد الآن",
+            doThis: "انتظر ثوانيَ ثمّ اضغط «إرجاع» مرّةً أخرى؛ وإن تكرّر الرفض فراجع صفحة التوصيل لتعرف من يعمل على الإرسالية",
+          }),
+        });
       }
     } else {
       // locking gap/current read يمنع إسناد إرسالية جديدة بين المعاينة وقفل الفاتورة.
@@ -300,9 +365,25 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (!inv) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: `الفاتورة ${Number(input.invoiceId)} اختفت بين فتح الشاشة وتنفيذ المرتجع — أُلغيت أو حُذفت في هذه اللحظة`,
+          doThis: "حدّث قائمة المبيعات وابحث عن الفاتورة برقمها؛ فإن لم تظهر فلا مرتجعَ عليها وأبلِغ المدير بما استلمه الزبون",
+        }),
+      });
+    }
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء المرتجع؛ أعد المحاولة" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: `فرع الفاتورة تغيّر أثناء تنفيذ المرتجع: كان ${Number(invPreview.branchId)} وصار ${Number(inv.branchId)} — نُقلت الفاتورة بين الفروع في اللحظة نفسها`,
+          doThis: "اضغط «إرجاع» مرّةً أخرى ليُعاد الحساب على الفرع الجديد؛ ولا تُكرّر المحاولة أكثر من مرّتين قبل مراجعة المدير",
+        }),
+      });
     }
     await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
     // المرتجع يغيّر الفاتورة وبنودها والمخزون والذمم تاريخياً. قيدٌ بتاريخ اليوم لا
@@ -317,14 +398,33 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         code: "BAD_REQUEST",
         message:
           inv.status === "SUPERSEDED"
-            ? "الفاتورة مستبدَلة بفاتورة مصحّحة — أرجِع من الفاتورة المصحّحة"
-            : "الفاتورة ملغاة أو مرتجعة بالكامل",
+            ? appErrorMessage({
+                what: `تعذّر الإرجاع من الفاتورة ${inv.invoiceNumber}`,
+                why: "الفاتورة مستبدَلة بفاتورة مصحّحة، وبنودها مُعادةٌ كلّها فيها — فلا متبقّي عليها يُرجَع",
+                doThis: "افتح الفاتورة المصحّحة (تجدها في سجلّ الفاتورة الأصلية تحت «استُبدلت بـ») وسجّل المرتجع منها",
+              })
+            : appErrorMessage({
+                what: `تعذّر الإرجاع من الفاتورة ${inv.invoiceNumber}`,
+                why: inv.status === "CANCELLED"
+                  ? "الفاتورة ملغاة: البيع عُكس بالكامل سلفاً — إيراداً وبضاعةً وذمّة — فلا شيء عليها يُرجَع"
+                  : "الفاتورة مرتجعة بالكامل: كلّ بنودها أُعيدت في مرتجعٍ سابق فلم يبقَ متبقٍّ",
+                doThis: inv.status === "CANCELLED"
+                  ? "راجع سجلّ الفاتورة لتعرف ما استُرِدّ للزبون فعلاً؛ وإن كان بيده بضاعة فسجّل له فاتورةً جديدة ثمّ أرجِع منها"
+                  : "راجع مرتجعات الفاتورة في سجلّها للتأكّد ممّا استُرِدّ؛ وإن كان بيد الزبون صنفٌ زائد فأبلِغ المدير",
+              }),
       });
     }
     // G8 (١٩/٦/٢٦): فحص ملكية الفرع — managerProcedure يسمح بالمدير والأدمن، لكن مدير فرع لا
     // يجوز له إصدار مرتجع على فاتورة فرع آخر (يخرج نقد من صندوقه لفاتورة لا تخصّه).
     if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: `تعذّر الإرجاع من الفاتورة ${inv.invoiceNumber}`,
+          why: `الفاتورة تخصّ الفرع ${Number(inv.branchId)} وأنت على الفرع ${Number(actor.branchId)} — ونقدُ المرتجع يخرج من صندوق الفرع البائع لا من صندوقك`,
+          doThis: "أحِل الزبون إلى الفرع الذي أصدر الفاتورة، أو اطلب من المدير تنفيذ المرتجع فصلاحيتُه تعبر الفروع",
+        }),
+      });
     }
     await assertNoActiveInstallmentPlanAfterInvoiceLockTx(tx, {
       invoiceId: input.invoiceId,
@@ -336,21 +436,31 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (!resolution) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message:
-            "مرتجع الزبون العابر يحتاج resolution صريحاً: ردّ CASH فوري كامل من وردية مفتوحة، مع سبب المرتجع وحالة البضاعة. اربط الفاتورة بعميل مسجّل أولاً إن كان المطلوب رصيداً أو مساراً آخر.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: "الفاتورة بلا عميلٍ مسجَّل، ولم يصل معها قرارُ التسوية (resolution) الذي يحدّد ردّ CASH نقداً كاملاً مع سبب المرتجع ومصير البضاعة — وبلا ذلك يبقى مالُ الزبون في الدرج بلا ذمّةٍ تحمله ولا طرفٍ يُنسَب إليه",
+            doThis: "أدخِل الردّ النقديّ الكامل والسبب ومصير البضاعة في شاشة المرتجع؛ وإن كان المطلوب رصيداً أو مساراً آخر فسجّل الزبون عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
+          }),
         });
       }
       if (input.refund != null) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "لا تجمع refund وresolution لزبون عابر؛ أدخِل الردّ النقدي الكامل داخل resolution فقط.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: "الردّ وصل مرّتين في الطلب نفسه: في حقل الاسترداد العام وفي تسوية الزبون العابر معاً — وقبولُهما يفتح باب صرفٍ مزدوج من الدرج",
+            doThis: "أدخِل الردّ النقديّ الكامل في تسوية الزبون العابر وحدها، واترك حقل الاسترداد العام فارغاً",
+          }),
         });
       }
       if (resolution.kind !== "IMMEDIATE_REFUND" || resolution.method !== "CASH") {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message:
-            "في النطاق الحالي تسوية الزبون العابر هي ردّ CASH فوري كامل فقط. لا بطاقة ولا تحويل ولا رصيد معلّق؛ سجّل العميل أولاً إن احتجت مساراً آخر.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `طريقة الردّ المطلوبة «${resolution.method}» غير متاحة لزبونٍ بلا حساب — المسار الوحيد ردّ CASH نقداً فوريّاً كامل فقط: لا بطاقة ولا تحويل ولا رصيد معلّق، فالعابر لا ذمّةَ له تستوعب الفرق`,
+            doThis: "بدّل طريقة الردّ إلى النقد وسلّم الزبون مبلغه من الدرج؛ وإن أصرّ على مسارٍ آخر فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته",
+          }),
         });
       }
       /**
@@ -364,34 +474,71 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         && (!Number.isInteger(resolution.shiftId) || Number(resolution.shiftId) <= 0)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "رقم الوردية المحدَّدة لردّ الزبون العابر غير صالح.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `رقم الوردية المحدَّد لصرف الردّ «${String(resolution.shiftId)}» ليس عدداً صحيحاً موجباً`,
+            doThis: "اترك حقل الوردية فارغاً ليختار النظام الدرج المفتوح تلقائياً، أو اختر الوردية من القائمة بدل كتابة رقمها يدوياً",
+          }),
         });
       }
       if ((resolution.reason?.trim().length ?? 0) < 3) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "سبب مرتجع الزبون العابر إلزامي (٣ أحرف على الأقل)." });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `سبب المرتجع إلزاميّ ولا يقلّ عن 3 أحرف — الوارد ${resolution.reason?.trim().length ?? 0} حرفاً؛ وهو المستند الوحيد على سبب خروج النقد من الدرج`,
+            doThis: "اكتب السبب كما قاله الزبون: «مقاس غير مناسب» أو «صنف مختلف عن المطلوب» أو «عيب في المنتج»",
+          }),
+        });
       }
       if (resolution.reason.trim().length > 500) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "سبب مرتجع الزبون العابر طويل جداً (الحد ٥٠٠ حرف)." });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `سبب المرتجع أطول من الحدّ المسموح: ${resolution.reason.trim().length} حرفاً والحدّ 500`,
+            doThis: "اختصر السبب في سطرٍ واحد يذكر الصنف والعلّة، وضع التفصيل الطويل في ملاحظات الفاتورة",
+          }),
+        });
       }
       if (resolution.disposition !== "RESTOCK" && resolution.disposition !== "DAMAGED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد مصير البضاعة: تعود للرفّ أو تالفة." });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `مصير البضاعة المُرسَل «${String(resolution.disposition)}» ليس أحد الخيارين المقبولين: تعود للرفّ أو تالفة`,
+            doThis: "اختر «تعود للرف» إن كانت البضاعة سليمةً تُباع مرّةً أخرى، أو «تالفة» إن لم تعد صالحة — الخيار يقرّر هل تُعاد للمخزون أم تُسجَّل خسارة",
+          }),
+        });
       }
       if (input.restock != null && input.restock !== (resolution.disposition === "RESTOCK")) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "تعارض مصير البضاعة بين restock وresolution.disposition؛ اعتمد disposition للزبون العابر.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `مصير البضاعة وصل بقيمتين متعارضتين: «${input.restock ? "تعود للرف" : "لا تعود للرف"}» في حقل إعادة التخزين، و«${resolution.disposition === "RESTOCK" ? "تعود للرف" : "تالفة"}» في تسوية الزبون العابر`,
+            doThis: "احذف حقل إعادة التخزين من الطلب واترك القرار في تسوية الزبون العابر وحدها — هي المصدر المعتمَد لمصير بضاعته",
+          }),
         });
       }
       if (inv.sourceType === "WORKORDER" && resolution.disposition === "RESTOCK") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "مرتجع أمر الشغل لا يعود إلى مخزون الرف؛ اختر «تالف/لا يعود للمخزون».",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع طلب الخدمة",
+            why: "مُنتَج أمر الشغل مصنوعٌ لهذا الزبون بعينه ولا رصيد له على الرفّ — موادُه استُهلكت عند بدء التنفيذ، فإعادته للمخزون تُنشئ رصيداً وهمياً لصنفٍ مخصَّص",
+            doThis: "اختر «تالف/لا يعود للمخزون» في مصير البضاعة ثمّ أعِد التسجيل — الردّ الماليّ للزبون يتمّ كاملاً على أيّ حال",
+          }),
         });
       }
     } else if (input.resolution && !input.internalCorrectionReversal) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "resolution مخصّص للزبون العابر فقط؛ استخدم مسارات refund/الذمّة القائمة للعميل المسجّل.",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: "تسوية الزبون العابر مخصَّصة للفواتير بلا عميل، وهذه الفاتورة مرتبطة بعميلٍ مسجَّل له ذمّةٌ تستوعب المبلغ",
+          doThis: "استعمل حقل الاسترداد المعتاد لتردّ نقداً أو بطاقة، أو اتركه فارغاً ليُخصَم المبلغ من ذمّة العميل",
+        }),
       });
     }
 
@@ -426,7 +573,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       ? input.resolution.disposition === "RESTOCK"
       : input.restock !== false;
     const restock = inv.sourceType === "WORKORDER" ? false : requestedRestock;
-    if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا أصناف للإرجاع" });
+    if (!input.lines.length) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: "لم يُحدَّد أيّ صنفٍ للإرجاع — الطلب وصل بقائمة أصنافٍ فارغة",
+          doThis: "حدّد الأصناف التي يعيدها الزبون وكمّية كلٍّ منها في جدول الفاتورة، ثمّ اضغط «إرجاع»",
+        }),
+      });
+    }
 
     // RETURN-DEDUP (تدقيق ٢/٧): منع تكرار invoiceItemId في أسطر المرتجع. كان الفحص يقارن كل سطر
     // بـremaining من لقطةٍ ثابتة، فسطران بنفس البند [{6},{6}] يمرّان كلاهما ⇒ إعادة تخزين مضاعفة
@@ -436,7 +592,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (seenItemIds.has(l.invoiceItemId)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `البند ${l.invoiceItemId} مكرّر في أسطر المرتجع — ادمج الكميات في سطرٍ واحد`,
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `البند ${Number(l.invoiceItemId)} مذكورٌ أكثر من مرّة في أسطر المرتجع — وتمريرُه مرّتين يُعيد كمّيته للمخزون مرّتين ويصرف قيمتها مرّتين`,
+            doThis: "احذف السطر المكرّر واجمع الكمّيتين في سطرٍ واحد لهذا البند",
+          }),
         });
       }
       seenItemIds.add(l.invoiceItemId);
@@ -458,22 +618,49 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (blocked.length) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message:
-            "لا يُرجَع كرتٌ رقميّ بالمرتجع العادي — استعمل «عكس بيع الكروت» بقرار المدير " +
-            "(الكرت صدر من جهاز المزوّد ولا يعود للمخزون).",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة تحوي ${blocked.length} بنداً من الكروت الرقمية، والكرت يصدر من جهاز المزوّد وقد يكون استُهلك — فإعادته عكسٌ ماليّ يحتاج تأكيد المزوّد لا إعادةَ بضاعةٍ إلى الرفّ`,
+            doThis: "أزِل بنود الكروت من هذا المرتجع وأرجِع بقيّة الأصناف؛ ثمّ افتح شاشة «عكس بيع الكروت» ليقرّرها المدير مع المزوّد",
+          }),
         });
       }
     }
 
     const work = input.lines.map((l) => {
       const item = itemById.get(l.invoiceItemId);
-      if (!item) throw new TRPCError({ code: "BAD_REQUEST", message: `بند ${l.invoiceItemId} لا يخص الفاتورة` });
+      if (!item) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `البند ${Number(l.invoiceItemId)} ليس من بنود الفاتورة ${inv.invoiceNumber} — الصفحة على الأرجح مفتوحةٌ على فاتورةٍ أخرى أو حُذف البند بعد فتحها`,
+            doThis: "حدّث صفحة الفاتورة واختر الأصناف من جدولها من جديد، ثمّ أعِد تسجيل المرتجع",
+          }),
+        });
+      }
       if (!Number.isInteger(l.baseQuantity) || l.baseQuantity <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الإرجاع يجب أن تكون صحيحة موجبة" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `كمية الإرجاع للبند ${Number(l.invoiceItemId)} وصلت «${l.baseQuantity}» — والكمية عددٌ صحيحٌ أكبر من صفر بالوحدة الأساس (لا كسور ولا صفر)`,
+            doThis: "صحّح الكمية إلى عددٍ صحيحٍ موجب، أو احذف السطر إن لم يُرجِع الزبون شيئاً من هذا الصنف",
+          }),
+        });
       }
       const remaining = item.baseQuantity - (item.returnedBaseQuantity ?? 0);
       if (l.baseQuantity > remaining) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `كمية الإرجاع تتجاوز المتبقّي القابل للإرجاع للبند ${l.invoiceItemId}` });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          // ⭐ الزبون واقف: الرقمُ الذي يحتاجه الموظّف هو **المتبقّي**، وكان عليه أن يفتح
+          //   الفاتورة ومرتجعاتها ليحسبه بنفسه. الفرق واتّجاهه هنا في نصّ الرسالة.
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `المطلوب إرجاعه من البند ${Number(l.invoiceItemId)} هو ${l.baseQuantity} والمتبقّي القابل للإرجاع ${remaining} فقط (المُباع ${item.baseQuantity} · المُرجَع سابقاً ${item.returnedBaseQuantity ?? 0}) — زيادة ${l.baseQuantity - remaining}`,
+            doThis: `أنقص الكمية إلى ${remaining} أو أقلّ؛ وإن كان بيد الزبون أكثر من ذلك فراجع مرتجعات الفاتورة في سجلّها قبل استلام الزيادة`,
+          }),
+        });
       }
       return { line: l, item };
     });
@@ -550,7 +737,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           if (!def.length) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: `البكج (بند ${Number(item.id)}) بلا لقطة مكوّنات محفوظة — الفواتير قبل ٧/٧/٢٦ لا تدعم الإرجاع الآلي للبكج؛ أعِد المكوّنات فرادى`,
+              message: appErrorMessage({
+                what: "تعذّر إرجاع البكج إلى المخزون",
+                why: `البند ${Number(item.id)} بكجٌ بِيع قبل 7/7/2026 ولا لقطة محفوظة لمكوّناته وقتَها — وإعادتُه بوصفة اليوم قد تُعيد للمخزون غير ما خرج منه`,
+                doThis: "ألغِ هذا السطر من المرتجع، وأرجِع مكوّنات البكج فرادى بأصنافها وكمّياتها كما استلمتها من الزبون",
+              }),
             });
           }
           for (const c of def) {
@@ -886,7 +1077,14 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     // Cash refund capped to min(returnedTotal, amount actually paid). Reject overage.
     const requestedRefund = money(refund?.amount ?? "0");
     if (requestedRefund.lt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الاسترداد لا يصحّ أن يكون سالباً" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: `مبلغ الاسترداد المُدخَل ${requestedRefund.toFixed(2)} د.ع سالب — والاسترداد مالٌ يخرج للزبون فلا يكون بالسالب`,
+          doThis: "أدخِل المبلغ موجباً كما ستسلّمه للزبون، أو اتركه صفراً إن لم يُردّ له شيء نقداً في هذه العملية",
+        }),
+      });
     }
     // سقف الاسترداد — **الحساب موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts` (مصدر حقيقة
     // واحد). كان مكرَّراً هنا بمنطقٍ يخالف ما تعرضه الشاشة، فيبني الموظف طلباً مرفوضاً حتماً.
@@ -915,18 +1113,33 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (isWalkInReturn && !requestedRefund.eq(returnedTotal)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message:
-          `ردّ الزبون العابر يجب أن يساوي قيمة المرتجع الدقيقة بعد التقريب: ${returnedTotal.toFixed(2)} ` +
-          `(المُدخل ${requestedRefund.toFixed(2)}). لا يجوز ردّ جزئي؛ سجّل العميل أولاً إن كان المطلوب رصيداً أو مطالبة مالية.`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+          why: `الردّ يجب أن يساوي قيمة المرتجع بالضبط بعد التقريب: المطلوب ${returnedTotal.toFixed(2)} د.ع والمُدخَل ${requestedRefund.toFixed(2)} د.ع — فرق ${returnedTotal.minus(requestedRefund).abs().toFixed(2)} د.ع ${requestedRefund.lt(returnedTotal) ? "ناقص يبقى في الدرج بلا صاحب" : "زائد يخرج من الدرج بلا مستند"}`,
+          doThis: `أدخِل ${returnedTotal.toFixed(2)} د.ع بالضبط وسلّمها للزبون؛ ولا يصحّ ردٌّ جزئيّ لزبونٍ بلا حساب — فإن كان المطلوب رصيداً أو مطالبةً مالية فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته`,
+        }),
       });
     }
     if (requestedRefund.gt(refundCap)) {
       const poolNote = refundMethod === "CASH"
         ? "الأقل من قيمة المرتجع والمتبقّي من المقبوض على الفاتورة بكل الطرق"
         : "الأقل من قيمة المرتجع والمقبوض بهذه الطريقة والمتبقّي من المقبوض إجمالاً";
+      // أيُّ الحدّين قصّ السقف فعلاً؟ مساواتُه لقيمة المرتجع تعني أنّ الحدّ هو المرتجع نفسه،
+      // وإلّا فالحدّ ما تبقّى من مقبوض الفاتورة — وهما مخرجان مختلفان تماماً للموظّف.
+      const cappedByReturnValue = refundCap.eq(returnedTotal);
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = ${poolNote})`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل استرداد المرتجع",
+          why:
+            `المطلوب ردّه بـ${refundMethod ?? "—"} هو ${requestedRefund.toFixed(2)} د.ع، وهو يتجاوز المسموح ${refundCap.toFixed(2)} د.ع بزيادة ${requestedRefund.minus(refundCap).toFixed(2)} د.ع — والمسموح هو ${poolNote}` +
+            (cappedByReturnValue
+              ? `، والحدّ هنا قيمة المرتجع نفسها ${returnedTotal.toFixed(2)} د.ع`
+              : `، والحدّ هنا ما تبقّى من مقبوض الفاتورة لا قيمة المرتجع ${returnedTotal.toFixed(2)} د.ع`),
+          doThis: refundCap.isZero()
+            ? "لم يبقَ على الفاتورة مقبوضٌ يُردّ (لم تُدفع بعد أو استُرِدّ مقبوضها كلّه سابقاً): سجّل المرتجع بمبلغ استردادٍ صفر ليسقط المبلغ من ذمّة العميل بدل خروج نقدٍ من الدرج"
+            : `أنقص مبلغ الاسترداد إلى ${refundCap.toFixed(2)} د.ع أو أقلّ؛ وما زاد عنه يُسوّى على ذمّة العميل لا نقداً من الدرج`,
+        }),
       });
     }
     const refundRequest = requestedRefund;
@@ -954,7 +1167,14 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       if (refund!.method === "CASH") {
         const resolved = prelockedRefundSource;
         if (!resolved) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر الاسترداد النقدي" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: appErrorMessage({
+              what: "تعذّر صرف استرداد المرتجع نقداً",
+              why: "لم يُحجَز مصدر النقد (درجٌ أو خزينة) في بداية العملية رغم أنّ الردّ نقديّ — خللٌ داخليّ في تسلسل التنفيذ لا في مدخلاتك",
+              doThis: "لم يخرج أيّ مبلغ ولم تتغيّر الفاتورة؛ أعِد المحاولة مرّةً واحدة، وإن تكرّر فأبلِغ مسؤول النظام برقم الفاتورة ولا تُسلّم الزبون نقداً خارج النظام",
+            }),
+          });
         }
         shiftId = resolved.shiftId;
         refundCashBucket = resolved.cashBucket;
@@ -977,7 +1197,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         if (!refundReference) {
           throw new TRPCError({
             code: "BAD_REQUEST",
-            message: "الاسترداد بالبطاقة يحتاج مرجع العملية من جهاز الدفع (رقم العملية/كود الموافقة) — نفّذ الاسترداد على الجهاز ثمّ أدخِل مرجعه",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل استرداد المرتجع على البطاقة",
+              why: `مرجع العملية من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${requestedRefund.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`,
+              doThis: "نفّذ الاسترداد على جهاز الدفع أوّلاً، ثمّ أدخِل رقم العملية أو كود الموافقة المطبوع على قسيمة الجهاز في حقل المرجع",
+            }),
           });
         }
         // لا يمسّ درجاً (cashBucket=NULL) ⇒ لا أثر على expectedCash ولا على Z-report النقديّ.
@@ -992,7 +1216,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         if (inv.customerId == null) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "الاسترداد غير النقدي يحتاج عميلاً مرتبطاً بالفاتورة كي يمرّ بسند صرف واعتماد مالك",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل استرداد المرتجع",
+              why: `الردّ بـ${refund!.method} لا يخرج فوراً بل يمرّ بسند صرفٍ يعتمده المالك، والسند يلزمه طرفٌ يُنسَب إليه — وهذه الفاتورة بلا عميلٍ مسجَّل`,
+              doThis: "ردّ للزبون نقداً أو على بطاقته (رافدا الردّ الفوريّان)، أو سجّله عميلاً على الفاتورة ثمّ أعِد المرتجع بهذه الطريقة",
+            }),
           });
         }
         assertNonPhysicalOutReceipt({
@@ -1112,7 +1340,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     )) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `الفاتورة مرتبطة بإرسالية مفتوحة ${cn.number}. أعد الإرسالية أولاً أو ورّد تحصيلها قبل تسجيل مرتجع المبيعات.`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل المرتجع",
+          why: `الفاتورة ما زالت على إرسالية التوصيل ${cn.number}: حالة الطرد «${cn.parcelStatus}» وحالة مالها «${cn.moneyStatus}» — أي أنّ البضاعة أو نقدها ما زال بيد جهة التوصيل، فالمرتجع الآن يعكس بيعاً لم تُغلَق دورتُه`,
+          doThis: "أغلق الإرسالية أوّلاً من شاشة التوصيل: سجّل إرجاع الطرد إن عاد إليك، أو ورّد ما حصّله المندوب — ثمّ أعِد تسجيل المرتجع",
+        }),
       });
     }
 
@@ -1156,7 +1388,14 @@ export async function returnSaleAsOwner(
 ) {
   const reason = input.ownerReason.trim().replace(/\s+/g, " ");
   if (reason.length < 3 || reason.length > 500) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "سبب المرتجع إلزاميّ للمالك (3-500 محرف)" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المرتجع الفوريّ",
+        why: `سبب المرتجع إلزاميّ للمالك ويقع بين 3 و500 محرف — الوارد ${reason.length} محرفاً؛ وهو ما يقوم مقام اعتماد الشخص الثاني في هذا المسار`,
+        doThis: "اكتب السبب في سطرٍ واحد يذكر الصنف والعلّة (مثل «عيب طباعة في 20 دفتر»)، أو مرّر المرتجع بمسار الطلب والاعتماد المعتاد",
+      }),
+    });
   }
   return withTx(async (tx) => {
     const [owner] = await tx
@@ -1168,7 +1407,15 @@ export async function returnSaleAsOwner(
     if (!owner?.isActive || !owner.isOwner) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط — استعمل مسار الطلب والاعتماد",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المرتجع الفوريّ",
+          why: !owner
+            ? "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط، وحسابك لم يعد موجوداً في سجلّ المستخدمين"
+            : !owner.isActive
+              ? "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط، وحسابك موقوف الآن"
+              : "المرتجع الفوريّ محصورٌ بحساب مالكٍ نشط، وحسابك ليس عليه صفة المالك — وهي التي تُغني عن اعتماد الشخص الثاني",
+          doThis: "سجّل المرتجع من شاشة المرتجعات بمسار الطلب والاعتماد ليعتمده المالك؛ وإن كنت المالك فراجع صفحة المستخدمين للتأكّد من تفعيل حسابك وصفته",
+        }),
       });
     }
     return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);

@@ -1,0 +1,52 @@
+{
+  "client/src/pages/Asset": {
+    "onlyNew": [
+      "acquisitionBeneficiaryName",
+      "acquisitionEvidenceReference",
+      "custodianId"
+    ],
+    "onlyEdit": [
+      "custodianName"
+    ]
+  },
+  "client/src/pages/Product": {
+    "onlyNew": [
+      "defaultMin",
+      "productName"
+    ],
+    "onlyEdit": [
+      "allowAutoCartRecommendations",
+      "allowBackorder",
+      "isService",
+      "originalName",
+      "showInPrintPos",
+      "showInReception"
+    ]
+  },
+  "client/src/pages/Purchase": {
+    "onlyNew": [],
+    "onlyEdit": [
+      "revisionReason"
+    ]
+  },
+  "client/src/pages/Supplier": {
+    "onlyNew": [],
+    "onlyEdit": [
+      "email",
+      "whatsapp"
+    ]
+  },
+  "client/src/pages/User": {
+    "onlyNew": [
+      "account",
+      "mustChangePassword",
+      "password",
+      "passwordConfirm",
+      "value"
+    ],
+    "onlyEdit": [
+      "isOwner",
+      "resetToken"
+    ]
+  }
+}

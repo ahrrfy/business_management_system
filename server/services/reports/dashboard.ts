@@ -4,6 +4,20 @@ import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getReminderQueue } from "../arRemindersService";
 import { getTodayNetSales } from "./todaySales";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+
+/**
+ * أعمدةُ مسند «الرصيد المفتوح» بالاسم المستعار `i` (نمطُ SQL الخامّ في هذا الملفّ) —
+ * `openBalanceExpr` لا تستورد المخطّط عمداً فتقبل أيّ جزءِ SQL، ولذلك تصلح هنا كما تصلح
+ * على جدول drizzle مباشرةً. ملاحظة: `CAST(… AS DECIMAL(15,2))` الذي تُضيفه لا أثرَ له رقمياً
+ * على هذه الأعمدة (`decimal(15,2)` في المخطّط) — هو تثبيتٌ يمنع استنتاج `DOUBLE` حين يمرّ
+ * المسند فوق عمودٍ عابرٍ من انضمامٍ يساريّ أو جدولٍ مشتقّ.
+ */
+const INVOICE_ALIAS_OPEN_BALANCE_COLS = {
+  total: sql`i.total`,
+  paidAmount: sql`i.paidAmount`,
+  returnedTotal: sql`i.returnedTotal`,
+};
 
 /** شرط SQL خام لمهمة متأخّرة — مرآة `overdueSqlCond` في `server/services/tasks/list.ts`
  *  (لا استيراد مباشر: تلك الدالة تستعمل أعمدة drizzle مكتوبة `tasks.dueAt`، وهذا الملف يبني
@@ -173,8 +187,10 @@ export async function getDashboardMetrics(
     const arRows = await db.execute(sql`
       SELECT
         COUNT(*) AS c,
-        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
+        CAST(COALESCE(SUM(${openBalanceExpr(INVOICE_ALIAS_OPEN_BALANCE_COLS, "COLLECTIBLE")}), 0) AS CHAR) AS t
       FROM invoices i
+      -- ⚠️ قائمةٌ بيضاء أضيقُ من «غير ميتة» (تُسقِط CONFIRMED) — تُرِكت كما هي: توسيعُها يرفع
+      -- بطاقةَ «الذمم المتأخّرة» في اللوحة ⇒ قرارُ سياسة لا توحيدُ مسند (جرد الانحراف، بند د).
       WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
         -- S2 (٢٩/٦/٢٦): مطابق DATEDIFF(NOW(),invoiceDate)>30 تماماً (DATEDIFF يتجاهل الوقت، TZ=UTC) لكنه قابل للفهرسة.
         AND i.invoiceDate < DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)

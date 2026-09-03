@@ -26,6 +26,7 @@ import {
 } from "./accounting/postingEngine";
 import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 
 export interface ReconcileResult {
   entity: string;
@@ -564,15 +565,21 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   // مع عمود returnedTotal، الصيغة تبسّطت كثيراً:
   //   AR_per_invoice = total - paidAmount - returnedTotal (موقَّع، لا GREATEST(.,0))
   // CANCELLED وSUPERSEDED مستندان نهائيان بلا ذمة: البديلة وحدها تحمل الالتزام بعد التصحيح.
+  //
+  // ⭐ **غيابُ `GREATEST` هنا ليس سهواً** رغم أنّ عشرة مواضعَ أخرى تحمله — وهذا الموضعُ بالذات
+  // كان مشتبَهاً به. الطرفُ المقارَن `customers.currentBalance` **موقَّعٌ** وقد يكون سالباً
+  // (دفعٌ زائد — مسموحٌ بقرار المالك — أو مرتجعٌ نقديّ)، فقصُّ الطرف المُشتقّ عند الصفر يخترع
+  // «انحرافاً وهمياً» في كل حالةٍ مشروعة. وهي العلّةُ التي أُغلقت فعلاً وموثَّقةٌ في رأس هذه
+  // الدالّة («السابق استعمل GREATEST(.,0) … فأنتج انحرافاً وهمياً»).
+  // ⇒ الوضعُ الصحيح `SIGNED`، ومجموعةُ حالاته `VOIDED_INVOICE_STATUSES` = ('CANCELLED',
+  // 'SUPERSEDED') وهي حرفياً المكتوبة أدناه. التوحيدُ يُثبّت هذا القرار باسمٍ بدل تعليقٍ يُنسى.
   const invSum = await db
     .select({
       customerId: invoices.customerId,
       arGross: sql<string>`
         COALESCE(SUM(CASE
           WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
-          THEN CAST(${invoices.total} AS DECIMAL(15,2))
-             - CAST(${invoices.paidAmount} AS DECIMAL(15,2))
-             - CAST(${invoices.returnedTotal} AS DECIMAL(15,2))
+          THEN ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "SIGNED")}
           ELSE 0
         END), 0)
       `,

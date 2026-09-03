@@ -38,6 +38,8 @@ import { withTx, type Actor } from "../tx";
 import { sha256, stableCanonical } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
 import { assertExpectedVersion, assertIndependentPurchaseReviewer } from "./returnGovernance";
+import { purchaseChargeControlTrigger } from "@shared/approvalTriggers";
+import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { payloadHashMatches } from "../idempotency";
 
 const ACCRUABLE_ROLES = new Set<AccountRole>(["RENT", "UTILITIES", "OPERATING_EXPENSE", "DELIVERY_EXPENSE", "OTHER_EXPENSE"]);
@@ -242,7 +244,9 @@ export async function decidePurchaseChargeControl(input: DecidePurchaseChargeCon
       );
     }
     const request = (await tx.select().from(purchaseChargeControlRequests).where(eq(purchaseChargeControlRequests.id, input.requestId)).for("update").limit(1))[0]!;
-    assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
+    // اعتمادُ المصروف **يُخرج نقداً**: الإيصال يستوفي شروط «النقد المتحقّق» الأربعة نصّاً
+    // (cashAvailability.ts) ⇒ نقدٌ يغادر الدرج ماديّاً. ⇒ المالك حصراً.
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseChargeControlTrigger(input.action), subject: `مصروف شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
     if (request.status !== "PENDING") { if (request.decisionKey === decisionKey && request.decisionHash === hash) return { requestId: input.requestId, status: request.status, purchaseChargeId: Number(request.purchaseChargeId), idempotent: true as const }; throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب التحكم مسبقاً" }); }
     if (input.action === "REJECT") { await tx.update(purchaseChargeControlRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey, decisionHash: hash }).where(eq(purchaseChargeControlRequests.id, input.requestId)); return { requestId: input.requestId, status: "REJECTED" as const, purchaseChargeId: Number(request.purchaseChargeId), idempotent: false as const }; }
     const charge = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.id, Number(request.purchaseChargeId))).for("update").limit(1))[0];

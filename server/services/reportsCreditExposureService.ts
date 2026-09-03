@@ -9,6 +9,7 @@
 // ⚠️ أسماء أعمدة DB الخام: invoices.invoiceStatus · receipts.receiptStatus/voucherPartyType.
 // مرساة «اليوم» UTC_DATE() (نظير getARAging — تفادي انزياح المنطقة الزمنية). كل الأموال بـdecimal (§٥).
 import { sql } from "drizzle-orm";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 
@@ -82,6 +83,14 @@ export async function getCreditExposure(opts: { branchId?: number; limit?: numbe
   const db = getDb();
   if (!db) return empty;
 
+  // مسند «الرصيد المفتوح» من مصدره الواحد (`@shared/predicates/openBalance`) بالاسم المستعار
+  // `i`، ستُّ مرّاتٍ في استعلامٍ واحد كانت مكتوبةً بيد. الوضع `COLLECTIBLE` (المقصوص) هو
+  // القائم حرفياً وهو الصحيح هنا: الشرائح تُجمَع، و«أعلى فاتورة» تُقارَن، وشرط `HAVING`
+  // يُقارِن بصفر — والسالبُ في أيٍّ منها يخترع ائتماناً لم يُمنَح.
+  const openBalance = openBalanceExpr(
+    { total: sql`i.total`, paidAmount: sql`i.paidAmount`, returnedTotal: sql`i.returnedTotal` },
+    "COLLECTIBLE",
+  );
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
   const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
 
@@ -94,11 +103,11 @@ export async function getCreditExposure(opts: { branchId?: number; limit?: numbe
         c.customerType,
         CAST(c.currentBalance AS CHAR) AS currentBalance,
         CASE WHEN c.creditLimit IS NULL THEN NULL ELSE CAST(c.creditLimit AS CHAR) END AS creditLimit,
-        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
-        CAST(COALESCE(MAX(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS highestUnpaid,
-        COALESCE(MAX(CASE WHEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) > 0 THEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) END), 0) AS daysOverdue
+        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d31_60,
+        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d61_90,
+        CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN ${openBalance} ELSE 0 END), 0) AS CHAR) AS d91p,
+        CAST(COALESCE(MAX(${openBalance}), 0) AS CHAR) AS highestUnpaid,
+        COALESCE(MAX(CASE WHEN ${openBalance} > 0 THEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) END), 0) AS daysOverdue
       FROM customers c
       LEFT JOIN invoices i
         ON i.customerId = c.id
@@ -106,7 +115,7 @@ export async function getCreditExposure(opts: { branchId?: number; limit?: numbe
         ${branchFilter}
       WHERE c.isActive = TRUE
       GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance, c.creditLimit
-      HAVING c.currentBalance > 0 OR SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)) > 0
+      HAVING c.currentBalance > 0 OR SUM(${openBalance}) > 0
       ORDER BY c.currentBalance DESC
       LIMIT ${limit}
     `),
