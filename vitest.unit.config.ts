@@ -288,6 +288,9 @@ export default defineConfig({
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
       "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
       "scripts/__tests__/rawSelectGuard.test.ts",
+      // م٢ ق١١ — مُشتقّ الخطوة التالية (`shared/nextAction.ts`) على الخادم + رقاقة العرض.
+      "server/services/__tests__/nextActionDerivation.test.ts",
+      "client/src/components/nextAction/NextActionChip.test.ts",
       // م٥ ق١ — المسندات المشتركة (D2 في مقياس الاحتكاك) + قاموس المصطلحات (D6).
       "shared/predicates/hasOpenBalance.test.ts",
       "shared/predicates/isDeadInvoice.test.ts",

@@ -11,6 +11,9 @@ import { stripDocPrefix } from "@shared/documentNumber";
 import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus,
 } from "@shared/invoiceStatus";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { deriveInvoiceNextAction } from "../services/nextActionDerivation";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
 import {
@@ -1395,14 +1398,30 @@ export const saleRouter = router({
     // حقل تفويض داخلي للاستعلام فقط؛ لا يكون جزءاً من عقد تفاصيل الفاتورة.
     const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } = inv;
 
+    /**
+     * م٢ ق١١ — «الخطوة التالية»: حقلٌ اختياريٌّ يُلحَق بالردّ فتعرضه رقاقةُ الرأس بدل أن
+     * تُخمّنه كلُّ شاشةٍ لنفسها. `hasLiveConsignment` مشتقٌّ من الحالة الموحَّدة للإرسالية
+     * لا من أعمدةٍ متفرّقة. المستدعي القديم لا ينكسر — الحقلُ اضافةٌ لا تغيير.
+     */
+    const nextAction = deriveInvoiceNextAction({
+      invoiceId: inv.id,
+      status: inv.status,
+      hasLiveConsignment: isOpenConsignmentStatus(inv.consignmentStatus),
+      deliveryPartyLabel: inv.courierName,
+      replacementInvoiceId: inv.correctedByInvoiceId,
+      dueDate: inv.dueDate,
+    });
+    const nextActionReason =
+      nextAction == null ? nextActionTerminalReason("SALE_INVOICE", inv.status) : null;
+
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
     if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = invoiceForView;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload,
+      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload, nextAction, nextActionReason,
         };
     }
-    return { ...invoiceForView, items, payments, returns, qrPayload };
+    return { ...invoiceForView, items, payments, returns, qrPayload, nextAction, nextActionReason };
   }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.

@@ -6,11 +6,15 @@ import {
   productUnits,
   productVariants,
   products,
+  purchaseControlSettings,
+  purchaseOrderControlRequests,
   purchaseOrderItems,
   purchaseOrders,
   suppliers,
   users,
 } from "../../drizzle/schema";
+import { nextActionTerminalReason } from "@shared/nextAction";
+import { derivePurchaseOrderNextActionFromRow } from "../services/nextActionDerivation";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import {
@@ -1014,6 +1018,8 @@ export const purchaseRouter = router({
             supplierName: suppliers.name,
             branchId: purchaseOrders.branchId,
             orderDate: purchaseOrders.orderDate,
+            // م٢ ق١١: تاريخ التسليم المتوقّع — يدخل سقف «الخطوة التالية» عند CONFIRMED.
+            expectedDeliveryDate: purchaseOrders.expectedDeliveryDate,
             subtotal: purchaseOrders.subtotal,
             taxAmount: purchaseOrders.taxAmount,
             taxRatePercent: purchaseOrders.taxRatePercent,
@@ -1094,6 +1100,55 @@ export const purchaseRouter = router({
           eq(purchaseOrderItems.productUnitId, productUnits.id),
         )
         .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+      /**
+       * م٢ ق١١ — «الخطوة التالية». نقرأ هنا حقيقتَين قصيرتَين من جداول التحكّم مباشرةً:
+       *  · إعدادُ الفرع `requireRequisition` — نصفُ سطرٍ يجيب سؤال «هل التغطية مفروضة أصلاً؟».
+       *  · طلبُ اعتمادٍ نشطٌ على الأمر (PENDING/STALE) — لتقول الرقاقة «مَن ينتظر أحداً؟».
+       *
+       * ⛔ لا نمرّ بخدمة الشراء (`server/services/purchase/**` ممنوعُ المسّ في هذه الموجة).
+       *   استعلامان مقروءان مباشرةً على المخطّط، بحدود صفٍّ واحد ومصفوفٍ محدودٍ (LIMIT 1).
+       */
+      const [controlSetting] = po.branchId != null
+        ? await db
+            .select({ requireRequisition: purchaseControlSettings.requireRequisition })
+            .from(purchaseControlSettings)
+            .where(eq(purchaseControlSettings.branchId, Number(po.branchId)))
+            .limit(1)
+        : [];
+      const activeApprovals = await db
+        .select({ status: purchaseOrderControlRequests.status })
+        .from(purchaseOrderControlRequests)
+        .where(
+          and(
+            eq(purchaseOrderControlRequests.purchaseOrderId, po.id),
+            eq(purchaseOrderControlRequests.kind, "APPROVE_REVISION"),
+            inArray(purchaseOrderControlRequests.status, ["PENDING", "STALE"]),
+          ),
+        )
+        .orderBy(desc(purchaseOrderControlRequests.id))
+        .limit(1);
+      const approvalRequest: "PENDING" | "STALE" | "NONE" =
+        activeApprovals[0]?.status === "PENDING"
+          ? "PENDING"
+          : activeApprovals[0]?.status === "STALE"
+            ? "STALE"
+            : "NONE";
+      const totalDec = Number(po.total ?? 0);
+      const paidDec = Number(po.paidAmount ?? 0);
+      const nextAction = derivePurchaseOrderNextActionFromRow({
+        purchaseOrderId: po.id,
+        status: po.status,
+        currentRevisionId: po.currentRevisionId,
+        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(paidDec) && totalDec - paidDec > 0,
+        approvalRequest,
+        requireRequisition: controlSetting?.requireRequisition,
+        expectedDeliveryDate: po.expectedDeliveryDate,
+      });
+      const nextActionReason =
+        nextAction == null
+          ? nextActionTerminalReason("PURCHASE_ORDER", po.status)
+          : null;
+
       // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
       if (!canSeeCostForUser(ctx.user)) {
         // 0204: الخصم وسعرُ ما قبله **تكلفةٌ أيضاً** (يكشفان بنية سعر المورّد) ⇒ يُحجبان مع البقيّة.
@@ -1128,8 +1183,8 @@ export const purchaseRouter = router({
               usdListUnitPrice: null,
             }) as unknown as typeof row,
         );
-        return { ...poMasked, items: itemsMasked };
+        return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, items };
+      return { ...po, items, nextAction, nextActionReason };
     }),
 });
