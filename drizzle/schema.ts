@@ -17143,3 +17143,47 @@ export const documentEffects = mysqlTable(
 
 export type DocumentEffect = typeof documentEffects.$inferSelect;
 export type InsertDocumentEffect = typeof documentEffects.$inferInsert;
+
+/**
+ * ═══ recordVersions — اللقطة والاستعادة (م٦ ق٨، هجرة 0330) ═══
+ *
+ * **المبدأ الحاكم:** لا لقطة ⇒ لا تعديل. كل تعديلٍ لكيانٍ مرجعيٍّ (منتج/عميل/…) يُنشئ صفَّ
+ * لقطةٍ داخل نفس المعاملة، يحمل الحمولةَ الكاملة قبل التعديل. الاستعادةُ = تعديلٌ جديدٌ
+ * يحمل حمولةَ إصدارٍ قديمٍ ويمرّ بكلّ حرّاس التعديل — لا كتابةٌ خامٌّ للجدول الأصل.
+ *
+ * ⚠️ بلا FK جامدة: الجدول polymorphic (`entityType`+`entityId`)، وحذفُ الطرف الأمّ يجب
+ * ألّا يُقيّده سجلّ التاريخ. الفهارس تكفي للاستعلامات الحاكمة.
+ *
+ * ⛔ الخدمة `versioning/recordVersion.ts` **لا تكتب** إلّا داخل `Tx`، وتفشل مغلقةً بلا
+ * سبب — انظر عقدها هناك.
+ */
+export const recordVersions = mysqlTable(
+  "recordVersions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    entityType: varchar("entityType", { length: 50 }).notNull(),
+    entityId: bigint("entityId", { mode: "number" }).notNull(),
+    versionNumber: int("versionNumber").notNull(),
+    payloadJson: json("payloadJson").notNull(),
+    reason: varchar("reason", { length: 500 }),
+    actorUserId: bigint("actorUserId", { mode: "number" }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uniqEntityVersion: unique("uniq_entity_version").on(
+      t.entityType,
+      t.entityId,
+      t.versionNumber,
+    ),
+    entityHistoryIdx: index("idx_entity_history").on(
+      t.entityType,
+      t.entityId,
+      t.createdAt,
+    ),
+    actorIdx: index("idx_actor").on(t.actorUserId, t.createdAt),
+  }),
+);
+
+export type RecordVersion = typeof recordVersions.$inferSelect;
+export type InsertRecordVersion = typeof recordVersions.$inferInsert;

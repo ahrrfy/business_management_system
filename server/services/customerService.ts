@@ -37,6 +37,7 @@ import {
 } from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
+import { snapshotBeforeUpdate } from "./versioning/recordVersion";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -65,6 +66,11 @@ export interface CreateCustomerInput {
 
 export interface UpdateCustomerInput extends Partial<CreateCustomerInput> {
   customerId: number;
+  /**
+   * سببُ التعديل — يُلحق بلقطة `recordVersions` (م٦ ق٨). اختياريّ اليوم بسبب أنّ الشاشة
+   * لم تُوصل حقلَ سببٍ بعد؛ في غيابه يُستعمل النصُّ الافتراضيّ «تعديل بيانات العميل».
+   */
+  updateReason?: string | null;
 }
 
 export interface ListCustomersInput {
@@ -433,12 +439,26 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
 }
 
 /** تعديل عميل قائم. */
-export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) {
+export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
   return withTx(async (tx) => {
     const existing = (
       await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1)
     )[0];
     if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+
+    // م٦ ق٨: لقطة قبل التعديل — «لا لقطة ⇒ لا تعديل». الكتابةُ داخل نفس المعاملة، فإن
+    // فشلت اللقطةُ (أو التعديلُ لاحقاً) ⇒ ROLLBACK كامل. السببُ الافتراضيّ حتى تُوصل
+    // الشاشةُ حقلَ سبب.
+    await snapshotBeforeUpdate(
+      tx,
+      {
+        entityType: "customer",
+        entityId: input.customerId,
+        payloadJson: existing,
+        reason: input.updateReason?.trim() || "تعديل بيانات العميل",
+      },
+      actor,
+    );
 
     const patch: Record<string, unknown> = {};
     if (input.name !== undefined) {
