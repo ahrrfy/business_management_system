@@ -12,7 +12,7 @@ import { createSystemPaymentRequestTx } from "../voucher/create";
 import { postEntry } from "../ledgerService";
 import { expenseAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 
 /** تسليم عهدة: يُغلق العهدة الجارية ويفتح أخرى للموظف الجديد، ويحدّث صاحب العهدة.
  *  يتحقّق من أنّ الموظف نشط (employmentStatus='active') لمنع تسجيل عهدة على موظف منتهي/في إجازة،
@@ -109,7 +109,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       .for("update")
       .limit(1);
     if (existing) {
-      if (existing.requestPayloadHash !== requestPayloadHash) {
+      if (!payloadHashMatches(requestPayloadHash, existing.requestPayloadHash)) {
         throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: مفتاح الصيانة استُعمل ببيانات مختلفة" });
       }
       const [priorRequest] = await tx

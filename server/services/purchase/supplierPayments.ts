@@ -55,6 +55,7 @@ import {
 } from "./returnGovernance";
 import { supplierPaymentRefundTrigger, supplierPaymentTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { payloadHashMatches } from "../idempotency";
 
 type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
 export const SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY = Symbol(
@@ -626,7 +627,7 @@ export async function requestSupplierPayment(
     )[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (replay.payloadHash !== payloadHash)
+      if (!payloadHashMatches(payloadHash, replay.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل بدفعة مختلفة",
@@ -1237,7 +1238,7 @@ export async function requestSupplierPaymentRefund(
     )[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (replay.payloadHash !== payloadHash)
+      if (!payloadHashMatches(payloadHash, replay.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل باسترداد مختلف",

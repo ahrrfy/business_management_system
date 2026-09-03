@@ -36,6 +36,7 @@ import {
   stableCanonical,
 } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
+import { payloadHashMatches } from "../idempotency";
 
 export interface CreateGoodsReceiptInput {
   purchaseOrderId: number;
@@ -388,7 +389,7 @@ export async function createGoodsReceiptInTx(
         .limit(1)
     )[0];
     if (existing) {
-      if (existing.payloadHash !== payloadHash) {
+      if (!payloadHashMatches(payloadHash, existing.payloadHash)) {
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({
@@ -946,7 +947,7 @@ export async function requestGoodsReceiptReversal(
         .limit(1)
     )[0];
     if (existing) {
-      if (existing.payloadHash !== payloadHash)
+      if (!payloadHashMatches(payloadHash, existing.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({

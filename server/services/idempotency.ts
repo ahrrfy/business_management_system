@@ -8,6 +8,7 @@
 // بحمولةٍ مختلفة** (كان يُعيد النتيجة القديمة صامتاً — خطأ عميل/إعادة إرسالٍ ملوَّثة). الـhash قانونيّ
 // (مفاتيح مرتّبة) فإعادةُ الإرسال بنفس المدخل تُنتج نفس الـhash على أي جهاز/ترتيب.
 import { and, eq } from "drizzle-orm";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { idempotencyKeys } from "../../drizzle/schema";
@@ -26,9 +27,115 @@ function canonicalJson(v: unknown): string {
   );
 }
 
-/** hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح. */
+/**
+ * يُطبّع القيمة إلى **وثيقة JSON** — أي ما سيُخزَّن فعلاً في عمود `json()` ويُقرأ منه.
+ *
+ * ⭐ الجذر (٣/٩/٢٦، بلاغ الإنتاج «حمولة الطلب لا تطابق بصمتها المحفوظة»): كلّ مستهلكٍ يحسب
+ * البصمة على كائن JS الخامّ ثمّ يخزّن الحمولة بـ`JSON.stringify` ويتحقّق لاحقاً على ما قرأه.
+ * تلك الرحلة **تُسقط المفاتيح ذات `undefined`** وتحوّل `Date` إلى نصّ ISO، بينما كان
+ * `canonicalJson` يُصدر `"key":null` للمفتاح `undefined` — و`undefined` يصل من الواجهة كما هو
+ * عبر superjson ويبقى بعد zod (`resolution: undefined` في كلّ مرتجع بيعٍ لعميلٍ مسجَّل، أو
+ * `refund: undefined` للعابر) ⇒ بصمةُ الإنشاء ≠ بصمةُ المخزَّن، فالطلب يُرفض عند الاعتماد بلا
+ * مخرج. التطبيع أوّلاً يضمن `hash(x) ≡ hash(parse(stringify(x)))` **بالبناء**، ولا يغيّر بصمة
+ * أيّ قيمة JSON خالصة (بلا undefined ولا Date) — فالبصمات المخزَّنة للحمولات السليمة تبقى صالحة
+ * (يحرسه متّجهٌ مثبَّت في `idempotencyFramework.test.ts`). الصفوف المعلَّقة التي خُتمت قبل
+ * الإصلاح تُعاد ختمها مرّةً عند النشر: `scripts/repair-control-request-payload-hashes.ts`.
+ */
+function toJsonDocument(value: unknown): unknown {
+  if (value === undefined) return null;
+  const text = JSON.stringify(value);
+  return text === undefined ? null : JSON.parse(text);
+}
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * جسرُ انتقالٍ للمفاتيح المسجَّلة **قبل** إصلاح ٣/٩/٢٦ (مراجعة Codex على #956، P1): صفوف
+ * `idempotencyKeys` لا تحتفظ بالحمولة، فبصمتُها القديمة (undefined ⇒ null، وDate ⇒ `{}`)
+ * لا تُعاد حسابها من القاعدة. إعادةُ محاولةٍ بعد النشر لطلبٍ التزم قبله (استجابةٌ ضاعت عبر
+ * النشر — حالةُ الكاشير الأوفلاينيّ الطبيعية: `POS.tsx` يرسل `deviceId`/`customerId` بـ
+ * `undefined` صراحةً) كانت ستُرفض CONFLICT بدل replay، فيُعيد الكاشير البيعَ بمفتاحٍ جديد
+ * ⇒ فاتورةٌ مكرَّرة. الحلّ: `idempotencyHash` تحسب البصمة القديمة أيضاً حين تختلف، وتحفظها
+ * في خريطةٍ محدودة داخل العملية؛ و`checkIdempotency` عند عدم التطابق تقبل المفتاح إن ساوت
+ * البصمةُ المخزَّنة البصمةَ القديمة **لنفس الحمولة** — فحمايةُ «نفس المفتاح بحمولةٍ مختلفة»
+ * تبقى كاملة (المساواة مع البصمة القديمة إثباتٌ رياضيّ على تطابق الحمولة بصيغتها القديمة).
+ * الحسابُ والفحصُ يقعان في الطلب نفسه وفي العملية نفسها، فالخريطةُ لا تفوت إلّا عند طفحٍ
+ * غير واقعيّ (٤٠٩٦ بصمة بين الحساب والفحص) — وحينها يعود السلوك إلى CONFLICT الصريح لا
+ * إلى قبولٍ صامت.
+ */
+const LEGACY_HASH_CACHE_LIMIT = 4096;
+/**
+ * كلُّ البصمات القديمة المحتملة لكلّ بصمةٍ حالية — **مجموعةٌ لا قيمةٌ واحدة** (Codex، جولة ٢): حمولتان
+ * مختلفتان قد تتشاركان البصمة الحالية وتختلفان في القديمة (`{a: undefined}` و`{b: undefined}` كلتاهما
+ * `{}` بعد التطبيع)، فقيمةٌ واحدة قابلة للاستبدال كانت تُسقط مفتاحاً صالحاً تحت طلبين متزامنين.
+ *
+ * **محلّيةٌ للطلب** (Codex، جولة ٤): المخزنُ الحيّ هو خريطةُ الطلب الجاري (AsyncLocalStorage يفتحها
+ * وسيط Express مبكراً — `runWithLegacyHashScope`)، فلا يستطيع طلبٌ متزامن أن يطرح مرشّح طلبٍ آخر
+ * مهما بلغ التزامن؛ وتموت مع الطلب. الخريطةُ العامّة المحدودة **احتياطٌ** لما يجري خارج طلبٍ
+ * (سكربتات/اختبارات/وظائف الخلفية) فقط.
+ */
+const legacyHashScope = new AsyncLocalStorage<Map<string, Set<string>>>();
+const globalLegacyHashesByCurrent = new Map<string, Set<string>>();
+function legacyHashesByCurrentStore(): Map<string, Set<string>> {
+  return legacyHashScope.getStore() ?? globalLegacyHashesByCurrent;
+}
+/** يفتح نطاقَ مرشّحاتٍ خاصّاً بالطلب الجاري — يُستدعى من وسيط Express لكلّ طلب. */
+export function runWithLegacyHashScope<T>(fn: () => T): T {
+  return legacyHashScope.run(new Map(), fn);
+}
+/**
+ * سقفُ المرشّحات لكلّ بصمةٍ حالية (Codex، جولة ٣): حمولاتٌ متطابقة JSON تختلف في مواضع
+ * `undefined` (عقد طلب الشراء: ثلاثة حقول nullish × ٢٠٠ سطر) كانت تُنمّي مجموعةً واحدة بلا حدّ.
+ * الأقدم يُطرَح أوّلاً؛ الاستعمال الفعليّ قراءةٌ في الطلب نفسه، فالسقف الصغير كافٍ.
+ */
+const LEGACY_CANDIDATES_PER_HASH = 8;
+function rememberLegacyHash(current: string, legacy: string): void {
+  if (current === legacy) return;
+  // داخل نطاق طلبٍ لا طرحَ أبداً (Codex، جولة ٥): دفعةُ tRPC الواحدة (حتى ٢٠ إجراءً متزامناً) تتشارك
+  // نطاق الطلب، فأيُّ سقفٍ فيه قد يطرح مرشّحَ إجراءٍ ما زال ينتظر قاعدته. النطاق محدودٌ بعمر
+  // الطلب وبعدد حمولاته أصلاً؛ السقفان يخصّان الخريطة العامّة الاحتياطية وحدها.
+  const scoped = legacyHashScope.getStore();
+  const legacyHashesByCurrent = scoped ?? globalLegacyHashesByCurrent;
+  const existing = legacyHashesByCurrent.get(current);
+  if (existing) {
+    if (existing.has(legacy)) return;
+    if (!scoped && existing.size >= LEGACY_CANDIDATES_PER_HASH) {
+      const oldest = existing.values().next().value;
+      if (oldest !== undefined) existing.delete(oldest);
+    }
+    existing.add(legacy);
+    return;
+  }
+  if (!scoped && legacyHashesByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
+    const oldest = legacyHashesByCurrent.keys().next().value;
+    if (oldest !== undefined) legacyHashesByCurrent.delete(oldest);
+  }
+  legacyHashesByCurrent.set(current, new Set([legacy]));
+}
+/** البصمة بالصيغة القديمة (قبل ٣/٩/٢٦) — للاختبارات ولتوثيق الجسر؛ لا يستعملها مسارٌ حيّ للكتابة. */
+export function legacyIdempotencyHash(payload: unknown): string {
+  return sha256(canonicalJson(payload));
+}
+/**
+ * المقارنة الموحَّدة لبصمة حمولةٍ مخزَّنة مع البصمة الحالية لنفس الطلب: تطابقٌ مباشر، أو بصمةٌ قديمة
+ * (ما قبل ٣/٩/٢٦) **لنفس الحمولة**. تُستعمل في `checkIdempotency` وفي كلّ موضع replay يقارن
+ * `payloadHash` مباشرةً (طلبات التحكّم/المشتريات/الأنبوب البيعيّ…) — وإلّا رُفض بعد النشر
+ * تكرارُ طلبٍ التزم قبله بحمولةٍ فيها undefined/Date، بـCONFLICT بدل replay.
+ */
+export function payloadHashMatches(currentHash: string, storedHash: string | null | undefined): boolean {
+  if (storedHash == null) return false;
+  if (currentHash === storedHash) return true;
+  return legacyHashesByCurrentStore().get(currentHash)?.has(storedHash) ?? false;
+}
+
+/**
+ * hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح،
+ * **ومستقرٌّ عبر رحلة التخزين في عمود JSON** (انظر `toJsonDocument`).
+ */
 export function idempotencyHash(payload: unknown): string {
-  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+  const current = sha256(canonicalJson(toJsonDocument(payload)));
+  rememberLegacyHash(current, legacyIdempotencyHash(payload));
+  return current;
 }
 
 /** إن كان clientRequestId مُستهلَكاً سابقاً يُرجع refId الأول؛ وإلّا null. (توافقٌ خلفيّ — بلا فحص hash.) */
@@ -86,7 +193,7 @@ export async function checkIdempotency(
   if (
     payloadHash != null &&
     row.payloadHash != null &&
-    row.payloadHash !== payloadHash
+    !payloadHashMatches(payloadHash, row.payloadHash)
   ) {
     throw new TRPCError({
       code: "CONFLICT",

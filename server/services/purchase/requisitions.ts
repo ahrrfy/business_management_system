@@ -16,6 +16,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import {
   checkIdempotency,
   idempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
 } from "../idempotency";
 import { toDateStr } from "../money";
@@ -390,7 +391,7 @@ async function createRequisitionControlRequestTx(
     .limit(1);
   if (existing) {
     if (
-      existing.payloadHash !== payloadHash ||
+      !payloadHashMatches(payloadHash, existing.payloadHash) ||
       Number(existing.requisitionId) !== input.requisitionId ||
       existing.kind !== input.kind
     ) {
@@ -503,7 +504,7 @@ export async function submitPurchaseRequisition(
       if (
         Number(existing.requisitionId) !== input.requisitionId ||
         existing.kind !== "APPROVE" ||
-        existing.payloadHash !== expectedHash
+        !payloadHashMatches(expectedHash, existing.payloadHash)
       ) {
         throw new TRPCError({
           code: "CONFLICT",

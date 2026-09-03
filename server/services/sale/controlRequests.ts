@@ -13,7 +13,7 @@ import type { SalesControlType } from "@shared/salesControl";
 import type { Tx } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
-import { idempotencyHash } from "../idempotency";
+import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2 } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import type { ReturnSaleInput } from "../returnService";
@@ -149,7 +149,7 @@ function exactReplay(
   return Number(row.invoiceId) === Number(input.invoiceId)
     && row.requestType === input.requestType
     && row.reason === reason
-    && row.payloadHash === payloadHash
+    && payloadHashMatches(payloadHash, row.payloadHash)
     && Number(row.requestedBy) === Number(actor.userId);
 }
 

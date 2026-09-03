@@ -38,6 +38,7 @@ import {
 } from "./supplierInvoiceDraftPolicy";
 import { supplierInvoiceApprovalTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { payloadHashMatches } from "../idempotency";
 
 export type SupplierInvoiceEvidenceType = SupplierInvoiceDraftEvidenceType;
 
@@ -446,7 +447,7 @@ export async function createSupplierInvoiceInTx(
         .limit(1)
     )[0];
     if (existing) {
-      if (existing.payloadHash !== payloadHash)
+      if (!payloadHashMatches(payloadHash, existing.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح الطلب مستعمل لفاتورة مورد مختلفة",
@@ -712,7 +713,7 @@ export async function requestSupplierInvoiceApproval(
         .limit(1)
     )[0];
     if (existing) {
-      if (existing.payloadHash !== payloadHash)
+      if (!payloadHashMatches(payloadHash, existing.payloadHash))
         throw new TRPCError({
           code: "CONFLICT",
           message: "مفتاح طلب الاعتماد مستعمل بحمولة مختلفة",

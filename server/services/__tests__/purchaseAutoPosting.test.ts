@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -209,11 +210,15 @@ describe("اعتماد أمر الشراء يرحّل الفاتورة والا�
 
     const decision = {
       requestId: request.requestId,
-      decisionKey: "purchase-auto-approve",
+      // مفتاحُ القرار بصيغة الشاشة حرفياً (PurchaseApprovalQueue) — ~٨٠ محرفاً. كان عمود
+      // idempotencyKeys.clientRequestId ٦٤ فسقط الاعتمادُ على الإنتاج بـ«قيمة أطول من المسموح»
+      // بينما تمرّ هذه الحزمة بمفتاحٍ قصير (هجرة 0328، ٣/٩/٢٦).
+      decisionKey: `purchase-decision-PURCHASE_ORDER-${request.requestId}-approve-${randomUUID()}`,
       approve: true,
       reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
       confirmedFullReceipt: true,
     } as const;
+    expect(decision.decisionKey.length).toBeGreaterThan(64);
     const approved = await decidePurchaseOrderControl(decision, approver);
     expect(approved).toMatchObject({
       status: "APPROVED",

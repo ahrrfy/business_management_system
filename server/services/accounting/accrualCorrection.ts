@@ -36,6 +36,7 @@ import {
   type AccrualObligationStatus,
 } from "./accrualObligations";
 import type { AccountRole } from "./postingEngine";
+import { payloadHashMatches } from "../idempotency";
 
 type RefundRequest = Extract<
   SystemPaymentRequest,
@@ -496,7 +497,7 @@ export async function requestAccrualCorrection(
       .for("update")
       .limit(1);
     if (replay) {
-      if (replay.payloadHash !== payloadHash) {
+      if (!payloadHashMatches(payloadHash, replay.payloadHash)) {
         throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency في طلب التصحيح" });
       }
       if (

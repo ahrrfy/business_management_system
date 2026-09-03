@@ -32,6 +32,7 @@ import {
 import {
   checkIdempotency,
   idempotencyHash,
+  payloadHashMatches,
   recordIdempotencyKey,
 } from "./idempotency";
 import { extractInsertId } from "../lib/insertId";
@@ -102,7 +103,7 @@ async function checkReopenIdempotencyCurrentTx(
       }),
     });
   }
-  if (row.payloadHash !== payloadHash) {
+  if (!payloadHashMatches(payloadHash, row.payloadHash)) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
@@ -138,7 +139,7 @@ async function checkDailyCountIdempotencyCurrentTx(
       .limit(1)
   )[0];
   if (!row) return null;
-  if (row.payloadHash == null || row.payloadHash !== payloadHash) {
+  if (row.payloadHash == null || !payloadHashMatches(payloadHash, row.payloadHash)) {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({

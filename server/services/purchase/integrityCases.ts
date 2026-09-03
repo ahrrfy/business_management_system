@@ -19,6 +19,7 @@ import { assertPurchaseBranch } from "./internal";
 import { assertIndependentPurchaseReviewer } from "./returnGovernance";
 import { purchaseIntegrityResolutionTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { payloadHashMatches } from "../idempotency";
 
 export type IntegrityCode = typeof purchaseIntegrityCases.$inferInsert["code"];
 export type IntegritySeverity = typeof purchaseIntegrityCases.$inferInsert["severity"];
@@ -134,7 +135,7 @@ export async function decidePurchaseIntegrityResolution(input: DecideIntegrityRe
   const decisionKey = required(input.decisionKey, "مفتاح القرار", 120); const reason = required(input.reason, "سبب القرار", 1000); const canonical = stableCanonical({ caseId: input.caseId, decision: input.decision, reason }); const hash = sha256(canonical);
   return withTx(async (tx) => {
     const priorEvent = (await tx.select().from(purchaseIntegrityCaseEvents).where(eq(purchaseIntegrityCaseEvents.eventKey, `RESOLUTION-DECISION:${decisionKey}`)).limit(1))[0];
-    if (priorEvent) { if (priorEvent.payloadHash !== hash) throw new TRPCError({ code: "CONFLICT", message: "مفتاح القرار مستعمل بقرار مختلف" }); assertPurchaseBranch(priorEvent, actor); return { caseId: input.caseId, status: priorEvent.newStatus, idempotent: true as const }; }
+    if (priorEvent) { if (!payloadHashMatches(hash, priorEvent.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح القرار مستعمل بقرار مختلف" }); assertPurchaseBranch(priorEvent, actor); return { caseId: input.caseId, status: priorEvent.newStatus, idempotent: true as const }; }
     const row = (await tx.select().from(purchaseIntegrityCases).where(eq(purchaseIntegrityCases.id, input.caseId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "قضية النزاهة غير موجودة" }); assertPurchaseBranch(row, actor);
     if (row.status !== "PENDING_RESOLUTION" || row.resolutionRequestedBy == null) throw new TRPCError({ code: "CONFLICT", message: "لا يوجد طلب حل معلّق" });
