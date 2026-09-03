@@ -209,6 +209,35 @@ describe("recruitment branch isolation", () => {
     await expect((await caller(4)).recruitment.vacancyList()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  /*
+   * الاستمارة العامّة (submit) بلا مصادقة — الحارس الوحيد ضدّ التزييف: العنوان يُؤخذ من سجلّ
+   * الوظيفة الموثوق لا من المتقدّم، والوظيفة غير المنشورة (isPublished:false) تُرفض للمجهول
+   * تحديداً (createApplicant: `v && (scope || v.isPublished)`). كان هذا بلا اختبارٍ سلوكيّ:
+   * انقلاب `||` إلى `&&` أو حذف سطر الثقة بالعنوان الموثوق كانا يمرّان بلا أن يُمسكهما شيء.
+   */
+  it("الاستمارة العامّة ترفض وظيفةً غير منشورة وتتجاهل عنوان المتقدّم المُزيَّف", async () => {
+    const anonymous = appRouter.createCaller({
+      req: { headers: {} },
+      res: { cookie() {}, clearCookie() {} },
+      sessionId: null,
+      platformAdmin: null,
+      user: null,
+    } as unknown as TrpcContext);
+
+    // وظيفة ٥٣ (HQ role) غير منشورة — المجهول يُرفَض حتى لو عرف معرّفها.
+    await expect(
+      anonymous.recruitment.submit({ name: "Attacker", vacancyId: 53, jobTitle: "Fake CEO" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // وظيفة ٥١ منشورة — يُقبَل لكن عنوانه الوهميّ يُستبدَل بعنوان السجلّ الموثوق.
+    const applied = await anonymous.recruitment.submit({
+      name: "Honest applicant",
+      vacancyId: 51,
+      jobTitle: "Forged CEO title — should be ignored",
+    });
+    expect(applied).toMatchObject({ vacancyId: 51, branchId: 1, jobTitle: "Branch one role" });
+  });
+
   it("never returns CV bytes to a manager outside the vacancy branch", async () => {
     expect(await getJobApplicantCvByKey(BRANCH_ONE_CV_KEY, { branchId: 1 })).toMatchObject({
       fileName: "branch-one.pdf",
