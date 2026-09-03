@@ -5,7 +5,7 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
-import { finalizeService, intentService, offeringService, posCardsService, pricingService, providerService, reviewResolutionService, walletService } from "../digitalCards";
+import { finalizeService, intentService, offeringService, posCardsService, pricingService, providerService, reviewResolutionService, reversalService, walletService } from "../digitalCards";
 
 const cashier = { userId: 1, branchId: 1, role: "cashier" };
 const manager = { userId: 2, branchId: 1, role: "manager" };
@@ -216,5 +216,58 @@ describe("digital provider transaction baskets", () => {
     expect(details.map((item) => item.profit)).toEqual(["500.00", "500.00"]);
     expect(result.printDetails.map((item) => item.providerReference)).toEqual(["OP-ONE", "OP-ONE"]);
     expect(JSON.stringify(result.printDetails)).not.toMatch(/providerShare|profit|wallet/);
+  });
+
+  it.each(["PREPAID", "POSTPAID"] as const)("reverses only one %s basket card, rejects duplicate refund, and retains the shared reference", async (mode) => {
+    const context = await setup(mode);
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "100000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "BASKET-REFUND-FUND", createdBy: manager.userId,
+    });
+    const operation = await prepare(context.lines);
+    await mark(operation);
+    const sale = await withTx((tx) => finalizeService.finalize(tx, {
+      intentId: operation.intentId, clientRequestId: "partial-basket-sale", paymentAmount: "30000", paymentMethod: "CASH",
+    }, cashier));
+    const original = await finalizeService.getSaleDetails(db(), sale.invoiceId);
+    const reversal = { invoiceId: sale.invoiceId, detailIds: [Number(original[0].id)], reason: "المزوّد أكد إلغاء البطاقة الأولى فقط" };
+    const result = await withTx((tx) => reversalService.approveReversal(tx, reversal, manager));
+    expect(result).toMatchObject({ reversed: 1, refunded: "10000.00", outcome: "REVERSED" });
+
+    async function financialState() {
+      const details = await finalizeService.getSaleDetails(db(), sale.invoiceId);
+      const [supplier] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, context.supplierId));
+      const wallets = context.walletId == null ? [] : await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, context.walletId));
+      const receipts = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
+      const walletTransactions = await db().select().from(s.digitalWalletTransactions).where(eq(s.digitalWalletTransactions.invoiceId, sale.invoiceId));
+      const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+      return { details, supplierBalance: supplier.currentBalance, walletBalance: wallets[0]?.currentBalance ?? null,
+        refunds: receipts.filter((receipt) => receipt.direction === "OUT"),
+        walletReversals: walletTransactions.filter((transaction) => transaction.type === "SALE_REVERSAL"),
+        returns: entries.filter((entry) => entry.entryType === "RETURN"),
+        net: await reversalService.netForInvoice(db(), sale.invoiceId) };
+    }
+    const after = await financialState();
+    expect(after.details.map((detail) => detail.fulfillmentStatus)).toEqual(["REVERSED", "ISSUED"]);
+    expect(after.details[1]).toMatchObject({ invoiceItemId: original[1].invoiceItemId, sellPrice: "20000.00", providerShare: "19500.00", profit: "500.00" });
+    expect(after.net).toEqual({ revenue: "20000.00", cost: "19500.00", profit: "500.00" });
+    expect(after.supplierBalance).toBe(mode === "POSTPAID" ? "19500.00" : "0.00");
+    expect(after.walletBalance).toBe(mode === "PREPAID" ? "80500.00" : null);
+    expect(after.refunds).toHaveLength(1);
+    expect(after.refunds[0]).toMatchObject({ amount: "10000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED" });
+    expect(after.returns).toHaveLength(1);
+    expect(after.returns[0]).toMatchObject({ revenue: "-10000.00", cost: "-9500.00", profit: "-500.00" });
+    expect(after.walletReversals).toHaveLength(mode === "PREPAID" ? 1 : 0);
+    if (mode === "PREPAID") expect(after.walletReversals[0]).toMatchObject({ amount: "9500.00", direction: "IN" });
+
+    // The existing endpoint rejects a repeated detail rather than returning a replay;
+    // the financial effect must nevertheless remain exactly once.
+    await expect(withTx((tx) => reversalService.approveReversal(tx, reversal, manager))).rejects.toThrow(/لا يُعكس مرّتين/);
+    expect(await financialState()).toEqual(after);
+    const [referenceOwner] = await db().select().from(s.digitalSaleIntentItems).where(eq(s.digitalSaleIntentItems.id, Number(operation.items[0].id)));
+    expect(referenceOwner.providerReference).toBe("OP-ONE");
+    expect(referenceOwner.refKey).toBe(`${context.providerId}:OP-ONE`);
+    await expect(prepare(context.lines, "reuse-partially-reversed-basket")).rejects.toThrow(/محفوظ/);
   });
 });
