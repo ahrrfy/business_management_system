@@ -10,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import type { ColumnDef } from "@tanstack/react-table";
 import { LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
@@ -435,8 +436,14 @@ export default function TransfersLog() {
               )}
 
               {/* شبكةُ تحرير لا عرض: كل سطرٍ يحمل حقلَ الكمية المستلَمة وحقلَ ملاحظته —
-                  `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. */}
-              <div className="border rounded-md overflow-hidden">
+                  `DataTable` أداةُ عرضٍ فتبقى هذه خامّةً عن قصد. قشرتُها مشتركة الآن
+                  (`ScrollTableShell` بدل `border rounded-md overflow-hidden`): الترويسة تلتصق
+                  فيبقى «المرسَل ← المستلَم ← الفرق» مرئياً في سندٍ طويل. الارتفاع مقيَّد بـ
+                  `max-h-[50vh]` لأنّ الحوار نفسه يُمرَّر (`max-h-[85vh]`): بلا قيدٍ يتداخل
+                  تمريران ويهبط زرّا «مطابقة الكل» و«تأكيد الاستلام» تحت الأسطر.
+                  `showColumnVisibility` معطَّل — إخفاء «المرسَل» أو «الفرق» يُلغي المقارنة
+                  التي من أجلها فُتح الحوار. */}
+              <ScrollTableShell maxHeightClass="max-h-[50vh]" showColumnVisibility={false}>
                 <table className="w-full text-sm">
                   <thead className="bg-muted/40">
                     <tr>
@@ -499,7 +506,7 @@ export default function TransfersLog() {
                     })}
                   </tbody>
                 </table>
-              </div>
+              </ScrollTableShell>
 
               {canReceive && (
                 <div className="flex flex-wrap items-center justify-between gap-2">

@@ -6,6 +6,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { type Mode, canSeeMode } from "./pos/posModeGates";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /**
  * نقطة البيع المُوحَّدة — Shell واحد لـ٣ أوضاع: تجزئة / خدمات طباعة / استقبال.
@@ -239,7 +240,7 @@ export default function PointOfSale() {
       <div className="min-h-0 flex-1 overflow-hidden">
         {meLoading ? (
           <div className="grid h-full place-items-center text-muted-foreground">
-            جارٍ التحقّق من الصلاحيات…
+            {ACTION_LABELS.verifyingPermissions}
           </div>
         ) : accessDenied ? (
           <Forbidden mode={activeMode} />

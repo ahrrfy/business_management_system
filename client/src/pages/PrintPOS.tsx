@@ -1597,7 +1597,7 @@ function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: 
   const hasVariance = diff != null && Math.abs(diff) >= 0.01;
   const closeDisabled = !counted || closeShift.isPending || hasVariance;
   const closeLabel = closeShift.isPending
-    ? "جارٍ الإغلاق…"
+    ? ACTION_LABELS.closing
     : hasVariance
       ? "الإغلاق مرفوض لوجود فرق"
       : "إغلاق وطباعة Z";

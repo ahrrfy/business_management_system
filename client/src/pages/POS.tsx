@@ -3530,7 +3530,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
   const closeDisabled = !counted || closeShift.isPending || closeBlocked || hasVariance;
   const closeLabel = closeShift.isPending
-    ? "جارٍ الإغلاق…"
+    ? ACTION_LABELS.closing
     : closeBlocked
       ? "أكمل المزامنة أولاً"
       : hasVariance
