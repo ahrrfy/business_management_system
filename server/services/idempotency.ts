@@ -46,12 +46,49 @@ function toJsonDocument(value: unknown): unknown {
   return text === undefined ? null : JSON.parse(text);
 }
 
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * جسرُ انتقالٍ للمفاتيح المسجَّلة **قبل** إصلاح ٣/٩/٢٦ (مراجعة Codex على #956، P1): صفوف
+ * `idempotencyKeys` لا تحتفظ بالحمولة، فبصمتُها القديمة (undefined ⇒ null، وDate ⇒ `{}`)
+ * لا تُعاد حسابها من القاعدة. إعادةُ محاولةٍ بعد النشر لطلبٍ التزم قبله (استجابةٌ ضاعت عبر
+ * النشر — حالةُ الكاشير الأوفلاينيّ الطبيعية: `POS.tsx` يرسل `deviceId`/`customerId` بـ
+ * `undefined` صراحةً) كانت ستُرفض CONFLICT بدل replay، فيُعيد الكاشير البيعَ بمفتاحٍ جديد
+ * ⇒ فاتورةٌ مكرَّرة. الحلّ: `idempotencyHash` تحسب البصمة القديمة أيضاً حين تختلف، وتحفظها
+ * في خريطةٍ محدودة داخل العملية؛ و`checkIdempotency` عند عدم التطابق تقبل المفتاح إن ساوت
+ * البصمةُ المخزَّنة البصمةَ القديمة **لنفس الحمولة** — فحمايةُ «نفس المفتاح بحمولةٍ مختلفة»
+ * تبقى كاملة (المساواة مع البصمة القديمة إثباتٌ رياضيّ على تطابق الحمولة بصيغتها القديمة).
+ * الحسابُ والفحصُ يقعان في الطلب نفسه وفي العملية نفسها، فالخريطةُ لا تفوت إلّا عند طفحٍ
+ * غير واقعيّ (٤٠٩٦ بصمة بين الحساب والفحص) — وحينها يعود السلوك إلى CONFLICT الصريح لا
+ * إلى قبولٍ صامت.
+ */
+const LEGACY_HASH_CACHE_LIMIT = 4096;
+const legacyHashByCurrent = new Map<string, string>();
+function rememberLegacyHash(current: string, legacy: string): void {
+  if (current === legacy) return;
+  if (legacyHashByCurrent.size >= LEGACY_HASH_CACHE_LIMIT) {
+    const oldest = legacyHashByCurrent.keys().next().value;
+    if (oldest !== undefined) legacyHashByCurrent.delete(oldest);
+  }
+  legacyHashByCurrent.set(current, legacy);
+}
+/** البصمة بالصيغة القديمة (قبل ٣/٩/٢٦) — للاختبارات ولتوثيق الجسر؛ لا يستعملها مسارٌ حيّ للكتابة. */
+export function legacyIdempotencyHash(payload: unknown): string {
+  return sha256(canonicalJson(payload));
+}
+/** هل يفسَّر عدمُ التطابق بأنّ المخزَّن بصمةٌ قديمة لنفس الحمولة؟ */
+function matchesLegacyHash(currentHash: string, storedHash: string): boolean {
+  return legacyHashByCurrent.get(currentHash) === storedHash;
+}
+
 /**
  * hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح،
  * **ومستقرٌّ عبر رحلة التخزين في عمود JSON** (انظر `toJsonDocument`).
  */
 export function idempotencyHash(payload: unknown): string {
-  return createHash("sha256").update(canonicalJson(toJsonDocument(payload))).digest("hex");
+  const current = sha256(canonicalJson(toJsonDocument(payload)));
+  rememberLegacyHash(current, legacyIdempotencyHash(payload));
+  return current;
 }
 
 /** إن كان clientRequestId مُستهلَكاً سابقاً يُرجع refId الأول؛ وإلّا null. (توافقٌ خلفيّ — بلا فحص hash.) */
@@ -109,7 +146,8 @@ export async function checkIdempotency(
   if (
     payloadHash != null &&
     row.payloadHash != null &&
-    row.payloadHash !== payloadHash
+    row.payloadHash !== payloadHash &&
+    !matchesLegacyHash(payloadHash, row.payloadHash)
   ) {
     throw new TRPCError({
       code: "CONFLICT",

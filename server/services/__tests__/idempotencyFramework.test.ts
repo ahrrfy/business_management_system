@@ -1,6 +1,12 @@
 // إطار idempotency الموحّد (#٥): hash الحمولة القانونيّ + CONFLICT عند «نفس المفتاح بحمولةٍ مختلفة».
 import { describe, expect, it } from "vitest";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey, withIdempotency } from "../idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  legacyIdempotencyHash,
+  recordIdempotencyKey,
+  withIdempotency,
+} from "../idempotency";
 import { withTx } from "../tx";
 
 describe("idempotencyHash — قانونيّ ومستقرّ", () => {
@@ -109,6 +115,22 @@ describe("withIdempotency / checkIdempotency — DB", () => {
 
   // هجرة 0328 (بلاغ الإنتاج ٣/٩/٢٦): عرض العمود = عقد الراوترات (١٢٠) لا ٦٤ — مفتاح قرار الشاشة
   // `purchase-decision-PURCHASE_ORDER-<id>-approve-<uuid>` كان يسقط هنا بـER_DATA_TOO_LONG.
+  // جسرُ الانتقال (Codex على #956، P1): مفتاحٌ سُجِّل **قبل** إصلاح ٣/٩/٢٦ ببصمةٍ قديمة لحمولةٍ
+  // فيها undefined/Date (صفوف idempotencyKeys لا تحتفظ بالحمولة فلا يُصلحها سكربت). إعادةُ
+  // المحاولة بعد النشر بنفس الحمولة يجب أن تُعيد replay لا CONFLICT — وإلّا أعاد الكاشير البيع
+  // بمفتاحٍ جديد. وحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى قائمة.
+  it("مفتاح ما قبل الإصلاح ببصمة قديمة: نفس الحمولة ⇒ replay، حمولة مختلفة ⇒ CONFLICT", async () => {
+    const k = "idem-legacy-" + Date.now();
+    const posPayload = { branchId: 1, deviceId: undefined, customerId: undefined, lines: [{ variantId: 1, quantity: "1" }] };
+    const legacy = legacyIdempotencyHash(posPayload);
+    expect(legacy).not.toBe(idempotencyHash(posPayload));
+    await withTx((tx) => recordIdempotencyKey(tx, op, k, 777, legacy)); // كما كتبه الخادم القديم
+    expect(await withTx((tx) => checkIdempotency(tx, op, k, idempotencyHash(posPayload)))).toBe(777);
+    await expect(
+      withTx((tx) => checkIdempotency(tx, op, k, idempotencyHash({ ...posPayload, lines: [{ variantId: 2, quantity: "9" }] }))),
+    ).rejects.toThrow(/بحمولةٍ مختلفة/);
+  });
+
   it("مفتاح بطول ١٢٠ محرفاً يُسجَّل ويُقرأ", async () => {
     const k = (`purchase-decision-PURCHASE_ORDER-${Date.now()}-approve-` + "0123456789abcdef".repeat(8)).slice(0, 120);
     expect(k).toHaveLength(120);

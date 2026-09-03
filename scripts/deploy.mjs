@@ -2148,14 +2148,6 @@ async function deploy(expectedHead) {
           "scripts/ci-apply-extra-migrations.mjs",
           "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
         ]);
-        // ٣/٩/٢٦ — إعادةُ ختم بصمات طلبات التحكّم المعلَّقة بعد إصلاح `idempotencyHash`
-        // (الصفوفُ المختومة قبل الإصلاح لا يمكن اعتمادُها أبداً). idempotent ويطبع كلّ صفٍّ يُعاد ختمه.
-        run("node", [
-          "--import",
-          "tsx",
-          "scripts/repair-control-request-payload-hashes.ts",
-          "--apply",
-        ]);
       });
       step("6/12 التحقق من مخطط قاعدة البيانات", () =>
         run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
@@ -2248,6 +2240,22 @@ async function deploy(expectedHead) {
         }
       }
     }
+
+    // ٣/٩/٢٦ — إعادةُ ختم بصمات طلبات التحكّم المعلَّقة بعد إصلاح `idempotencyHash`
+    // (الصفوفُ المختومة قبل الإصلاح لا يمكن اعتمادُها أبداً). تُنفَّذ **بعد** تبديل العمال
+    // (مراجعة Codex على #956، P2): لو سبقت التبديل لكتب عاملٌ قديم صفّاً بالبصمة القديمة بعد
+    // المسح فبقي عالقاً. تعمل مرّةً واحدة لكلّ قاعدة (علامة إتمام في idempotencyKeys — P1)
+    // فلا تُعيد توقيع أيّ تعارضٍ مستقبليّ، وخارج كتلة التراجع عمداً: فشلُها لا يُرجع الويب
+    // القديم (وهو الذي كان يعطّل الاعتمادات) بل يُسقط النشر برسالةٍ صريحة، والإعادة يدوياً:
+    //   pnpm repair:control-request-hashes -- --apply
+    step("10b/12 إعادة ختم طلبات التحكّم المعلَّقة (مرّة واحدة)", () =>
+      run("node", [
+        "--import",
+        "tsx",
+        "scripts/repair-control-request-payload-hashes.ts",
+        "--apply",
+      ]),
+    );
 
     step("11/12 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
       const operations = makeActivationOperations(
