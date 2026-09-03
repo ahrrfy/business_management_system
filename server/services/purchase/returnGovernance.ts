@@ -681,7 +681,9 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     const lockedInvoice = input.action === "APPROVE" ? (await tx.select().from(supplierInvoices).where(eq(supplierInvoices.id, Number(preview.supplierInvoiceId))).for("update").limit(1))[0] : null;
     const request = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.id, input.requestId)).for("update").limit(1))[0]!;
     // اعتمادُ المرتجع محوُ أثرٍ مُثبَت: applyMovement بـOUT + قيدٌ منشور + إنقاصُ رصيد المورّد.
-    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
+    const purchaseReturnApprover = await resolveApprovalActor(tx, actor);
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnTrigger(input.action), subject: `مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
     if (request.status !== "PENDING") {
       if (request.decisionKey === key && request.decisionHash === hash) {
         const existingReturn = request.status === "APPROVED"
@@ -1072,7 +1074,9 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
     const request = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).for("update").limit(1))[0]!;
     // عكسُ المرتجع **يُخرج نقداً فعلاً**: إيصال OUT يُصنَّف otherCashOut في تسوية الوردية
     // فيُنقص expectedCash وZ-report. ⇒ المالك حصراً.
-    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId) });
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
+    const purchaseReturnReversalApprover = await resolveApprovalActor(tx, actor);
+    assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnReversalApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
     if (request.status !== "PENDING") {
       if (request.decisionKey === key && request.decisionHash === hash)
         return { requestId: input.requestId, status: request.status, reversalId: null, idempotent: true as const };

@@ -1784,7 +1784,7 @@ export default function WorkOrders() {
         </div>
       </div>
 
-      <WorkOrderRefundApprovals isOwner={isOwner} currentUserId={me.data?.id} />
+      <WorkOrderRefundApprovals isOwner={isOwner} />
       <WorkOrderControlApprovals
         canReview={canReviewWorkOrderControls}
         currentUserId={me.data?.id}

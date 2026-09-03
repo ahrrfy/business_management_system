@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { canCrossBranches } from "@shared/predicates";
 
 export interface CommissionAuthorityUser {
   role: string;
@@ -13,7 +14,7 @@ export interface CommissionAuthorityUser {
  * - بقية حاملي READ يُقصرون على فرعهم؛ غياب الفرع يفشل مغلقاً.
  */
 export function commissionReadScope(user: CommissionAuthorityUser): number | null {
-  if (user.isOwner === true || user.role === "admin") return null;
+  if (canCrossBranches(user)) return null;
   if (user.role === "accountant" && user.branchId == null) return null;
   const branchId = Number(user.branchId);
   if (Number.isInteger(branchId) && branchId > 0) return branchId;

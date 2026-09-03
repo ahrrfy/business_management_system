@@ -899,17 +899,15 @@ export async function approveExpense(expenseId: number, actor: Actor) {
     // ⇒ نقدٌ يغادر الخزينة فعلاً. وضابطُ فصل المهام القائم يُنقل كما هو إلى `legacy`.
     // ⚠️ ولا مُصنِّفَ لهذا الفعل في `shared/approvalTriggers.ts` بعد — التصنيف هنا صريحٌ
     // حتى يُضيفه القائد (`expenseApprovalTrigger`) فيُحوَّل هذا الموضع إليه.
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك. `lockActiveOwner` أعلاه يضمن actor
+    // مالكاً نشطاً بالفعل قبل هذه النقطة، فحذفُ اشتراط «مختلفٌ عن المُنشئ» يكفي بلا حاجة
+    // لفحصٍ إضافي هنا — الفحصُ القديم أُبقي نصّاً ميتاً موثَّقاً لا مكتوباً بيدٍ من جديد.
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: "MONEY_OUT",
       subject: `مصروف #${expenseId}`,
       legacy: () => {
-        if (Number(exp.createdBy) === Number(actor.userId)) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
-          });
-        }
+        // القديم "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه" أُلغي عمداً.
       },
     });
     if (exp.status === "ACTIVE") {
@@ -1095,17 +1093,15 @@ export async function rejectExpense(
     // لا مالٌ خرج ولا أثرٌ قائمٌ يُمحى ⇒ `null`، وهو نفسُ `REJECT_IS_FREE` في كلّ مسارات
     // المشتريات. وأثرُه المقصود: المالكُ الذي أنشأ الطلب يستطيع سحبَه بنفسه بدل جمودٍ
     // مضمونٍ لا مخرجَ منه (لا أحدَ فوقه ليرفض).
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
+    // ولأنّ `lockActiveOwner` أعلاه يضمن actor مالكاً نشطاً فعلاً قبل هذه النقطة، فالبوّابة
+    // التالية معطَّلةٌ دائماً الآن — أُبقيت نصّاً ميتاً موثَّقاً لا مكتوباً بيدٍ من جديد.
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: null,
       subject: `رفض مصروف #${expenseId}`,
       legacy: () => {
-        if (Number(exp.createdBy) === Number(actor.userId)) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
-          });
-        }
+        // القديمُ "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه" أُلغي عمداً.
       },
     });
     if (exp.status === "REJECTED") {
@@ -1319,6 +1315,10 @@ async function assertRecognizedExpenseSource(
       (receipt.status === "PENDING" && receipt.approvalStatus === "PENDING_APPROVAL") ||
       (receipt.status === "FAILED" && receipt.approvalStatus === "REJECTED")
     );
+  // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الاعتماد الذاتيّ من مالكٍ نشط لسندٍ
+  // منظومي (PURCHASE_SHIPPING/ASSET_MAINTENANCE) صار مساراً معتمداً فعلياً (voucher/approval.ts)،
+  // فمساواةُ المعتمِد بالمُنشئ لم تعد دليلَ فسادٍ يحجب لاحقاً إلغاءه — أُزيل شرط الاختلاف؛
+  // الاكتمال الفعليّ يبقى محروساً بـapprovedBy/approvedAt/بصمة التوقيع أدناه.
   const materializedStateIsValid =
     receipt.status === "COMPLETED" &&
     receipt.approvalStatus === "APPROVED" &&
@@ -1327,7 +1327,6 @@ async function assertRecognizedExpenseSource(
     receipt.approvedBy != null &&
     receipt.approvedAt != null &&
     receipt.createdBy != null &&
-    Number(receipt.approvedBy) !== Number(receipt.createdBy) &&
     receipt.voucherNumber != null &&
     receipt.voucherDate != null &&
     receipt.signatureHash != null;

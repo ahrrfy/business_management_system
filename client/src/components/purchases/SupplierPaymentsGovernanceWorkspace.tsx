@@ -69,6 +69,7 @@ export function SupplierPaymentsGovernanceWorkspace({
   pendingPayments,
   pendingRefunds,
   currentUserId,
+  isOwner,
   canDecide,
   decisionBlockedReason,
   loadingSources,
@@ -98,6 +99,7 @@ export function SupplierPaymentsGovernanceWorkspace({
   pendingPayments: GovernanceQueueRow[];
   pendingRefunds: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
+  isOwner?: boolean;
   canDecide: boolean;
   decisionBlockedReason: string;
   loadingSources: boolean;
@@ -388,6 +390,7 @@ export function SupplierPaymentsGovernanceWorkspace({
         scope="supplier-payment"
         rows={pendingPayments}
         currentUserId={currentUserId}
+        isOwner={isOwner}
         loading={pendingPaymentLoading}
         error={pendingPaymentError}
         pending={decisionPending}
@@ -401,6 +404,7 @@ export function SupplierPaymentsGovernanceWorkspace({
         scope="supplier-payment-refund"
         rows={pendingRefunds}
         currentUserId={currentUserId}
+        isOwner={isOwner}
         loading={pendingRefundLoading}
         error={pendingRefundError}
         pending={decisionPending}

@@ -394,7 +394,7 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     expect(advanceAfterReopen.remaining).toBe("500.00");
   });
 
-  it("requires an active owner independent from the maker for approval and reopen", async () => {
+  it("requires an active owner for approval and reopen, and permits self-approval (قرار المالك ٣/٩/٢٦)", async () => {
     const runId = await seedDraft();
 
     await expect(approveRun(runId, NON_OWNER_HR)).rejects.toMatchObject({
@@ -403,23 +403,20 @@ describe("payroll accrual lifecycle — DB invariants", () => {
     await expect(approveRun(runId, INACTIVE_OWNER)).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
-    await expect(approveRun(runId, MAKER)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
 
-    await approveRun(runId, CHECKER);
+    const firstApproval = await approveRun(runId, MAKER);
+    expect(firstApproval.replayed).toBe(false);
+    const replayedApproval = await approveRun(runId, CHECKER);
+    expect(replayedApproval.replayed).toBe(true);
 
     await expect(cancelRun(runId, NON_OWNER_HR)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
-    await expect(cancelRun(runId, MAKER)).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
     await expect(cancelRun(runId, INACTIVE_OWNER)).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
 
-    await expect(cancelRun(runId, CHECKER, "إعادة مراجعة مستقلة")).resolves.toMatchObject({
+    await expect(cancelRun(runId, MAKER, "إعادة مراجعة ذاتية")).resolves.toMatchObject({
       status: "draft",
       revisionNo: 1,
     });

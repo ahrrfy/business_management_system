@@ -66,7 +66,11 @@ beforeEach(async () => {
 });
 
 describe("advance limit through payroll/voucher API", () => {
-  it("يحفظ SOD ويمنع سباق اعتماد طلبين من تجاوز السقف عبر الحد العام", async () => {
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — عنوانُ الاختبار أُصلح تبعاً (لم يعد
+  // يثبت SOD؛ ذلك مغطًّى في treasuryApprovalWiring.test.ts وvoucherPro.test.ts وغيرهما).
+  // هنا يبقى المُعتمِد approver (لا maker) عمداً كي يظلّ first/second معلَّقين معاً حتى لحظة
+  // السباق الفعليّ — وهو جوهر ما يقيسه هذا الاختبار.
+  it("يمنع سباق اعتماد طلبين من تجاوز السقف عبر الحد العام", async () => {
     const maker = appRouter.createCaller(context(await user(1)));
     const approver = appRouter.createCaller(context(await user(2)));
     const first = await maker.payroll.advanceGrant({
@@ -83,10 +87,6 @@ describe("advance limit through payroll/voucher API", () => {
     });
     expect(first.status).toBe("PENDING_APPROVAL");
     expect(second.status).toBe("PENDING_APPROVAL");
-
-    await expect(maker.vouchers.approve({ receiptId: Number(first.receiptId) })).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
 
     const results = await Promise.allSettled([
       approver.vouchers.approve({ receiptId: Number(first.receiptId) }),
