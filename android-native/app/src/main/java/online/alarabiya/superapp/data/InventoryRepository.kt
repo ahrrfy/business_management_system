@@ -44,7 +44,8 @@ interface InventoryDataSource {
     suspend fun requestRecount(sessionId: Long, variantId: Long, reason: String)
     suspend fun forceStocktakeReview(sessionId: Long)
     suspend fun firstSignStocktake(sessionId: Long)
-    suspend fun approveStocktake(sessionId: Long)
+    /** @return عدد الأصناف التي ثُبّتت برصيدٍ سالب حقيقي (بيعٌ استمرّ بعد العدّ وتجاوزه). */
+    suspend fun approveStocktake(sessionId: Long): Int
     suspend fun cancelStocktake(sessionId: Long, reason: String)
     suspend fun countAssignments(): List<CountAssignment>
     suspend fun countSession(sessionCode: String): CountSession
@@ -226,9 +227,9 @@ class InventoryRepository(
         api.mutate("stocktakes.firstSign", JSONObject().put("sessionId", sessionId))
     }
 
-    override suspend fun approveStocktake(sessionId: Long) {
+    override suspend fun approveStocktake(sessionId: Long): Int =
         api.mutate("stocktakes.approve", JSONObject().put("sessionId", sessionId))
-    }
+            .optInt("negativeSettlements", 0)
 
     override suspend fun cancelStocktake(sessionId: Long, reason: String) {
         api.mutate(

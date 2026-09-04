@@ -324,6 +324,10 @@ export default function StocktakeReview() {
               : ""),
         );
       await invalidate();
+      // اعتماد الجلسة يكتب مباشرةً إلى branchStock (سالباً محتملاً) — تقرير السوالب خارج
+      // نطاق invalidate() (مقصورة على stocktakes.*)، ولها staleTime 60ث في شاشته
+      // (InventoryOpsReport.tsx)؛ بلا هذا قد يُوجَّه المعتمد لتقريرٍ لا يعرض ما أَحدَثه للتوّ.
+      if (!r.alreadyApproved) await utils.reports.negativeStock.invalidate();
       navigate(`/stocktakes/${sessionId}/report`);
     },
     onError: (e) => notify.err(e),
@@ -501,6 +505,19 @@ export default function StocktakeReview() {
     (r.decision?.reason as Reason | undefined) ??
     "UNSPECIFIED";
 
+  /** هل سيكتب الاعتماد رصيداً سالباً فعلياً لهذا الصنف؟ يطابق تحديد action في finalize.ts
+   * تماماً (KEEP لا يستدعي setStock أبداً) — لا نحذّر من صفٍّ لن يُسوّى فعلياً لمجرّد
+   * سالبية adjustedCount (مراجعة عدائية: صنفٌ اختير له KEEP صراحةً يبقى برصيده الدفتري
+   * الحالي، وقد يكون موجباً، فيُخالف التحذير الحقيقة). */
+  const willRowSettleNegative = (r: Row): boolean => {
+    if (r.adjustedCount == null || r.adjustedCount >= 0) return false;
+    if (r.diff === 0) return false;
+    const action =
+      r.decision?.action ??
+      (r.withinThreshold && effectiveDirectUnderThreshold ? "ADJUST" : undefined);
+    return action === "ADJUST";
+  };
+
   /* ───── الفلاتر + البحث المحلي ───── */
   const qNorm = q.trim().toLowerCase();
   const filtered = rows.filter((r: Row) => {
@@ -652,12 +669,7 @@ export default function StocktakeReview() {
   ).length;
   /* بيعٌ استمرّ بعد العدّ وتجاوزه ⇒ العدّ المصحَّح سالب. تُثبَّت برصيدها الحقيقي عند الاعتماد
    * (لا تُحجَب — انظر finalize.ts) وتظهر في تقرير السوالب؛ هذا العدّ للتنبيه المسبق فقط. */
-  const negativeSettleCount = rows.filter(
-    (r: Row) =>
-      r.adjustedCount != null &&
-      r.adjustedCount < 0 &&
-      r.decision?.action !== "KEEP",
-  ).length;
+  const negativeSettleCount = rows.filter(willRowSettleNegative).length;
   const hasShort = D(ledgerPreview.shortExpense).gt(0);
   const hasOver = D(ledgerPreview.overGain).gt(0);
 
@@ -1435,8 +1447,7 @@ export default function StocktakeReview() {
                 const recPending = r.recount?.status === "PENDING";
                 const recDone = r.recount?.status === "DONE";
                 const uncounted = r.rawCount == null;
-                const willSettleNegative =
-                  r.adjustedCount != null && r.adjustedCount < 0;
+                const willSettleNegative = willRowSettleNegative(r);
                 const movesTitle = r.movesAfter
                   .map(
                     (m: {
