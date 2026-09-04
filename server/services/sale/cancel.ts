@@ -651,7 +651,7 @@ export async function cancelSaleInTx(
         eq(receipts.approvalStatus, "APPROVED"),
       ))
       .for("update");
-    const totalIn = materialReceipts.reduce(
+    const directIn = materialReceipts.reduce(
       (sum, receipt) => receipt.direction === "IN" ? sum.plus(money(receipt.amount)) : sum,
       money(0),
     );
@@ -659,6 +659,30 @@ export async function cancelSaleInTx(
       (sum, receipt) => receipt.direction === "OUT" ? sum.plus(money(receipt.amount)) : sum,
       money(0),
     );
+    // مراجعة Codex على PR #988: فاتورةٌ من مسوّدة استقبالٍ شُظّي عربونها الأمّ بين هدفين فأكثر
+    // (بيعٌ عاديّ + بيعٌ مطبعيّ من نفس المسوّدة مثلاً) لا يُختم إيصالها بـinvoiceId — allocateAtCommit
+    // (reception/deposits.ts) يختم فقط الهدف الوحيد بلا ردٍّ جزئيّ — فحصّتها المطبَّقة تزيد
+    // paidAmount فعلاً (preCollected في receptionCheckoutService) لكنها غائبةٌ عن materialReceipts
+    // أعلاه تماماً. نفس الاستعلام الذي يحرس سقف المرتجع فعلياً — returns/refundCaps.ts خطوة ②،
+    // مصدر الحقيقة المشترك بين شاشة المرتجع وreturnSaleInTx — مُقتَصَراً على appliedKind='INVOICE'
+    // (فواتير WORKORDER مرفوضةٌ أصلاً في requestSalesControl، فلا يصل الإلغاء لفاتورةٍ من عربون
+    // أمر شغل). الاستثناء `pr.invoiceId <> invoiceId` يمنع ازدواج العدّ مع الهدف الوحيد المختوم
+    // أعلاه (تلك حصّتُه إيصالٌ مباشرٌ مُحتسَبٌ في materialReceipts سلفاً).
+    const appliedPoolRows = await tx.execute(sql`
+      SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
+      FROM orderPayments app
+      JOIN orderPayments coll ON coll.id = app.parentPaymentId
+      LEFT JOIN receipts pr ON pr.id = coll.receiptId
+      WHERE app.orderPayKind = 'APPLICATION'
+        AND app.orderPayAppliedKind = 'INVOICE'
+        AND app.appliedId = ${input.invoiceId}
+        AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
+      FOR UPDATE
+    `);
+    const appliedPoolData = (appliedPoolRows as unknown as [Array<{ amount: string }>])[0] ?? appliedPoolRows;
+    const appliedPoolRow = Array.isArray(appliedPoolData) ? appliedPoolData[0] : undefined;
+    const appliedPoolIn = money(appliedPoolRow?.amount ?? "0");
+    const totalIn = directIn.plus(appliedPoolIn);
     const refundable = totalIn.minus(totalOutPrior);
     let refundAmount = new Decimal(0);
     let pendingRefundAmount = new Decimal(0);
