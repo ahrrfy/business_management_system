@@ -373,7 +373,10 @@ function applyCancelCashRouting(
   payload: SalesCancelControlPayload,
   routing: SalesControlCashRouting | null | undefined,
 ): SalesCancelControlPayload {
-  if (!routing || routing.reference == null) return payload;
+  // ⛔ `undefined` (المفتاح غائب) = لم يمسّه المُعتمِد، يبقى مرجع الطلب كما أُرسل. `null` صراحةً
+  // = مسحه المُعتمِد عمداً (لا يطابق قسيمة الجهاز) — يُفرَض غيابه فعلياً فيرفضه cancelSaleInTx
+  // حتماً لـCARD، لا رجوعٌ صامتٌ لِما أرسله الطالب (مراجعة Codex P1 على PR #997).
+  if (!routing || routing.reference === undefined) return payload;
   return { ...payload, reference: routing.reference };
 }
 

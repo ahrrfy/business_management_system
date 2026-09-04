@@ -68,15 +68,20 @@ export function salesControlFacts(
     }];
   }
   if (type === "SALES_CANCEL") {
-    return [
+    // مرجع الجهاز يخصّ CARD وحدها — عرضه لِـCASH/TRANSFER/CHECK/WALLET يوهم المُعتمِد بمرجعٍ
+    // مطلوب لا تفرضه الخدمة، فتبدو موافقاتٌ سليمة ناقصةً (مراجعة Codex P2 على PR #997).
+    const facts: SalesControlFact[] = [
       { label: "جهة الاسترداد", value: String(p.refundPaymentMethod ?? "غير محددة") },
-      {
+    ];
+    if (p.refundPaymentMethod === "CARD") {
+      facts.push({
         label: "مرجع جهاز الدفع",
         value: p.reference == null || String(p.reference).trim() === ""
           ? "لم يُدخَل بعد — يُدخله أو يؤكّده المُعتمِد"
           : String(p.reference),
-      },
-    ];
+      });
+    }
+    return facts;
   }
   if (type === "SALES_RETURN") {
     // `refund` للعميل المسجَّل و`resolution` للزبون العابر — أحدهما يحمل المبلغ والطريقة.

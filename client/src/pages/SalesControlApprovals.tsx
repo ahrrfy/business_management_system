@@ -142,21 +142,42 @@ export default function SalesControlApprovals() {
   }
 
   async function approveOne(requestId: number, invoiceNumber: string, type: SalesControlType) {
-    const shiftId = routingFor === requestId && routingShiftId ? Number(routingShiftId) : null;
-    const reference = routingFor === requestId && routingReference.trim() ? routingReference.trim() : null;
-    const cashRouting = shiftId != null || reference != null
-      ? { ...(shiftId != null ? { shiftId } : {}), ...(reference != null ? { reference } : {}) }
+    const editingThis = routingFor === requestId;
+    const shiftId = editingThis && routingShiftId ? Number(routingShiftId) : null;
+    /**
+     * ⭐ ثلاثُ حالاتٍ للمرجع لا حالتان (مراجعة Codex P1 على PR #997): `undefined` (لم يلمسه
+     * المُعتمِد لهذا الطلب بعينه) ⇒ لا override، يبقى مرجع الطلب كما أُرسل. `null` (لمسه ثمّ
+     * مسحه عمداً — لا يطابق قسيمة الجهاز) ⇒ override إلى null فيُرفض الاعتماد حتماً لـCARD،
+     * لا رجوعٌ صامتٌ لمرجع الطالب. نصٌّ ⇒ override إلى القيمة الجديدة. الخلطُ بين «لم يُلمَس»
+     * و«مُسِح» كان يُسقِط المسح العمديّ فيُنفَّذ الاعتماد بمرجعٍ رفضه المُعتمِد بنفسه.
+     */
+    const referenceOverride: string | null | undefined = editingThis
+      ? (routingReference.trim() ? routingReference.trim() : null)
+      : undefined;
+    const cashRouting = shiftId != null || referenceOverride !== undefined
+      ? { ...(shiftId != null ? { shiftId } : {}), ...(referenceOverride !== undefined ? { reference: referenceOverride } : {}) }
       : null;
     if (!(await confirm({
       variant: "danger",
       title: `اعتماد ${SALES_CONTROL_TYPE_LABELS[type]}`,
       description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة.${
         shiftId ? ` النقد يخرج من الدرج #${shiftId}.` : ""
-      }${reference ? ` مرجع جهاز الدفع: ${reference}.` : ""} لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
+      }${referenceOverride ? ` مرجع جهاز الدفع: ${referenceOverride}.` : ""}${
+        referenceOverride === null ? " مسحتَ المرجع المعروض — سيُرفض الاعتماد إن كانت الطريقة بطاقة." : ""
+      } لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
       confirmText: "اعتماد وتنفيذ",
       requireText: invoiceNumber,
     }))) return;
     approve.mutate(cashRouting ? { requestId, cashRouting } : { requestId });
+  }
+
+  /** يبدأ تحرير توجيه طلبٍ بعينه — يمسح توجيه أيّ طلبٍ آخر كان قيد التحرير (درجاً أو مرجعاً)
+   *  كي لا يُرسَل مرجع/درج طلبٍ سابقٍ خطأً مع اعتماد طلبٍ مختلف (مراجعة Codex P2 على PR #997). */
+  function beginRouting(requestId: number) {
+    if (routingFor === requestId) return;
+    setRoutingFor(requestId);
+    setRoutingShiftId("");
+    setRoutingReference("");
   }
 
   return (
@@ -242,7 +263,7 @@ export default function SalesControlApprovals() {
                     placeholder="رقم الوردية"
                     value={routingFor === Number(request.id) ? routingShiftId : ""}
                     onChange={(event) => {
-                      setRoutingFor(Number(request.id));
+                      beginRouting(Number(request.id));
                       setRoutingShiftId(event.target.value.replace(/[^\d]/g, ""));
                     }}
                   />
@@ -267,13 +288,15 @@ export default function SalesControlApprovals() {
                       ? routingReference
                       : String((request.payload as { reference?: string } | null)?.reference ?? "")}
                     onChange={(event) => {
-                      setRoutingFor(Number(request.id));
+                      beginRouting(Number(request.id));
                       setRoutingReference(event.target.value);
                     }}
                   />
                   <p className="text-[11px] text-muted-foreground">
                     المرجع الذي تعتمده هنا هو ما يُنفَّذ فعلياً — قارنه بإيصال الجهاز قبل الاعتماد. تركه فارغاً
                     يرفض الاعتماد فوراً (لا أثر) إن كانت الطريقة بطاقة.
+                    {" "}إن ظهر خطأ «تغيّرت الفاتورة» بعد تنفيذك الاسترداد فعلاً على الجهاز، لا تُعِد المحاولة —
+                    أبلغ الإدارة فوراً للتسوية اليدوية (المبلغ خرج من حسابنا البنكيّ بلا أثرٍ في النظام).
                   </p>
                 </div>
               )}
