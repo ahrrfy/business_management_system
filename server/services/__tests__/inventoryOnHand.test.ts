@@ -222,6 +222,21 @@ describe("inventory.onHand", () => {
     expect(supplierLabel[0]?.scanMatch?.scannedBarcode).toBe("1  0095");
   });
 
+  it("resolves legacy alphabetic supplier identities in inventory and global search", async () => {
+    const { searchProducts } = await import("../globalSearch/searchMasterData");
+    await db().update(s.productUnits).set({ barcode: "\u200f ABC\t" }).where(eq(s.productUnits.id, 12));
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 12, barcode: " DEF\r\n" });
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    for (const query of ["ABC", "DEF"]) {
+      const rows = await caller.inventory.onHand({ branchId: 1, q: query, limit: 1 });
+      expect(rows.map((row) => Number(row.variantId))).toEqual([2]);
+      expect(rows[0]?.scanMatch?.scannedBarcode).toBe(query);
+      const global = await searchProducts(db(), "TEXT", query, 1);
+      expect(global.map((row) => row.id)).toEqual([1]);
+      expect(global[0]?.rank).toBe(0);
+    }
+  });
+
   it("يفشل مغلقاً إذا امتلك UPC-A وEAN-13 المكافئ وحدتان مختلفتان", async () => {
     await db().update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 10));
     await db().update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 12));

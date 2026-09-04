@@ -708,10 +708,8 @@ export const inventoryRouter = router({
       // عند limit=1، ويشفي الإرث الملوّث وتكافؤ UPC-A/EAN-13 في شاشة الجرد نفسها.
       const scannedBarcode = canonicalizeBarcodeInput(input?.q ?? "");
       const scanResolution = scannedBarcode
-        ? await resolveBarcodeOwnerResult(db, scannedBarcode, {
-            // أسماء المنتجات العادية لا تبرّر مسحاً غير مفهرس للكتالوج عند كل ضغطة.
-            allowNormalizedFallback: !/^[A-Za-z\u0600-\u065f\u0670-\u06ef\u06fa-\u06ff\s]+$/.test(scannedBarcode),
-          })
+        // المطابقة المطبعة مفهرسة الآن؛ شكل الحروف وحده لا يميّز الاسم عن باركود المورد.
+        ? await resolveBarcodeOwnerResult(db, scannedBarcode)
         : { status: "NOT_FOUND" as const };
       if (scanResolution.status === "AMBIGUOUS") {
         throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تحديد صنف الجرد من الباركود") });

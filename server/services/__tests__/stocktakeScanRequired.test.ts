@@ -184,6 +184,18 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
     );
   });
 
+  it.each(["SCAN_HID", "SCAN_CAMERA"] as const)("FREE: %s requires nonempty scan evidence", async (entryMethod) => {
+    const r = await mkSession({ countMethod: "FREE" });
+    const id = await loginPin(r.code, pinOf(r));
+    for (const scannedBarcode of [undefined, "", "\r\n\u200f "]) {
+      await expect(submitCount(id, {
+        variantId: 1, qty: 5, entryMethod, scannedBarcode, clientRequestId: randomUUID(),
+      })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    }
+    expect(await db().select().from(s.stocktakeCountOperations).where(eq(s.stocktakeCountOperations.sessionId, r.sessionId))).toHaveLength(0);
+    expect(await db().select().from(s.stocktakeCounts).where(eq(s.stocktakeCounts.sessionId, r.sessionId))).toHaveLength(0);
+  });
+
   it("SCAN_REQUIRED: مسح بلا باركود مرفوض", async () => {
     const r = await mkSession({ countMethod: "SCAN_REQUIRED" });
     const id = await loginPin(r.code, pinOf(r));

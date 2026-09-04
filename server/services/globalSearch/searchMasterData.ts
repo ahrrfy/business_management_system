@@ -18,9 +18,8 @@ async function searchProducts(
   // قد تكون قصيرة مثل 10095، أو Code39/128 حروفية، أو تبدأ بـ+؛ وتصنيفها كوثيقة/نص/هاتف
   // لا يجوز أن يحجب المنتج. الوثائق والعملاء يبقون يعملون بالتوازي في المُنسّق.
   const { resolveBarcodeOwnerResult } = await import("../catalog/barcodeAliases");
-  const resolution = await resolveBarcodeOwnerResult(db, query, {
-    allowNormalizedFallback: kind !== "TEXT" || !/^[A-Za-z\u0600-\u065f\u0670-\u06ef\u06fa-\u06ff\s]+$/.test(query),
-  });
+  // حتى الرمز الحرفي الخالص قد يكون باركوداً؛ المفتاح المولد يجعل فحص الإرث مفهرساً.
+  const resolution = await resolveBarcodeOwnerResult(db, query);
   const owner = resolution.status === "FOUND" ? resolution.owner : null;
   if (resolution.status === "AMBIGUOUS") return [];
   if (owner) {

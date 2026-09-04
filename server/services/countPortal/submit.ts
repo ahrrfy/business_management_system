@@ -291,7 +291,14 @@ export async function submitCount(
       const entryMethod: CountEntryMethod = input.entryMethod ?? "SEARCH_PICK";
       const scannedBarcode = canonicalizeBarcodeInput(input.scannedBarcode ?? "") || null;
 
-      if (isScanEntry(entryMethod) && scannedBarcode) {
+      if (isScanEntry(entryMethod)) {
+        if (!scannedBarcode) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذّر تسجيل العدّ كعملية مسح",
+            why: "لم يصل باركود صالح يثبت المسح، حتى في جلسة العدّ الحر",
+            doThis: "امسح باركود الصنف ثم أعد المحاولة، أو استخدم طريقة الإدخال اليدوي المسموح بها للجلسة",
+          }) });
+        }
         const resolution = await resolveBarcodeOwnerResult(tx, scannedBarcode);
         if (resolution.status === "AMBIGUOUS") {
           throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تسجيل العدّ بهذا الباركود") });
