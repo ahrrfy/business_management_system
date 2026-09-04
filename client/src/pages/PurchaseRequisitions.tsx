@@ -31,6 +31,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { estimatedPurchaseUnitPrice } from "@/components/invoice/purchasePrice";
 
 type RequisitionRow = RouterOutputs["purchases"]["requisitions"][number];
 type RequisitionDetail = RouterOutputs["purchases"]["requisition"];
@@ -475,7 +476,15 @@ export default function PurchaseRequisitions() {
           variantId: Number(selected.variantId),
           productUnitId: Number(selected.productUnitId),
           requestedBaseQuantity: Number(selected.conversionFactor || 1),
-          estimatedUnitPrice: selected.costPriceBase ?? "",
+          // Codex #980 (٤/٩/٢٦) — Finding 4: كان يُهيَّأ بـ`selected.costPriceBase` وحده ⇒ درزنٌ
+          // (معامل ١٢) بتكلفة قطعةٍ ١٥٠ يُخزَّن سعرُ وحدةٍ تقديريّاً ١٥٠ لا ١٨٠٠. عند تحويل الطلب
+          // إلى أمر شراء (`PurchaseNew` مسار الاستحضار)، تُنقَل هذه القيمةُ خامّاً إلى `unitPrice`
+          // ⇒ الخادم يقسمها على المعامل ⇒ `costPerBase = 12.50` يسمّم WAVG. المساعد المشترك
+          // يُصلح المصدر: `price = costBase × factor` (الطلب بالدينار — لا عمود عملة عليه).
+          estimatedUnitPrice: estimatedPurchaseUnitPrice(
+            selected.costPriceBase,
+            String(selected.conversionFactor ?? "1"),
+          ),
           preferredSupplierId: null,
           justification: "حاجة تشغيلية موثقة",
         },

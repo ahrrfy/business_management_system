@@ -92,6 +92,8 @@ export default defineConfig({
       "client/src/components/invoice/__tests__/stockAvailability.test.ts",
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
+      // PUR-UNIT-01 (٤/٩/٢٦) — سعرُ الوحدة التقديريّ لشاشة الشراء = costBase × conversionFactor.
+      "client/src/components/invoice/__tests__/purchasePrice.test.ts",
       "client/src/lib/unitPrice.test.ts",
       "client/src/lib/productStudio/mobileStudioUi.test.ts",
       "client/src/lib/productStudio/coldOfflinePolicy.test.ts",
