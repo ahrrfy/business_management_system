@@ -76,6 +76,7 @@ export default defineConfig({
       "client/src/pages/__tests__/assetFormParity.test.ts",
       "client/src/pages/__tests__/userFormParity.test.ts",
       "client/src/pages/__tests__/customerFormParity.test.ts",
+      "client/src/pages/__tests__/customerEditSnapshotRace.test.ts",
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
       "client/src/pages/__tests__/purchaseOrderApprovalUi.test.tsx",
       "client/src/pages/__tests__/purchaseGovernanceUi.test.tsx",
@@ -303,6 +304,8 @@ export default defineConfig({
       "shared/predicates/invoiceRemaining.test.ts",
       "shared/predicates/wiring.test.ts",
       "shared/terms.test.ts",
+      // FP-05 — حارس فقدان البيانات يعترض تنقّل SPA بحوارٍ عربيّ موحّد.
+      "client/src/hooks/__tests__/useUnsavedGuard.test.ts",
     ],
   },
 });
