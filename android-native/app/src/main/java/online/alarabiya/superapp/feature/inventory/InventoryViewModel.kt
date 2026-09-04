@@ -734,7 +734,17 @@ class InventoryViewModel(
     }
     fun forceReview() = stocktakeAction("stocktake:review", "نُقلت الجلسة للمراجعة") { source.forceStocktakeReview(it) }
     fun firstSign() = stocktakeAction("stocktake:sign", "تم التوقيع الأول") { source.firstSignStocktake(it) }
-    fun approveStocktake() = stocktakeAction("stocktake:approve", "تم اعتماد الجرد") { source.approveStocktake(it) }
+    fun approveStocktake() = stocktakeAction(
+        key = "stocktake:approve",
+        message = "تم اعتماد الجرد",
+        successOf = { negativeSettlements: Int ->
+            if (negativeSettlements > 0) {
+                "تم اعتماد الجرد — $negativeSettlements صنف بأرصدة سالبة، راجع تقرير السوالب"
+            } else {
+                "تم اعتماد الجرد"
+            }
+        },
+    ) { source.approveStocktake(it) }
     fun setCancelStocktakeReason(value: String) { state = state.copy(cancelStocktakeReason = value.take(500)) }
     fun cancelStocktake() {
         val detail = state.selectedStocktake ?: return
@@ -760,7 +770,12 @@ class InventoryViewModel(
         )
     }
 
-    private fun stocktakeAction(key: String, message: String, action: suspend (Long) -> Unit) {
+    private fun <T> stocktakeAction(
+        key: String,
+        message: String,
+        successOf: ((T) -> String)? = null,
+        action: suspend (Long) -> T,
+    ) {
         val detail = state.selectedStocktake ?: return
         if (!capabilities.canManage) return
         val acknowledgedStatus = when (key) {
@@ -772,6 +787,7 @@ class InventoryViewModel(
             key = key,
             section = InventorySection.STOCKTAKES,
             success = message,
+            successOf = successOf,
             replayPolicy = MutationReplayPolicy.MONOTONIC,
             request = { action(detail.summary.id) },
             acknowledge = { current, _ ->
@@ -866,6 +882,7 @@ class InventoryViewModel(
         request: suspend () -> T,
         acknowledge: (InventoryUiState, T) -> InventoryUiState,
         refresh: suspend (T) -> InventoryReducer,
+        successOf: ((T) -> String)? = null,
     ) {
         if (!state.canInteract(section)) return
         state = state.copy(busyKey = key, error = null, message = null)
@@ -887,17 +904,18 @@ class InventoryViewModel(
             }
 
             val value = response.getOrThrow()
+            val resolvedSuccess = successOf?.invoke(value) ?: success
             // Commit the acknowledged server outcome first. The following read is reconciliation,
             // never part of the write, so its failure cannot reopen the draft or repeat the action.
-            state = acknowledge(state, value).markStale(section).copy(message = success)
+            state = acknowledge(state, value).markStale(section).copy(message = resolvedSuccess)
             runCatching { refresh(value) }
                 .onSuccess { reducer ->
-                    state = reducer(state).markFresh(section).copy(busyKey = null, error = null, message = success)
+                    state = reducer(state).markFresh(section).copy(busyKey = null, error = null, message = resolvedSuccess)
                 }
                 .onFailure { refreshFailure ->
                     state = state.copy(
                         busyKey = null,
-                        message = success,
+                        message = resolvedSuccess,
                         error = "اكتملت العملية، لكن تعذر تحديث بيانات القسم. اضغط إعادة المحاولة قبل تنفيذ إجراء آخر: ${userMessage(refreshFailure)}",
                     )
                 }

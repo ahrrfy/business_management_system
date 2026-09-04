@@ -19,6 +19,7 @@ import { getSessionCookieOptions } from "../cookies";
 import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth/kioskSession";
 import { logAudit } from "../services/auditService";
 import { kioskBanner, kioskLookup } from "../services/kioskService";
+import { barcodeString } from "../lib/schemas";
 import {
   createKioskDevice,
   deleteKioskDevice,
@@ -78,7 +79,7 @@ export const kioskRouter = router({
 
   /** بحث سعر بالباركود (المسح). يعيد null إن لم يُعرَف الباركود. */
   lookup: kioskReadProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional(), barcode: z.string().min(1).max(64) }))
+    .input(z.object({ branchId: z.number().int().positive().optional(), barcode: barcodeString }))
     .query(({ input, ctx }) => kioskLookup(input.barcode, effectiveBranchId(ctx.deviceBranchId, input.branchId))),
 
   // ───────────────────────── مصادقة الجهاز الخارجي ─────────────────────────

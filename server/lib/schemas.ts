@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_PRICE_DECIMALS } from "../../shared/moneyPrecision";
+import { canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 
 /** سلسلة مالية بـ٢ خانات عشرية على الأكثر، تَقبل السالب (للمرتجعات/التعديلات).
  *  متّسق مع toDbMoney(string) في server/services/money.ts.
@@ -60,6 +61,26 @@ export const percentString = z
 
 /** سلسلة مالية موقَّعة (تَقبل السالب للمرتجعات). مرادف لـmoneyString — للوضوح الدلالي. */
 export const signedMoneyString = moneyString;
+
+/**
+ * حقل باركود إلزاميّ — يُطبَّع على حدّ الـAPI (تقليم + طيّ الأرقام العربية-الهندية) قبل أن يبلغ الخدمة.
+ *
+ * لماذا هنا لا في الشاشة: مخطّطات الحفظ كانت `z.string()` عاريةً بلا `.trim()`، فأيّ مسافةٍ طرفية
+ * تُحفَظ حرفياً في `productUnits.barcode`، بينما المسح يُقارن بمساواةٍ SQL خامّة ⇒ الباركود يُحفَظ
+ * ويمرّ فحصَ التفرّد (الذي كان يقلّم للفحص وحده) ثمّ لا يُمسَح أبداً. المصدر: `canonicalizeBarcodeInput`.
+ */
+export const barcodeString = z
+  .string()
+  .transform(canonicalizeBarcodeInput)
+  .refine((s) => s.length > 0, "الباركود فارغ")
+  .refine((s) => s.length <= 64, "الباركود أطول من ٦٤ خانة");
+
+/** حقل باركود اختياريّ (وحدةٌ قد تُنشأ بلا باركود ويُضاف لاحقاً) — نفس التطبيع؛ الفارغ بعده ⇒ `null`. */
+export const optionalBarcodeString = z
+  .string()
+  .nullish()
+  .transform((s) => (s == null ? null : canonicalizeBarcodeInput(s) || null))
+  .refine((s) => s == null || s.length <= 64, "الباركود أطول من ٦٤ خانة");
 
 /** تاريخ بصيغة YYYY-MM-DD (متّسق مع toDateStr() في money.ts و dueDate في invoices). */
 export const ymdDate = z

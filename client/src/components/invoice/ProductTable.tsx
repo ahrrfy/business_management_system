@@ -257,6 +257,10 @@ export function ProductTable({
             tier={tier}
             onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
+            // Codex #980: عملة الأمر وسعرُ تثبيته يمرَّان لِتقدير سعر الوحدة **بالدولار** بالقسمة
+            // على `agreedRate` (الفرع الدولاريّ)، وبلا تثبيتٍ يترك حقلَ السعر فارغاً بدل ادّعاءٍ.
+            purchaseCurrency={purchaseCurrency}
+            purchaseAgreedRate={purchaseRate}
           />
         </div>
       )}
@@ -345,10 +349,23 @@ export function ProductTable({
               const marginNum = Number(margin);
               const stock = stockState(item);
               const allocations = allocationsByVariant.get(item.variantId) ?? [];
-              const purchaseInsight = isPurchase
+              // Codex #980 (٤/٩/٢٦) — Finding 2: صفوف `purchaseOrderItems` التاريخيّة لوحدةٍ
+              // غير أساس (معامل ≠ ١) قد تكون **الصفوف المفسدة** التي يُصلحها PUR-UNIT-01
+              // نفسه: `unitPrice` فيها كان يحمل تكلفة الأساس (١٥٠) بدل سعر وحدة الصفّ (١٨٠٠).
+              // مقارنةُ سعرِ ٱليوم المُصحَّح (١٨٠٠) بها تُبلّغ «١٦٥٠ فوق الأدنى التاريخيّ» فتُغري
+              // المستخدم باستعادة القيمة المفسدة. الآن نُعطّل تلميحَ الأرخص التاريخيّ للوحدات
+              // غير الأساس حتى يُصلَح تراث البيانات — الوحدة الأساس (معامل ١) لم تتأثّر
+              // بالعطب فتبقى المقارنة موثوقة عليها.
+              const conversionFactorRaw = Number(item.conversionFactor);
+              const isBaseUnit = Number.isFinite(conversionFactorRaw) && conversionFactorRaw === 1;
+              const purchaseInsight = isPurchase && isBaseUnit
                 ? purchasePriceInsights?.[`${item.variantId}:${item.productUnitId}`]
                 : undefined;
-              const enteredPriceIqd = priceAsIqd(item.costBase || item.price);
+              // PUR-UNIT-01 (٤/٩/٢٦): مقارنةٌ بـ`item.price` (وحدة الصفّ) لا `item.costBase`
+              // (وحدة الأساس) — `purchaseInsight.lowestPurchase.price` مقروءٌ من
+              // `purchaseOrderItems.unitPrice` وهو بوحدة الصفّ في الأمر التاريخيّ. المقارنة
+              // بالأساس (١٥٠) مع تاريخٍ بالدرزن (١٨٠٠) تُشعل «أرخص سابقاً» كاذباً.
+              const enteredPriceIqd = priceAsIqd(item.price);
               const lowestPriceIqd = purchaseInsight ? Number(purchaseInsight.lowestPurchase.price) : null;
               const supplierLastPriceIqd = purchaseInsight?.selectedSupplierLastPurchase
                 ? Number(purchaseInsight.selectedSupplierLastPurchase.price)
@@ -499,17 +516,17 @@ export function ProductTable({
                       <span dir="ltr" className="text-sm font-bold tabular-nums">{fmtNum(item.price)}</span>
                     ) : (
                       <InlineNumberInput
-                        value={isPurchase ? item.costBase || item.price : item.price}
+                        // PUR-UNIT-01 (٤/٩/٢٦): الحقلُ يعرض ويحرّر **سعر وحدة الصفّ** (`price`)
+                        // — درزن يُعرَض بسعر الدرزن لا بسعر القطعة. كان `costBase || price`
+                        // يعرض ١٥٠ لدرزنٍ سعرُه ١٨٠٠ ويكتب الإدخال في `costBase` (تكلفة
+                        // الأساس المرجعيّة) فيلوّث معناها. الآن `costBase` مرجعٌ ثابت لا يُمَسّ
+                        // من الشاشة (خدمات الاعتماد الخادميّة تعتمده)، وسعر السطر وحده يُعدَّل.
+                        value={item.price}
                         width="w-20"
                         decimals={linePriceDecimals}
                         ariaLabel={`سعر ${item.name}`}
                         onChange={(v) => {
-                          if (isPurchase) {
-                            dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: v });
-                            dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
-                          } else {
-                            dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
-                          }
+                          dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
                         }}
                       />
                     )}
