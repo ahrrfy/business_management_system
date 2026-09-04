@@ -76,6 +76,7 @@ export default defineConfig({
       "client/src/pages/__tests__/assetFormParity.test.ts",
       "client/src/pages/__tests__/userFormParity.test.ts",
       "client/src/pages/__tests__/customerFormParity.test.ts",
+      "client/src/pages/__tests__/customerEditSnapshotRace.test.ts",
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
       "client/src/pages/__tests__/purchaseOrderApprovalUi.test.tsx",
       "client/src/pages/__tests__/purchaseGovernanceUi.test.tsx",
