@@ -23,6 +23,7 @@ import {
   payrollRuns,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { assertPeriodOpen } from "../periodLockService";
 import { requireDb, withTx, type Actor } from "../tx";
 
 export async function listRuns(scopedBranchId: number | null = null) {
@@ -190,6 +191,10 @@ export async function approveRunInTx(
       message: `مسيّر رواتب ${run.period} ${payroll.status === "paid" ? "مدفوع" : "معتمد"} فعلاً — فات قطار الالتقاط. أعد المسيّر إلى مسودة أولاً ثم أعد توليده بعد اعتماد العمولات.`,
     });
   }
+  // حارس إقفال الفترة المالية العامّة (مرآة recomputeMonthRates في attendanceService): الفحص أعلاه
+  // يغطي فقط وجود صفّ payrollRuns لنفس الشهر — شهرٌ مُقفَل بلا مسيّرٍ أصلاً (قفلٌ قديم أو شهرٌ
+  // صفريّ الموظفين) يمرّ منه. الاعتماد append-only (لا unapproveRun فعليّ) فلا رجوع لو فات.
+  await assertPeriodOpen(tx, new Date(`${run.period}-01`));
 
   await options.beforeApply?.(run);
   await tx
