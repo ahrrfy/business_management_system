@@ -80,6 +80,12 @@ export default function SalesControlApprovals() {
    */
   const [routingFor, setRoutingFor] = useState<number | null>(null);
   const [routingShiftId, setRoutingShiftId] = useState<string>("");
+  /**
+   * ⭐ مرجع استرداد البطاقة لحظة الاعتماد لا لحظة الطلب (مراجعة Codex على PR #988) — نظير
+   * `routingShiftId` تماماً. الطالب قد يترك المرجع فارغاً (لم ينفّذ الاسترداد بعد)؛ المُعتمِد
+   * يدخله هنا بعد تنفيذه الفعليّ على الجهاز، أو يعتمد ما أدخله الطالب إن كان قد نفّذه هو.
+   */
+  const [routingReference, setRoutingReference] = useState<string>("");
   const [rejecting, setRejecting] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [message, setMessage] = useState("");
@@ -137,16 +143,20 @@ export default function SalesControlApprovals() {
 
   async function approveOne(requestId: number, invoiceNumber: string, type: SalesControlType) {
     const shiftId = routingFor === requestId && routingShiftId ? Number(routingShiftId) : null;
+    const reference = routingFor === requestId && routingReference.trim() ? routingReference.trim() : null;
+    const cashRouting = shiftId != null || reference != null
+      ? { ...(shiftId != null ? { shiftId } : {}), ...(reference != null ? { reference } : {}) }
+      : null;
     if (!(await confirm({
       variant: "danger",
       title: `اعتماد ${SALES_CONTROL_TYPE_LABELS[type]}`,
       description: `سيُنفَّذ الأثر الآن على الفاتورة ${invoiceNumber} داخل معاملة واحدة.${
         shiftId ? ` النقد يخرج من الدرج #${shiftId}.` : ""
-      } لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
+      }${reference ? ` مرجع جهاز الدفع: ${reference}.` : ""} لا يمكن للطالب أو منشئ الفاتورة اعتمادها.`,
       confirmText: "اعتماد وتنفيذ",
       requireText: invoiceNumber,
     }))) return;
-    approve.mutate(shiftId ? { requestId, cashRouting: { shiftId } } : { requestId });
+    approve.mutate(cashRouting ? { requestId, cashRouting } : { requestId });
   }
 
   return (
@@ -238,6 +248,32 @@ export default function SalesControlApprovals() {
                   />
                   <p className="text-[11px] text-muted-foreground">
                     إن أُقفلت وردية الطلب فسيسقط التنفيذ — حدّد هنا وردية مفتوحة الآن. المبلغ والطريقة لا يتغيّران.
+                  </p>
+                </div>
+              )}
+              {canReview && request.requestType === "SALES_CANCEL"
+                && (request.payload as { refundPaymentMethod?: string } | null)?.refundPaymentMethod === "CARD"
+                && !isReviewerConflict(me.data?.id, request) && (
+                <div className="space-y-1 rounded-md border border-dashed p-3">
+                  <Label htmlFor={`cancel-ref-${request.id}`} className="text-xs">
+                    مرجع استرداد البطاقة — نفّذه على الجهاز ثمّ أدخِله هنا قبل الاعتماد
+                  </Label>
+                  <Input
+                    id={`cancel-ref-${request.id}`}
+                    dir="ltr"
+                    className="h-8 w-56"
+                    placeholder="رقم العملية / كود الموافقة"
+                    value={routingFor === Number(request.id)
+                      ? routingReference
+                      : String((request.payload as { reference?: string } | null)?.reference ?? "")}
+                    onChange={(event) => {
+                      setRoutingFor(Number(request.id));
+                      setRoutingReference(event.target.value);
+                    }}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    المرجع الذي تعتمده هنا هو ما يُنفَّذ فعلياً — قارنه بإيصال الجهاز قبل الاعتماد. تركه فارغاً
+                    يرفض الاعتماد فوراً (لا أثر) إن كانت الطريقة بطاقة.
                   </p>
                 </div>
               )}

@@ -68,7 +68,15 @@ export function salesControlFacts(
     }];
   }
   if (type === "SALES_CANCEL") {
-    return [{ label: "جهة الاسترداد", value: String(p.refundPaymentMethod ?? "غير محددة") }];
+    return [
+      { label: "جهة الاسترداد", value: String(p.refundPaymentMethod ?? "غير محددة") },
+      {
+        label: "مرجع جهاز الدفع",
+        value: p.reference == null || String(p.reference).trim() === ""
+          ? "لم يُدخَل بعد — يُدخله أو يؤكّده المُعتمِد"
+          : String(p.reference),
+      },
+    ];
   }
   if (type === "SALES_RETURN") {
     // `refund` للعميل المسجَّل و`resolution` للزبون العابر — أحدهما يحمل المبلغ والطريقة.

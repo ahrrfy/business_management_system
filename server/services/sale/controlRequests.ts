@@ -361,6 +361,22 @@ function applyCashRouting(
   return next;
 }
 
+/**
+ * ⭐ مرجع استرداد البطاقة **قرار المُعتمِد لحظة الاعتماد**، لا التزامٌ يُقفَل عند الطالب
+ * (مراجعة Codex على PR #988). `cancelSaleInTx` يفرض المرجع إلزامياً لـCARD وحدها؛ دون هذا
+ * الدمج يبقى الطالبُ مضطراً لتنفيذ الاسترداد الفعليّ على الجهاز **قبل** أن يبتّ أيّ مراجعٍ في
+ * طلب الإلغاء أصلاً — فإن رُفض الطلب أو تعارضت اللقطة، يكون المال قد خرج من حساب المكتبة
+ * البنكيّ بلا أثرٍ في الفاتورة أو الدفتر. نظير `applyCashRouting` تماماً؛ لا مساسٍ بطريقة
+ * الاسترداد ولا المبلغ — المتغيّر مرجع الجهاز وحده.
+ */
+function applyCancelCashRouting(
+  payload: SalesCancelControlPayload,
+  routing: SalesControlCashRouting | null | undefined,
+): SalesCancelControlPayload {
+  if (!routing || routing.reference == null) return payload;
+  return { ...payload, reference: routing.reference };
+}
+
 export async function approveSalesControlRequest(
   requestId: number,
   actor: Actor & { role?: string },
@@ -459,7 +475,9 @@ export async function approveSalesControlRequest(
       resultInvoiceId = Number(request.invoiceId);
     } else if (request.requestType === "SALES_CANCEL") {
       effect = await cancelSaleInTx(tx, {
-        ...(request.payload as unknown as SalesCancelControlPayload),
+        // توجيه المرجع يُدمَج هنا — بعد التحقّق من `payloadHash` أعلاه وقبل أوّل أثر، تماماً
+        // كما يُدمَج توجيه النقد للمرتجع. طريقة الاسترداد والمبلغ كما أُقرّا في الطلب.
+        ...applyCancelCashRouting(request.payload as unknown as SalesCancelControlPayload, cashRouting),
         invoiceId: Number(request.invoiceId),
         reason: request.reason,
         clientRequestId: `sales-control-${requestId}`,

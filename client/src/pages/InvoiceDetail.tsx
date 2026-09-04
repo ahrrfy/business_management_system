@@ -1651,7 +1651,7 @@ export default function InvoiceDetail() {
             )}
             {needsCardReference && (
               <PaymentDeviceReferenceField id="cancel-card-ref" value={cancelReference} onChange={setCancelReference}
-                hint="نفّذ الاسترداد على جهاز الدفع أولاً ثمّ أدخِل مرجعه هنا." />
+                hint="اختياريّ هنا. إن نفّذت الاسترداد على الجهاز فعلاً أدخِل مرجعه — وإلا اتركه فارغاً؛ المُعتمِد المستقل يدخله أو يؤكّده لحظة الاعتماد، قبل أن يُنفَّذ أيّ أثرٍ فعليّ." />
             )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
@@ -1681,12 +1681,12 @@ export default function InvoiceDetail() {
           <DialogFooter className="gap-2 sm:justify-between">
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button variant="destructive"
-              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3 || (needsCardReference && !cancelReference.trim())}
+              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
                   invoiceId, refundPaymentMethod: cancelMethod,
-                  reference: needsCardReference ? cancelReference.trim() : undefined,
+                  reference: needsCardReference && cancelReference.trim() ? cancelReference.trim() : undefined,
                   reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
