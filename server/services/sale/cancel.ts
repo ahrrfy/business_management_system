@@ -23,6 +23,7 @@
 // اشتقاق remaining من قيود RETURN السابقة، تقريب نقديّ IQD) مطابقٌ في الحسابات وموثَّق بالمرجع.
 
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -53,6 +54,7 @@ import {
   lockCashSourceForUpdate,
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
+import { isSurfacedRefundMethod } from "../returns/refundCaps";
 import { withTx, type Actor } from "../tx";
 import { recordEffect } from "../reversalEngine"; // ق٧: ربطٌ ظلّيّ لمحرّك العكس (شريحة ٠٣٢٩)
 import { userNameSnapshot } from "../userSnapshot";
@@ -74,6 +76,8 @@ export interface CancelSaleInput {
    * النقد يمرّ shiftIdForCashTx فيُعيَّن الدلو تلقائياً (DRAWER للمشغّل ذي الوردية، TREASURY للأدمن/مدير بلا وردية).
    */
   refundPaymentMethod: CancelRefundMethod;
+  /** مرجع عملية الاسترداد على جهاز الدفع — تفرضه الخدمة إلزامياً لِـCARD وحدها؛ نظير ReturnSaleInput.refund.reference. */
+  reference?: string | null;
   /** سبب الإلغاء — يُخزَّن على قيد RETURN.notes للتدقيق. */
   reason?: string | null;
   /** idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة). */
@@ -664,6 +668,10 @@ export async function cancelSaleInTx(
       // بلا وردية). غير النقد لا يمسّ صندوقاً ⇒ shiftId اختياري (نأخذ ما هو مفتوح إن وُجد للربط بالتسوية).
       let shiftId: number | null = null;
       let cashBucket: "DRAWER" | "TREASURY" | null = null;
+      // ⭐ قرار المالك (١٧/٨/٢٦): رافدا الردّ الفوريّ نقدٌ أو بطاقة (مطابقٌ لـreturnService.ts) — البطاقة
+      // تتجسّد الآن فوراً بمرجع جهازٍ إلزاميّ، لا تنتظر اعتماد سندٍ معلَّق كـCHECK/TRANSFER/WALLET.
+      const isImmediateRefundRail = isSurfacedRefundMethod(input.refundPaymentMethod);
+      let cardReference: string | null = null;
       if (input.refundPaymentMethod === "CASH") {
         const g = prelockedCashSource;
         if (!g) {
@@ -678,6 +686,27 @@ export async function cancelSaleInTx(
           shiftId,
           amount: refundable,
           operation: "استرداد إلغاء الفاتورة",
+        });
+      } else if (isSurfacedRefundMethod(input.refundPaymentMethod)) {
+        cardReference = input.reference?.trim() || null;
+        if (!cardReference) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل استرداد إلغاء الفاتورة على البطاقة",
+              why: `مرجع عملية الاسترداد من جهاز الدفع لم يصل، وهو الأثر الوحيد الذي يربط ${refundable.toFixed(2)} د.ع خرجت من حسابنا البنكيّ بمستندها`,
+              doThis: "نفّذ الاسترداد على جهاز الدفع أوّلاً، ثمّ أدخِل رقم العملية أو كود الموافقة المطبوع على قسيمة الجهاز في حقل المرجع",
+            }),
+          });
+        }
+        // لا يمسّ درجاً (cashBucket=NULL) ⇒ لا أثر على expectedCash ولا Z-report. لا يشترط عميلاً
+        // مسجَّلاً — البطاقة نفسها هي الطرف (مطابقٌ لـreturnService.ts:1192-1214).
+        assertNonPhysicalOutReceipt({
+          classification: "NON_CASH_METHOD",
+          paymentMethod: input.refundPaymentMethod,
+          cashBucket: null,
+          approvalStatus: "APPROVED",
+          operation: "استرداد إلغاء فاتورة على البطاقة",
         });
       } else {
         if (inv.customerId == null) {
@@ -697,7 +726,7 @@ export async function cancelSaleInTx(
       }
 
       // غير النقد يحمل voucherNumber فيظهر بطابور السندات وي materialize حصراً عبر
-      // voucher.approve من مالك آخر. النقد الفوري يبقى إيصال مرتجع بلا voucherNumber.
+      // voucher.approve من مالك آخر. النقد والبطاقة الفوريّان يبقيان إيصال مرتجعٍ بلا voucherNumber.
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
@@ -706,12 +735,14 @@ export async function cancelSaleInTx(
         direction: "OUT",
         amount: toDbMoney(refundable),
         paymentMethod: input.refundPaymentMethod,
-        status: input.refundPaymentMethod === "CASH" ? "COMPLETED" : "PENDING",
+        status: isImmediateRefundRail ? "COMPLETED" : "PENDING",
         description: `استرداد إلغاء فاتورة ${inv.invoiceNumber}`,
-        approvalStatus: input.refundPaymentMethod === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
+        approvalStatus: isImmediateRefundRail ? "APPROVED" : "PENDING_APPROVAL",
         referenceNumber: input.refundPaymentMethod === "CASH"
           ? null
-          : `SALE-CANCEL-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
+          : isImmediateRefundRail
+            ? cardReference
+            : `SALE-CANCEL-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
         voucherNumber: pendingRefundVoucherNumber,
         partyType: inv.customerId ? "CUSTOMER" : "OTHER",
         partyId: inv.customerId ?? null,
@@ -721,7 +752,7 @@ export async function cancelSaleInTx(
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
-      if (input.refundPaymentMethod === "CASH") {
+      if (isImmediateRefundRail) {
         const refundAssetRole = paymentAssetRole(input.refundPaymentMethod, cashBucket, "OUT");
         const refundPostingSource = {
           roleDebits: { AR: refundable },

@@ -42,6 +42,7 @@ async function pendingContract(
   referenceNumber = "CD-1-20260725-0001",
   sourceShiftId: number | null = null,
   stageSource: "NEW" | "LEGACY" | false = "NEW",
+  recipientId: number = RECIPIENT,
 ) {
   if ((referenceNumber.startsWith("CD-") || referenceNumber.startsWith("CH-")) && stageSource) {
     const sourceResult = await db().insert(s.receipts).values({
@@ -83,7 +84,7 @@ async function pendingContract(
     approvalStatus: "APPROVED",
     partyType: "OTHER",
     description: "cash custody pending recipient acceptance",
-    createdBy: RECIPIENT,
+    createdBy: recipientId,
   });
   return Number((result as any)[0]?.insertId ?? (result as any).insertId);
 }
@@ -369,5 +370,55 @@ describe("treasury handover receipt acceptance", () => {
         .from(s.accountingEntries)
         .where(eq(s.accountingEntries.receiptId, receiptId)),
     ).toHaveLength(1);
+  });
+
+  it("rejects the courier who dropped the cash from accepting their own custody", async () => {
+    // المستلِم = المُسلِّم نفسه (CASHIER)، عبر إدخالٍ مباشر يتجاوز حارس الإنشاء
+    // (createCashDrop) عمداً — القبول يجب أن يرفضه بمعزل عن ذلك الحارس الأعلى.
+    const receiptId = await pendingContract(
+      "CD-1-20260725-SELFCOURIER",
+      null,
+      "NEW",
+      CASHIER,
+    );
+    const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
+
+    await expect(
+      cashier.treasury.acceptHandoverReceipt(acceptInput(receiptId, "self-courier")),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز لمُسلِّم النقد قبول عهدته",
+    });
+
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId))
+    )[0];
+    expect(row.status).toBe("PENDING");
+  });
+
+  it("rejects the shift owner from accepting cash dropped out of their own drawer", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: RECIPIENT,
+      openingBalance: "0",
+      openGuard: "recipient-shift-owner:1:RETAIL",
+    });
+    const shiftId = Number(
+      (shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId,
+    );
+    const receiptId = await pendingContract("CD-1-20260725-SELFSHIFT", shiftId);
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "self-shift-owner")),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز لمالك الوردية قبول النقد الخارج من درجها",
+    });
+
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId))
+    )[0];
+    expect(row.status).toBe("PENDING");
   });
 });

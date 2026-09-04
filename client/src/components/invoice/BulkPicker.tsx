@@ -21,7 +21,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
-import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
+import { estimatedPurchaseUnitPrice } from "./purchasePrice";
+import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
 export interface BulkPickerProps {
   open: boolean;
@@ -30,9 +31,15 @@ export interface BulkPickerProps {
   invoiceType: InvoiceType;
   branchId: number;
   tier: PriceTier;
+  /**
+   * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته لتقدير سعر وحدة الصفّ بالدولار
+   * (الفرع الدولاريّ يقسم على `agreedRate`). تُمرَّر من `PurchaseNew`/`PurchaseEdit`.
+   */
+  purchaseCurrency?: Currency;
+  purchaseAgreedRate?: string;
 }
 
-export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier }: BulkPickerProps) {
+export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -92,7 +99,10 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         availableBase: r.stockBase ?? 0,
         isService: false,
         allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
-        price: r.costPriceBase,
+        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل
+        // (نفس ProductSearchBar). `costBase` يبقى مرجعُ الأساس بلا ضربٍ.
+        // Codex #980: الفرع الدولاريّ يقسم على سعر التثبيت؛ بلا تثبيتٍ ⇒ حقلٌ فارغ.
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor, isPurchase ? purchaseCurrency : "IQD", isPurchase ? purchaseAgreedRate : null),
         costBase: r.costPriceBase,
       }));
     }
@@ -115,7 +125,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
       costBase: r.costPriceBase ?? "0",
     }));
-  }, [isPurchase, posQ.data, purQ.data]);
+  }, [isPurchase, posQ.data, purQ.data, purchaseCurrency, purchaseAgreedRate]);
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -274,7 +284,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                     <div dir="ltr" className="text-sm font-extrabold text-primary">
                       {fmtNum(p.price)}
                     </div>
-                    <div className="text-center text-[10px] text-muted-foreground">د.ع</div>
+                    <div className="text-center text-[10px] text-muted-foreground">
+                      د.ع
+                      {/* PUR-UNIT-01: تقديرٌ من آخر تكلفةٍ × معامل الوحدة — قابل للتعديل قبل الإرسال. */}
+                      {isPurchase && (
+                        <span className="ms-1 rounded bg-muted px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                          تقديريّ
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

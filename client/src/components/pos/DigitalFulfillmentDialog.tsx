@@ -39,11 +39,13 @@ const STATUS_LABEL: Record<string, string> = {
 export function DigitalFulfillmentDialog({
   intentId,
   finalizing = false,
+  finalizeError = null,
   onClose,
   onAllExecuted,
 }: {
   intentId: number | null;
   finalizing?: boolean;
+  finalizeError?: string | null;
   /** يُستدعى فقط حين يجوز الإغلاق (لا كرت نُفِّذ بعد، أو بعد إقرار المراجعة). */
   onClose: () => void;
   /** كل البنود نُفِّذت بنجاح — تثبيت الفاتورة يتولّاه المستدعي. */
@@ -234,8 +236,14 @@ export function DigitalFulfillmentDialog({
           {allSuccess && (
             <div style={{ background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 6 }}>
               <span style={{ fontSize: 15.5, fontWeight: 800, color: C.fg }}>كل الكروت نُفِّذت بنجاح</span>
-              <span style={{ fontSize: 13, color: C.mutedFg }}>جارٍ تثبيت الفاتورة وتحصيل المبلغ…</span>
-              <button disabled={finalizing} onClick={() => intentId != null && onAllExecuted(intentId)} style={{ padding: 10, border: `1px solid ${C.border}`, background: C.card, color: C.fg }}>إعادة محاولة تثبيت الفاتورة عند تعذّر الاتصال</button>
+              {finalizeError ? (
+                <span style={{ fontSize: 13, color: C.danger, fontWeight: 700 }}>{finalizeError}</span>
+              ) : (
+                <span style={{ fontSize: 13, color: C.mutedFg }}>جارٍ تثبيت الفاتورة وتحصيل المبلغ…</span>
+              )}
+              <button disabled={finalizing} onClick={() => intentId != null && onAllExecuted(intentId)} style={{ padding: 10, border: `1px solid ${C.border}`, background: C.card, color: C.fg }}>
+                {finalizeError ? "أعد محاولة تثبيت الفاتورة" : "إعادة محاولة تثبيت الفاتورة عند تعذّر الاتصال"}
+              </button>
             </div>
           )}
 

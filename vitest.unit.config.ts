@@ -92,6 +92,8 @@ export default defineConfig({
       "client/src/components/invoice/__tests__/stockAvailability.test.ts",
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
+      // PUR-UNIT-01 (٤/٩/٢٦) — سعرُ الوحدة التقديريّ لشاشة الشراء = costBase × conversionFactor.
+      "client/src/components/invoice/__tests__/purchasePrice.test.ts",
       "client/src/lib/unitPrice.test.ts",
       "client/src/lib/productStudio/mobileStudioUi.test.ts",
       "client/src/lib/productStudio/coldOfflinePolicy.test.ts",
@@ -160,6 +162,7 @@ export default defineConfig({
       "client/src/components/workorder/DesignFileCard.test.tsx",
       "client/src/pages/__tests__/TaskDetailDesignApproval.test.tsx",
       "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
+      "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
       "client/src/pages/__tests__/workOrderReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceExternalPaymentUi.test.tsx",

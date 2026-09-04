@@ -39,6 +39,12 @@ import { useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
 import {
+  willRowSettleNegative,
+  CorrectedCountCell,
+  NegativeSettlementPill,
+  NegativeSettlementBanner,
+} from "@/components/stocktake/NegativeSettlementUi";
+import {
   Printer,
   Download,
   Lock,
@@ -318,9 +324,16 @@ export default function StocktakeReview() {
       else
         notify.ok(
           "اعتُمدت الجلسة ونُفّذت التسوية",
-          `${nf(r.adjustedCount)} حركة تسوية — عجز ${money(r.shortExpense)} · زيادة ${money(r.overGain)}`,
+          `${nf(r.adjustedCount)} حركة تسوية — عجز ${money(r.shortExpense)} · زيادة ${money(r.overGain)}` +
+            (r.negativeSettlements > 0
+              ? ` — ${nf(r.negativeSettlements)} صنف بأرصدة سالبة (راجع تقرير السوالب)`
+              : ""),
         );
       await invalidate();
+      // اعتماد الجلسة يكتب مباشرةً إلى branchStock (سالباً محتملاً) — تقرير السوالب خارج
+      // نطاق invalidate() (مقصورة على stocktakes.*)، ولها staleTime 60ث في شاشته
+      // (InventoryOpsReport.tsx)؛ بلا هذا قد يُوجَّه المعتمد لتقريرٍ لا يعرض ما أَحدَثه للتوّ.
+      if (!r.alreadyApproved) await utils.reports.negativeStock.invalidate();
       navigate(`/stocktakes/${sessionId}/report`);
     },
     onError: (e) => notify.err(e),
@@ -498,6 +511,9 @@ export default function StocktakeReview() {
     (r.decision?.reason as Reason | undefined) ??
     "UNSPECIFIED";
 
+  const rowSettlesNegative = (r: Row) =>
+    willRowSettleNegative(r, effectiveDirectUnderThreshold);
+
   /* ───── الفلاتر + البحث المحلي ───── */
   const qNorm = q.trim().toLowerCase();
   const filtered = rows.filter((r: Row) => {
@@ -647,6 +663,9 @@ export default function StocktakeReview() {
     (r: Row) =>
       r.diff != null && r.diff !== 0 && effReason(r) === "UNSPECIFIED",
   ).length;
+  /* بيعٌ استمرّ بعد العدّ وتجاوزه ⇒ العدّ المصحَّح سالب. تُثبَّت برصيدها الحقيقي عند الاعتماد
+   * (لا تُحجَب — انظر finalize.ts) وتظهر في تقرير السوالب؛ هذا العدّ للتنبيه المسبق فقط. */
+  const negativeSettleCount = rows.filter(rowSettlesNegative).length;
   const hasShort = D(ledgerPreview.shortExpense).gt(0);
   const hasOver = D(ledgerPreview.overGain).gt(0);
 
@@ -1424,6 +1443,7 @@ export default function StocktakeReview() {
                 const recPending = r.recount?.status === "PENDING";
                 const recDone = r.recount?.status === "DONE";
                 const uncounted = r.rawCount == null;
+                const willSettleNegative = rowSettlesNegative(r);
                 const movesTitle = r.movesAfter
                   .map(
                     (m: {
@@ -1591,30 +1611,13 @@ export default function StocktakeReview() {
                         </p>
                       )}
                     </td>
-                    {/* المعدود المصحَّح */}
-                    <td
-                      className="p-2.5 text-center font-mono font-bold tabular-nums"
-                      dir="ltr"
-                    >
-                      {r.adjustedCount == null ? (
-                        "—"
-                      ) : (
-                        <span
-                          title={
-                            r.netAfter !== 0 && autoAdjust && r.rawCount != null
-                              ? `العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة`
-                              : ""
-                          }
-                        >
-                          {nf(r.adjustedCount)}
-                          {r.netAfter !== 0 && autoAdjust && (
-                            <span className="text-[10px] text-[var(--sem-info)]">
-                              *
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </td>
+                    <CorrectedCountCell
+                      adjustedCount={r.adjustedCount}
+                      netAfter={r.netAfter}
+                      rawCount={r.rawCount}
+                      autoAdjust={autoAdjust}
+                      willSettleNegative={willSettleNegative}
+                    />
                     {/* رصيد الدفتر الآن */}
                     <td
                       className="p-2.5 text-center font-mono tabular-nums"
@@ -1719,6 +1722,7 @@ export default function StocktakeReview() {
                             <Pen aria-hidden className="size-3" /> توقيعان
                           </Pill>
                         )}
+                        {willSettleNegative && <NegativeSettlementPill />}
                         {recDone && !conflictOpen && (
                           <Pill tone="violet">
                             <Undo2 aria-hidden className="size-3" /> إعادة عدّ
@@ -2337,6 +2341,7 @@ export default function StocktakeReview() {
                 </span>
               </p>
             )}
+            <NegativeSettlementBanner count={negativeSettleCount} />
             {barriers.requiresDualSign && s.firstSign && (
               <p className="flex items-start gap-1.5 rounded-md bg-violet-50 px-3 py-2 text-xs text-violet-800">
                 <Pen aria-hidden className="mt-0.5 size-3.5 shrink-0" />

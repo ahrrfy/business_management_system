@@ -287,6 +287,37 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(rc.approvedBy).toBe(managerActor.userId); // الأثر التدقيقيّ يبقى كاملاً رغم الاعتماد الذاتيّ.
   });
 
+  // الضابط الوحيد المتبقّي على نقدٍ مجهول المصدر (شارك/approvalTriggers.ts:
+  // voucherApprovalRetainsLegacy) — لم يمسّه قرار المالك ٣/٩/٢٦ (لا اعتماد ثانٍ بعد المالك)
+  // لأنه IN بلا systemKind، لا OUT ولا ERASE_EFFECT. مسارٌ حيٌّ: العلَم ownerOnlyApproval مطفأ
+  // ⇒ هذا هو الحارس الفعليّ اليوم على سند قبضٍ من طرف "أخرى" (partyType=OTHER).
+  it("قبض OTHER (نقد مجهول المصدر) — مالكٌ لا يعتمد سند القبض الذي أنشأه بنفسه", async () => {
+    const r = await createVoucher({
+      voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
+      paymentMethod: "CASH", partyType: "OTHER",
+      description: "إيراد بيع مخلفات",
+    }, adminActor);
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
+
+    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
+    });
+  });
+
+  it("قبض OTHER — مالكٌ آخر غير المُنشئ يعتمده بنجاح", async () => {
+    const r = await createVoucher({
+      voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
+      paymentMethod: "CASH", partyType: "OTHER",
+      description: "إيراد بيع مخلفات",
+    }, managerActor);
+
+    const ap = await approveVoucher(r.receiptId, adminActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.approvedBy).toBe(adminActor.userId);
+  });
+
   it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {
     await db().update(s.suppliers).set({ currentBalance: "3000000.00" }).where(eq(s.suppliers.id, 1));
     const request = await createVoucher({

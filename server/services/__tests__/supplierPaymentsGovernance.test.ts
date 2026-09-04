@@ -18,13 +18,14 @@ import {
  * معزولة بلا معاملة أو إيصال أو قيد. هذا الملفّ يسدّ الفجوة: يستدعي الدالّتين فعلياً مرّتين لكلّ
  * مسار — مرّةً بذاتِ الفاعل (يُتوقَّع FORBIDDEN) ومرّةً بفاعلٍ مستقلّ (يُتوقَّع نجاحٌ وحركةُ مالٍ فعلية).
  *
- * ⚠️ **لا اختبار لتجاوز المالك هنا عمداً**: كودُ الخدمة (٣/٩، 3227ce5b) يُجيز اليوم للمالك
- * اعتماد طلبه الخاص، لكنّ chk_supplier_payment_request_maker_checker وchk_supplier_payment_
- * refund_maker_checker (drizzle/schema.ts، من الهجرة 0304) ما زالتا تفرضان reviewedBy<>requestedBy
- * **بلا استثناء مالك** — قيدٌ سابقٌ للسياسة لم يُحدَّث معها. فمحاولةُ المالك اعتمادَ طلبه تسقط
- * اليوم فعلياً بخطأ DB خامّ (ER_CHECK_CONSTRAINT_VIOLATED) لا بنجاحٍ ولا بـFORBIDDEN نظيف — تحقّقتُ
- * منه تجريبياً. إصلاحُه يلزمه تعديل drizzle/schema.ts وهجرةٌ جديدة (ملفٌّ ساخنٌ خارج نطاق هذه
- * الشريحة)؛ تتبّعه مهمّةٌ منفصلة.
+ * ⭐ **تجاوز المالك مُختبَرٌ الآن فعلياً (٤/٩/٢٦)**: عند كتابة هذا الملفّ أوّل مرّة، تحقّقتُ
+ * تجريبياً أنّ كود الخدمة (٣/٩، 3227ce5b) يُجيز للمالك اعتماد طلبه الخاص، لكنّ
+ * chk_supplier_payment_request_maker_checker وchk_supplier_payment_refund_maker_checker
+ * (drizzle/schema.ts، من الهجرة 0304) كانتا سابقتَين لتلك السياسة ولا تستثنيان المالك — فكانت
+ * محاولته اعتماد طلبه تسقط بخطأ DB خامّ (ER_CHECK_CONSTRAINT_VIOLATED) لا بنجاحٍ ولا بـFORBIDDEN
+ * نظيف. الهجرة 0333 (PR #982) أسقطت القيدين (ومعهما أربعة قيودٍ مماثلة على جداول حوكمةٍ أخرى)،
+ * فصار تجاوز المالك مُثبَتاً هنا حرفياً عبر الدالّتين الحقيقيّتين لا بتلاعبٍ مباشر بالقاعدة.
+ * راجع ذاكرة [[owner-decision-no-second-approval-2026-09-03]] للتفصيل الكامل.
  */
 
 const maker = { userId: 7, branchId: 1, role: "purchasing" as const };
@@ -296,6 +297,43 @@ describe("حوكمة سداد المورد — فصل المهام على قاع
     expect(allocations).toHaveLength(1);
     expect(Number(allocations[0].supplierInvoiceId)).toBe(1);
   });
+
+  it("يعتمد المالكُ طلب سدادٍ أنشأه هو بنفسه فتتحرك الخزينة فعلاً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
+    const requested = await requestSupplierPayment(paymentInput(), owner);
+    expect(requested.status).toBe("PENDING");
+
+    const decided = await decideSupplierPayment(
+      {
+        requestId: requested.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE",
+        reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦",
+      },
+      owner,
+      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+    );
+    expect(decided.status).toBe("APPROVED");
+
+    const receiptsRows = await db().select().from(schema.receipts);
+    expect(receiptsRows).toHaveLength(1);
+    expect(receiptsRows[0]).toMatchObject({ direction: "OUT", partyType: "SUPPLIER", partyId: 1 });
+
+    const [supplier] = await db()
+      .select()
+      .from(schema.suppliers)
+      .where(eq(schema.suppliers.id, 1));
+    expect(Number(supplier.currentBalance)).toBe(90000); // 100000 مرحّلةً − 10000 مدفوعة
+
+    const [request] = await db()
+      .select()
+      .from(schema.supplierPaymentRequests)
+      .where(eq(schema.supplierPaymentRequests.id, requested.requestId));
+    expect(request).toMatchObject({
+      status: "APPROVED",
+      requestedBy: owner.userId,
+      reviewedBy: owner.userId,
+    });
+  });
 });
 
 describe("حوكمة استرداد سداد المورد — فصل المهام على قاعدةٍ حقيقية", () => {
@@ -413,5 +451,55 @@ describe("حوكمة استرداد سداد المورد — فصل المها�
       .from(schema.supplierPaymentAllocations)
       .where(eq(schema.supplierPaymentAllocations.id, allocationId));
     expect(Number(allocation.refundedAmount)).toBe(3000);
+  });
+
+  it("يعتمد المالكُ طلب استردادٍ أنشأه هو بنفسه فيعود المال فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
+    const { supplierPaymentId, allocationId } = await approveFreshPayment();
+
+    const refundRequested = await requestSupplierPaymentRefund(
+      {
+        supplierPaymentId,
+        expectedPaymentVersion: 1,
+        requestKey: randomUUID(),
+        refundMethod: "TRANSFER",
+        externalReference: `TR-R-${randomUUID()}`,
+        evidenceType: "TRANSFER_RECEIPT",
+        evidenceReference: `ev-r-${randomUUID()}`,
+        reason: "استرداد اختبار — طلبٌ ذاتيّ للمالك",
+        allocations: [
+          { supplierPaymentAllocationId: allocationId, amount: "3000.00", currencyAmount: "3000.00" },
+        ],
+      },
+      owner,
+    );
+    expect(refundRequested.status).toBe("PENDING");
+
+    const decided = await decideSupplierPaymentRefund(
+      {
+        requestId: refundRequested.requestId,
+        decisionKey: randomUUID(),
+        action: "APPROVE",
+        reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦",
+      },
+      owner,
+      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+    );
+    expect(decided.status).toBe("APPROVED");
+
+    const [supplier] = await db()
+      .select()
+      .from(schema.suppliers)
+      .where(eq(schema.suppliers.id, 1));
+    expect(Number(supplier.currentBalance)).toBe(93000); // 100000 مرحّلةً − 10000 دفعاً + 3000 استرداداً
+
+    const [request] = await db()
+      .select()
+      .from(schema.supplierPaymentRefundRequests)
+      .where(eq(schema.supplierPaymentRefundRequests.id, refundRequested.requestId));
+    expect(request).toMatchObject({
+      status: "APPROVED",
+      requestedBy: owner.userId,
+      reviewedBy: owner.userId,
+    });
   });
 });
