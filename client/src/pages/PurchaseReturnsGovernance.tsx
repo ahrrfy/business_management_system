@@ -230,6 +230,7 @@ export default function PurchaseReturnsGovernance() {
           pendingReturns={pendingReturns}
           pendingReversals={pendingReversals}
           currentUserId={me.data?.id}
+          isOwner={me.data?.isOwner === true}
           loadingSources={
             returnSourcesQuery.isLoading || reversalSourcesQuery.isLoading
           }

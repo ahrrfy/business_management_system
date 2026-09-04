@@ -13,6 +13,7 @@ import { Link, useParams } from "wouter";
 import { PurchaseOrderGovernance } from "@/components/purchases/PurchaseOrderGovernance";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
 
 /** بندُ أمر الشراء — مشتقٌّ من عقد `purchases.get` فلا ينجرف عن الخادم. */
 type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
@@ -198,6 +199,12 @@ export default function PurchaseOrderDetail() {
             </div>
           ) : undefined
         }
+      />
+
+      {/* م٢ ق١١ — «الخطوة التالية» لأمر الشراء. اختياريّ العقد فيسقط إلى null بأمان. */}
+      <NextActionChip
+        nextAction={d.nextAction ?? null}
+        terminalReason={d.nextActionReason ?? null}
       />
 
       <Card>

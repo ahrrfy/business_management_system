@@ -25,7 +25,7 @@ import {
   closeDailyCashReconciliation,
   getDailyCashReconciliation,
 } from "../cashDailyReconciliationService";
-import { suggestDeductionsForPeriod } from "../advancesService";
+import { suggestDeductionsForPeriod } from "../advances";
 import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
 import { truncateTables } from "./__testUtils__";
 import { CASH_VARIANCE_EVIDENCE_MAX_BYTES } from "../../../shared/cashVariance";

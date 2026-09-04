@@ -750,7 +750,14 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
       actor,
     );
     const yesterday = new Date(utcTodayStart().getTime() - 12 * 60 * 60 * 1000);
-    await db().update(s.receipts).set({ createdAt: yesterday }).where(eq(s.receipts.id, Number(settled.receiptId)));
+    // هذا الإيصال يُعتمَد ذاتياً لحظة إنشائه (approvedBy=createdBy وapprovedAt=createdAt معاً
+    // في settleSupplier.ts) — فمحاكاةُ «حدث فعلاً بالأمس» تُبدّل الاثنين معاً، وإلا بقيت
+    // approvedAt عند «اليوم» وcashEventAtSql (يعتمد على وقوع اعتمادٍ فعليّ لا هويّة المعتمِد
+    // منذ قرار المالك ٣/٩/٢٦) يؤرّخ الحدث بها فيُخفي تدفّق الأمس زوراً.
+    await db()
+      .update(s.receipts)
+      .set({ createdAt: yesterday, approvedAt: yesterday })
+      .where(eq(s.receipts.id, Number(settled.receiptId)));
 
     await reverseExchangeTransaction(settled.txnId, reverser);
 

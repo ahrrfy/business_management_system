@@ -1,6 +1,6 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { eq } from "drizzle-orm";
 import {
@@ -770,7 +770,7 @@ export async function createVoucherTx(
       // حالة الفاتورة لاحقاً، وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج.
       if (
         options?.systemRequest?.kind !== "VOUCHER_CANCELLATION" &&
-        isDeadInvoiceStatus(inv.status)
+        isDeadInvoice(inv)
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",

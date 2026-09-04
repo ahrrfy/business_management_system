@@ -7,7 +7,7 @@ import { withTx } from "../tx";
 import {
   cancelLockedEmployeeAdvanceTx,
   lockUntouchedEmployeeAdvanceForCancellationTx,
-} from "../voucher/employeeAdvanceCancellation";
+} from "../advances";
 import {
   advanceRepaymentPosting,
   approveAdvanceRepaymentRequest,
@@ -142,7 +142,7 @@ describe("employee advance repayment 0191", () => {
     await expect(createAdvanceRepaymentRequest(cardRepayment(), MAKER)).resolves.toMatchObject({ replayed: true });
   });
 
-  it("requires an owner independent of the original repayment before returning cash, then permits re-repayment", async () => {
+  it("permits the original reviewer to approve the return too (قرار المالك ٣/٩/٢٦), races it safely against a concurrent cancellation, then permits re-repayment", async () => {
     await db().insert(s.receipts).values({
       id: 900,
       branchId: 1,
@@ -189,11 +189,8 @@ describe("employee advance repayment 0191", () => {
       clientRequestId: "advance-return-002",
     }, RETURN_MAKER)).rejects.toMatchObject({ code: "CONFLICT" });
 
-    const beforeReceipts = await db().select().from(s.receipts);
-    await expect(approveAdvanceRepaymentRequest(Number(returned.id), ORIGINAL_REVIEWER)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(await db().select().from(s.receipts)).toHaveLength(beforeReceipts.length);
     const returnVsCancellation = await Promise.allSettled([
-      approveAdvanceRepaymentRequest(Number(returned.id), INDEPENDENT_OWNER),
+      approveAdvanceRepaymentRequest(Number(returned.id), ORIGINAL_REVIEWER),
       withTx(async (tx) => {
         const locked = await lockUntouchedEmployeeAdvanceForCancellationTx(tx, {
           originalReceiptId: 900,

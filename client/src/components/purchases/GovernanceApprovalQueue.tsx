@@ -50,6 +50,7 @@ export function GovernanceApprovalQueue({
   scope,
   rows,
   currentUserId,
+  isOwner,
   loading,
   fetching,
   error,
@@ -63,6 +64,8 @@ export function GovernanceApprovalQueue({
   scope: string;
   rows: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
+  /** ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يقرّر طلبه بنفسه. */
+  isOwner?: boolean;
   loading: boolean;
   fetching?: boolean;
   error?: unknown;
@@ -146,7 +149,8 @@ export function GovernanceApprovalQueue({
             ? rows.map((row) => {
                 const canReview =
                   reviewAllowed &&
-                  canReviewGovernanceRequest(currentUserId, row.requestedBy);
+                  (isOwner === true ||
+                    canReviewGovernanceRequest(currentUserId, row.requestedBy));
                 return (
                   <section
                     key={row.id}
