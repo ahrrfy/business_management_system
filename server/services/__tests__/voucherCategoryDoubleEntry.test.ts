@@ -243,10 +243,12 @@ describe("voucher category exact double-entry", () => {
       expect(cancellation.status).toBe("PENDING_APPROVAL");
       expect(await entriesFor(request.receiptId)).toHaveLength(1);
       expect(await entriesFor(Number(cancellation.approvalReceiptId))).toHaveLength(0);
-      await expect(
-        approveVoucher(Number(cancellation.approvalReceiptId), owner),
-      ).rejects.toMatchObject({ code: "FORBIDDEN" });
-      await approveVoucher(Number(cancellation.approvalReceiptId), secondOwner);
+      // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — owner طلب الإلغاء بنفسه فيعتمده بنفسه.
+      const cancellationApproval = await approveVoucher(Number(cancellation.approvalReceiptId), owner);
+      expect(cancellationApproval.replayed).toBe(false);
+      const cancellationReplay = await approveVoucher(Number(cancellation.approvalReceiptId), secondOwner);
+      expect(cancellationReplay.replayed).toBe(true);
+      expect(cancellationReplay.signatureHash).toBe(cancellationApproval.signatureHash);
       await expect(cancelVoucher(request.receiptId, owner)).rejects.toMatchObject({ code: "BAD_REQUEST" });
       const [compensatingReceipt] = await db()
         .select()

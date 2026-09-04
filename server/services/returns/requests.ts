@@ -21,7 +21,8 @@ import { invoiceItems, invoices, returnRequests, salesControlRequests, users,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractAffectedRows } from "../../lib/insertId";
-import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
 import type { Tx } from "../../db";
@@ -65,7 +66,7 @@ export async function createReturnRequest(input: CreateReturnRequestInput, actor
     throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر",
     });
   }
-  if (isDeadInvoiceStatus(inv.status)) {
+  if (isDeadInvoice(inv)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: `الفاتورة ${invoiceStatusLabel(inv.status)} — لا يُطلَب إرجاعٌ عليها`,

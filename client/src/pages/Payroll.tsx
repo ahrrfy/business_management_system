@@ -200,9 +200,8 @@ export default function Payroll() {
   const isApproved = run?.status === "approved";
   const isPaid = run?.status === "paid";
   const busy = generate.isPending || approve.isPending || cancel.isPending;
+  // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يعتمد استحقاقه بنفسه.
   const isOwner = me.data?.isOwner === true;
-  const independentOwner = isOwner && Number(me.data?.id ?? 0) !== Number(run?.createdBy ?? 0);
-
   // جاهزية العمولة — استباقية بدل انتظار فشل «اعتماد الاستحقاق». راجع describeCommissionBlock أعلاه.
   const commissionReadinessQ = trpc.payroll.commissionReadiness.useQuery(
     { period: run?.period ?? "" },
@@ -572,14 +571,14 @@ export default function Payroll() {
                 variant="outline"
                 size="sm"
                 title={
-                  !independentOwner
-                    ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر"
+                  !isOwner
+                    ? "الاعتماد محصور بحساب مالك نشط"
                     : commissionBlock
                       ? `${commissionBlock.title} — ${commissionBlock.body}`
                       : undefined
                 }
                 onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }}
-                disabled={busy || !independentOwner || commissionBlocking}
+                disabled={busy || !isOwner || commissionBlocking}
               >
                 <Check className="size-4" /> اعتماد الاستحقاق
               </Button>

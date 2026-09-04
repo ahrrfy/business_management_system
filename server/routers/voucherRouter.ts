@@ -149,7 +149,7 @@ export const voucherRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء السند (تكرار)" });
     }),
 
-  /** اعتماد سند مُعلَّق (Maker-Checker) — مدير ثانٍ غير المُنشئ. */
+  /** اعتماد سند مُعلَّق — حساب مالكٍ نشط (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك). */
   approve: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {

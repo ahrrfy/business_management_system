@@ -112,7 +112,7 @@ async function assertCampaignAssignees(tx: StudioTx, actor: ProductStudioActor, 
 }
 
 function isAdminActor(actor: ProductStudioActor): boolean {
-  return actor.role === "admin" || actor.isOwner === true;
+  return canCrossBranches(actor);
 }
 
 function cleanAdminOverrideReason(reason: string | null | undefined): string | null {

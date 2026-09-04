@@ -367,10 +367,9 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     await expect(workOrderCaller({ id: 1, role: "manager", isOwner: false })
       .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(workOrderCaller({ id: 3, role: "admin", isOwner: true })
-      .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
-      .rejects.toMatchObject({ code: "FORBIDDEN" });
-    const approved = await workOrderCaller({ id: 4, role: "admin", isOwner: true })
+    // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — user 3 اعتمد طلب الإلغاء نفسه
+    // (cancelGoverned) فهو مالكٌ نشط يعتمد ردّ العربون الناتج بنفسه دون مالكٍ آخر.
+    const approved = await workOrderCaller({ id: 3, role: "admin", isOwner: true })
       .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" });
     expect(approved.replayed).toBe(false);
     await expect(workOrderCaller({ id: 4, role: "admin", isOwner: true })
