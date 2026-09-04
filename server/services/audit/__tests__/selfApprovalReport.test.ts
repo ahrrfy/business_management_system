@@ -4,6 +4,10 @@
 // ويُرتَّب الناتج بالمبلغ تنازلياً. بقيّة المصادر (السبعة الأخرى) تشترك في نفس نمط
 // الاستعلام (تساوي عمودَي المُنشئ/المُقرِّر) فتغطيتها هنا تمثيلية لا شاملة — راجع
 // server/services/audit/selfApprovalReport.ts لخريطة المصادر كاملةً.
+//
+// اختباران إضافيّان (مراجعة Codex #982): استبعاد إيصال التجسيد (P1) وبقاء اعتماد
+// الاستحقاق بعد إعادة فتح المسيّر (P1) — كلاهما كان يُسقط الضابط التعويضيّ صامتاً.
+import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
@@ -18,6 +22,9 @@ function db() {
 
 beforeEach(async () => {
   await truncateTables([
+    "payrollAccountingEvents",
+    "payrollRuns",
+    "supplierPayments",
     "payrollRemittanceRequests",
     "expenses",
     "receipts",
@@ -159,5 +166,177 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
     const records = await listSelfApprovalRecords();
     const expenseRecord = records.find((r) => r.detail === "صيانة طارئة");
     expect(expenseRecord?.kind).toBe("expense");
+  });
+
+  it("يستبعد إيصال تجسيد سداد المورّد — لا يظهر مرّتين ولا كسندٍ عامّ حين مُنشئ الطلب غير مُقرِّره", async () => {
+    // موظّفٌ (id=3، مُدرَجٌ في beforeEach) يطلب سداد مورّد، ومالكٌ (id=1) يقرّره وينفّذه —
+    // الإيصالُ الناتج createdBy=approvedBy=1 (نفّذه actor نفسه)، لكنّ هذا **ليس** اعتماداً
+    // ذاتياً: الطلبَ الأصليّ أنشأه موظّفٌ آخر. لولا الاستبعاد لظهر صفٌّ "سند مالي" كاذب.
+    const [insertedReceipt] = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "640000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "SUPPLIER-PAY-REQ:1",
+      createdBy: 1,
+      approvedBy: 1,
+    });
+    const receiptId = Number((insertedReceipt as unknown as { insertId: number }).insertId);
+
+    await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    try {
+      await db().insert(s.supplierPayments).values({
+        paymentNumber: "SP-SELF-APPROVAL-TEST-1",
+        requestId: 9001,
+        supplierId: 9001,
+        branchId: 1,
+        currency: "IQD",
+        amount: "640000.00",
+        currencyAmount: "640000.00",
+        paymentMethod: "CASH",
+        receiptId,
+        accountingEntryId: 9001,
+        payloadCanonical: "{}",
+        payloadHash: "a".repeat(64),
+        postedBy: 1,
+      });
+    } finally {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+    }
+
+    const records = await listSelfApprovalRecords();
+    expect(records.some((r) => r.subject === "SUPPLIER-PAY-REQ:1")).toBe(false);
+    expect(records.some((r) => r.amount === "640000.00")).toBe(false);
+  });
+
+  describe("اعتماد استحقاق مسيّر — تطابق revisionNo (مراجعة Codex الثانية على #984)", () => {
+    // ⭐ الثابت المحروس: الحدث التاريخيّ يُقرأ فقط حين تطابق revisionNo الحاليّة على
+    // payrollRuns — لا مقارنة بعمودَي createdBy/totalNet المتقلّبَين مباشرةً. راجع رأس
+    // selfApprovalReport.ts للتعليل الكامل (Codex أمسك أنّ المقارنة المباشرة قد تُسيء
+    // نسبةَ/تسعيرَ مراجعةٍ سابقة استبدلها معدٌّ لاحق).
+    async function insertAccrualEvent(runId: number, revisionNo: number, sourceSuffix: string, createdBy = 1) {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      try {
+        await db().insert(s.payrollAccountingEvents).values({
+          runId,
+          revisionNo,
+          eventKind: "ACCRUAL",
+          accountingEntryId: 9100 + revisionNo,
+          sourceKey: `PAYROLL:ACCRUAL:SELF-APPROVAL-TEST:${sourceSuffix}`,
+          sourceHash: "b".repeat(64),
+          occurredAt: new Date("2026-01-01"), // تاريخ استحقاق الفترة المحاسبية — يجب ألّا يُستعمَل كتاريخ قرار.
+          createdBy,
+        });
+      } finally {
+        await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+      }
+    }
+
+    it("مراجعةٌ حاليّة (revisionNo مطابق): تظهر بالمبلغ/الفاعل الحاليَّين، وبتاريخ createdAt الحدث لا occurredAt الفترة", async () => {
+      const [insertedRun] = await db().insert(s.payrollRuns).values({
+        branchId: 1,
+        period: "2026-07",
+        status: "approved",
+        revisionNo: 0,
+        totalNet: "12500000.00",
+        createdBy: 1,
+        approvedBy: 1,
+        approvedAt: new Date(),
+      });
+      const runId = Number((insertedRun as unknown as { insertId: number }).insertId);
+      await insertAccrualEvent(runId, 0, "current-rev");
+
+      const records = await listSelfApprovalRecords();
+      const runRecord = records.find((r) => r.kind === "payrollAccrualApproval" && r.subject === "مسيّر 2026-07");
+      expect(runRecord).toBeDefined();
+      expect(runRecord?.actorUserId).toBe(1);
+      expect(runRecord?.amount).toBe("12500000.00");
+      // occurredAt مضروبٌ على ٢٠٢٦-٠١-٠١ عمداً أعلاه (تاريخ فترةٍ محاسبية بعيد) — لو استُعمل
+      // خطأً بدل createdAt (تاريخ إدراج الحدث الفعليّ، defaultNow) لظهر شهرُ يناير هنا.
+      expect(runRecord?.decidedAt.toISOString().slice(0, 7)).not.toBe("2026-01");
+    });
+
+    it("مراجعةٌ سابقة استُبدلت بإعادة فتحٍ (revisionNo الحاليّة أعلى): لا تظهر — بدل عرض بياناتٍ خاطئة", async () => {
+      // اعتُمد ذاتياً عند revisionNo=0 (المالك id=1)، ثم أُعيد فتحه فصار draft عند
+      // revisionNo=1 بمُنشئٍ مختلف (موظّفٌ id=3، يحاكي `update.ts` يعيد نسب createdBy
+      // لآخر معدّلٍ ماليّ). حدثُ المراجعة ٠ يبقى في الدفتر لكنه لم يعد يصف الحالة الحالية.
+      const [insertedRun] = await db().insert(s.payrollRuns).values({
+        branchId: 1,
+        period: "2026-08",
+        status: "draft",
+        revisionNo: 1,
+        totalNet: "9000000.00",
+        createdBy: 3,
+        // approvedBy/approvedAt تُصفَّر فعلياً عند إعادة الفتح — لا نضبطهما.
+      });
+      const runId = Number((insertedRun as unknown as { insertId: number }).insertId);
+      await insertAccrualEvent(runId, 0, "superseded-rev");
+
+      const records = await listSelfApprovalRecords();
+      expect(records.some((r) => r.subject === "مسيّر 2026-08")).toBe(false);
+    });
+
+    it("اعتمادٌ ذاتيٌّ جديدٌ بعد إعادة الفتح (مراجعةٌ ثانية): يظهر بالبيانات الصحيحة للمراجعة الجديدة فقط", async () => {
+      const [insertedRun] = await db().insert(s.payrollRuns).values({
+        branchId: 1,
+        period: "2026-09",
+        status: "approved",
+        revisionNo: 1,
+        totalNet: "5000000.00",
+        createdBy: 1,
+        approvedBy: 1,
+        approvedAt: new Date(),
+      });
+      const runId = Number((insertedRun as unknown as { insertId: number }).insertId);
+      // حدثُ المراجعة القديمة (٠) بمبلغٍ/فاعلٍ مختلفَين — يجب ألّا يُخلَط بحدث المراجعة ١.
+      await insertAccrualEvent(runId, 0, "old-rev-9", 3);
+      await insertAccrualEvent(runId, 1, "new-rev-9", 1);
+
+      const records = await listSelfApprovalRecords();
+      const matches = records.filter((r) => r.subject === "مسيّر 2026-09");
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.actorUserId).toBe(1);
+      expect(matches[0]?.amount).toBe("5000000.00");
+    });
+
+    it("مسيّرٌ ذاتيّ الاعتماد بلا أيّ حدث ACCRUAL (تعويضٌ صفريّ لكل الموظفين): يظهر عبر مسار الاستثناء لا يسقط صامتاً", async () => {
+      await db().insert(s.payrollRuns).values({
+        branchId: 1,
+        period: "2026-10",
+        status: "approved",
+        revisionNo: 0,
+        totalNet: "0.00",
+        createdBy: 1,
+        approvedBy: 1,
+        approvedAt: new Date(),
+      });
+
+      const records = await listSelfApprovalRecords();
+      const runRecord = records.find((r) => r.kind === "payrollAccrualApproval" && r.subject === "مسيّر 2026-10");
+      expect(runRecord).toBeDefined();
+      expect(runRecord?.actorUserId).toBe(1);
+      expect(runRecord?.amount).toBe("0.00");
+    });
+  });
+
+  describe("روابط المرجع تُطابق مساراتٍ مسجَّلة فعلياً في App.tsx (مراجعة Codex الثانية على #984)", () => {
+    it("مسيّرُ رواتبٍ ذاتيّ الاعتماد يربط بـ/hr?tab=payroll لا /payroll (مسارٌ غير مسجَّل)", async () => {
+      await db().insert(s.payrollRuns).values({
+        branchId: 1,
+        period: "2026-11",
+        status: "approved",
+        revisionNo: 0,
+        totalNet: "1000000.00",
+        createdBy: 1,
+        approvedBy: 1,
+        approvedAt: new Date(),
+      });
+      const records = await listSelfApprovalRecords();
+      const runRecord = records.find((r) => r.subject === "مسيّر 2026-11");
+      expect(runRecord?.href).toBe("/hr?tab=payroll");
+    });
   });
 });

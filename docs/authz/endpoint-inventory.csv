@@ -931,7 +931,7 @@
 "trpc","salesPipelineRouter","transition","crm.sales_pipeline.transition","mutation","crmWriteProcedure","module-gate","crm","FULL","cashier|manager|sales_rep","required","MEDIUM","كتابة","","server/routers/salesPipelineRouter.ts:271"
 "trpc","salesPipelineRouter","update","crm.sales_pipeline.update","mutation","crmWriteProcedure","module-gate","crm","FULL","cashier|manager|sales_rep","required","MEDIUM","كتابة","","server/routers/salesPipelineRouter.ts:116"
 "trpc","salesPipelineRouter","update","crm.sales_pipeline.update","mutation","crmWriteProcedure","module-gate","crm","FULL","cashier|manager|sales_rep","required","MEDIUM","كتابة","","server/routers/salesPipelineRouter.ts:242"
-"trpc","selfApprovalAuditRouter","list","selfapprovalaudit.self_approval_audit.list","query","ownerProcedure","owner","ownership","APPROVE","","none","LOW","قراءة","","server/routers/selfApprovalAuditRouter.ts:11"
+"trpc","selfApprovalAuditRouter","list","selfapprovalaudit.self_approval_audit.list","query","ownerProcedure","owner","ownership","APPROVE","","none","LOW","قراءة","","server/routers/selfApprovalAuditRouter.ts:15"
 "trpc","shiftRouter","cancelFunding","treasury.shift.void","mutation","ownerProcedure","owner","ownership","APPROVE","","none","HIGH","فعل حسّاس: cancel","SENSITIVE_ACTION","server/routers/shiftRouter.ts:163"
 "trpc","shiftRouter","cashDrop","treasury.shift.cash_drop","mutation","treasuryCashierProcedure","module-gate","treasury","READ","cashier|manager","required","MEDIUM","كتابة","","server/routers/shiftRouter.ts:419"
 "trpc","shiftRouter","close","treasury.shift.close","mutation","treasuryCashierProcedure","module-gate","treasury","READ","cashier|manager","required","HIGH","فعل حسّاس: close","SENSITIVE_ACTION","server/routers/shiftRouter.ts:291"
