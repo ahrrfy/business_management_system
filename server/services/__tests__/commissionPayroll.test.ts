@@ -14,6 +14,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { computeCommissionRun } from "../commissions/engine";
 import { approveRun as approveCommission } from "../commissions/runs";
+import { approveCommissionRunRequest, requestCommissionRunApproval } from "../commissions/runApprovals";
 import { assignPlan, createPlan } from "../commissions/plans";
 import { saveTargets } from "../commissions/targets";
 import { approveRun as approvePayroll, cancelRun, generatePayroll, payRun } from "../payrollService";
@@ -209,5 +210,83 @@ describe("commissionPayroll — الالتقاط مرّة واحدة بالضب�
       .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.dedupeKey, `PAYROLL:${run!.id}:11`)));
     expect(entries.length).toBe(1);
     expect(Number(entries[0].amount)).toBe(1104000);
+  });
+});
+
+/*
+ * المسار الحرج الكامل — يطابق حرفياً الحالة الحقيقية العالقة على الإنتاج: مالكٌ وحيد يشغّل
+ * النظام يحتسب كشف العمولة *ويطلب* اعتماده بنفسه، فيُرفَض اعتماده لنفس طلبه (فصل مهام)، ولا
+ * تتقدّم الرواتب خطوة واحدة، حتى يعتمده حسابٌ مستقلٌّ فعلاً ويُعاد توليد المسيّر ليلتقطها.
+ * التغطية السابقة (commissionRunApprovals.test.ts) كانت نصّية الحاجز، وباقي هذا الملف كان
+ * يتجاوز مسار الطلب/الاعتماد كليةً (يستدعي approveRun من commissions/runs مباشرةً بفاعلين
+ * مختلفين مسبقاً) — فلا شيء هنا كان يثبت أنّ نفس المستخدم يُرفَض فعلياً، ولا أنّ الرواتب
+ * تبقى عالقة بينهما، ولا أنّ التقاطها يعمل بعد الاعتماد المستقل الفعليّ.
+ */
+describe("commissionPayroll — المسار الحرج: احتساب → طلب اعتماد → فصل مهام → التقاط الرواتب", () => {
+  it("لا يعتمد المحتسب/الطالب طلبه بنفسه، وتبقى الرواتب عالقة حتى يعتمده مراجعٌ مستقلٌّ ويُعاد التوليد", async () => {
+    const { planId } = await createPlan(
+      { name: "خطة", tierMode: "TARGET_PCT", tiers: [{ threshold: "100", ratePct: "2", fixedBonus: "0" }] },
+      COMPUTER,
+    );
+    await assignPlan({ employeeId: 11, planId, effectiveFrom: "2026-01" }, COMPUTER);
+    await saveTargets({ period: "2026-06", rows: [{ employeeId: 11, target: "5000000" }] }, COMPUTER);
+    const d = db();
+    await d.insert(s.invoices).values({
+      id: 302, invoiceNumber: "INV-302", sourceType: "POS", sourceId: "t-302", branchId: 1,
+      subtotal: "5200000", total: "5200000", paidAmount: "5200000", status: "PAID", createdBy: 3,
+    });
+    await d.insert(s.accountingEntries).values({
+      entryType: "SALE", branchId: 1, invoiceId: 302,
+      revenue: "5200000", cost: "0", profit: "5200000", amount: "5200000",
+      entryDate: new Date("2026-06-10T00:00:00Z"),
+    });
+
+    // المحتسب نفسه يطلب الاعتماد — السيناريو الحقيقيّ لمالكٍ وحيد يشغّل النظام.
+    const commissionRun = await computeCommissionRun("2026-06", COMPUTER);
+    const request = await requestCommissionRunApproval({
+      requestKey: "critical-path-request",
+      runId: commissionRun.runId,
+      reason: "كشف عمولات يونيو جاهز",
+      scopeBranchId: null,
+    }, COMPUTER, null);
+
+    const draftPayroll = await generatePayroll("2026-06", COMPUTER);
+    await expect(approvePayroll(Number(draftPayroll!.id), APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // المحتسب/الطالب نفسه لا يملك اعتماد طلبه — هذا هو الحاجز الذي يعلق فيه المالك الوحيد.
+    await expect(approveCommissionRunRequest({
+      id: Number(request.id),
+      expectedVersion: Number(request.baseRunVersion),
+      decisionKey: "critical-path-self-decision",
+    }, COMPUTER, null)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // لا تزال الرواتب عالقة تماماً بعد محاولة الاعتماد الذاتيّ الفاشلة — لا أثر جانبيّ لها.
+    await expect(approvePayroll(Number(draftPayroll!.id), APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    // مراجعٌ مستقلٌّ فعلاً (غير المحتسب وغير الطالب) يعتمد الطلب فتُقفل التشغيلة.
+    const decision = await approveCommissionRunRequest({
+      id: Number(request.id),
+      expectedVersion: Number(request.baseRunVersion),
+      decisionKey: "critical-path-independent-decision",
+    }, APPROVER, null);
+    expect(decision.request.status).toBe("APPROVED");
+    expect(decision.runApproval?.requiresPayrollRegeneration).toBe(true);
+
+    // معتمدة الآن لكن غير مُلتقطة في المسيّر القديم — نفس الرسالة التي يشرحها بانر الرواتب.
+    await expect(approvePayroll(Number(draftPayroll!.id), APPROVER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("غير ملتقطة"),
+    });
+
+    await cancelRun(Number(draftPayroll!.id), APPROVER);
+    const regenerated = await generatePayroll("2026-06", COMPUTER);
+    const item = regenerated!.items.find((i) => Number(i.employeeId) === 11)!;
+    expect(Number(item.commission)).toBe(104000);
+
+    await approvePayroll(Number(regenerated!.id), APPROVER);
+    const [approvedRun] = await db().select().from(s.payrollRuns).where(eq(s.payrollRuns.id, Number(regenerated!.id)));
+    expect(approvedRun.status).toBe("approved");
+    const [approvedCommission] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, commissionRun.runId));
+    expect(Number(approvedCommission.payrollRunId)).toBe(Number(regenerated!.id));
   });
 });

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { grantAdvance } from "../advances";
+import { cancelAdvance, grantAdvance } from "../advances";
 import { approveVoucher, rejectVoucher } from "../voucher/approval";
 import { cancelVoucher } from "../voucher/cancel";
 import { parseSystemPaymentRequest } from "../voucher/create";
@@ -194,6 +194,41 @@ describe("employee advance voucher cancellation", () => {
     });
     expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
     expect(await db().select().from(s.employeeAdvances)).toHaveLength(1);
+  });
+
+  /*
+   * cancelAdvance المستقلّة (advancesService.ts) تشترط advance.status="ACTIVE" و
+   * receipt.status="REVERSED" معاً قبل أن تُنجح. لكن المسار الحقيقيّ أعلاه (cancelVoucher ثم
+   * approveVoucher) يقلب الاثنين معاً **ذرّياً داخل نفس المعاملة**: بحلول لحظة صيرورة السند
+   * REVERSED تكون السلفة CANCELLED فعلاً (تُرى في السطر ١٧٨ أعلاه). فالحالة التي تنتظرها
+   * cancelAdvance (نشطة + سندها معكوس) لا تقع أبداً لسلفةٍ مُرتبطة بسند — الزرّ المستقلّ في
+   * الشاشة (EmployeeAdvances.tsx) يصطدم دائماً برفضٍ آمن لا بنجاحٍ ثانٍ. هذا اختبارٌ يثبّت أنّ
+   * الاصطدام آمنٌ (رفضٌ واضح، لا إلغاءً مزدوجاً ولا حالةً فاسدة) لا أنه الطريق المُوصى به.
+   */
+  it("cancelAdvance المستقلّة بعد مسار السند الحقيقيّ: رفضٌ آمن لا إلغاءٌ مزدوج (مسارٌ ميت عملياً)", async () => {
+    const original = await requestAndApproveAdvance("advance-cancel-real-path-then-direct");
+    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    await approveVoucher(Number(cancellation.approvalReceiptId), SECOND_OWNER);
+
+    const [sourceReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
+    expect(sourceReceipt.status).toBe("REVERSED"); // السند عاد فعلاً — الحالة التي تشترطها cancelAdvance متحقّقة
+    const [advanceAfterVoucherFlow] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(original.advance.id)));
+    expect(advanceAfterVoucherFlow.status).toBe("CANCELLED"); // لكن السلفة أُلغيت أصلاً قبل أن تُستدعى cancelAdvance
+
+    await expect(
+      cancelAdvance({ advanceId: Number(original.advance.id) }, FIRST_OWNER),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("تُلغى السلف النشطة فقط") });
+
+    // لا أثرٌ إضافيّ — الرفض لم يُغيّر شيئاً (لا قيدَ ثالثاً ولا حالةً جديدة).
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(2);
+    const [advanceAfterDirectAttempt] = await db()
+      .select()
+      .from(s.employeeAdvances)
+      .where(eq(s.employeeAdvances.id, Number(original.advance.id)));
+    expect(advanceAfterDirectAttempt).toMatchObject({ status: "CANCELLED", remaining: "0.00" });
   });
 
   it("يرفض السلفة المستقطعة جزئياً قبل إنشاء إيصال الإلغاء أو قيده", async () => {
