@@ -12,6 +12,7 @@ import {
   productionRecipes,
   suppliers,
 } from "../../../drizzle/schema";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -109,12 +110,14 @@ function composeProductName(input: { name?: string | null; productType?: string 
  */
 async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
   // الباركودات: الأساسيّ + البديل معاً — نفس فضاء التفرّد.
+  // التطبيع هنا هو **نفسه** الذي يُكتب به أدناه — كان الفحص يقلّم بينما الإدراج يكتب المُدخل خاماً،
+  // فيمرّ «10095 » بمسافةٍ من فحص التفرّد ثم يُحفَظ بها ولا يُمسَح أبداً (الجذر، ٤/٩).
   const codes: string[] = [];
   for (const v of input.variants) for (const u of v.units) {
-    const b = (u.barcode ?? "").trim();
+    const b = canonicalizeBarcodeInput(u.barcode ?? "");
     if (b) codes.push(b);
     for (const a of u.barcodeAliases ?? []) {
-      const ab = (a.barcode ?? "").trim();
+      const ab = canonicalizeBarcodeInput(a.barcode ?? "");
       if (ab) codes.push(ab);
     }
   }
@@ -304,7 +307,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           variantId,
           unitName: u.unitName,
           conversionFactor: u.conversionFactor,
-          barcode: u.barcode ?? null,
+          barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
           isBaseUnit: u.isBaseUnit ?? false,
           isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
         });
@@ -318,7 +321,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
         // باركودات بديلة تُدرَج ذرّياً في نفس المعاملة — تفرّدها تم التحقّق منه في assertCatalogUniqueness.
         for (const a of u.barcodeAliases ?? []) {
-          const code = (a.barcode ?? "").trim();
+          const code = canonicalizeBarcodeInput(a.barcode ?? "");
           if (!code) continue;
           await tx.insert(productUnitBarcodes).values({
             productUnitId,

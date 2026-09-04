@@ -29,6 +29,7 @@ import {
   type CountEntryMethod,
   type CountMethod,
 } from "../../../shared/stocktakeCountMethod";
+import { canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
 
 function scannerPrefix(code: string | null | undefined): number | null {
   const digits = String(code ?? "").replace(/\D/g, "");
@@ -286,7 +287,7 @@ export async function submitCount(
       // مقبول في FREE، مرفوض في SCAN_REQUIRED — فلا تمرّ عدّةٌ حرّة عبر واجهةٍ متجاوِزة.
       const sessionMethod = session.countMethod as CountMethod;
       const entryMethod: CountEntryMethod = input.entryMethod ?? "SEARCH_PICK";
-      const scannedBarcode = input.scannedBarcode?.trim() || null;
+      const scannedBarcode = canonicalizeBarcodeInput(input.scannedBarcode ?? "") || null;
 
       if (sessionMethod === "SCAN_REQUIRED") {
         if (isScanEntry(entryMethod)) {
@@ -295,9 +296,9 @@ export async function submitCount(
           // (#6) الوحدة المتقاعدة لا تُقبل دليلاً — لا تعرضها الواجهة ولا تعدّها التغطية «متاحة».
           const variantCodes = new Set<string>();
           for (const u of units)
-            if (u.barcode && u.isActive !== false) variantCodes.add(String(u.barcode).trim());
+            if (u.barcode && u.isActive !== false) variantCodes.add(canonicalizeBarcodeInput(u.barcode));
           for (const a of aliases)
-            if (a.barcode && a.isActive !== false) variantCodes.add(String(a.barcode).trim());
+            if (a.barcode && a.isActive !== false) variantCodes.add(canonicalizeBarcodeInput(a.barcode));
           if (!scannedBarcode) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",

@@ -8,6 +8,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
+import { normalizedStoredBarcodeSql } from "./catalog/barcodeAliases";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
@@ -585,7 +586,15 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   const prefix = `${escLike(q)}%`;
   const productName = sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`;
   const variantName = normalizedStudioVariantNameSql();
-  const exactBarcode = q ? or(eq(productUnits.barcode, q), eq(productUnitBarcodes.barcode, q)) : undefined;
+  // (٤/٩) المقارنة على العمود **المُطبَّع** (تقليم + حالة موحّدة + طيّ الأرقام) لا الخامّ: `q` مرّ بـ
+  // `normalizeSearchText` (يقلّم ويصغّر ويطوي الأرقام)، فمساواةٌ خامّة تُخطئ أيّ صفٍّ حُفظ قبل تطبيع
+  // الحفظ بمسافةٍ طرفية أو رقمٍ عربيّ-هنديّ ⇒ لا يدخل الصفحةَ أصلاً ولا يصل إلى `contextFor`
+  // (المُطبَّع منذ #912)، فيصل الماسحَ «الرمز لا يطابق» على منتجٍ موجود. هذا الاستعلام مسحٌ متعدّد
+  // الشروط أصلاً (LIKE على الأسماء المُطبَّعة) لا مسارَ نقطيّ على فهرس الباركود، فالتغليف لا يغيّر كلفته.
+  // وهو مرآةُ `contextFor` أدناه بالضبط: ما يُطابقه SQL يُصنّفه JS باركوداً، لا أقلّ.
+  const exactBarcode = q
+    ? or(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${q}`, sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${q}`)
+    : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
   const namePrefix = q ? or(like(productName, prefix), like(variantName, prefix)) : undefined;

@@ -11,6 +11,7 @@ import { z } from "zod";
 import { bundleComponents, invoiceItems, productRelatedProducts, products, productUnits, productVariants } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
+import { barcodeString } from "../lib/schemas";
 import { getBundleDefinitions, replaceBundleComponents } from "../services/bundleService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
@@ -134,7 +135,7 @@ export const bundlesRouter = router({
   /** بحث بمكوّنٍ عبر الباركود (لقارئ الباركود اليدوي). يمرّ على الأساسيّ والبديل معاً عبر
    *  `resolveBarcodeOwner`. يعيد المتغيّر إن كان مؤهّلاً (لا بكج/خدمة، نشط). */
   lookupComponentByBarcode: productsManagerProcedure
-    .input(z.object({ barcode: z.string().min(1).max(64) }))
+    .input(z.object({ barcode: barcodeString }))
     .query(async ({ input }) => {
       const db = getDb();
       if (!db) return { item: null };

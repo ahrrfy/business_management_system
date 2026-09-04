@@ -1,6 +1,7 @@
 // إسناد/تحديث باركود وحدة مع ضمان التفرّد بين الأساسيّ والبديل معاً.
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { productUnits } from "../../../drizzle/schema";
 import { withTx } from "../tx";
 import { findBarcodeClashes } from "./barcodeAliases";
@@ -8,7 +9,7 @@ import { findBarcodeClashes } from "./barcodeAliases";
 /** يسند باركوداً لوحدة بلا باركود (أو يحدّثه)، مع ضمان التفرّد عبر كل الوحدات — أساسيّاً وبديلاً. */
 export async function assignBarcode(productUnitId: number, barcode: string) {
   return withTx(async (tx) => {
-    const code = barcode.trim();
+    const code = canonicalizeBarcodeInput(barcode);
     if (!code) throw new TRPCError({ code: "BAD_REQUEST", message: "الباركود فارغ" });
     const unit = (await tx.select().from(productUnits).where(eq(productUnits.id, productUnitId)).limit(1))[0];
     if (!unit) throw new TRPCError({ code: "NOT_FOUND", message: "الوحدة غير موجودة" });

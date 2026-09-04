@@ -52,6 +52,7 @@ import {
   router,
 } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
+import { barcodeString, optionalBarcodeString } from "../lib/schemas";
 import {
   checkVariantSanity,
   classifySeverity,
@@ -162,14 +163,16 @@ const customizationTemplateSchema = z.object({
   isActive: z.boolean().optional(),
   fields: z.array(customizationFieldSchema).max(50),
 });
+// (٤/٩) الباركود يُطبَّع على حدّ الـAPI (`barcodeString`/`optionalBarcodeString`): كان `z.string()` عارياً
+// فيُحفَظ «10095 » بمسافته ثم لا يُمسَح أبداً — المطابقة مساواةٌ SQL خامّة.
 const barcodeAliasSchema = z.object({
-  barcode: z.string().min(1).max(64),
+  barcode: barcodeString,
   note: z.string().max(255).optional().nullable(),
 });
 const unitSchema = z.object({
   unitName: z.string().min(1),
   conversionFactor: z.string(),
-  barcode: z.string().optional(),
+  barcode: optionalBarcodeString,
   isBaseUnit: z.boolean().optional(),
   isStoreSaleUnit: z.boolean().optional(),
   prices: z.array(priceSchema).optional(),
@@ -550,7 +553,7 @@ export const catalogRouter = router({
   byBarcode: productsReadProcedure
     .input(
       z.object({
-        barcode: z.string().min(1),
+        barcode: barcodeString,
         branchId: z.number().int().positive(),
         tier,
         customerId: z.number().int().positive().nullish(),
@@ -855,7 +858,7 @@ export const catalogRouter = router({
                     id: z.number().int().positive().optional(),
                     unitName: z.string().min(1),
                     conversionFactor: z.string(),
-                    barcode: z.string().nullish(),
+                    barcode: optionalBarcodeString,
                     isBaseUnit: z.boolean().optional(),
                     isStoreSaleUnit: z.boolean().optional(),
                     prices: z.array(priceSchema).optional(),
@@ -1165,7 +1168,7 @@ export const catalogRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: z.string().min(1),
+        barcode: barcodeString,
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1311,7 +1314,7 @@ export const catalogRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: z.string().min(1).max(64),
+        barcode: barcodeString,
         note: z.string().max(255).nullish(),
       }),
     )

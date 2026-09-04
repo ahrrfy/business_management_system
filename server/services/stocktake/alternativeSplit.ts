@@ -15,6 +15,7 @@ import {
   productVariants,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 
@@ -177,7 +178,7 @@ export async function splitAliasToAlternative(
   input: { productUnitId: number; aliasBarcode: string; name: string; cost?: string | null },
 ): Promise<SplitResult> {
   const name = input.name?.trim();
-  const aliasBarcode = input.aliasBarcode?.trim();
+  const aliasBarcode = canonicalizeBarcodeInput(input.aliasBarcode ?? "");
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم البديل مطلوب." });
   if (!aliasBarcode) throw new TRPCError({ code: "BAD_REQUEST", message: "الباركود المُفصَل مطلوب." });
 

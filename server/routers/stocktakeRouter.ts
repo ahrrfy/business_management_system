@@ -12,6 +12,7 @@ import { z } from "zod";
 import { auditLogs, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
+import { barcodeString } from "../lib/schemas";
 import {
   approveStocktake,
   approveStocktakeItems,
@@ -481,7 +482,7 @@ export const stocktakeRouter = router({
     .input(
       z.object({
         sessionId: idNum,
-        barcode: z.string().trim().min(1).max(64),
+        barcode: barcodeString,
         action: z.enum(["ADD_TO_SCOPE", "DISMISS"]),
         note: z.string().trim().max(255).optional(),
       }),

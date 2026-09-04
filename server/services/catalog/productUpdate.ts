@@ -1,6 +1,7 @@
 // تحديث منتج قائم: ترويسة + متغيّر(ات) + وحدات + أسعار في معاملة واحدة.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
@@ -193,7 +194,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
             .set({
               unitName: u.unitName,
               conversionFactor: u.conversionFactor,
-              barcode: u.barcode ?? null,
+              barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
               isBaseUnit: !!u.isBaseUnit,
               isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
               isActive: true,
@@ -221,7 +222,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
             variantId: v.id,
             unitName: u.unitName,
             conversionFactor: u.conversionFactor,
-            barcode: u.barcode ?? null,
+            barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
             isBaseUnit: !!u.isBaseUnit,
             isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
           });

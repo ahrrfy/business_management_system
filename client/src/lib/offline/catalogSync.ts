@@ -19,6 +19,7 @@ import type {
   OfflineVersions,
 } from "@shared/offlineCatalog";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { trpc } from "@/lib/trpc";
 import { connectivity } from "./connectivity";
 import { getMeta, offlineDb, requestPersistentStorage, setMeta } from "./db";
@@ -269,9 +270,12 @@ export async function offlineFindByBarcode(
   tier: OfflinePriceTier,
   branchId: number,
 ): Promise<OfflinePosRow | null> {
-  const trimmed = code.trim();
-  if (!trimmed) return null;
-  const row = await offlineDb.catalog.where("allBarcodes").equals(trimmed).first();
+  // (٤/٩) نُطبّع مُدخل المسح كما يُطبّعه المسارُ الأونلاين (`canonicalizeBarcodeInput`: تقليم + طيّ
+  // الأرقام العربية-الهندية) لا مجرّد trim: باركودات اللقطة مخزَّنةٌ مُطبَّعةً (الكتابة تُطبّع دائماً)،
+  // فإدخالٌ يدويّ بأرقامٍ عربية أونلاين يُحلّ وأوفلاين كان يفشل — تناقضٌ يُغلَق هنا بلا تغيير اللقطة.
+  const canonical = canonicalizeBarcodeInput(code);
+  if (!canonical) return null;
+  const row = await offlineDb.catalog.where("allBarcodes").equals(canonical).first();
   if (!row) return null;
   const cachedBranch = await getCachedStockBranchId();
   return toPosRow(row, tier, branchId, cachedBranch);
