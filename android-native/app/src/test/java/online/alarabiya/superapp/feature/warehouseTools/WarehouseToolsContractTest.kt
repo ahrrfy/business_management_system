@@ -1,5 +1,8 @@
 package online.alarabiya.superapp.feature.warehouseTools
 
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
+import online.alarabiya.superapp.data.EncryptedWarehouseReadFailurePolicy
+import online.alarabiya.superapp.data.toPendingCount
 import online.alarabiya.superapp.model.AppBootstrap
 import online.alarabiya.superapp.model.ModuleAccess
 import online.alarabiya.superapp.model.UserIdentity
@@ -20,6 +23,19 @@ class WarehouseToolsContractTest {
         assertEquals("036000291452", camera.getString("scannedBarcode"))
         val replay = PendingCount("CNT-1", 9, 2, "[]", "request", "now", entryMethod = "SEARCH_PICK").inputJson()
         assertFalse(replay.has("scannedBarcode"))
+
+        val sharedQueueEntry = CountSubmission(
+            "CNT-1",
+            9,
+            2,
+            "[]",
+            "request",
+            "SCAN_HID",
+            "000123",
+        ).toPendingCount("now")
+        assertEquals("SCAN_HID", sharedQueueEntry.entryMethod)
+        assertEquals("000123", sharedQueueEntry.scannedBarcode)
+        assertEquals("[]", sharedQueueEntry.unitBreakdown)
     }
 
     @Test
@@ -65,6 +81,42 @@ class WarehouseToolsContractTest {
         assertEquals(31, snapshot.items.single().stockBase)
         assertEquals(snapshot.items.single(), snapshot.exactMatch("101"))
         assertEquals(2L, snapshot.branchId)
+    }
+
+    @Test
+    fun scanResolutionFailsClosedAcrossVariantsAndCatalogUnits() {
+        val first = item().copy(units = listOf(CountUnit("قطعة", "1", "0036000291452", listOf("ALT"))))
+        val sameVariantAlias = session(first.copy(units = listOf(CountUnit("قطعة", "1", "ALT", listOf("0036000291452")))))
+            .barcodeMatch("036000291452")
+        assertTrue(sameVariantAlias is NativeBarcodeResolution.Unique)
+
+        val second = first.copy(variantId = 10, sku = "P-A3", units = listOf(CountUnit("قطعة", "1", "036000291452", emptyList())))
+        val ambiguousCount = session(first).copy(items = listOf(first, second))
+        assertEquals(NativeBarcodeResolution.Ambiguous, ambiguousCount.barcodeMatch("0036000291452"))
+        assertNull(ambiguousCount.exactMatch("0036000291452"))
+
+        val catalog = WarehouseCatalogItem(
+            productUnitId = 1,
+            productId = 1,
+            productName = "ورق",
+            variantId = 9,
+            variantName = null,
+            sku = "P-A4",
+            unitName = "قطعة",
+            conversionFactor = "1",
+            barcodes = listOf("0036000291452"),
+            isBaseUnit = true,
+            stockBase = 1,
+        )
+        val snapshot = WarehouseSnapshot(5, 2, "v", "now", "now", listOf(catalog, catalog.copy(productUnitId = 2, unitName = "علبة")))
+        assertEquals(NativeBarcodeResolution.Ambiguous, snapshot.barcodeMatch("036000291452"))
+        assertNull(snapshot.exactMatch("036000291452"))
+    }
+
+    @Test
+    fun unreadablePendingQueueIsPreservedWhileRebuildableCachesMayBeDiscarded() {
+        assertFalse(EncryptedWarehouseReadFailurePolicy.PRESERVE_PENDING_QUEUE.discardUnreadableValue)
+        assertTrue(EncryptedWarehouseReadFailurePolicy.DISCARD_REBUILDABLE_CACHE.discardUnreadableValue)
     }
 
     @Test

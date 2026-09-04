@@ -2,8 +2,10 @@ package online.alarabiya.superapp.model.warehouseTools
 
 import java.math.BigDecimal
 import java.util.UUID
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.core.scanner.nativeBarcodesEquivalent
 import online.alarabiya.superapp.core.scanner.normalizeNativeBarcode
+import online.alarabiya.superapp.core.scanner.resolveNativeBarcode
 import online.alarabiya.superapp.model.AppBootstrap
 
 enum class WarehouseSection { SCANNER, COUNTS, OFFLINE }
@@ -72,7 +74,23 @@ data class WarehouseSnapshot(
     val syncedAt: String,
     val items: List<WarehouseCatalogItem>,
 ) {
-    fun exactMatch(raw: String): WarehouseCatalogItem? = items.firstOrNull { it.exactMatch(raw) }
+    fun barcodeMatch(raw: String): NativeBarcodeResolution<WarehouseCatalogItem> = resolveNativeBarcode(
+        rawValue = raw,
+        candidates = items,
+        identity = WarehouseCatalogItem::productUnitId,
+        barcodes = WarehouseCatalogItem::barcodes,
+    )
+
+    fun skuMatch(raw: String): NativeBarcodeResolution<WarehouseCatalogItem> =
+        resolveUniqueValue(raw, items, WarehouseCatalogItem::productUnitId) { item, normalized ->
+            item.sku.equals(normalized, true)
+        }
+
+    fun exactMatch(raw: String): WarehouseCatalogItem? = when (val barcode = barcodeMatch(raw)) {
+        is NativeBarcodeResolution.Unique -> barcode.value
+        NativeBarcodeResolution.Ambiguous -> null
+        NativeBarcodeResolution.NoMatch -> (skuMatch(raw) as? NativeBarcodeResolution.Unique)?.value
+    }
 }
 
 data class CountAssignment(
@@ -132,11 +150,39 @@ data class CountSession(
     val countMethod: String = "FREE",
 ) {
     val active get() = sessionStatus == "COUNTING" && assignmentStatus == "ACTIVE"
-    fun exactMatch(raw: String): CountItem? = items.firstOrNull { it.exactMatch(raw) }
-    fun barcodeMatch(raw: String): Pair<CountItem, String>? = items.firstNotNullOfOrNull { item ->
-        item.barcodeMatch(raw)?.let { item to it }
+    fun barcodeMatch(raw: String): NativeBarcodeResolution<CountItem> = resolveNativeBarcode(
+        rawValue = raw,
+        candidates = items,
+        identity = CountItem::variantId,
+        barcodes = { item -> item.units.flatMap(CountUnit::barcodes) },
+    )
+
+    fun skuMatch(raw: String): NativeBarcodeResolution<CountItem> =
+        resolveUniqueValue(raw, items, CountItem::variantId) { item, normalized ->
+            item.sku.equals(normalized, true)
+        }
+
+    fun exactMatch(raw: String): CountItem? = when (val barcode = barcodeMatch(raw)) {
+        is NativeBarcodeResolution.Unique -> barcode.value
+        NativeBarcodeResolution.Ambiguous -> null
+        NativeBarcodeResolution.NoMatch -> (skuMatch(raw) as? NativeBarcodeResolution.Unique)?.value
     }
     fun canCount(item: CountItem): Boolean = active && (item.myCount != null || item.recountReason != null || duplicatePolicy != "BLOCK" || !item.colleagueCounted)
+}
+
+private fun <T> resolveUniqueValue(
+    raw: String,
+    candidates: Iterable<T>,
+    identity: (T) -> Any,
+    matches: (T, String) -> Boolean,
+): NativeBarcodeResolution<T> {
+    val normalized = normalizeNativeBarcode(raw) ?: return NativeBarcodeResolution.NoMatch
+    val unique = candidates.filter { matches(it, normalized) }.distinctBy(identity).take(2)
+    return when (unique.size) {
+        0 -> NativeBarcodeResolution.NoMatch
+        1 -> NativeBarcodeResolution.Unique(unique.single(), normalized)
+        else -> NativeBarcodeResolution.Ambiguous
+    }
 }
 
 data class CountUnitEntry(val unitName: String, val factor: String, val quantity: String = "")

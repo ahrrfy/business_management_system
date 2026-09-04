@@ -1,8 +1,9 @@
 package online.alarabiya.superapp.model.inventory
 
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.core.scanner.nativeBarcodesEquivalent
 import online.alarabiya.superapp.core.scanner.normalizeNativeBarcode
-
+import online.alarabiya.superapp.core.scanner.resolveNativeBarcode
 import online.alarabiya.superapp.model.AppBootstrap
 
 enum class InventorySection { BALANCES, MOVEMENTS, TRANSFERS, ADJUSTMENTS, STOCKTAKES, MY_COUNTS }
@@ -301,7 +302,14 @@ data class CountSession(
     val total: Int,
     val items: List<CountItem>,
     val countMethod: String = "FREE",
-)
+) {
+    fun barcodeMatch(raw: String): NativeBarcodeResolution<CountItem> = resolveNativeBarcode(
+        rawValue = raw,
+        candidates = items,
+        identity = CountItem::variantId,
+        barcodes = { item -> item.units.flatMap { unit -> listOfNotNull(unit.barcode) + unit.aliases } },
+    )
+}
 
 object InventoryValidation {
     private val transferReasons = setOf("REBALANCE", "STOCKOUT", "BRANCH_REQ", "SEASONAL", "RETURN_HQ", "OTHER")

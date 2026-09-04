@@ -84,7 +84,7 @@ class WarehouseToolsRepository(
         WarehouseValidation.count(session, item, draft)?.let { throw IllegalArgumentException(it) }
         val submission = WarehouseValidation.submission(draft)
         if (WarehouseQueueRules.mustSerialize(store.pending(), submission.sessionCode, submission.variantId)) {
-            val pending = submission.pending(now())
+            val pending = submission.toPendingCount(now())
             store.enqueue(pending)
             return CountSubmitOutcome.Queued(pending)
         }
@@ -93,7 +93,7 @@ class WarehouseToolsRepository(
             CountSubmitOutcome.Submitted(WarehouseToolsMappers.countReceipt(api.mutate("count.submit", input)))
         } catch (error: ApiException) {
             if (!WarehouseRetryPolicy.canQueue(error.status)) throw error
-            val pending = submission.pending(now())
+            val pending = submission.toPendingCount(now())
             store.enqueue(pending)
             CountSubmitOutcome.Queued(pending)
         }
@@ -163,6 +163,11 @@ class WarehouseToolsRepository(
     }
 }
 
+internal enum class EncryptedWarehouseReadFailurePolicy(val discardUnreadableValue: Boolean) {
+    DISCARD_REBUILDABLE_CACHE(true),
+    PRESERVE_PENDING_QUEUE(false),
+}
+
 class EncryptedWarehouseStore(context: Context, private val userId: Long) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val namespace = MessageDigest.getInstance("SHA-256").digest("user:$userId".toByteArray())
@@ -184,7 +189,7 @@ class EncryptedWarehouseStore(context: Context, private val userId: Long) {
 
     @Synchronized fun pending(sessionCode: String? = null): List<PendingCount> {
         val persisted = preferences.contains(pendingKey)
-        val raw = read(pendingKey)
+        val raw = read(pendingKey, EncryptedWarehouseReadFailurePolicy.PRESERVE_PENDING_QUEUE)
         check(!persisted || raw != null) { "تعذر فك تشفير طابور العد المحلي؛ لا تتابع قبل معالجة بيانات الجهاز" }
         val values = raw?.let {
             runCatching { WarehouseToolsMappers.pending(JSONArray(it)) }
@@ -224,7 +229,10 @@ class EncryptedWarehouseStore(context: Context, private val userId: Long) {
         preferences.edit { putString(key, encoded) }
     }
 
-    private fun read(key: String): String? {
+    private fun read(
+        key: String,
+        failurePolicy: EncryptedWarehouseReadFailurePolicy = EncryptedWarehouseReadFailurePolicy.DISCARD_REBUILDABLE_CACHE,
+    ): String? {
         val encoded = preferences.getString(key, null) ?: return null
         return runCatching {
             val blob = EncryptedBlobCodec.unpack(Base64.decode(encoded, Base64.NO_WRAP))
@@ -233,7 +241,7 @@ class EncryptedWarehouseStore(context: Context, private val userId: Long) {
             cipher.updateAAD("$userId:$key".toByteArray(Charsets.UTF_8))
             String(cipher.doFinal(blob.ciphertext), Charsets.UTF_8)
         }.getOrElse {
-            preferences.edit { remove(key) }
+            if (failurePolicy.discardUnreadableValue) preferences.edit { remove(key) }
             null
         }
     }
@@ -260,7 +268,7 @@ class EncryptedWarehouseStore(context: Context, private val userId: Long) {
 internal fun CountSubmission.inputJson() = JSONObject().put("sessionCode", sessionCode).put("variantId", variantId)
     .put("qty", quantityBase).put("unitBreakdown", unitBreakdown).put("clientRequestId", clientRequestId)
     .put("entryMethod", entryMethod).apply { scannedBarcode?.let { put("scannedBarcode", it) } }
-private fun CountSubmission.pending(createdAt: String) = PendingCount(
+internal fun CountSubmission.toPendingCount(createdAt: String) = PendingCount(
     sessionCode = sessionCode,
     variantId = variantId,
     quantityBase = quantityBase,

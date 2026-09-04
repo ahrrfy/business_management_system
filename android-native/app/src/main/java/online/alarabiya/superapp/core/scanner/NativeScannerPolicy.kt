@@ -71,6 +71,75 @@ fun nativeBarcodesEquivalent(left: String, right: String): Boolean {
     return nativeBarcodeCandidates(left).any { it.lowercase() in rightKeys }
 }
 
+sealed interface NativeBarcodeResolution<out T> {
+    data object NoMatch : NativeBarcodeResolution<Nothing>
+    data object Ambiguous : NativeBarcodeResolution<Nothing>
+    data class Unique<T>(val value: T, val normalizedBarcode: String) : NativeBarcodeResolution<T>
+}
+
+/** Resolves a scan by business identity, so aliases on one item do not create false ambiguity. */
+fun <T> resolveNativeBarcode(
+    rawValue: String,
+    candidates: Iterable<T>,
+    identity: (T) -> Any,
+    barcodes: (T) -> Iterable<String>,
+): NativeBarcodeResolution<T> {
+    val normalized = normalizeNativeBarcode(rawValue) ?: return NativeBarcodeResolution.NoMatch
+    val matchedIdentities = mutableSetOf<Any>()
+    val matches = mutableListOf<T>()
+    for (candidate in candidates) {
+        if (barcodes(candidate).none { nativeBarcodesEquivalent(it, normalized) }) continue
+        if (!matchedIdentities.add(identity(candidate))) continue
+        matches += candidate
+        if (matches.size > 1) return NativeBarcodeResolution.Ambiguous
+    }
+    return matches.singleOrNull()?.let { NativeBarcodeResolution.Unique(it, normalized) }
+        ?: NativeBarcodeResolution.NoMatch
+}
+
+/**
+ * A keyboard Enter is HID evidence only after a compact burst of single-character text mutations.
+ * Pasted or manually submitted text therefore stays SEARCH_PICK and cannot satisfy SCAN_REQUIRED.
+ */
+class HidWedgeClassifier(
+    private val maxInterKeyMillis: Long = 50,
+    private val maxTerminatorDelayMillis: Long = 80,
+    private val minimumDataKeys: Int = 3,
+) {
+    private var dataKeyCount = 0
+    private var lastDataKeyAt: Long? = null
+
+    init {
+        require(maxInterKeyMillis > 0)
+        require(maxTerminatorDelayMillis > 0)
+        require(minimumDataKeys >= 2)
+    }
+
+    fun recordDataKey(eventTimeMillis: Long) {
+        val previous = lastDataKeyAt
+        if (previous != null && (eventTimeMillis < previous || eventTimeMillis - previous > maxInterKeyMillis)) {
+            reset()
+        }
+        dataKeyCount += 1
+        lastDataKeyAt = eventTimeMillis
+    }
+
+    fun consumeTerminator(eventTimeMillis: Long): Boolean {
+        val previous = lastDataKeyAt
+        val hid = previous != null &&
+            dataKeyCount >= minimumDataKeys &&
+            eventTimeMillis >= previous &&
+            eventTimeMillis - previous <= maxTerminatorDelayMillis
+        reset()
+        return hid
+    }
+
+    fun reset() {
+        dataKeyCount = 0
+        lastDataKeyAt = null
+    }
+}
+
 private fun isLatinReference(value: String): Boolean {
     var index = 0
     while (index < value.length) {

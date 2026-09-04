@@ -11,6 +11,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import online.alarabiya.superapp.core.network.ApiException
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.data.InventoryDataSource
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
 import online.alarabiya.superapp.model.inventory.AdjustmentRequest
@@ -34,6 +35,7 @@ import online.alarabiya.superapp.model.inventory.TransferDetail
 import online.alarabiya.superapp.model.inventory.TransferDraft
 import online.alarabiya.superapp.model.inventory.TransferPage
 import online.alarabiya.superapp.model.inventory.TransferStatus
+import online.alarabiya.superapp.model.warehouseTools.CountSubmitOutcome
 
 enum class ExecutiveStockState { LOW, OUT }
 
@@ -818,14 +820,19 @@ class InventoryViewModel(
     fun setCountQuery(value: String) { state = state.copy(countQuery = value.take(120), countScannedVariantId = null, countScannedBarcode = null) }
     fun scanCount(raw: String) {
         val count = state.selectedCount ?: return
-        val match = count.items.firstNotNullOfOrNull { item -> item.barcodeMatch(raw)?.let { item to it } }
-            ?: return setError("الباركود الممسوح لا يخص صنفاً في هذا التكليف")
-        state = state.copy(
-            countQuery = match.first.label,
-            countScannedVariantId = match.first.variantId,
-            countScannedBarcode = match.second,
-            error = null,
-        )
+        state = state.copy(countScannedVariantId = null, countScannedBarcode = null)
+        when (val match = count.barcodeMatch(raw)) {
+            NativeBarcodeResolution.NoMatch ->
+                setError("الباركود الممسوح لا يخص صنفاً في هذا التكليف")
+            NativeBarcodeResolution.Ambiguous ->
+                setError("الباركود يطابق أكثر من صنف في هذا التكليف؛ صحّح هوية الباركود قبل العد")
+            is NativeBarcodeResolution.Unique -> state = state.copy(
+                countQuery = match.value.label,
+                countScannedVariantId = match.value.variantId,
+                countScannedBarcode = match.normalizedBarcode,
+                error = null,
+            )
+        }
     }
     fun submitCount(variantId: Long, quantity: String) {
         val count = state.selectedCount ?: return
@@ -840,12 +847,20 @@ class InventoryViewModel(
             key = "count:submit:$variantId",
             section = InventorySection.MY_COUNTS,
             success = "تم حفظ العدّة",
+            successOf = { outcome ->
+                when (outcome) {
+                    is CountSubmitOutcome.Submitted -> "تم حفظ العدّة"
+                    is CountSubmitOutcome.Queued -> "تعذر الاتصال؛ حُفظت العدّة في طابور أدوات المستودع"
+                }
+            },
             replayPolicy = MutationReplayPolicy.IDEMPOTENT,
             request = { source.submitCount(count.code, variantId, parsedQuantity, clientRequestId, if (scannedBarcode == null) "SEARCH_PICK" else "SCAN_CAMERA", scannedBarcode) },
             acknowledge = { current, _ -> current.acknowledgeCount(count.code, variantId, parsedQuantity).copy(countScannedVariantId = null, countScannedBarcode = null) },
-            refresh = {
-                val refreshed = source.countSession(count.code)
-                val reducer: InventoryReducer = { current -> current.copy(selectedCount = refreshed) }
+            refresh = { outcome ->
+                val refreshed = if (outcome is CountSubmitOutcome.Queued) null else source.countSession(count.code)
+                val reducer: InventoryReducer = { current ->
+                    if (refreshed == null) current else current.copy(selectedCount = refreshed)
+                }
                 reducer
             },
         )

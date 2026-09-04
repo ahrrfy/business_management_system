@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
 import kotlinx.coroutines.launch
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.data.WarehouseToolsDataSource
 import online.alarabiya.superapp.model.warehouseTools.*
 
@@ -140,15 +141,44 @@ class WarehouseToolsViewModel(
     fun scan(capturedByCamera: Boolean = false, capturedByHid: Boolean = false, scannedValue: String = state.scanInput) {
         val raw = scannedValue.trim()
         if (raw.isEmpty()) return fail("أدخل أو امسح رمزاً")
-        state.selectedCount?.barcodeMatch(raw)?.let { (item, barcode) ->
-            return beginCount(
-                item,
-                entryMethod = when { capturedByCamera -> "SCAN_CAMERA"; capturedByHid -> "SCAN_HID"; else -> "SEARCH_PICK" },
-                scannedBarcode = barcode.takeIf { capturedByCamera || capturedByHid },
-            )
+        state.selectedCount?.let { session ->
+            when (val match = session.barcodeMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("الباركود يطابق أكثر من صنف في هذا التكليف؛ صحّح هوية الباركود قبل العد")
+                is NativeBarcodeResolution.Unique -> return beginCount(
+                    match.value,
+                    entryMethod = when { capturedByCamera -> "SCAN_CAMERA"; capturedByHid -> "SCAN_HID"; else -> "SEARCH_PICK" },
+                    scannedBarcode = match.normalizedBarcode.takeIf { capturedByCamera || capturedByHid },
+                )
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+            when (val match = session.skuMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("رمز SKU يطابق أكثر من صنف في هذا التكليف؛ صحّح الهوية قبل العد")
+                is NativeBarcodeResolution.Unique -> return beginCount(match.value)
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
         }
-        state.selectedCount?.exactMatch(raw)?.let { return beginCount(it) }
-        state.snapshot?.exactMatch(raw)?.let { state = state.copy(catalogResult = it, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة"); return }
+        state.snapshot?.let { snapshot ->
+            when (val match = snapshot.barcodeMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("الباركود يطابق أكثر من وحدة أو منتج في اللقطة؛ صحّح هوية الباركود")
+                is NativeBarcodeResolution.Unique -> {
+                    state = state.copy(catalogResult = match.value, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة")
+                    return
+                }
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+            when (val match = snapshot.skuMatch(raw)) {
+                NativeBarcodeResolution.Ambiguous ->
+                    return fail("رمز SKU يطابق أكثر من وحدة أو منتج في اللقطة؛ صحّح الهوية")
+                is NativeBarcodeResolution.Unique -> {
+                    state = state.copy(catalogResult = match.value, signedResult = null, message = "تمت المطابقة من اللقطة المشفرة")
+                    return
+                }
+                NativeBarcodeResolution.NoMatch -> Unit
+            }
+        }
         if (raw.count { it == '|' } >= 5) {
             launch("barcode:verify") { state = state.copy(signedResult = source.verifySignedBarcode(raw), catalogResult = null) }
         } else fail("لا توجد مطابقة دقيقة للباركود أو SKU في البيانات المتاحة")

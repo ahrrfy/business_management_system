@@ -1,5 +1,6 @@
 package online.alarabiya.superapp.feature.warehouseTools
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.core.scanner.HidWedgeClassifier
 import online.alarabiya.superapp.core.scanner.NativeScanField
 import online.alarabiya.superapp.model.warehouseTools.*
 import online.alarabiya.superapp.ui.scanner.NativeScannerAction
@@ -121,7 +124,15 @@ private fun WedgeInput(
     cameraSubmit: (String) -> Unit,
 ) {
     val focus = remember { FocusRequester() }
+    val hidClassifier = remember { HidWedgeClassifier() }
+    var observedInput by remember { mutableStateOf(value) }
     val keyboard = LocalSoftwareKeyboardController.current
+    SideEffect {
+        if (value != observedInput) {
+            observedInput = value
+            hidClassifier.reset()
+        }
+    }
     LaunchedEffect(Unit) {
         focus.requestFocus()
         delay(120)
@@ -129,9 +140,24 @@ private fun WedgeInput(
     }
     OutlinedTextField(
         value = value,
-        onValueChange = change,
+        onValueChange = { next ->
+            if (next.length == observedInput.length + 1 && next.startsWith(observedInput)) {
+                hidClassifier.recordDataKey(SystemClock.uptimeMillis())
+            } else {
+                hidClassifier.reset()
+            }
+            observedInput = next
+            change(next)
+        },
         modifier = Modifier.fillMaxWidth().focusRequester(focus).onPreviewKeyEvent { event ->
-            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) { submit(true); true } else false
+            if (event.key == Key.Enter) {
+                if (event.type == KeyEventType.KeyUp) {
+                    submit(hidClassifier.consumeTerminator(SystemClock.uptimeMillis()))
+                }
+                true
+            } else {
+                false
+            }
         },
         label = { Text("امسح أو أدخل الرمز") },
         leadingIcon = { Icon(Icons.Rounded.QrCodeScanner, null) },

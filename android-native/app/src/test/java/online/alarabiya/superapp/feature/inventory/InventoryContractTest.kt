@@ -1,9 +1,13 @@
 package online.alarabiya.superapp.feature.inventory
 
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.model.AppBootstrap
 import online.alarabiya.superapp.model.ModuleAccess
 import online.alarabiya.superapp.model.UserIdentity
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
+import online.alarabiya.superapp.model.inventory.CountItem
+import online.alarabiya.superapp.model.inventory.CountSession
+import online.alarabiya.superapp.model.inventory.CountUnit
 import online.alarabiya.superapp.model.inventory.InventoryCapabilities
 import online.alarabiya.superapp.model.inventory.InventoryMappers
 import online.alarabiya.superapp.model.inventory.InventorySection
@@ -105,6 +109,30 @@ class InventoryContractTest {
     }
 
     @Test
+    fun countScanRejectsEquivalentBarcodeAssignedToDifferentVariants() {
+        fun item(id: Long, vararg barcodes: String) = CountItem(
+            variantId = id,
+            productName = "صنف $id",
+            variantName = null,
+            sku = "SKU-$id",
+            counted = false,
+            myQuantity = null,
+            colleagueCounted = false,
+            recountReason = null,
+            units = listOf(CountUnit("قطعة", "1", barcodes.first(), barcodes.drop(1))),
+        )
+        val first = item(1, "0036000291452", "ALT-1")
+        val unique = CountSession("C-1", "جرد", "الرئيسي", "تكليف", null, 0, 1, listOf(first))
+            .barcodeMatch("036000291452")
+        assertTrue(unique is NativeBarcodeResolution.Unique)
+        assertEquals(1L, (unique as NativeBarcodeResolution.Unique).value.variantId)
+
+        val ambiguous = uniqueSession(first, item(2, "036000291452"))
+            .barcodeMatch("0036000291452")
+        assertEquals(NativeBarcodeResolution.Ambiguous, ambiguous)
+    }
+
+    @Test
     fun readAndFullAccessStayDistinctAndBranchScopeFailsClosed() {
         val read = capabilities(access = "READ", role = "warehouse", branchId = 2)
         assertTrue(read.canRead)
@@ -196,5 +224,16 @@ class InventoryContractTest {
         createdAt = null,
         createdByName = "مدير المخزون",
         lines = listOf(TransferLine(7, 9, "ورق", "A4", "P-A4", 5, null, null)),
+    )
+
+    private fun uniqueSession(vararg items: CountItem) = CountSession(
+        code = "C-1",
+        name = "جرد",
+        branchName = "الرئيسي",
+        assignmentName = "تكليف",
+        zone = null,
+        counted = 0,
+        total = items.size,
+        items = items.toList(),
     )
 }
