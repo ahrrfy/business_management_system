@@ -301,6 +301,8 @@ export default defineConfig({
       "shared/predicates/invoiceRemaining.test.ts",
       "shared/predicates/wiring.test.ts",
       "shared/terms.test.ts",
+      // FP-05 — حارس فقدان البيانات يعترض تنقّل SPA بحوارٍ عربيّ موحّد.
+      "client/src/hooks/__tests__/useUnsavedGuard.test.ts",
     ],
   },
 });
