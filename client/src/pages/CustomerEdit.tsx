@@ -151,6 +151,12 @@ export default function CustomerEdit() {
     onSuccess: async () => {
       notify.ok("تمّ حفظ التعديلات");
       await invalidate();
+      // بعد حفظٍ ناجح: baseline الجديد = القيم الحاليّة (وهي التي أرسلها المستخدم للتوّ)،
+      // فيصير isDirty=false فوراً ولا يظهر حوار «تجاهل التعديلات؟» عند المغادرة بلا تعديلٍ إضافيّ.
+      // ⛔ لا نُصفّرها إلى null: تأثير الالتقاط الأولى (أعلاه) مشروطٌ بـ`loaded` كتبعية، فلن يُعاد
+      //   الالتقاط بعد أن صار loaded=true ⇒ سيبقى null إلى الأبد ⇒ يعود العطب من الجهة المعكوسة.
+      // (فشلُ الحفظ يمرّ بـonError ⇒ لا نمسّ baseline، فتبقى الحقول dirty ويظهر الحوار عند المغادرة.)
+      initialSnapshotRef.current = dirtySnapshot();
     },
     onError: (e) => {
       setError(e.message);
