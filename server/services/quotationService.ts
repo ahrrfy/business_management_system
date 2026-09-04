@@ -236,7 +236,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         code: "BAD_REQUEST",
         message: appErrorMessage({
           what: "لا يمكن تعديل هذا العرض",
-          why: `العرض غادر حالة المسوّدة (الحالة حالياً «${current.status}») — التعديل بعد الإرسال يفسد لقطة الالتزام المرسلة للعميل`,
+          why: `العرض غادر حالة المسوّدة (الحالة حالياً «${current.status}») — التعديل بعد إرساله يفسد لقطة الالتزام المرسلة للعميل`,
           doThis: "أنشئ نسخة جديدة من العرض بزر «نسخ لعرض جديد» ثم عدّل النسخة",
         }),
       });
