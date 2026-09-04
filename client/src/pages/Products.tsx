@@ -516,6 +516,7 @@ export default function Products() {
             /* الترقيم خادميّ (limit/offset + total) ⇒ شريطٌ واحد بدل شريطٍ يدويّ تحت البطاقة. */
             serverPagination={{ page, onPageChange: setPage, pageSize: limit, total, isFetching: list.isFetching }}
             selection={sel}
+            rowClickSelects
             getRowId={rowKey}
             getRowSelectionLabel={(r) => `تحديد ${r.productName}`}
             getRowClassName={(r) => {
