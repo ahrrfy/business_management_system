@@ -721,6 +721,7 @@ export const stocktakeRouter = router({
             adjustedCount: res.adjustedCount,
             shortExpense: res.shortExpense,
             overGain: res.overGain,
+            negativeSettlements: res.negativeSettlements,
           },
         });
       }

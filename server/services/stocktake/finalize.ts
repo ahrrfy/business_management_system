@@ -44,6 +44,8 @@ export interface ApproveResult {
   adjustedCount: number;
   shortExpense: string;
   overGain: string;
+  /** عدد الأصناف التي ثُبّتت برصيدٍ سالب حقيقي (بيعٌ استمرّ بعد العدّ وتجاوزه) — تظهر في تقرير السوالب. */
+  negativeSettlements: number;
 }
 
 /**
@@ -67,6 +69,7 @@ export async function approveStocktake(
         adjustedCount: 0,
         shortExpense: "0.00",
         overGain: "0.00",
+        negativeSettlements: 0,
       };
     }
     if (s.status !== "REVIEW") {
@@ -289,6 +292,7 @@ export async function approveStocktake(
 
     // (٤+٥) التسويات والقرارات النهائية.
     let adjustedMovements = 0;
+    let negativeSettlements = 0;
     let shortExpense = money(0);
     let ownedShortExpense = money(0);
     let overGain = money(0);
@@ -357,16 +361,14 @@ export async function approveStocktake(
       }
 
       if (action === "ADJUST" && r.diff !== 0) {
-        // افتتاحي: العدّ المصحَّح السالب (بيعٌ بالسالب تجاوز العدّ قبل الاعتماد) يُعتمد برصيده
-        // السالب الحقيقي — الصنف يُفتتَح فيتحوّل فوراً للصرامة ويظهر في تقرير السوالب، بدل حجب
-        // اعتماد الجلسة كلها بصنفٍ واحد (livelock مثبَت في المراجعة العدائية — البيع مستمر أثناء
-        // كل «إعادة عدّ»). دوري: الحارس باقٍ كما هو.
-        if (!isOpening && r.adjustedCount < 0) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `العدّ المصحَّح سالب للصنف «${r.productName}» — راجع الحركات اللاحقة قبل الاعتماد`,
-          });
-        }
+        // العدّ المصحَّح قد يكون سالباً (بيعٌ استمرّ بعد العدّ وتجاوزه قبل الاعتماد) — لكلا نوعَي
+        // الجلسة على حدٍّ سواء يُثبَّت برصيده السالب الحقيقي (فيُفتتَح إن لم يكن، ويتحوّل فوراً
+        // للصرامة، ويظهر في تقرير السوالب `reportsInventoryOpsService.getNegativeStock`) بدل حجب
+        // اعتماد الجلسة كلّها بصنفٍ واحد (livelock مثبَت في المراجعة العدائية ١٨/٧ — البيع مستمر
+        // أثناء كل «إعادة عدّ»، فمحاولة إعادة العدّ لا تُغلق النافذة على صنفٍ سريع الحركة). كان هذا
+        // مُصلَحاً للافتتاحي وحده («الحارس باقٍ كما هو» للدوريّ) — وُحِّد المساران ٤/٩ بعد أن ثبت
+        // الحدوث فعلياً على جلسة دوريّة حيّة (١٣٧ تسويةً محجوبة بصنفٍ واحد سريع البيع).
+        if (r.adjustedCount < 0) negativeSettlements++;
         await setStock(tx, {
           variantId: r.variantId,
           branchId: Number(s.branchId),
@@ -377,7 +379,7 @@ export async function approveStocktake(
           referenceId: sessionId,
           notes: s.code,
           createdBy: actor.userId,
-          allowNegativeTarget: isOpening,
+          allowNegativeTarget: true,
         });
         adjustedMovements++;
         // افتتاحي: لا تُجمَع قيم عجز/زيادة إطلاقاً ⇒ لا يُرحَّل أي قيد دفتري أدناه (الفرق هنا
@@ -575,6 +577,7 @@ export async function approveStocktake(
       adjustedCount: adjustedMovements,
       shortExpense: toDbMoney(shortExpense),
       overGain: toDbMoney(overGain),
+      negativeSettlements,
     };
   });
 }

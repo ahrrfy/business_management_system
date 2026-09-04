@@ -28,14 +28,15 @@ const VIEW_LABEL: Record<View, string> = {
   dead: "راكد عالي القيمة",
   risk: "خطر النفاد",
   variance: "فروقات الجرد",
-  negatives: "السوالب (وضع الافتتاح)",
+  negatives: "السوالب",
 };
 const VIEW_DESC: Record<View, string> = {
   reorder: "منتجات نفدت أو تحت حدّ إعادة الطلب — اطلبها الآن.",
   dead: "رصيد بلا بيع منذ مدّة — رأس مال مجمّد يجب تحريره.",
   risk: "مبيعات عالية ومخزون منخفض — اطلب عاجلاً قبل النفاد.",
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
-  negatives: "أرصدة تحت الصفر — بوصلة أولوية الجرد الافتتاحي: اجرد الأعلى انكشافاً أولاً.",
+  negatives:
+    "أرصدة تحت الصفر أياً كان سببها — صنفٌ لم يُفتتَح بعد، أو يُباع بالطلب عمداً، أو جردٌ تجاوزه بيعٌ لاحق. غير المفتتَح هو بوصلة أولوية الجرد الافتتاحي: اجرده أولاً.",
 };
 const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
 const STATUS_CLS: Record<string, string> = { out: "badge-stock-out", low: "badge-stock-low", ok: "bg-muted text-muted-foreground" };
