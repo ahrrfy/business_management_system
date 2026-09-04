@@ -354,8 +354,20 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
         approver,
       ),
     ]);
-    expect(["fulfilled", "rejected"]).toContain(confirmResult.status);
-    expect(["fulfilled", "rejected"]).toContain(updateResult.status);
+    // الطرفان يتشاركان قفلاً تفاؤلياً واحداً (expectedVersion + FOR UPDATE على صفّ الأمر):
+    // نجاحُ أحدهما يُبطل النسخة التي يعتمدها الآخر فيُرفض حتماً بـCONFLICT/BAD_REQUEST — لا
+    // نجاحٌ مزدوج ولا فشلٌ مزدوج ممكن. هذا هو الضامن الذي يجعل استعمال `editor` معتمداً في
+    // "race-first-decision" أدناه آمناً **دائماً**: حين ينجح confirm فإنّ update قد خسر
+    // السباق حتماً ولم يكتب lastEditedBy قط، فيبقى editor مستقلاً عن المنشئ (creator) وعن
+    // مُرسِل طلب الاعتماد (approver) بصرف النظر عن توقيت التنفيذ الفعليّ.
+    expect(
+      updateResult.status === "fulfilled" ||
+        confirmResult.status === "fulfilled",
+    ).toBe(true);
+    expect(
+      updateResult.status === "fulfilled" &&
+        confirmResult.status === "fulfilled",
+    ).toBe(false);
 
     if (confirmResult.status === "fulfilled") {
       await decide(
