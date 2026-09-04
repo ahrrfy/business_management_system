@@ -1,8 +1,14 @@
 /** Durable public-price snapshot for ordinary lines travelling with digital cards. */
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { eq, inArray } from "drizzle-orm";
-import { customers, products, productVariants } from "../../../drizzle/schema";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import {
+  customers,
+  productionRecipeLines,
+  productionRecipes,
+  products,
+  productVariants,
+} from "../../../drizzle/schema";
 import type {
   DigitalCheckoutRegularLineInput,
   DigitalCheckoutSnapshot,
@@ -20,7 +26,7 @@ import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { resolveContractPrices } from "../contractPriceService";
 import { GIFT_APPROVAL_THRESHOLD } from "../gifts/outbound";
 import { convertToBaseQuantity } from "../inventoryService";
-import { money, sumMoney, toDbMoney } from "../money";
+import { money, round2, sumMoney, toDbMoney } from "../money";
 import { readOpeningWindowState } from "../openingModeService";
 import {
   getUnitPrice,
@@ -275,6 +281,96 @@ export async function prepareCheckoutSnapshot(
         .filter((variant) => variant.isBundle)
         .map((variant) => Number(variant.id)),
     );
+    // Mirrors sale/create.ts's computeServiceUnitCost (recipe load + per-line formula)
+    // exactly, so the below-cost/gift-threshold checks below see the same service cost
+    // createSaleInTx enforces at commit instead of silently skipping service lines.
+    const serviceVariantIds = variants
+      .filter((variant) => variant.isService && !variant.isBundle)
+      .map((variant) => Number(variant.id));
+    const serviceRecipe = new Map<
+      number,
+      { inputVariantId: number; qtyPerOutputBase: string }[]
+    >();
+    const materialCostByVariant = new Map<number, string>();
+    if (serviceVariantIds.length) {
+      const recipeHeads = await tx
+        .select({
+          id: productionRecipes.id,
+          outputVariantId: productionRecipes.outputVariantId,
+        })
+        .from(productionRecipes)
+        .where(
+          and(
+            inArray(productionRecipes.outputVariantId, serviceVariantIds),
+            eq(productionRecipes.isActive, true),
+          ),
+        )
+        .orderBy(desc(productionRecipes.id)); // الأحدث يفوز — يطابق sale/create.ts.
+      const recipeByOutput = new Map<number, number>();
+      for (const r of recipeHeads) {
+        const svid = Number(r.outputVariantId);
+        if (!recipeByOutput.has(svid)) recipeByOutput.set(svid, Number(r.id));
+      }
+      const recipeIds = Array.from(new Set(recipeByOutput.values()));
+      const recLines = recipeIds.length
+        ? await tx
+            .select({
+              recipeId: productionRecipeLines.recipeId,
+              inputVariantId: productionRecipeLines.inputVariantId,
+              qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
+            })
+            .from(productionRecipeLines)
+            .where(inArray(productionRecipeLines.recipeId, recipeIds))
+        : [];
+      const linesByRecipe = new Map<
+        number,
+        { inputVariantId: number; qtyPerOutputBase: string }[]
+      >();
+      for (const rl of recLines) {
+        const rid = Number(rl.recipeId);
+        if (!linesByRecipe.has(rid)) linesByRecipe.set(rid, []);
+        linesByRecipe.get(rid)!.push({
+          inputVariantId: Number(rl.inputVariantId),
+          qtyPerOutputBase: String(rl.qtyPerOutputBase),
+        });
+      }
+      for (const svid of serviceVariantIds) {
+        const rid = recipeByOutput.get(svid);
+        if (rid != null) serviceRecipe.set(svid, linesByRecipe.get(rid) ?? []);
+      }
+      const materialIds = new Set<number>();
+      for (const lines of Array.from(serviceRecipe.values())) {
+        for (const rl of lines) materialIds.add(rl.inputVariantId);
+      }
+      if (materialIds.size) {
+        const matRows = await tx
+          .select({ id: productVariants.id, cost: productVariants.costPrice })
+          .from(productVariants)
+          .where(inArray(productVariants.id, Array.from(materialIds)));
+        for (const r of matRows)
+          materialCostByVariant.set(Number(r.id), String(r.cost ?? "0"));
+      }
+    }
+    const computeServiceUnitCost = (
+      variantId: number,
+      baseQuantity: number,
+    ): string => {
+      const rlines = serviceRecipe.get(variantId);
+      if (!rlines || !rlines.length || baseQuantity <= 0) return "0.00";
+      let lineCost = money(0);
+      for (const rl of rlines) {
+        const consumed = Math.max(
+          0,
+          Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()),
+        );
+        if (consumed <= 0) continue;
+        const matCost = round2(
+          money(materialCostByVariant.get(rl.inputVariantId) ?? "0"),
+        );
+        lineCost = lineCost.plus(round2(matCost.times(consumed)));
+      }
+      return round2(lineCost.div(baseQuantity)).toFixed(2);
+    };
     const costedLines: {
       total: string;
       unitCost: string;
@@ -284,16 +380,16 @@ export async function prepareCheckoutSnapshot(
     for (const line of regularLines) {
       const variant = byId.get(line.variantId)!;
       const baseQuantity = baseByLine.get(line.lineKey)!;
-      if (!variant.isService || variant.isBundle) {
-        costedLines.push({
-          total: line.total,
-          unitCost: variant.isBundle
-            ? (bundleCosts.get(line.variantId) ?? "0")
+      costedLines.push({
+        total: line.total,
+        unitCost: variant.isBundle
+          ? (bundleCosts.get(line.variantId) ?? "0")
+          : variant.isService
+            ? computeServiceUnitCost(line.variantId, baseQuantity)
             : variant.costPrice,
-          baseQuantity,
-          isGift: line.isGift,
-        });
-      }
+        baseQuantity,
+        isGift: line.isGift,
+      });
       if (!variant.isService && !variant.isBundle) {
         requestedStock.set(
           line.variantId,
@@ -301,10 +397,10 @@ export async function prepareCheckoutSnapshot(
         );
       }
     }
-    // Conservative early check, NOT another sale engine: stocked ATP and known
-    // stocked/bundle costs only. Opening exceptions and service recipe rounding remain
-    // authoritative in createSaleInTx; this read does not reserve inventory or remove
-    // the final locked checks. Never interpret a service's absent stock as zero stock.
+    // Conservative early check, NOT another sale engine: stocked ATP only (services carry
+    // no branchStock row) and the opening-window exception remain authoritative in
+    // createSaleInTx; this read does not reserve inventory or remove the final locked
+    // checks. Never interpret a service's absent stock as zero stock.
     for (const [variantId, required] of Array.from(requestedStock)) {
       const variant = byId.get(variantId)!;
       if (variant.allowBackorder || opening.active) continue;
