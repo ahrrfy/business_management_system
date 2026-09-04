@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
@@ -371,7 +372,7 @@ async function assertEditUniqueness(tx: Tx, input: UpdateProductVariantsInput) {
   const unitNames = input.unitTemplate.map((u) => u.unitName.trim());
   const codes: string[] = [];
   for (const v of input.variants) for (const n of unitNames) {
-    const b = (v.unitBarcodes[n] ?? "").trim();
+    const b = canonicalizeBarcodeInput(v.unitBarcodes[n] ?? "");
     if (b) codes.push(b);
   }
   const seen = new Set<string>();
@@ -433,7 +434,7 @@ async function upsertVariantUnits(
   const inserted: Array<{ unitId: number; barcode: string | null }> = [];
   for (const t of template) {
     const name = t.unitName.trim();
-    const barcode = (unitBarcodes[name] ?? "").trim() || null;
+    const barcode = canonicalizeBarcodeInput(unitBarcodes[name] ?? "") || null;
     const match = existing.find((u) => u.unitName === name);
     let unitId: number;
     if (match) {

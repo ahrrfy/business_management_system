@@ -233,6 +233,8 @@ export default defineConfig({
       "server/lib/__tests__/retryDup.test.ts",
       "server/lib/__tests__/ttlCache.test.ts",
       "shared/errorMap.ar.test.ts",
+      "shared/barcodeNormalize.test.ts",
+      "server/lib/__tests__/barcodeSchemas.test.ts",
       "server/tenancy/__tests__/expressMiddlewareLease.test.ts",
       "server/tenancy/__tests__/tenantPoolLifecycle.test.ts",
       "server/services/__tests__/jobApplicantCvService.test.ts",

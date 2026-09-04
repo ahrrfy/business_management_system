@@ -5,7 +5,7 @@
 //   - DISMISS: صنفٌ مجهولٌ تماماً أو غير ذي صلة ⇒ يُغلق بملاحظة (يبقى في السجل append-only).
 // الحلّ يعبُر الأساسيّ والبديل معاً (نفس منطق resolveBarcodeOwner)، ويُرفض الخدميّ/البكج.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   branchStock,
   products,
@@ -18,6 +18,8 @@ import {
   stocktakeUnknownScans,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -55,7 +57,11 @@ async function resolveBarcodesToVariants(
     string,
     { variantId: number; productName: string; isService: boolean; isBundle: boolean; costPrice: string }
   >();
-  if (!barcodes.length) return out;
+  // (٤/٩) المفتاح **مُطبَّع**: يُطابَق المسحُ المخزَّن (stocktakeUnknownScans.barcode) بكتالوجٍ صار مُطبَّعاً
+  // عند الكتابة. المُدخل قد يحمل مسافةً طرفية أو أرقاماً عربية-هندية من التقاط الميدان، والكتالوج نظيف
+  // ⇒ نُطبّع الطرفين ونُفهرس النتيجة بالصيغة المُطبَّعة. القرّاء يستعلمون بـ`canonicalizeBarcodeInput`.
+  const canon = Array.from(new Set(barcodes.map(canonicalizeBarcodeInput).filter(Boolean)));
+  if (!canon.length) return out;
   const primary = await tx
     .select({
       barcode: productUnits.barcode,
@@ -68,10 +74,11 @@ async function resolveBarcodesToVariants(
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productUnits.barcode, barcodes));
+    .where(inArray(productUnits.barcode, canon));
   for (const r of primary) {
-    if (r.barcode && !out.has(r.barcode))
-      out.set(r.barcode, {
+    const key = canonicalizeBarcodeInput(r.barcode ?? "");
+    if (key && !out.has(key))
+      out.set(key, {
         variantId: Number(r.variantId),
         productName: r.productName,
         isService: !!r.isService,
@@ -79,7 +86,7 @@ async function resolveBarcodesToVariants(
         costPrice: String(r.costPrice ?? "0"),
       });
   }
-  const remaining = barcodes.filter((b) => !out.has(b));
+  const remaining = canon.filter((b) => !out.has(b));
   if (remaining.length) {
     const alias = await tx
       .select({
@@ -96,8 +103,9 @@ async function resolveBarcodesToVariants(
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productUnitBarcodes.barcode, remaining));
     for (const r of alias) {
-      if (r.barcode && !out.has(r.barcode))
-        out.set(r.barcode, {
+      const key = canonicalizeBarcodeInput(r.barcode ?? "");
+      if (key && !out.has(key))
+        out.set(key, {
           variantId: Number(r.variantId),
           productName: r.productName,
           isService: !!r.isService,
@@ -186,7 +194,7 @@ export async function listUnknownScans(
   }
 
   return rows.map((r) => {
-    const hit = resolved.get(r.barcode);
+    const hit = resolved.get(canonicalizeBarcodeInput(r.barcode));
     const already = hit ? inScope.has(hit.variantId) : false;
     const resolvable = !!hit && !hit.isService && !hit.isBundle && !already;
     return {
@@ -222,7 +230,7 @@ export async function resolveUnknownScan(
   actor: StkActor,
   opts: { restrictBranchId: number | null } = { restrictBranchId: null },
 ): Promise<ResolveUnknownScanResult> {
-  const barcode = input.barcode.trim();
+  const barcode = canonicalizeBarcodeInput(input.barcode);
   if (!barcode) throw new TRPCError({ code: "BAD_REQUEST", message: "باركود غير صالح." });
 
   return withTx(async (tx) => {
@@ -234,7 +242,13 @@ export async function resolveUnknownScan(
       .where(
         and(
           eq(stocktakeUnknownScans.sessionId, session.id),
-          eq(stocktakeUnknownScans.barcode, barcode),
+          // (٤/٩، مراجعة Codex P2) نطابق العمود المُطبَّع أيضاً: صفوف PENDING الملتقَطة قبل النشر قد
+          // تحمل أرقاماً عربية-هندية، والمساواةُ الخامّة على مُدخلٍ مُطبَّع تُعمي ADD_TO_SCOPE/DISMISS عنها
+          // فتبقى عالقةً في جلسةٍ جارية. الالتقاطُ الجديد مُطبَّعٌ أصلاً فالمساواة الخامّة تكفيه (المسار السريع).
+          or(
+            eq(stocktakeUnknownScans.barcode, barcode),
+            sql`${normalizedStoredBarcodeSql(stocktakeUnknownScans.barcode)} = ${barcode.toLowerCase()}`,
+          ),
           eq(stocktakeUnknownScans.status, "PENDING"),
         ),
       )

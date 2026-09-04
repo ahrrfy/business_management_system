@@ -8,6 +8,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
+import { normalizedStoredBarcodeSql } from "./catalog/barcodeAliases";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
@@ -585,7 +586,15 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   const prefix = `${escLike(q)}%`;
   const productName = sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`;
   const variantName = normalizedStudioVariantNameSql();
-  const exactBarcode = q ? or(eq(productUnits.barcode, q), eq(productUnitBarcodes.barcode, q)) : undefined;
+  // (٤/٩) المقارنة على العمود **المُطبَّع** (تقليم + حالة موحّدة + طيّ الأرقام) لا الخامّ: `q` مرّ بـ
+  // `normalizeSearchText` (يقلّم ويصغّر ويطوي الأرقام)، فمساواةٌ خامّة تُخطئ أيّ صفٍّ حُفظ قبل تطبيع
+  // الحفظ بمسافةٍ طرفية أو رقمٍ عربيّ-هنديّ ⇒ لا يدخل الصفحةَ أصلاً ولا يصل إلى `contextFor`
+  // (المُطبَّع منذ #912)، فيصل الماسحَ «الرمز لا يطابق» على منتجٍ موجود. هذا الاستعلام مسحٌ متعدّد
+  // الشروط أصلاً (LIKE على الأسماء المُطبَّعة) لا مسارَ نقطيّ على فهرس الباركود، فالتغليف لا يغيّر كلفته.
+  // وهو مرآةُ `contextFor` أدناه بالضبط: ما يُطابقه SQL يُصنّفه JS باركوداً، لا أقلّ.
+  const exactBarcode = q
+    ? or(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${q}`, sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${q}`)
+    : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
   const namePrefix = q ? or(like(productName, prefix), like(variantName, prefix)) : undefined;
@@ -1019,7 +1028,23 @@ export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: s
     search: barcode,
     includeInactive: isManager(actor),
   });
-  const activeMatch = activeOnly.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  const barcodeMatches = activeOnly.rows.filter((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  // (٤/٩، مراجعة Codex P1) المطابقةُ على العمود المُطبَّع قد تُرجع أكثرَ من منتجٍ حين يتطبّع باركودان
+  // إرثيّان ملوّثان على منتجين مختلفين إلى القيمة نفسها بلا مطابقةٍ خامّةٍ صريحة. أخذُ الأوّل يجعل
+  // الاختيارَ رهنَ ترتيب الاسم فيَفتح عملَ تصويرٍ لمنتجٍ خاطئ — نظير خطر التسعير الخاطئ عند الكاشير.
+  // كالحلّال النقديّ (`resolveNormalizedOwner`): عند تعدّد المالك لا نحسم صامتاً بل نرفع غموضاً.
+  const distinctOwners = new Set(barcodeMatches.map((row) => `${row.productId}:${row.variantId ?? ""}:${row.unitId ?? ""}`));
+  if (distinctOwners.size > 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "الرمز الممسوح يخصّ أكثر من منتج",
+        why: "باركوداتٌ مخزّنةٌ قديمةٌ لعدّة منتجاتٍ تتطابق بعد التطبيع مع هذا الرمز، فلا يُحسَم لأيّها آلياً",
+        doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، واطلب من المدير تصحيح باركودات المنتجات المتضاربة",
+      }),
+    });
+  }
+  const activeMatch = barcodeMatches[0];
   if (activeMatch) {
     return {
       productId: activeMatch.productId,
