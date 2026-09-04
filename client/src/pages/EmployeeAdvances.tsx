@@ -200,10 +200,19 @@ export default function EmployeeAdvances() {
             <button
               className="text-xs text-destructive font-medium hover:underline inline-flex items-center gap-1"
               onClick={async () => {
+                /*
+                 * النصّ يطابق ما يفعله الخادم فعلياً — لا العكس. cancelAdvance (advancesService.ts)
+                 * ترفض حين يكون سند الصرف سارياً (الحالة المعتادة لسلفةٍ صُرفت نقداً بسند فعليّ)،
+                 * وتنجح مباشرةً فقط حين لا سريان له (بلا سندٍ أصلاً، أو معكوس/مرفوض مسبقاً). كان
+                 * النصّ السابق يَعِد بالعكس: «تُلغى السلفة الآن، ثمّ ألغِ السند بنفسك لاحقاً» — وعداً
+                 * لا يتحقّق في الحالة الشائعة، ورسالة الرفض الفعلية تصل المستخدم متناقضةً معه.
+                 */
                 const ok = await confirm({
                   variant: "danger",
                   title: `إلغاء سلفة ${r.employeeName}`,
-                  description: `تُلغى السلفة (${iqd(r.amount)} د.ع) قبل أي خصم. سند الصرف الأصلي ${r.voucherNumber ?? ""} لا يُعكَس آلياً — إرجاع النقد للخزينة يكون بإلغاء السند من شاشة السندات.`,
+                  description: r.voucherNumber
+                    ? `تُلغى السلفة (${iqd(r.amount)} د.ع) مباشرةً فقط إن كان سند صرفها ${r.voucherNumber} غير سارٍ (معكوس أو مرفوض مسبقاً). إن كان السند سارياً (الحالة المعتادة لسلفةٍ صُرفت نقداً)، تُرفض المحاولة وتُطالَب بإلغاء السند ${r.voucherNumber} أولاً من شاشة السندات — يعتمده مراجعٌ آخر، وعندها تُلغى هذه السلفة تلقائياً معه.`
+                    : `تُلغى السلفة (${iqd(r.amount)} د.ع) قبل أي خصم — لا سند صرفٍ مرتبط بها.`,
                   confirmText: "إلغاء السلفة",
                 });
                 if (ok) cancelM.mutate({ advanceId: Number(r.id) });
