@@ -34,8 +34,8 @@ function nextDayUtc(ymd: string): string {
 
 const RANGES = [
   { key: "today", label: "اليوم" },
-  { key: "week", label: "٧ أيام" },
-  { key: "month", label: "٣٠ يوماً" },
+  { key: "week", label: "7 أيام" },
+  { key: "month", label: "30 يوماً" },
   { key: "custom", label: "مدى مخصّص" },
 ] as const;
 type RangeKey = (typeof RANGES)[number]["key"];

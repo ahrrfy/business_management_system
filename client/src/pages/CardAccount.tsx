@@ -172,7 +172,7 @@ export default function CardAccount() {
           { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "دخل" : "صرف") },
           { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
           { key: "runningBalance", header: "الرصيد بعد الحركة", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
-          { key: "cardLastFour", header: "آخر ٤", map: (r) => r.cardLastFour ?? "" },
+          { key: "cardLastFour", header: "آخر 4", map: (r) => r.cardLastFour ?? "" },
           { key: "voucherNumber", header: "المرجع", map: (r) => r.voucherNumber ?? r.referenceNumber ?? "" },
         ],
       });
@@ -559,7 +559,7 @@ export default function CardAccount() {
             </div>
             <div>
               <Label htmlFor="rec-label">وصف الكشف (اختياري)</Label>
-              <Input id="rec-label" value={statementLabel} onChange={(e) => setStatementLabel(e.target.value)} placeholder="كشف حزيران ٢٠٢٦" maxLength={120} />
+              <Input id="rec-label" value={statementLabel} onChange={(e) => setStatementLabel(e.target.value)} placeholder="كشف حزيران 2026" maxLength={120} />
             </div>
             <div className="flex items-end">
               <Button className="w-full" onClick={submitRecon} disabled={createRec.isPending || needsBranchForRecon}>

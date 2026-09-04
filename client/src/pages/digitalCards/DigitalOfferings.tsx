@@ -796,7 +796,7 @@ export default function DigitalOfferings() {
               <Input
                 value={fName}
                 onChange={(e) => setFName(e.target.value)}
-                placeholder="كارت آسياسيل ١٠ آلاف"
+                placeholder="كارت آسياسيل 10 آلاف"
                 dir="auto"
                 autoFocus
               />

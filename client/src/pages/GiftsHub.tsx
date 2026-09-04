@@ -14,6 +14,7 @@ import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { fmt } from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -530,7 +531,7 @@ export default function GiftsHub() {
               },
               { id: "party", header: "الطرف", cell: ({ row }) => row.original.supplierName ?? row.original.customerName ?? "—" },
               { id: "status", header: "الحالة", meta: { kind: "status" }, cell: ({ row }) => STATUS_AR[row.original.status] ?? row.original.status },
-              { id: "value", header: "القيمة التقديرية", meta: { kind: "money" }, cell: ({ row }) => row.original.estimatedValue ?? "—" },
+              { id: "value", header: "القيمة التقديرية", meta: { kind: "money" }, cell: ({ row }) => row.original.estimatedValue != null ? fmt(row.original.estimatedValue) : "—" },
               {
                 id: "actions",
                 header: "إجراء",
@@ -652,10 +653,10 @@ export default function GiftsHub() {
             <div className="py-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
           ) : report.data ? (
             <div className="grid gap-4 md:grid-cols-2">
-              {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), String(x.totalCost)]))}
-              {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), String(x.totalCost)]))}
-              {reportTable("تركّز حسب المُنشئ (كشف إساءة)", ["الموظف", "عدد", "التكلفة"], report.data.byCreator.map((x) => [x.userName || "—", String(x.count), String(x.totalCost)]))}
-              {reportTable("تركّز حسب العميل (كشف إساءة)", ["العميل", "عدد", "التكلفة"], report.data.byCustomer.map((x) => [x.customerName || "—", String(x.count), String(x.totalCost)]))}
+              {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("تركّز حسب المُنشئ (كشف إساءة)", ["الموظف", "عدد", "التكلفة"], report.data.byCreator.map((x) => [x.userName || "—", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("تركّز حسب العميل (كشف إساءة)", ["العميل", "عدد", "التكلفة"], report.data.byCustomer.map((x) => [x.customerName || "—", String(x.count), fmt(x.totalCost)]))}
             </div>
           ) : null}
         </div>
@@ -735,7 +736,7 @@ export default function GiftsHub() {
                 cell: ({ row }) =>
                   row.original.spent == null
                     ? "—"
-                    : `${row.original.spent}${row.original.budgetCost ? ` / ${row.original.budgetCost}` : " (بلا سقف)"}`,
+                    : `${fmt(row.original.spent)}${row.original.budgetCost ? ` / ${fmt(row.original.budgetCost)}` : " (بلا سقف)"}`,
               },
               // عمود الإجراء لمن يملك الصلاحية وحده — كما كان `elevated ? <td/> : null`.
               ...(elevated
@@ -840,7 +841,7 @@ export default function GiftsHub() {
                   {(activeCampaigns.data ?? []).map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
-                      {c.budgetCost ? ` (${c.spent}/${c.budgetCost} د.ع)` : ""}
+                      {c.budgetCost ? ` (${fmt(c.spent)}/${fmt(c.budgetCost)} د.ع)` : ""}
                     </option>
                   ))}
                 </AppSelect>

@@ -396,7 +396,9 @@ export default function APAging() {
 function Bucket({ label, value, color, emphasis }: { label: string; value: string; color: string; emphasis?: boolean }) {
   return (
     <div className={`rounded-md p-3 ${color}`}>
-      <div className="text-xs opacity-80">{label}</div>
+      {/* bidi: "0–30 يوم" بلا dir="ltr" يُعاد ترتيبه بصرياً "30-0" داخل حاويةٍ RTL — أثبتَتْه
+          جولةٌ بصرية فعلية بقياس مواضع الأحرف (٣/٩). ليس تجميلاً. */}
+      <div className="text-xs opacity-80" dir="ltr">{label}</div>
       <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">{fmt(value)}</div>
     </div>
   );

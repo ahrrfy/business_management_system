@@ -221,7 +221,7 @@ export default function Login() {
                 onCheckedChange={(v) => setRemember(v === true)}
               />
               <Label htmlFor="remember" className="text-sm font-normal cursor-pointer">
-                تذكّرني على هذا الجهاز (٣٠ يوماً)
+                تذكّرني على هذا الجهاز (30 يوماً)
               </Label>
             </div>
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

@@ -83,7 +83,7 @@ export default function ContactsBank() {
     <div className="space-y-4">
       <PageHeader
         title="بنك جهات الاتصال"
-        description="بحث موحّد عبر العملاء والموردين وأطراف التوصيل ومرسلي واتساب غير المربوطين بعميل — بطاقة ٣٦٠° لكل عميل/مورّد."
+        description="بحث موحّد عبر العملاء والموردين وأطراف التوصيل ومرسلي واتساب غير المربوطين بعميل — بطاقة 360° لكل عميل/مورّد."
       />
 
       <Card>
@@ -196,7 +196,7 @@ export default function ContactsBank() {
                                     actions={[{
                                       key: "view-360",
                                       kind: "view",
-                                      label: "عرض ٣٦٠",
+                                      label: "عرض 360",
                                       icon: Eye,
                                       onSelect: () => setSelected({ kind, id: r.id }),
                                       gate: kind === "supplier"

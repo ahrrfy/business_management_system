@@ -7,7 +7,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createEmployee } from "../employeeService";
+import { createEmployee, linkEmployeeAccount } from "../employeeService";
 import { cancelLeave, createLeave, decideLeave } from "../leaveService";
 
 const ACTOR = { userId: 1 };
@@ -86,5 +86,27 @@ describe("leaveService", () => {
     expect(cancelled.status).toBe("rejected");
     [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
     expect(Number(e2.annualLeaveBalance)).toBe(30); // استُرِدّ بالكامل
+  });
+
+  /*
+   * فصل مهام (HR-PAY-03، leaveService.ts:241) — الحاجز موجود منذ فترة لكن بلا اختبارٍ
+   * سلوكيّ فعليّ: كل استدعاءات decideLeave القائمة تستعمل فاعلاً لا يطابق موظف الطلب أبداً،
+   * فلا شيء يثبت أنّ رفض الذات يعمل فعلياً، ولا أنّ رصيده يبقى سليماً بعد المحاولة المرفوضة.
+   * نفس نمط ثغرة العمولات (assertIndependentReviewer) المُصلَحة سابقاً — راجع
+   * commissionRunApprovals.test.ts.
+   */
+  it("لا يبتّ الموظف في إجازته بنفسه، ومُقرِّرٌ آخر يبتّ فيها فيُخصَم الرصيد (فصل مهام HR-PAY-03)", async () => {
+    await db().insert(s.users).values({ id: 2, openId: "test-leave-employee-self", name: "الموظف نفسه", role: "cashier", branchId: 1 });
+    const emp = await createEmployee({ firstName: "سارة", lastName: "الجبوري", payType: "monthly", salary: "700000", annualLeaveBalance: 30, branchId: 1 });
+    await linkEmployeeAccount(emp!.id, 2);
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-03", days: 3 });
+
+    await expect(decideLeave(lv.id, "approved", { userId: 2 })).rejects.toThrow(/لا يجوز البتّ في إجازتك بنفسك/);
+    let [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.annualLeaveBalance)).toBe(30); // المحاولة الذاتية المرفوضة لا تمسّ الرصيد
+
+    await decideLeave(lv.id, "approved", ACTOR); // ACTOR (userId 1) مستقلٌّ عن صاحب الطلب
+    [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.annualLeaveBalance)).toBe(27);
   });
 });

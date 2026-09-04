@@ -343,7 +343,7 @@ export default function UserEdit() {
     if (!(await confirm({
       variant: "warning",
       title: "إصدار رمز استعادة",
-      description: `سيُلغى أي رمز استعادة سابق لـ«${name || u?.email || `#${userId}`}». الرمز الجديد صالح ١٥ دقيقة ويُعرض مرة واحدة. هل تتابع؟`,
+      description: `سيُلغى أي رمز استعادة سابق لـ«${name || u?.email || `#${userId}`}». الرمز الجديد صالح 15 دقيقة ويُعرض مرة واحدة. هل تتابع؟`,
       confirmText: "إصدار الرمز",
     }))) return;
     setResetToken("");
@@ -686,7 +686,7 @@ export default function UserEdit() {
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
             أصدر رمزاً أحادي الاستخدام وأرسله للمستخدم عبر قناة موثوقة. يختار المستخدم كلمته
-            الجديدة بنفسه من شاشة الدخول؛ لا يعرفها المدير. صلاحية الرمز ١٥ دقيقة.
+            الجديدة بنفسه من شاشة الدخول؛ لا يعرفها المدير. صلاحية الرمز 15 دقيقة.
           </p>
           <Button type="button" variant="outline" onClick={() => void doIssueResetToken()} disabled={issueResetToken.isPending}>
             {issueResetToken.isPending ? "جارٍ الإصدار…" : resetToken ? "إصدار رمز بديل" : "إصدار رمز استعادة"}
@@ -719,7 +719,7 @@ export default function UserEdit() {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                ينتهي {resetExpiresAt ? fmtDateTime(resetExpiresAt) : "خلال ١٥ دقيقة"}. إصدار رمز آخر يُبطل هذا الرمز فوراً.
+                ينتهي {resetExpiresAt ? fmtDateTime(resetExpiresAt) : "خلال 15 دقيقة"}. إصدار رمز آخر يُبطل هذا الرمز فوراً.
               </p>
             </div>
           )}

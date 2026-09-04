@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import {
   accountingEntries,
   accrualCorrectionRequests,
@@ -84,7 +85,11 @@ function assertExpectedCashAsset(
   ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "طلب التصحيح لا يخص اقتناء الأصل النقدي المحدد",
+      message: appErrorMessage({
+        what: "تعذّرت معالجة طلب التصحيح المالي",
+        why: "معرّف الأصل المتوقَّع لا يطابق أصلاً نقدياً محدَّداً على الالتزام (نوع الالتزام أو معرّف الأصل مختلف)",
+        doThis: "أعد فتح شاشة التصحيح من صفحة الأصل نفسه، ولا تعدّل معرّف الأصل يدوياً",
+      }),
     });
   }
 }
@@ -94,7 +99,11 @@ function requiredText(value: string | null | undefined, label: string, max: numb
   if (!normalized || normalized.length > max) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `${label} إلزامي ويجب ألا يتجاوز ${max} محرفاً`,
+      message: appErrorMessage({
+        what: "تعذّرت معالجة طلب التصحيح المالي",
+        why: `${label} إلزامي ويجب ألا يتجاوز ${max} محرفاً — القيمة إمّا فارغة أو أطول من المسموح`,
+        doThis: `اكتب قيمةً واضحة في حقل «${label}»، بطولٍ لا يتجاوز ${max} محرفاً`,
+      }),
     });
   }
   return normalized;
@@ -104,7 +113,11 @@ function assertOwner(actor: Actor) {
   if (actor.isOwner !== true) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "اعتماد تصحيح مالي أو رفضه محصور بمالك نشط مختلف عن المنشئ",
+      message: appErrorMessage({
+        what: "تعذّر حسم طلب التصحيح المالي",
+        why: "اعتماد التصحيح أو رفضه محصورٌ بالمالك النشط وحده، ولا يجوز للمنشئ حسم قراره",
+        doThis: "اطلب من المالك الدخول بحسابه وحسم القرار من قائمة تصحيحات الاستحقاق",
+      }),
     });
   }
 }
@@ -117,7 +130,11 @@ function assertBranchScope(actor: Actor, branchId: number) {
   ) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "التزام المصروف تابع لفرع آخر",
+      message: appErrorMessage({
+        what: "تعذّرت معالجة التزام المصروف",
+        why: "الالتزام يخصّ فرعاً غير فرعك المُسنَد، والمعالجة محصورةٌ بفرع الالتزام (المالك/المدير يعبرون)",
+        doThis: "أدر الطلب من داخل الفرع الصحيح، أو اطلب من المالك/المدير التنفيذ نيابةً",
+      }),
     });
   }
 }
@@ -141,7 +158,11 @@ function refundAssetRole(
   }
   throw new TRPCError({
     code: "CONFLICT",
-    message: "دلو النقد الفعلي إلزامي لاسترداد نقدي معتمد",
+    message: appErrorMessage({
+      what: "تعذّر تحديد حساب الاسترداد",
+      why: "طريقة الاسترداد نقديّة لكن لم يُحدَّد وعاء النقد (درج الوردية أم خزينة الفرع)",
+      doThis: "افتح شاشة التصحيح واختر «الدرج» أو «الخزينة» في حقل وعاء النقد قبل الاعتماد",
+    }),
   });
 }
 
@@ -159,7 +180,11 @@ function validateRefundShape(
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "التصحيح غير المدفوع لا ينشئ قبضاً أو دليلاً مصطنعاً للاسترداد",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب التصحيح",
+          why: "الالتزام لم يُدفَع بعد، وأرسلتَ حقولَ استرداد (طريقة/وعاء/مرجع/بطاقة) — التصحيح غير المدفوع ينحصر بإلغاء الالتزام بلا سندٍ نقديّ",
+          doThis: "امسح كلّ حقول الاسترداد وأعد الحفظ، أو انتظر دفع الالتزام قبل طلب تصحيحٍ مع استرداد",
+        }),
       });
     }
     return;
@@ -167,22 +192,47 @@ function validateRefundShape(
 
   const method = input.refundPaymentMethod;
   if (!method) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "طريقة الاسترداد الفعلية إلزامية" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب التصحيح",
+        why: "الالتزام مدفوع لكن الطلب وصل بلا طريقةِ استردادٍ فعليّة (نقد/بطاقة/تحويل/محفظة/صك)",
+        doThis: "افتح شاشة التصحيح واختر طريقة الاسترداد المناسبة قبل الحفظ",
+      }),
+    });
   }
   const reference = input.refundReferenceNumber?.trim() ?? "";
   const cardTail = input.refundCardLastFour?.trim() ?? "";
   if (method === "CASH") {
     if (!input.refundCashBucket || reference || cardTail) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد النقدي يتطلب دلو النقد فقط" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب التصحيح",
+          why: "الاسترداد النقديّ يلزمه وعاءُ نقدٍ (درج أو خزينة) فقط، والطلب يحمل مرجعاً أو أرقامَ بطاقة",
+          doThis: "امسح حقلَي «رقم التأكيد» و«أرقام البطاقة» وأبقِ وعاء النقد وحده، أو غيّر طريقة الدفع",
+        }),
+      });
     }
   } else if (method === "CARD") {
     if (input.refundCashBucket != null || !/^\d{4}$/.test(cardTail) || !reference) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "استرداد البطاقة يتطلب مرجع المزود وآخر أربعة أرقام" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب التصحيح",
+          why: "استرداد البطاقة يلزمه مرجع مزوّد الخدمة وآخر أربعة أرقامٍ للبطاقة معاً، وأحدُهما غائبٌ أو غير صالح",
+          doThis: "افتح إيصال جهاز البطاقة واكتب رقم المرجع والأربعة أرقام الأخيرة في حقلَيهما، وامسح وعاء النقد",
+        }),
+      });
     }
   } else if (input.refundCashBucket != null || !reference || cardTail) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مرجع مزود الاسترداد إلزامي للصك أو التحويل أو المحفظة",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب التصحيح",
+        why: "استرداد الصك/التحويل/المحفظة يلزمه رقم مرجعٍ من مزوّد الخدمة، وقد وصل الطلب بلا مرجعٍ أو بأرقام بطاقة زائدة",
+        doThis: "امسح حقول «وعاء النقد» و«أرقام البطاقة»، واكتب رقم المرجع في حقل «رقم التأكيد الخارجي»",
+      }),
     });
   }
 }
@@ -231,7 +281,15 @@ async function assertCashAssetHasNoDownstreamUseTx(
     .where(eq(fixedAssets.id, assetId))
     .for("update")
     .limit(1);
-  if (!asset) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل المرتبط بالتصحيح غير موجود" });
+  if (!asset)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّرت معالجة تصحيح اقتناء الأصل",
+        why: "الأصل المرتبط بالالتزام غير موجود في قاعدة البيانات، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+        doThis: "افتح شاشة الأصول الثابتة وتحقّق أنّ الأصل قائم، ثمّ أعد إنشاء التصحيح من صفحة الأصل نفسه",
+      }),
+    });
 
   const [[maintenance], [custody], [document]] = await Promise.all([
     tx.select({ id: assetMaintenance.id }).from(assetMaintenance).where(eq(assetMaintenance.assetId, assetId)).limit(1),
@@ -252,8 +310,11 @@ async function assertCashAssetHasNoDownstreamUseTx(
   if (used) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message:
-        "لا يمكن تصحيح اقتناء أصل استُعمل أو أُهلك أو صين أو نُقل أو سُلّم كعهدة؛ استخدم مسار الاستبعاد/الإشعار الدائن",
+      message: appErrorMessage({
+        what: "تعذّر تصحيح اقتناء الأصل",
+        why: "الأصل استُعمل أو أُهلك أو خضع لصيانةٍ أو نقلٍ أو تسليمٍ كعهدة، ولا يقبل التصحيح بعد ذلك",
+        doThis: "استعمل مسار الاستبعاد أو الإشعار الدائن من شاشة الأصل بدل التصحيح، فذلك يحفظ التاريخ",
+      }),
     });
   }
 }
@@ -273,7 +334,11 @@ async function latestSettlementTx(tx: Tx, obligationId: number) {
   if (!event?.receiptId || !event.accountingEntryId) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "لا يوجد أثر تسوية كامل يمكن إثبات استرداده",
+      message: appErrorMessage({
+        what: "تعذّر إثبات استرداد التصحيح",
+        why: "لا يوجد سند تسويةٍ سابق مكتمل (بإيصالٍ وقيدٍ محاسبيّ) يُبنى عليه الاسترداد",
+        doThis: "افتح سجلّ الالتزام لعرض التسويات السابقة، أو ارفض التصحيح واطلب تسويةً كاملةً أوّلاً",
+      }),
     });
   }
   return event;
@@ -365,7 +430,14 @@ async function markSourceCorrectedTx(
         .for("update")
         .limit(1);
       if (!asset) {
-        throw new TRPCError({ code: "NOT_FOUND", message: "الأصل المرتبط بالصيانة المصححة غير موجود" });
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّرت معالجة تصحيح صيانة الأصل",
+            why: "الأصل المرتبط بالصيانة لم يعد موجوداً في قاعدة البيانات",
+            doThis: "افتح شاشة الأصول الثابتة وتحقّق أنّ الأصل قائم، ثمّ أعد إنشاء التصحيح من صفحة الأصل نفسه",
+          }),
+        });
       }
       if (asset.status === "maintenance") {
         const result = await tx
@@ -498,13 +570,27 @@ export async function requestAccrualCorrection(
       .limit(1);
     if (replay) {
       if (!payloadHashMatches(payloadHash, replay.payloadHash)) {
-        throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency في طلب التصحيح" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل طلب التصحيح",
+            why: "نفس مفتاح منع التكرار مسجَّل قبل قليل بحمولةٍ مختلفة (التزامٌ آخر أو مبلغٌ مختلف)",
+            doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالبيانات المعروضة أمامك",
+          }),
+        });
       }
       if (
         Number(replay.requestedBy) !== actor.userId ||
         Number(replay.obligationId) !== input.obligationId
       ) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مفتاح إعادة التصحيح مملوك لفاعل أو مصدر آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل إعادة التصحيح",
+            why: "مفتاح إعادة التصحيح مملوكٌ لطلبٍ سابق أنشأه فاعلٌ آخر أو على مصدرٍ آخر",
+            doThis: "افتح قائمة تصحيحات الاستحقاق وابحث عن الطلب القائم بهذا المفتاح، أو استعمل مفتاحاً جديداً",
+          }),
+        });
       }
       const replayObligation = await lockAccrualObligationTx(
         tx,
@@ -526,11 +612,22 @@ export async function requestAccrualCorrection(
     if (obligation.kind === "ASSET_ACQUISITION_SUPPLIER") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "تصحيح أصل ممول من المورد يحتاج إشعاراً دائناً/تخصيص AP مستقلاً، لا مسار الاستحقاق النقدي",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب التصحيح",
+          why: "الأصل ممولٌ من المورد بذمّةٍ (AP)، ومسار الاستحقاق النقديّ لا يعالج ذمّة المورد",
+          doThis: "افتح شاشة إشعارات المورد الدائنة وأنشئ إشعاراً دائناً على الفاتورة، أو خصّص تسويةً على أمر الشراء",
+        }),
       });
     }
     if (!["ACCRUED_UNPAID", "PAYMENT_PENDING", "PAID"].includes(obligation.status)) {
-      throw new TRPCError({ code: "CONFLICT", message: `حالة الالتزام ${obligation.status} لا تسمح بطلب تصحيح جديد` });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب التصحيح",
+          why: `حالة الالتزام ${obligation.status} لا تسمح بطلب تصحيحٍ جديد — يُقبل التصحيح فقط في حالات ACCRUED_UNPAID/PAYMENT_PENDING/PAID`,
+          doThis: "افتح شاشة الالتزام لعرض حالته، ثمّ اتخذ الإجراء المناسب لحالته (تسوية أو إلغاء)",
+        }),
+      });
     }
     await assertCashAssetHasNoDownstreamUseTx(tx, obligation);
     validateRefundShape(obligation.status as AccrualObligationStatus, input);
@@ -624,13 +721,35 @@ export async function approveAccrualCorrection(
       .where(eq(accrualCorrectionRequests.id, correctionRequestId))
       .for("update")
       .limit(1);
-    if (!correction) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التصحيح غير موجود" });
+    if (!correction)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب التصحيح",
+          why: "طلب التصحيح المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة تصحيحات الاستحقاق واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     if (correction.status !== "PENDING") {
       if (correction.status === "APPROVED") return { correctionRequestId, replayed: true as const };
-      throw new TRPCError({ code: "CONFLICT", message: "طلب التصحيح مرفوض ولا يمكن اعتماده" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب التصحيح",
+          why: "الطلب حالته «مرفوض»، وطلب مرفوضٌ لا يقبل اعتماداً — يلزمه إعادة تقديم من المنشئ أوّلاً",
+          doThis: "اطلب من المنشئ إعادة تقديم الطلب بعد معالجة سبب الرفض، ثمّ اعتمده",
+        }),
+      });
     }
     if (Number(correction.requestedBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمنشئ التصحيح اعتماده" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب التصحيح",
+          why: "أنت منشئ الطلب — فصل المهام يمنع اعتماد صاحب الطلب لطلبه",
+          doThis: "اطلب من مالكٍ آخر اعتماد الطلب من قائمة تصحيحات الاستحقاق",
+        }),
+      });
     }
     const obligation = await lockAccrualObligationTx(tx, Number(correction.obligationId));
     assertBranchScope(actor, Number(obligation.branchId));
@@ -638,11 +757,22 @@ export async function approveAccrualCorrection(
     if (correction.previousObligationStatus === "PAID") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "التصحيح المدفوع يعتمد حصراً من سند قبض الاسترداد المثبت",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد التصحيح من هذا المسار",
+          why: "الالتزام مدفوعٌ سابقاً، والتصحيح المدفوع يعتمد حصراً من مسار سند قبض الاسترداد المثبت (لا من الاعتماد المباشر)",
+          doThis: "افتح سند قبض الاسترداد المرتبط بطلب التصحيح، ثمّ اعتمده من هناك",
+        }),
       });
     }
     if (obligation.status !== "CORRECTION_PENDING") {
-      throw new TRPCError({ code: "CONFLICT", message: "إسقاط/تلاعب في حالة التزام التصحيح" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد طلب التصحيح",
+          why: "حالة الالتزام تغيّرت خارج المسار المتوقّع بين لحظة إنشاء طلب التصحيح ولحظة اعتماده",
+          doThis: "ارفض هذا الطلب واطلب من المنشئ إعادة إنشائه على الالتزام بحالته الحاليّة",
+        }),
+      });
     }
     await completeRecognitionCorrectionTx(tx, obligation, {
       expectedStatus: "CORRECTION_PENDING",
@@ -671,7 +801,14 @@ async function rejectCorrectionTx(
   },
 ) {
   if (Number(input.correction.requestedBy) === input.reviewer.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمنشئ التصحيح رفضه" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر رفض طلب التصحيح",
+        why: "أنت منشئ الطلب — فصل المهام يمنع صاحب الطلب من رفض طلبه",
+        doThis: "اطلب من مالكٍ آخر رفض الطلب من قائمة تصحيحات الاستحقاق",
+      }),
+    });
   }
   const restore = input.correction.previousObligationStatus as AccrualObligationStatus;
   const current = restore === "PAID" ? "REFUND_PENDING" : "CORRECTION_PENDING";
@@ -719,15 +856,34 @@ export async function rejectAccrualCorrection(
       .where(eq(accrualCorrectionRequests.id, correctionRequestId))
       .for("update")
       .limit(1);
-    if (!correction) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التصحيح غير موجود" });
+    if (!correction)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب التصحيح",
+          why: "طلب التصحيح المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة تصحيحات الاستحقاق واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     if (correction.status !== "PENDING") {
       if (correction.status === "REJECTED") return { correctionRequestId, replayed: true as const };
-      throw new TRPCError({ code: "CONFLICT", message: "طلب التصحيح المعتمد لا يمكن رفضه" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر رفض طلب التصحيح",
+          why: "الطلب حالته «معتمَد» — طلبٌ معتمَدٌ لا يُرفَض، فالأثر المحاسبيّ تم بالفعل",
+          doThis: "الاعتمادُ ذو أثرٍ محاسبيٍّ لا يُلغى بالرفض. أنشئ **تصحيحاً مضاداً** جديداً على الالتزام (بمقدارٍ معاكس ومسوّغ) عبر نفس مسار طلب التصحيح، ثم اعتمده مراجعٌ آخر — هذا المسار الوحيد المُنفَّذ اليوم",
+        }),
+      });
     }
     if (correction.previousObligationStatus === "PAID") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "ارفض سند قبض الاسترداد من شاشة الاعتماد لإبقاء أثر الدفع الأصلي",
+        message: appErrorMessage({
+          what: "تعذّر رفض التصحيح من هذا المسار",
+          why: "الالتزام مدفوعٌ سابقاً، ورفض التصحيح المدفوع يلزمه رفض سند قبض الاسترداد لإبقاء أثر الدفع الأصليّ",
+          doThis: "افتح سند قبض الاسترداد المرتبط بطلب التصحيح، ثمّ ارفضه من شاشة اعتماد السند",
+        }),
       });
     }
     const obligation = await lockAccrualObligationTx(tx, Number(correction.obligationId));
@@ -754,10 +910,24 @@ export async function settleAccrualCorrectionRefundTx(
     .for("update")
     .limit(1);
   if (!correction || correction.status !== "PENDING" || correction.previousObligationStatus !== "PAID") {
-    throw new TRPCError({ code: "CONFLICT", message: "طلب استرداد التصحيح غير صالح للاعتماد" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "طلب الاسترداد لم يعد بحالةٍ تقبل الاعتماد (رُفض أو اعتُمد أو ألغي بعد الفتح)",
+        doThis: "ارجع لقائمة تصحيحات الاستحقاق وحدّثها لعرض النسخة الحاليّة",
+      }),
+    });
   }
   if (Number(correction.requestedBy) === input.approver.userId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز لمنشئ طلب الاسترداد اعتماده" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "أنت منشئ طلب الاسترداد — فصل المهام يمنع صاحب الطلب من اعتماد طلبه",
+        doThis: "اطلب من مالكٍ آخر اعتماد الاسترداد من قائمة تصحيحات الاستحقاق",
+      }),
+    });
   }
   const obligation = await lockAccrualObligationTx(tx, input.request.obligationId);
   assertBranchScope(input.approver, Number(obligation.branchId));
@@ -776,11 +946,25 @@ export async function settleAccrualCorrectionRefundTx(
     !money(input.receipt.amount).eq(money(obligation.recognizedAmount)) ||
     input.receipt.referenceNumber !== `ACCRUAL-REFUND-${correction.id}`
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "سند الاسترداد لا يطابق طلب التصحيح/الالتزام المثبت" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "سند الاسترداد المُرسَل لا يطابق طلب التصحيح أو الالتزام المثبت (تعدّل الالتزام أو استُعمل سندٌ آخر)",
+        doThis: "ارفض هذا الطلب واطلب من المنشئ إعادة إنشاء طلب الاسترداد من صفحة الالتزام الحاليّة",
+      }),
+    });
   }
   const settlement = await latestSettlementTx(tx, Number(obligation.id));
   if (Number(settlement.receiptId) !== input.request.originalSettlementReceiptId) {
-    throw new TRPCError({ code: "CONFLICT", message: "مرجع التسوية الأصلية في طلب الاسترداد غير مطابق" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "معرّف إيصال التسوية الأصليّ في طلب الاسترداد لا يطابق آخر تسويةٍ فعليّة على الالتزام",
+        doThis: "ارفض هذا الطلب وأنشئ طلب استردادٍ جديداً من صفحة التسوية الأصليّة",
+      }),
+    });
   }
   const [originalReceipt] = await tx
     .select({ id: receipts.id, status: receipts.status, approvalStatus: receipts.approvalStatus, amount: receipts.amount })
@@ -794,31 +978,73 @@ export async function settleAccrualCorrectionRefundTx(
     originalReceipt.approvalStatus !== "APPROVED" ||
     !money(originalReceipt.amount).eq(money(obligation.recognizedAmount))
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "التسوية الأصلية ليست دفعة كاملة نافذة" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "التسوية الأصليّة على الالتزام ليست دفعةً كاملة نافذة (قد تكون مسودةً أو مرتجعةً)",
+        doThis: "ارفض هذا الطلب واطلب من المدير التحقّق من إيصال التسوية الأصليّ قبل إعادة الطلب",
+      }),
+    });
   }
   await assertCashAssetHasNoDownstreamUseTx(tx, obligation);
 
   const method = input.receipt.paymentMethod as RefundMethod;
   if (method !== correction.refundPaymentMethod) {
-    throw new TRPCError({ code: "CONFLICT", message: "طريقة الاسترداد تغيرت بعد إنشاء طلب التصحيح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "طريقة الاسترداد على سند القبض لا تطابق الطريقة المسجَّلة في طلب التصحيح",
+        doThis: "ارفض هذا الطلب وأعد إنشاء طلب استردادٍ جديداً بالطريقة الصحيحة",
+      }),
+    });
   }
   const expectedProviderEvidence = method === "CASH"
     ? correction.externalEvidenceReference
     : correction.refundReferenceNumber;
   if (!expectedProviderEvidence || input.request.providerEvidenceReference !== expectedProviderEvidence) {
-    throw new TRPCError({ code: "CONFLICT", message: "دليل مزود الاسترداد لا يطابق الطلب الموقّع" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "رقم مرجع مزوّد الاسترداد على السند لا يطابق المرجع المسجَّل في طلب التصحيح",
+        doThis: "ارفض هذا الطلب وأعد إنشاء طلب الاسترداد بالمرجع الحقيقيّ للإيصال",
+      }),
+    });
   }
   if (
     method === "CASH" &&
     input.receipt.cashBucket !== correction.refundCashBucket
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "دلو الاسترداد النقدي لا يطابق الطلب المعتمد" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "وعاء النقد على السند (درج أو خزينة) لا يطابق الوعاء المسجَّل في طلب التصحيح",
+        doThis: "ارفض هذا الطلب واحرص على تسجيل الاسترداد من نفس وعاء النقد المذكور في الطلب",
+      }),
+    });
   }
   if (method === "CARD" && input.receipt.cardLastFour !== correction.refundCardLastFour) {
-    throw new TRPCError({ code: "CONFLICT", message: "دليل بطاقة الاسترداد لا يطابق الطلب" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "آخر أربعة أرقامٍ للبطاقة على السند لا تطابق الأرقام المسجَّلة في طلب التصحيح",
+        doThis: "ارفض هذا الطلب واحرص على أن يطابق إيصال البطاقة الأرقام في الطلب",
+      }),
+    });
   }
   if (method === "CHECK" && input.receipt.checkNumber !== correction.refundReferenceNumber) {
-    throw new TRPCError({ code: "CONFLICT", message: "رقم صك الاسترداد لا يطابق الطلب" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد استرداد التصحيح",
+        why: "رقم الصك على السند لا يطابق الرقم المسجَّل في طلب التصحيح",
+        doThis: "ارفض هذا الطلب وأنشئ سنداً جديداً بنفس رقم الصك المذكور في الطلب",
+      }),
+    });
   }
   const assetRole = refundAssetRole(method, input.receipt.cashBucket as RefundCashBucket | null);
   const amount = money(obligation.recognizedAmount);
@@ -893,7 +1119,14 @@ export async function rejectAccrualCorrectionRefundTx(
     .for("update")
     .limit(1);
   if (!correction || correction.status !== "PENDING" || correction.previousObligationStatus !== "PAID") {
-    throw new TRPCError({ code: "CONFLICT", message: "طلب استرداد التصحيح غير صالح للرفض" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر رفض استرداد التصحيح",
+        why: "طلب الاسترداد لم يعد بحالةٍ تقبل الرفض (رُفض أو اعتُمد أو ألغي)",
+        doThis: "ارجع لقائمة تصحيحات الاستحقاق وحدّثها لعرض النسخة الحاليّة",
+      }),
+    });
   }
   if (
     Number(correction.refundRequestReceiptId) !== Number(input.receipt.id) ||
@@ -904,7 +1137,14 @@ export async function rejectAccrualCorrectionRefundTx(
     input.receipt.partyType !== "OTHER" ||
     input.receipt.partyId != null
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "سند الاسترداد لا يطابق طلب التصحيح" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر رفض استرداد التصحيح",
+        why: "سند الاسترداد المُرسَل لا يطابق طلب التصحيح (استُعمل سندٌ آخر)",
+        doThis: "ارجع لصفحة طلب التصحيح وحدّثها، ثمّ ارفض من هناك بالسند المرتبط الصحيح",
+      }),
+    });
   }
   const obligation = await lockAccrualObligationTx(tx, input.request.obligationId);
   const method = input.receipt.paymentMethod as RefundMethod;
@@ -919,7 +1159,14 @@ export async function rejectAccrualCorrectionRefundTx(
     !expectedProviderEvidence ||
     input.request.providerEvidenceReference !== expectedProviderEvidence
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "طلب رفض الاسترداد لا يطابق مصدر الالتزام المثبت" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر رفض استرداد التصحيح",
+        why: "طلب الرفض لا يطابق مصدر الالتزام المثبَّت في القاعدة (تعدّل الالتزام بعد الطلب)",
+        doThis: "أعد فتح شاشة الالتزام لعرض نسخته الحاليّة، ثمّ ارفض من هناك",
+      }),
+    });
   }
   await rejectCorrectionTx(tx, { correction, obligation, reviewer: input.reviewer, rejectionReason: reason, occurredAt: input.occurredAt });
   return { correctionRequestId: Number(correction.id), obligationId: Number(obligation.id) };
@@ -940,10 +1187,24 @@ export async function bindAccrualCorrectionRefundReplacementTx(
     .for("update")
     .limit(1);
   if (!correction || correction.status !== "REJECTED" || correction.previousObligationStatus !== "PAID") {
-    throw new TRPCError({ code: "CONFLICT", message: "طلب التصحيح لا يقبل إعادة تقديم استرداد" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة تقديم الاسترداد",
+        why: "طلب التصحيح ليس بحالةٍ تقبل إعادة تقديم استرداد (اعتُمد سابقاً أو رُفض أو أُلغي)",
+        doThis: "افتح صفحة الطلب لعرض حالته، ثمّ اتخذ الإجراء المناسب لحالته",
+      }),
+    });
   }
   if (Number(correction.requestedBy) !== input.actorId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "إعادة التقديم محصورة بمنشئ طلب التصحيح" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة تقديم الاسترداد",
+        why: "إعادة التقديم بعد الرفض محصورةٌ بمنشئ طلب التصحيح — لا يقدّمها مالكٌ أو مديرٌ نيابةً",
+        doThis: "اطلب من المنشئ الأصليّ للطلب إعادة تقديم الاسترداد من قائمة تصحيحاته",
+      }),
+    });
   }
   const obligation = await lockAccrualObligationTx(tx, Number(correction.obligationId));
   const beneficiaryName = requiredText(
@@ -987,7 +1248,14 @@ export async function bindAccrualCorrectionRefundReplacementTx(
     (replacement.paymentMethod === "CARD" && replacement.cardLastFour !== correction.refundCardLastFour) ||
     (replacement.paymentMethod === "CHECK" && replacement.checkNumber !== correction.refundReferenceNumber)
   ) {
-    throw new TRPCError({ code: "CONFLICT", message: "سند الاسترداد البديل ليس طلب قبض معلقاً" });
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة تقديم الاسترداد",
+        why: "السند البديل الذي أرسلته الشاشة ليس طلب قبضٍ معلَّقاً — إمّا مُعتمَداً أو ملغىً أو من نوعٍ آخر",
+        doThis: "أنشئ طلب قبضٍ جديداً معلَّقاً على الالتزام، ثمّ اربطه في خطوة إعادة التقديم",
+      }),
+    });
   }
   await transitionAccrualObligationTx(tx, {
     obligationId: Number(obligation.id),
@@ -1031,10 +1299,24 @@ export async function retryAccrualCorrectionRefund(
       .for("update")
       .limit(1);
     if (!correction || correction.status !== "REJECTED" || correction.previousObligationStatus !== "PAID") {
-      throw new TRPCError({ code: "CONFLICT", message: "طلب التصحيح لا يقبل إعادة تقديم استرداد" });
+      throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة تقديم الاسترداد",
+        why: "طلب التصحيح ليس بحالةٍ تقبل إعادة تقديم استرداد (اعتُمد سابقاً أو رُفض أو أُلغي)",
+        doThis: "افتح صفحة الطلب لعرض حالته، ثمّ اتخذ الإجراء المناسب لحالته",
+      }),
+    });
     }
     if (Number(correction.requestedBy) !== actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "إعادة التقديم محصورة بمنشئ طلب التصحيح" });
+      throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّرت إعادة تقديم الاسترداد",
+        why: "إعادة التقديم بعد الرفض محصورةٌ بمنشئ طلب التصحيح — لا يقدّمها مالكٌ أو مديرٌ نيابةً",
+        doThis: "اطلب من المنشئ الأصليّ للطلب إعادة تقديم الاسترداد من قائمة تصحيحاته",
+      }),
+    });
     }
     const obligation = await lockAccrualObligationTx(tx, Number(correction.obligationId));
     assertBranchScope(actor, Number(obligation.branchId));
@@ -1045,7 +1327,15 @@ export async function retryAccrualCorrectionRefund(
     );
     const settlement = await latestSettlementTx(tx, Number(obligation.id));
     const method = correction.refundPaymentMethod;
-    if (!method) throw new TRPCError({ code: "CONFLICT", message: "طريقة الاسترداد الأصلية مفقودة" });
+    if (!method)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّرت إعادة تقديم الاسترداد",
+          why: "طلب التصحيح الأصليّ لا يحمل طريقة استرداد — سجلٌّ محفوظٌ من قبل ترقية العقد فلا يمكن مطابقته",
+          doThis: "افتح صفحة الالتزام وأنشئ طلب تصحيحٍ جديداً بدل إعادة التقديم على القديم",
+        }),
+      });
     const providerEvidence = method === "CASH"
       ? correction.externalEvidenceReference
       : requiredText(correction.refundReferenceNumber, "مرجع مزود الاسترداد", 100);

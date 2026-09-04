@@ -1397,7 +1397,7 @@ function QtySheet({
       {tally && (
         <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold leading-relaxed text-primary">
           <ListPlus aria-hidden className="mt-0.5 size-3.5 shrink-0" />
-          <span>وضع التجميع: كل مسحةٍ لهذا الصنف تزيد وحدتها +١. احفظ عند الانتهاء ثم امسح الصنف التالي.</span>
+          <span>وضع التجميع: كل مسحةٍ لهذا الصنف تزيد وحدتها +1. احفظ عند الانتهاء ثم امسح الصنف التالي.</span>
         </div>
       )}
       {isRecount && (

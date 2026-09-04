@@ -606,17 +606,20 @@ export default function Purchases() {
               {
                 id: "remaining",
                 header: "المتبقي",
+                // ⚠️ كانت هذه الخلية الوحيدة في الجدول تعرض الرقم بلا فواصل آلاف (positiveDiff(...).toFixed(2)
+                // مباشرةً) بينما كل عمود مالٍ مجاورٍ (الإجمالي/فاتورة المورد) يمرّ عبر fmt() — تناقضٌ بصريّ
+                // يكسر إيقاع الجدول (جولة بصرية ٣/٩). fmt() يلفّ نفس Decimal بتنسيق en-US الموحَّد.
                 accessorFn: (p) =>
                   p.agreedCurrency === "USD"
-                    ? `${D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2)} $`
-                    : `${positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2)} د.ع`,
+                    ? `${fmt(D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2))} $`
+                    : `${fmt(positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2))} د.ع`,
                 meta: { kind: "money" },
                 // ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع».
                 cell: ({ row }) => (
                   <span className="font-bold" title="المتبقّي = الإجمالي − المدفوع">
                     {row.original.agreedCurrency === "USD"
-                      ? `${D(row.original.usdTotal ?? 0).minus(D(row.original.paidUsd ?? 0)).toFixed(2)} $`
-                      : `${positiveDiff(row.original.total ?? 0, row.original.paidAmount ?? 0).toFixed(2)} د.ع`}
+                      ? `${fmt(D(row.original.usdTotal ?? 0).minus(D(row.original.paidUsd ?? 0)).toFixed(2))} $`
+                      : `${fmt(positiveDiff(row.original.total ?? 0, row.original.paidAmount ?? 0).toFixed(2))} د.ع`}
                   </span>
                 ),
               },
