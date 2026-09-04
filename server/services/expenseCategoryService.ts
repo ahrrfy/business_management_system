@@ -217,7 +217,7 @@ export async function updateExpenseCategory(
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({
-            what: "لا يمكن تغيير الدلو المحاسبي لهذه الفئة",
+            what: "لا يمكن تغيير الدلو المحاسبي لفئة مرتبطة بمصروفات",
             why: "الفئة مستعمَلة على مصروفات مُرحَّلة سلفاً — تغيير الدلو يعيد تصنيف تاريخٍ محاسبيّ ويشوّه تقارير الفترات المغلقة",
             doThis: "أنشئ فئة جديدة بالدلو الصحيح من شاشة فئات المصروف، ثم استخدمها للطلبات الجديدة",
           }),
@@ -263,7 +263,7 @@ export async function setExpenseCategoryActive(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
-          what: "لا يمكن تعطيل هذه الفئة",
+          what: "لا تُعطَّل فئة الدلو الاحتياطية",
           why: "الفئة احتياطية (isBucketDefault) — إليها تهبط الطلبات التي تحمل الدلو وحده (أوفلاين/أندرويد/استيراد)، وتعطيلها يكسر مسار تلك الطلبات",
           doThis: "أنشئ فئة احتياطية بديلة قبل التعطيل، أو أبقِ هذه فعّالة",
         }),
