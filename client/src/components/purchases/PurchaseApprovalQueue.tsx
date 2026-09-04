@@ -60,8 +60,15 @@ function violatesVisibleSod(
 
 export function PurchaseApprovalQueue({
   currentUserId,
+  isOwner,
 }: {
   currentUserId: number | null | undefined;
+  /**
+   * ⭐ قرار المالك (٣/٩/٢٦، وسّعه PR #998 على طلب الشراء الداخليّ): لا اعتماد ثانٍ بعد
+   * المالك. مقصورٌ هنا على REQUISITION عمداً — أمر الشراء (`purchase/controls.ts`)
+   * لم يُوسَّع بعد (مراجعة Codex على #998).
+   */
+  isOwner?: boolean;
 }) {
   const utils = trpc.useUtils();
   const queue = trpc.purchases.pendingControls.useInfiniteQuery(
@@ -168,8 +175,10 @@ export function PurchaseApprovalQueue({
           ) : null}
           {queueRows.map((row) => {
             const identityUnavailable = currentUserId == null;
+            const ownerExempt = isOwner === true && row.documentType === "REQUISITION";
             const own =
-              identityUnavailable || violatesVisibleSod(row, currentUserId);
+              !ownerExempt &&
+              (identityUnavailable || violatesVisibleSod(row, currentUserId));
             const reference = documentReference(row);
             return (
               <section

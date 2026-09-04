@@ -76,7 +76,11 @@ import online.alarabiya.superapp.model.approvals.ApprovalDecision
 import online.alarabiya.superapp.model.approvals.ApprovalKey
 import online.alarabiya.superapp.model.approvals.ApprovalKind
 import online.alarabiya.superapp.model.approvals.ApprovalRequest
+import online.alarabiya.superapp.model.approvals.CardReferenceInput
 import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
+import online.alarabiya.superapp.model.approvals.cardCancelReferenceFact
+import online.alarabiya.superapp.model.approvals.needsCardCancelReference
+import online.alarabiya.superapp.model.approvals.resolveCardReferenceInput
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -396,7 +400,7 @@ private fun ApprovalDetail(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
-                    onClick = { onRequestDecision(request.key, ApprovalDecision.Approve) },
+                    onClick = { onRequestDecision(request.key, ApprovalDecision.Approve()) },
                     modifier = Modifier.weight(1f),
                     enabled = !submitting && request.capabilities.canApprove,
                 ) {
@@ -431,7 +435,14 @@ private fun DecisionDialog(
         val rejecting = initialDecision is ApprovalDecision.Reject
         val reasonRequired = rejecting &&
             request.capabilities.rejectionReasonPolicy == RejectionReasonPolicy.REQUIRED
+        // مرجع استرداد البطاقة لطلبات إلغاء البيع ببطاقة وحدها — نظير حقل الويب (تعميم PR #997).
+        // بلا تعبئةٍ مسبقة عمداً: العقد الحاليّ لا يرسل مرجع الطالب الخام، إنما نصّاً عرضياً قد
+        // يكون نائب «لم يُدخَل بعد» — تعبئته في حقلٍ قابلٍ للتعديل تخاطر بإرساله كأنه مرجعٌ فعليّ.
+        // الحقل يبقى فارغاً بلا مساس بمرجع الطلب (`resolveCardReferenceInput` غير المُلمَس).
+        val needsCardReference = !rejecting && request.needsCardCancelReference
         var reason by remember { mutableStateOf("") }
+        var cardReferenceText by remember { mutableStateOf("") }
+        var cardReferenceTouched by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = onDismiss,
             icon = {
@@ -455,12 +466,43 @@ private fun DecisionDialog(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+                    if (needsCardReference) {
+                        request.cardCancelReferenceFact?.let { fact -> DetailLine(fact.label, fact.value) }
+                        OutlinedTextField(
+                            value = cardReferenceText,
+                            onValueChange = {
+                                cardReferenceTouched = true
+                                if (it.length <= 100) cardReferenceText = it
+                            },
+                            label = { Text("مرجع جهاز الدفع") },
+                            supportingText = {
+                                Text(
+                                    "اختياريّ — اتركه لقبول مرجع الطالب أعلاه كما هو. اكتب مرجعاً جديداً لتغييره، " +
+                                        "أو اكتب ثمّ امسحه بالكامل لرفض المرجع الحالي عمداً — يفشل الاعتماد فوراً بلا أثر.",
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onConfirm(if (rejecting) ApprovalDecision.Reject(reason.trim().takeIf { it.isNotEmpty() }) else ApprovalDecision.Approve)
+                        onConfirm(
+                            if (rejecting) {
+                                ApprovalDecision.Reject(reason.trim().takeIf { it.isNotEmpty() })
+                            } else {
+                                ApprovalDecision.Approve(
+                                    cardReference = if (needsCardReference) {
+                                        resolveCardReferenceInput(cardReferenceTouched, cardReferenceText)
+                                    } else {
+                                        CardReferenceInput.Untouched
+                                    },
+                                )
+                            },
+                        )
                     },
                     enabled = !reasonRequired || reason.isNotBlank(),
                     colors = if (rejecting) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)

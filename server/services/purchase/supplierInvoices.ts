@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   purchaseReturnReversals,
   purchaseReturns,
@@ -885,7 +885,11 @@ export async function decideSupplierInvoiceApproval(
       });
     const decidedAt = new Date();
     if (input.action === "REJECT") {
-      if (Number(request.requestedBy) === actor.userId)
+      // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — هذا الفحص سابقٌ على استدعاء
+      // assertApprover أدناه (الرفضُ يعود مبكراً قبل الوصول إليه، مراجعة Codex على #998)،
+      // فيلزم نفس الاستثناء هنا صراحةً وإلّا بقي المالك عاجزاً عن سحب طلبه هو نفسه.
+      const rejectApprover = await resolveApprovalActor(tx, actor);
+      if (!rejectApprover.isOwner && Number(request.requestedBy) === actor.userId)
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "فصل المهام: منشئ الطلب لا يرفضه أو يعتمده",
@@ -937,11 +941,15 @@ export async function decideSupplierInvoiceApproval(
     // بالفعل لا بالإجراء: **الترحيل** ينشئ ذمّةً جديدة (لا مالٌ خرج ولا أثرٌ قائمٌ مُحي)
     // ⇒ لا بوّابة؛ و**العكس** محوُ أثرٍ مُثبَت (قيدٌ عكسيّ + إنقاصُ رصيد المورّد + الحالة
     // REVERSED التي لا كاتبَ لها سواه) ⇒ المالك حصراً. والرفضُ حرٌّ في الحالتين.
+    // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — توسيعُ قرار ٣/٩/٢٦ (voucher/approval.ts)
+    // إلى هذا المسار. بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
+    const supplierInvoiceApprovalApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
       subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
       legacy: () => {
+        if (supplierInvoiceApprovalApprover.isOwner) return;
         if (
           Number(request.requestedBy) === actor.userId ||
           Number(invoice.createdBy) === actor.userId
@@ -981,11 +989,14 @@ export async function decideSupplierInvoiceApproval(
           message: "المطابقة محجوزة أو تغيّرت بعد إجرائها — أعد تشغيل المطابقة ثم أعد الطلب",
         });
       }
+      // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — نفسُ التوسيع أعلى الدالّة.
+      const supplierInvoiceMatchApprover = await resolveApprovalActor(tx, actor);
       assertApprover({
         actor: await resolveApprovalActor(tx, actor),
         trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
         subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
         legacy: () => {
+          if (supplierInvoiceMatchApprover.isOwner) return;
           if (Number(match.performedBy) === actor.userId) {
             throw new TRPCError({
               code: "FORBIDDEN",
@@ -1262,6 +1273,8 @@ export async function listPendingSupplierInvoiceApprovals(
 ) {
   if (actor.role !== "admin" && actor.branchId !== branchId)
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك عرض فرع آخر" });
+  // ⭐ لا فلترةَ بـ`requestedBy` هنا (خلافاً لنسخةٍ سابقة كانت تستعمل `ne(...)`) — راجع
+  // التعليق الموازي على `listPendingGoodsReceiptReversals` في goodsReceipts.ts.
   return withTx(
     (tx) =>
       tx
@@ -1271,7 +1284,6 @@ export async function listPendingSupplierInvoiceApprovals(
           and(
             eq(supplierInvoiceApprovalRequests.branchId, branchId),
             eq(supplierInvoiceApprovalRequests.status, "PENDING"),
-            ne(supplierInvoiceApprovalRequests.requestedBy, actor.userId),
           ),
         )
         .orderBy(asc(supplierInvoiceApprovalRequests.requestedAt)),

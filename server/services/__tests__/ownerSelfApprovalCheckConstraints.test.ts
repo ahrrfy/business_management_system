@@ -5,6 +5,12 @@
 // أو مرتجعَ شراءٍ أو مسيّرَ استقطاعٍ أنشأه هو بنفسه كان يُقابَل بخطأ MySQL خامّ
 // (ER_CHECK_CONSTRAINT_VIOLATED)، رغم أنّ طبقة التطبيق تسمح له. الهجرة 0333 أسقطت الستّة.
 // راجع ذاكرة [[owner-decision-no-second-approval-2026-09-03]] للتفصيل الكامل.
+//
+// ⭐ توسيعُ القرار (٤/٩/٢٦): ثلاثةُ جداولٍ إضافية من مسارات حوكمة المشتريات — طلب الشراء
+// الداخليّ · عكس استلام البضاعة · اعتماد/عكس فاتورة المورّد. الهجرة 0334 أسقطت قيودها.
+// إثباتُها الفعليّ (لا الكتالوجيّ وحسب) عبر سلسلة الخدمة الكاملة لا إدراجٍ خامّ — راجع
+// server/services/__tests__/purchaseGovernanceS1S2.test.ts («S2ب») و
+// server/services/__tests__/financialHardening2.test.ts («#7»).
 import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -24,10 +30,13 @@ const DROPPED_MAKER_CHECKER_CONSTRAINTS: ReadonlyArray<{ table: string; constrai
   { table: "supplierPaymentRefundRequests", constraint: "chk_supplier_payment_refund_maker_checker" },
   { table: "purchaseChargeControlRequests", constraint: "chk_purchase_charge_control_maker_checker" },
   { table: "payrollRemittanceRequests", constraint: "chk_payroll_remittance_maker_checker" },
+  { table: "purchaseRequisitionControlRequests", constraint: "chk_purchase_req_control_maker_checker" },
+  { table: "goodsReceiptReversalRequests", constraint: "chk_grn_reversal_request_maker_checker" },
+  { table: "supplierInvoiceApprovalRequests", constraint: "chk_supplier_invoice_approval_maker_checker" },
 ];
 
-describe("owner self-approval — maker-checker CHECK constraints (٣/٩/٢٦، هجرة 0333)", () => {
-  it("لا يبقى أيٌّ من الستّة قيوداً فعلياً على المخطّط الحالي", async () => {
+describe("owner self-approval — maker-checker CHECK constraints (٣/٩/٢٦ هجرة 0333 + ٤/٩/٢٦ هجرة 0334)", () => {
+  it("لا يبقى أيٌّ من التسعة قيوداً فعلياً على المخطّط الحالي", async () => {
     const [rows] = (await db().execute(sql`
       SELECT table_name AS tableName, constraint_name AS constraintName
       FROM information_schema.table_constraints

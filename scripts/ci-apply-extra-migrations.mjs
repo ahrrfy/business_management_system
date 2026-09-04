@@ -217,6 +217,9 @@ const EXTRA_MIGRATIONS = [
   // مسبقاً (كإنتاج، أو دفعٍ تزايديّ لم يُعِد بناء الجدول) تبقى على الصيغة القديمة بصمتٍ —
   // نفس فخّ #675/0326.
   "drizzle/migrations/0333_owner_selfapproval_checkconstraints.sql",
+  // ٤/٩/٢٦: تُسقط ثلاثة قيود CHECK maker-checker قائمة (توسيعُ قرار المالك ٣/٩/٢٦ على
+  // مسارات حوكمة مشترياتٍ إضافية) — نفس فخّ #675/0326/0333.
+  "drizzle/migrations/0334_purchases_owner_selfapproval_checkconstraints.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
