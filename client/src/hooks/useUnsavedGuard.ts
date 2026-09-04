@@ -12,9 +12,17 @@ import { noteInteraction } from "@/lib/interactionDraft";
  *    فطور التقاط `document` يسبقه). عند dirty=true يستدعي `preventDefault` +
  *    `stopPropagation`، ويعرض `confirm()` عربيّاً موحّداً؛ إن قبل المستخدم المغادرة، ينفّذ
  *    `history.pushState` — وwouter monkey-patches الدالّة فتُحدَّث الشجرة تلقائياً.
- * 3. **⭐ زر الرجوع في المتصفّح (`popstate`)**: `popstate` يُطلَق **بعد** تغيّر URL ولا يمكن
+ * 3. **⭐ التنقّل البرمجيّ عبر wouter (`navigate()`) أو أيّ استدعاءٍ لـ`pushState`/`replaceState`**:
+ *    نُرصّع الدالّتين — نحتفظ بالأصليّتين ونبدّلهما بغلافٍ يفحص `anyDirty()` **قبل** التنفيذ.
+ *    عند dirty=true وتغيّر المسار، يوقف الغلاف نداء الأصليّة ويعرض الحوار؛ بعد قبول
+ *    المستخدم يُستدعى المرجعُ الأصليّ ذاته بنفس الوسائط. علَم `bypassPopstate`
+ *    (وحيدُ الاستعمال داخل الوحدة) يمنع إعادة الاعتراض على استرجاعنا الداخليّ.
+ *    (كان الرصعُ سابقاً يقرأ `lastPath` **بعد** التنفيذ فقط — فيمرّ `navigate()` بلا حوار.)
+ * 4. **⭐ زر الرجوع في المتصفّح (`popstate`)**: `popstate` يُطلَق **بعد** تغيّر URL ولا يمكن
  *    إلغاؤه؛ فنستعيد المسار السابق فوراً بـ`pushState` ثمّ نعرض الحوار — إن قبل المستخدم،
- *    نُعيد الانتقال إلى المسار الذي حاول الوصول إليه.
+ *    نطلق `history.back()` **مرّةً واحدة** بعلَم `bypassPopstate` (بدل `pushState` جديد كان
+ *    يُنتج سجلَّ `[A, B, A]` فيعود Back القادم إلى B لا X). المعالج يفحص العلَم قبل أيّ
+ *    منطقٍ ويعود صامتاً — فيُتمّ المتصفّح المسار الأصليّ للمستخدم بلا تراكم سجلّ.
  *
  * **سبب التصميم بسجلٍّ مركزيّ**: قد يكون في الشجرة أكثر من نموذجٍ يستدعي الحارس (مثل
  * محرّر ضمن حوار داخل شاشة قابلة للتعديل). نُبقي مجموعةً واحدة (`dirty: Set<string>`)
@@ -35,6 +43,22 @@ import { noteInteraction } from "@/lib/interactionDraft";
 const dirty = new Set<string>();
 let installed = false;
 let lastPath = "";
+
+/**
+ * ⭐ مراجع الأصليّتين قبل الترقيع (Codex #979 P1). نحتفظ بها لسببين:
+ *  - `uninstall()` يستعيدها فنترك التاريخَ نظيفاً بلا آثار رَصعنا.
+ *  - `handlePopState` يستعمل `originalPushState` مباشرةً لاسترجاع URL بلا استفزاز
+ *     الغلاف الجديد لفتح حوارٍ متكرّر (re-entrancy).
+ */
+let originalPushState: History["pushState"] | null = null;
+let originalReplaceState: History["replaceState"] | null = null;
+
+/**
+ * ⭐ علَم يُستهلَك مرّة واحدة (Codex #979 P2). نضبطه قبل `history.back()` عند قبول
+ * المستخدم المغادرة عبر Back؛ يفحصه معالج `popstate` أوّلاً ويصفّره ويعود بلا حوار —
+ * فيُتمّ المتصفّح المسار الأصليّ بلا سؤالٍ ثانٍ وبلا `pushState` يُضيف سجلاً مكرّراً.
+ */
+let bypassPopstate = false;
 
 function currentPath(): string {
   if (typeof window === "undefined") return "";
@@ -159,6 +183,67 @@ function extractIntentFromEvent(event: MouseEvent): ClickIntent | null {
 }
 
 // -----------------------------------------------------------------------------
+// ⭐ رصعُ pushState/replaceState — يعترض التنقّل البرمجيّ (Codex #979 P1)
+// -----------------------------------------------------------------------------
+
+/**
+ * يُحلّل الوسيط `url` لدالّة `pushState`/`replaceState` إلى `pathname+search+hash` داخل
+ * origin الحاليّ. يُرجع `null` إن كان الوسيط `undefined`/`null` أو `URL` غير قابل للحلّ أو
+ * origin مختلف (فتلك حالاتٌ لا نعترضها).
+ */
+function targetPathFromHistoryUrl(
+  url: string | URL | null | undefined,
+): string | null {
+  if (url === undefined || url === null) return null;
+  if (typeof window === "undefined") return null;
+  try {
+    const resolved = new URL(String(url), window.location.href);
+    if (resolved.origin !== window.location.origin) return null;
+    return resolved.pathname + resolved.search + resolved.hash;
+  } catch {
+    return null;
+  }
+}
+
+type HistoryStateFn = History["pushState"] | History["replaceState"];
+
+/**
+ * يُنتج غلافاً حول `history.pushState` أو `history.replaceState` يفحص `anyDirty()` قبل
+ * تنفيذ التنقّل. ثلاثة مسارات:
+ *  - غير dirty ⇒ نداءٌ مباشر للأصليّة.
+ *  - dirty لكن `url` غيرُ قابلٍ للاعتراض (فارغ، أو origin آخر، أو نفس المسار الحاليّ) ⇒ مباشر.
+ *  - dirty وanتقالٌ حقيقيّ ⇒ نوقف النداء، نفتح الحوار، وعند القبول نُطلق الأصليّة **بذات
+ *     الوسائط**. الرفض يترك URL بلا تغيير.
+ *
+ * ⚠️ التنقّل يصير غيرَ متزامنٍ عمداً (المتّصل `wouter.navigate()` لا يفحص القيمة المُرجَعة).
+ */
+function makeHistoryInterceptor(original: HistoryStateFn): HistoryStateFn {
+  return function interceptor(
+    this: History,
+    state: unknown,
+    title: string,
+    url?: string | URL | null,
+  ): void {
+    if (!anyDirty()) {
+      original.call(this, state, title, url);
+      return;
+    }
+    const target = targetPathFromHistoryUrl(url);
+    if (target === null || target === currentPath()) {
+      // لا نعترض: URL غيرُ محلّي، أو نفس المسار (نمطُ replaceState الشائع في React).
+      original.call(this, state, title, url);
+      return;
+    }
+    void promptLeaveUnsaved().then((ok) => {
+      if (!ok) return;
+      // ⭐ المرجع الأصليّ ذاته (المحفوظ قبل الرَصع) بنفس الوسائط.
+      original.call(window.history, state, title, url);
+      lastPath = target;
+    });
+  } as HistoryStateFn;
+}
+
+// -----------------------------------------------------------------------------
 // مستمعو DOM
 // -----------------------------------------------------------------------------
 
@@ -186,6 +271,12 @@ function handleBeforeUnload(event: BeforeUnloadEvent): void {
 }
 
 function handlePopState(_event: PopStateEvent): void {
+  // ⭐ Codex #979 P2: علَم يُستهلَك مرّة واحدة لتجاوز `back()` الذي أطلقناه بأنفسنا.
+  if (bypassPopstate) {
+    bypassPopstate = false;
+    lastPath = currentPath();
+    return;
+  }
   const attempted = currentPath();
   if (!anyDirty()) {
     lastPath = attempted;
@@ -194,14 +285,19 @@ function handlePopState(_event: PopStateEvent): void {
   if (attempted === lastPath) return;
   const restore = lastPath;
   // نُعيد URL فوراً قبل عرض الحوار — حتى لا يظهر «شاشة الوجهة» خلف الحوار.
-  window.history.pushState(null, "", restore);
+  // نستعمل **الأصليّة** مباشرةً لتجاوز رَصعنا (وإلّا فتح غلاف pushState حواراً ثانياً).
+  const rawPushState =
+    originalPushState ?? window.history.pushState.bind(window.history);
+  rawPushState.call(window.history, null, "", restore);
   void promptLeaveUnsaved().then((ok) => {
     if (!ok) {
       lastPath = restore;
       return;
     }
-    window.history.pushState(null, "", attempted);
-    lastPath = attempted;
+    // ⭐ Codex #979 P2: `history.back()` بعلَم bypass — يُتمّ المسار الأصليّ للمستخدم
+    // بلا `pushState` جديد يُنتج تراكم `[A, B, A]`. المعالج يفحص العلَم أوّلاً ويعود صامتاً.
+    bypassPopstate = true;
+    window.history.back();
   });
 }
 
@@ -219,6 +315,16 @@ function install(): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
   installed = true;
   lastPath = currentPath();
+  // ⭐ Codex #979 P1: احفظ الأصليّتين (قد تكونان مُرَصَّعتَين مسبقاً بـwouter — لا يهمّ،
+  // نغلف الحالة الراهنة ونعيدها كما هي عند `uninstall`)، ثمّ ركّب الغلاف.
+  originalPushState = window.history.pushState;
+  originalReplaceState = window.history.replaceState;
+  window.history.pushState = makeHistoryInterceptor(
+    originalPushState,
+  ) as History["pushState"];
+  window.history.replaceState = makeHistoryInterceptor(
+    originalReplaceState,
+  ) as History["replaceState"];
   // capture=true: نسبق مُعالج React الاصطناعيّ لـ`<Link>` (المربوط على جذر التطبيق).
   document.addEventListener("click", handleClickCapture, true);
   window.addEventListener("popstate", handlePopState);
@@ -231,6 +337,12 @@ function uninstall(): void {
   if (!installed) return;
   if (typeof window === "undefined" || typeof document === "undefined") return;
   installed = false;
+  // ⭐ Codex #979 P1: استعادة الأصليّتين — تنظيفٌ متماثلٌ للرَصع.
+  if (originalPushState) window.history.pushState = originalPushState;
+  if (originalReplaceState) window.history.replaceState = originalReplaceState;
+  originalPushState = null;
+  originalReplaceState = null;
+  bypassPopstate = false;
   document.removeEventListener("click", handleClickCapture, true);
   window.removeEventListener("popstate", handlePopState);
   window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -277,6 +389,10 @@ export function useUnsavedGuard(isDirty: boolean): void {
 export const __TEST_ONLY__ = {
   shouldInterceptAnchorClick,
   resolveNavigationAfterPrompt,
+  targetPathFromHistoryUrl,
+  handlePopState,
+  install,
+  uninstall,
   register(id: string): void {
     dirty.add(id);
   },
@@ -284,9 +400,14 @@ export const __TEST_ONLY__ = {
     dirty.delete(id);
   },
   reset(): void {
+    // نُنظّف الرَصع أوّلاً حتى نعيد globalThis.history إلى الأصليّة قبل حذف الاختبار للـstubs.
+    uninstall();
     dirty.clear();
     installed = false;
     lastPath = "";
+    originalPushState = null;
+    originalReplaceState = null;
+    bypassPopstate = false;
   },
   anyDirty,
   isInstalled: () => installed,
