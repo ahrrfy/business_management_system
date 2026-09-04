@@ -318,7 +318,10 @@ export default function StocktakeReview() {
       else
         notify.ok(
           "اعتُمدت الجلسة ونُفّذت التسوية",
-          `${nf(r.adjustedCount)} حركة تسوية — عجز ${money(r.shortExpense)} · زيادة ${money(r.overGain)}`,
+          `${nf(r.adjustedCount)} حركة تسوية — عجز ${money(r.shortExpense)} · زيادة ${money(r.overGain)}` +
+            (r.negativeSettlements > 0
+              ? ` — ${nf(r.negativeSettlements)} صنف بأرصدة سالبة (راجع تقرير السوالب)`
+              : ""),
         );
       await invalidate();
       navigate(`/stocktakes/${sessionId}/report`);
@@ -646,6 +649,14 @@ export default function StocktakeReview() {
   const noReasonCount = rows.filter(
     (r: Row) =>
       r.diff != null && r.diff !== 0 && effReason(r) === "UNSPECIFIED",
+  ).length;
+  /* بيعٌ استمرّ بعد العدّ وتجاوزه ⇒ العدّ المصحَّح سالب. تُثبَّت برصيدها الحقيقي عند الاعتماد
+   * (لا تُحجَب — انظر finalize.ts) وتظهر في تقرير السوالب؛ هذا العدّ للتنبيه المسبق فقط. */
+  const negativeSettleCount = rows.filter(
+    (r: Row) =>
+      r.adjustedCount != null &&
+      r.adjustedCount < 0 &&
+      r.decision?.action !== "KEEP",
   ).length;
   const hasShort = D(ledgerPreview.shortExpense).gt(0);
   const hasOver = D(ledgerPreview.overGain).gt(0);
@@ -1424,6 +1435,8 @@ export default function StocktakeReview() {
                 const recPending = r.recount?.status === "PENDING";
                 const recDone = r.recount?.status === "DONE";
                 const uncounted = r.rawCount == null;
+                const willSettleNegative =
+                  r.adjustedCount != null && r.adjustedCount < 0;
                 const movesTitle = r.movesAfter
                   .map(
                     (m: {
@@ -1593,7 +1606,7 @@ export default function StocktakeReview() {
                     </td>
                     {/* المعدود المصحَّح */}
                     <td
-                      className="p-2.5 text-center font-mono font-bold tabular-nums"
+                      className={`p-2.5 text-center font-mono font-bold tabular-nums ${willSettleNegative ? "text-[var(--sem-neg)]" : ""}`}
                       dir="ltr"
                     >
                       {r.adjustedCount == null ? (
@@ -1601,16 +1614,26 @@ export default function StocktakeReview() {
                       ) : (
                         <span
                           title={
-                            r.netAfter !== 0 && autoAdjust && r.rawCount != null
-                              ? `العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة`
-                              : ""
+                            willSettleNegative
+                              ? `بيعٌ استمرّ بعد العدّ وتجاوزه — العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة. يُثبَّت برصيده السالب الحقيقي عند الاعتماد ويظهر في تقرير السوالب.`
+                              : r.netAfter !== 0 && autoAdjust && r.rawCount != null
+                                ? `العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة`
+                                : ""
                           }
                         >
                           {nf(r.adjustedCount)}
-                          {r.netAfter !== 0 && autoAdjust && (
-                            <span className="text-[10px] text-[var(--sem-info)]">
-                              *
-                            </span>
+                          {willSettleNegative ? (
+                            <AlertTriangle
+                              aria-hidden
+                              className="ms-0.5 inline size-3 text-[var(--sem-neg)]"
+                            />
+                          ) : (
+                            r.netAfter !== 0 &&
+                            autoAdjust && (
+                              <span className="text-[10px] text-[var(--sem-info)]">
+                                *
+                              </span>
+                            )
                           )}
                         </span>
                       )}
@@ -1717,6 +1740,15 @@ export default function StocktakeReview() {
                             title={`قيمة الفرق تتجاوز حدّ التوقيعين ${money(s.dualThreshold)}`}
                           >
                             <Pen aria-hidden className="size-3" /> توقيعان
+                          </Pill>
+                        )}
+                        {willSettleNegative && (
+                          <Pill
+                            tone="rose"
+                            title="بيعٌ استمرّ بعد العدّ وتجاوزه — سيُثبَّت الرصيد سالباً حقيقياً عند الاعتماد بدل حجب الجلسة، ويظهر في تقرير السوالب للمتابعة."
+                          >
+                            <AlertTriangle aria-hidden className="size-3" />{" "}
+                            سيُسجَّل سالباً
                           </Pill>
                         )}
                         {recDone && !conflictOpen && (
@@ -2334,6 +2366,19 @@ export default function StocktakeReview() {
                   {nf(noReasonCount)} فرق بلا سبب محدد — يُنصح بتصنيفها
                   (تلف/فقدان/خطأ إدخال) ليصدق تقرير الانكماش السنوي. يمكنك
                   المتابعة على أي حال.
+                </span>
+              </p>
+            )}
+            {negativeSettleCount > 0 && (
+              <p className="flex items-start gap-1.5 rounded-md bg-money-negative/10 px-3 py-2 text-xs text-money-negative">
+                <AlertTriangle
+                  aria-hidden
+                  className="mt-0.5 size-3.5 shrink-0"
+                />
+                <span>
+                  {nf(negativeSettleCount)} صنف سيُثبَّت برصيدٍ سالب حقيقي —
+                  بيعٌ استمرّ بعد العدّ وتجاوزه. لن يُحجَب الاعتماد بسببها؛
+                  ستظهر في تقرير السوالب (المخزون ← تقرير السوالب) للمتابعة.
                 </span>
               </p>
             )}
