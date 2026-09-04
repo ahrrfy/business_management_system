@@ -26,6 +26,10 @@ beforeEach(async () => {
     "payrollRuns",
     "supplierPayments",
     "payrollRemittanceRequests",
+    "goodsReceiptReversalRequests",
+    "goodsReceipts",
+    "supplierInvoiceApprovalRequests",
+    "supplierInvoices",
     "expenses",
     "receipts",
     "branches",
@@ -210,6 +214,146 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
     const records = await listSelfApprovalRecords();
     expect(records.some((r) => r.subject === "SUPPLIER-PAY-REQ:1")).toBe(false);
     expect(records.some((r) => r.amount === "640000.00")).toBe(false);
+  });
+
+  describe("توسيعُ قرار المالك (٤/٩/٢٦) على المشتريات — عكس استلام + عكس فاتورة مورّد", () => {
+    it("عكسُ استلامٍ اعتمده المالك على طلبه هو نفسه يظهر بمبلغ الإذن؛ الرفضُ (بلا بوّابة) لا يظهر", async () => {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      try {
+        await db().insert(s.goodsReceipts).values({
+          id: 1,
+          receiptNumber: "GRN-SELF-APPROVAL-1",
+          clientRequestId: "grn-self-approval-1",
+          origin: "LEGACY_AGGREGATE",
+          purchaseOrderId: 9001,
+          supplierId: 9001,
+          branchId: 1,
+          currency: "IQD",
+          netAmount: "800000.00",
+          taxAmount: "0.00",
+          totalAmount: "800000.00",
+          payloadCanonical: "{}",
+          payloadHash: "c".repeat(64),
+        });
+        await db().insert(s.goodsReceiptReversalRequests).values({
+          requestKey: "grn-reversal-self-approval-1",
+          goodsReceiptId: 1,
+          branchId: 1,
+          baseReceiptVersion: 1,
+          payloadCanonical: "{}",
+          payloadHash: "d".repeat(64),
+          reason: "اختبار",
+          status: "APPROVED",
+          requestedBy: 1,
+          requestedAt: new Date(),
+          reviewedBy: 1,
+          reviewedAt: new Date(),
+          decisionKey: "grn-reversal-self-approval-decision-1",
+          decisionHash: "e".repeat(64),
+          appliedAt: new Date(),
+        });
+        // طلبٌ آخر مرفوضٌ (REJECT بلا بوّابة أصلاً — لا معنى لاعتمادٍ ذاتيّ عليه) — يجب ألّا يظهر.
+        await db().insert(s.goodsReceiptReversalRequests).values({
+          requestKey: "grn-reversal-self-rejected-1",
+          goodsReceiptId: 1,
+          branchId: 1,
+          baseReceiptVersion: 1,
+          payloadCanonical: "{}",
+          payloadHash: "f".repeat(64),
+          reason: "اختبار رفض",
+          status: "REJECTED",
+          requestedBy: 1,
+          requestedAt: new Date(),
+          reviewedBy: 1,
+          reviewedAt: new Date(),
+          decisionKey: "grn-reversal-self-rejected-decision-1",
+          decisionHash: "1".repeat(64),
+        });
+      } finally {
+        await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+      }
+
+      const records = await listSelfApprovalRecords();
+      const record = records.find((r) => r.kind === "goodsReceiptReversal");
+      expect(record).toBeDefined();
+      expect(record?.subject).toBe("عكس GRN-SELF-APPROVAL-1");
+      expect(record?.amount).toBe("800000.00");
+      expect(record?.actorUserId).toBe(1);
+      expect(records.filter((r) => r.kind === "goodsReceiptReversal")).toHaveLength(1);
+    });
+
+    it("عكسُ فاتورة موردٍ اعتمده المالك على طلبه هو نفسه يظهر بمبلغ الفاتورة؛ ترحيلُها (بلا بوّابة) لا يظهر", async () => {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+      try {
+        await db().insert(s.supplierInvoices).values({
+          id: 1,
+          invoiceNumber: "SINV-SELF-APPROVAL-1",
+          clientRequestId: "sinv-self-approval-1",
+          externalInvoiceNumber: "EXT-SELF-APPROVAL-1",
+          externalNumberNorm: "EXT-SELF-APPROVAL-1",
+          supplierId: 9001,
+          branchId: 1,
+          invoiceDate: new Date().toISOString().slice(0, 10),
+          currency: "IQD",
+          subtotal: "450000.00",
+          taxAmount: "0.00",
+          discountAmount: "0.00",
+          totalAmount: "450000.00",
+          payloadCanonical: "{}",
+          payloadHash: "a1".padEnd(64, "0"),
+          evidenceReference: "دليل اختباريّ",
+          createdBy: 1,
+        });
+        await db().insert(s.supplierInvoiceApprovalRequests).values({
+          requestKey: "sinv-reversal-self-approval-1",
+          supplierInvoiceId: 1,
+          branchId: 1,
+          kind: "REVERSE_INVOICE",
+          baseInvoiceVersion: 1,
+          payloadCanonical: "{}",
+          payloadHash: "b1".padEnd(64, "0"),
+          reason: "اختبار",
+          status: "APPROVED",
+          requestedBy: 1,
+          requestedAt: new Date(),
+          reviewedBy: 1,
+          reviewedAt: new Date(),
+          decisionKey: "sinv-reversal-self-approval-decision-1",
+          decisionHash: "c1".padEnd(64, "0"),
+          appliedAt: new Date(),
+        });
+        // طلبُ ترحيلٍ (POST_INVOICE بلا بوّابة أصلاً — ينشئ ذمّةً لا يمحو أثراً) — يجب ألّا يظهر
+        // حتى لو تساوى فيه المُنشئ والمُقرِّر.
+        await db().insert(s.supplierInvoiceApprovalRequests).values({
+          requestKey: "sinv-post-self-approval-1",
+          supplierInvoiceId: 1,
+          branchId: 1,
+          kind: "POST_INVOICE",
+          baseInvoiceVersion: 1,
+          payloadCanonical: "{}",
+          payloadHash: "d1".padEnd(64, "0"),
+          reason: "اختبار ترحيل",
+          status: "APPROVED",
+          requestedBy: 1,
+          requestedAt: new Date(),
+          reviewedBy: 1,
+          reviewedAt: new Date(),
+          decisionKey: "sinv-post-self-approval-decision-1",
+          decisionHash: "e1".padEnd(64, "0"),
+          appliedAt: new Date(),
+        });
+      } finally {
+        await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+      }
+
+      const records = await listSelfApprovalRecords();
+      const record = records.find((r) => r.kind === "supplierInvoiceReversal");
+      expect(record).toBeDefined();
+      expect(record?.subject).toBe("عكس فاتورة SINV-SELF-APPROVAL-1");
+      expect(record?.amount).toBe("450000.00");
+      expect(record?.actorUserId).toBe(1);
+      expect(records.filter((r) => r.kind === "supplierInvoiceReversal")).toHaveLength(1);
+    });
   });
 
   describe("اعتماد استحقاق مسيّر — تطابق revisionNo (مراجعة Codex الثانية على #984)", () => {

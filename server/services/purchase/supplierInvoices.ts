@@ -937,11 +937,15 @@ export async function decideSupplierInvoiceApproval(
     // بالفعل لا بالإجراء: **الترحيل** ينشئ ذمّةً جديدة (لا مالٌ خرج ولا أثرٌ قائمٌ مُحي)
     // ⇒ لا بوّابة؛ و**العكس** محوُ أثرٍ مُثبَت (قيدٌ عكسيّ + إنقاصُ رصيد المورّد + الحالة
     // REVERSED التي لا كاتبَ لها سواه) ⇒ المالك حصراً. والرفضُ حرٌّ في الحالتين.
+    // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — توسيعُ قرار ٣/٩/٢٦ (voucher/approval.ts)
+    // إلى هذا المسار. بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
+    const supplierInvoiceApprovalApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
       subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
       legacy: () => {
+        if (supplierInvoiceApprovalApprover.isOwner) return;
         if (
           Number(request.requestedBy) === actor.userId ||
           Number(invoice.createdBy) === actor.userId
@@ -981,11 +985,14 @@ export async function decideSupplierInvoiceApproval(
           message: "المطابقة محجوزة أو تغيّرت بعد إجرائها — أعد تشغيل المطابقة ثم أعد الطلب",
         });
       }
+      // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — نفسُ التوسيع أعلى الدالّة.
+      const supplierInvoiceMatchApprover = await resolveApprovalActor(tx, actor);
       assertApprover({
         actor: await resolveApprovalActor(tx, actor),
         trigger: supplierInvoiceApprovalTrigger(request.kind, input.action),
         subject: `فاتورة المورّد ${invoice.invoiceNumber}`,
         legacy: () => {
+          if (supplierInvoiceMatchApprover.isOwner) return;
           if (Number(match.performedBy) === actor.userId) {
             throw new TRPCError({
               code: "FORBIDDEN",

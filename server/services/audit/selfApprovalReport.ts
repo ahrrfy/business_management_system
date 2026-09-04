@@ -88,6 +88,8 @@ export async function listSelfApprovalRecords(
     purchaseChargeRows,
     purchaseReturnRows,
     purchaseReturnReversalRows,
+    goodsReceiptReversalRows,
+    supplierInvoiceReversalRows,
     payrollAccrualRows,
     payrollAccrualZeroCompRows,
     payrollPaidRows,
@@ -274,6 +276,69 @@ export async function listSelfApprovalRecords(
           sql`${s.purchaseReturnReversalRequests.requestedBy} = ${s.purchaseReturnReversalRequests.reviewedBy}`,
           ...dateBound(
             sql`COALESCE(${s.purchaseReturnReversalRequests.reviewedAt}, ${s.purchaseReturnReversalRequests.requestedAt})`,
+            from,
+            to,
+          ),
+        ),
+      ),
+    // ⭐ توسيعُ قرار المالك (٤/٩/٢٦) على المشتريات: عكسُ استلام البضاعة — الاعتمادُ فقط
+    // (goodsReceiptReversalTrigger: APPROVE ⇒ ERASE_EFFECT، وREJECT بلا بوّابة أصلاً فلا
+    // يُقاس عليه اعتمادٌ ذاتيّ). `goodsReceipts.totalAmount` عمودٌ محسوبٌ على الرأس
+    // (netAmount+taxAmount) فلا حاجة لتجميع بنودٍ.
+    db
+      .select({
+        id: s.goodsReceiptReversalRequests.id,
+        amount: s.goodsReceipts.totalAmount,
+        receiptNumber: s.goodsReceipts.receiptNumber,
+        branchId: s.goodsReceiptReversalRequests.branchId,
+        reviewedBy: s.goodsReceiptReversalRequests.reviewedBy,
+        reviewedAt: s.goodsReceiptReversalRequests.reviewedAt,
+        requestedAt: s.goodsReceiptReversalRequests.requestedAt,
+        approverName: s.users.name,
+        approverUsername: s.users.username,
+        approverEmail: s.users.email,
+      })
+      .from(s.goodsReceiptReversalRequests)
+      .leftJoin(s.goodsReceipts, eq(s.goodsReceipts.id, s.goodsReceiptReversalRequests.goodsReceiptId))
+      .leftJoin(s.users, eq(s.users.id, s.goodsReceiptReversalRequests.reviewedBy))
+      .where(
+        and(
+          eq(s.goodsReceiptReversalRequests.status, "APPROVED"),
+          sql`${s.goodsReceiptReversalRequests.requestedBy} = ${s.goodsReceiptReversalRequests.reviewedBy}`,
+          ...dateBound(
+            sql`COALESCE(${s.goodsReceiptReversalRequests.reviewedAt}, ${s.goodsReceiptReversalRequests.requestedAt})`,
+            from,
+            to,
+          ),
+        ),
+      ),
+    // ⭐ توسيعُ قرار المالك (٤/٩/٢٦): عكسُ فاتورة المورّد — `kind='REVERSE_INVOICE'` فقط
+    // (supplierInvoiceApprovalTrigger: POST_INVOICE ⇒ null دائماً — ينشئ ذمّةً لا يمحو
+    // أثراً ⇒ لا بوّابة أصلاً فلا معنى لـ«اعتمادٍ ذاتيّ» عليه؛ REVERSE_INVOICE+اعتماد فقط
+    // ⇒ ERASE_EFFECT الحقيقيّ الوحيد هنا).
+    db
+      .select({
+        id: s.supplierInvoiceApprovalRequests.id,
+        amount: s.supplierInvoices.totalAmount,
+        invoiceNumber: s.supplierInvoices.invoiceNumber,
+        branchId: s.supplierInvoiceApprovalRequests.branchId,
+        reviewedBy: s.supplierInvoiceApprovalRequests.reviewedBy,
+        reviewedAt: s.supplierInvoiceApprovalRequests.reviewedAt,
+        requestedAt: s.supplierInvoiceApprovalRequests.requestedAt,
+        approverName: s.users.name,
+        approverUsername: s.users.username,
+        approverEmail: s.users.email,
+      })
+      .from(s.supplierInvoiceApprovalRequests)
+      .leftJoin(s.supplierInvoices, eq(s.supplierInvoices.id, s.supplierInvoiceApprovalRequests.supplierInvoiceId))
+      .leftJoin(s.users, eq(s.users.id, s.supplierInvoiceApprovalRequests.reviewedBy))
+      .where(
+        and(
+          eq(s.supplierInvoiceApprovalRequests.kind, "REVERSE_INVOICE"),
+          eq(s.supplierInvoiceApprovalRequests.status, "APPROVED"),
+          sql`${s.supplierInvoiceApprovalRequests.requestedBy} = ${s.supplierInvoiceApprovalRequests.reviewedBy}`,
+          ...dateBound(
+            sql`COALESCE(${s.supplierInvoiceApprovalRequests.reviewedAt}, ${s.supplierInvoiceApprovalRequests.requestedAt})`,
             from,
             to,
           ),
@@ -590,6 +655,47 @@ export async function listSelfApprovalRecords(
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
       href: "/purchases/returns-governance",
+    });
+  }
+
+  // ⚠️ `href: "/purchases"` لكلا الحلقتين التاليتين — لا شاشةً مُخصَّصة بعد: اكتشافٌ عرضيّ
+  // (٤/٩/٢٦) أنّ `decideGoodsReceiptReversal`/`decideSupplierInvoiceApproval` غيرُ
+  // مُوصَّلتين بأيّ إجراء tRPC (لا مستدعيَ في server/routers/** سوى الاختبارات)، فلا مسار
+  // UI يُنشئ صفّاً هنا اليوم. الاستعلامان أعلاه صحيحان ومُختبَران فعلياً (إدراجٌ مباشر)
+  // تحسّباً ليوم تُوصَّل فيه الشاشة — لا تُصلح الفجوة هنا، خارج نطاق هذه الشريحة.
+  for (const row of goodsReceiptReversalRows) {
+    records.push({
+      kind: "goodsReceiptReversal",
+      kindLabel: SELF_APPROVAL_KIND_LABEL_AR.goodsReceiptReversal,
+      id: Number(row.id),
+      subject: row.receiptNumber ? `عكس ${row.receiptNumber}` : `عكس استلام #${row.id}`,
+      detail: null,
+      amount: row.amount,
+      direction: "OUT",
+      actorUserId: Number(row.reviewedBy),
+      actorName: displayName({ name: row.approverName, username: row.approverUsername, email: row.approverEmail }),
+      decidedAt: row.reviewedAt ?? row.requestedAt,
+      branchId: row.branchId == null ? null : Number(row.branchId),
+      branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
+      href: "/purchases",
+    });
+  }
+
+  for (const row of supplierInvoiceReversalRows) {
+    records.push({
+      kind: "supplierInvoiceReversal",
+      kindLabel: SELF_APPROVAL_KIND_LABEL_AR.supplierInvoiceReversal,
+      id: Number(row.id),
+      subject: row.invoiceNumber ? `عكس فاتورة ${row.invoiceNumber}` : `عكس فاتورة مورّد #${row.id}`,
+      detail: null,
+      amount: row.amount,
+      direction: "OUT",
+      actorUserId: Number(row.reviewedBy),
+      actorName: displayName({ name: row.approverName, username: row.approverUsername, email: row.approverEmail }),
+      decidedAt: row.reviewedAt ?? row.requestedAt,
+      branchId: row.branchId == null ? null : Number(row.branchId),
+      branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
+      href: "/purchases",
     });
   }
 

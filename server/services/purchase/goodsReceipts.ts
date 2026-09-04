@@ -1172,11 +1172,15 @@ export async function decideGoodsReceiptReversal(
       });
     // عكسُ الاستلام محوُ أثرٍ مُثبَت: `applyMovement` باتّجاه OUT (إخراجُ مخزونٍ أُدخل) +
     // قيدٌ عكسيّ يمحو التزام GRNI. ⇒ المالك حصراً. والرفضُ حرٌّ — لا يكتب شيئاً ماليّاً.
+    // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — توسيعُ قرار ٣/٩/٢٦ (voucher/approval.ts)
+    // إلى هذا المسار. بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
+    const goodsReceiptReversalApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: goodsReceiptReversalTrigger(input.action),
       subject: `عكس استلام ${receipt.receiptNumber}`,
       legacy: () => {
+        if (goodsReceiptReversalApprover.isOwner) return;
         if (
           Number(request.requestedBy) === actor.userId ||
           Number(receipt.createdBy) === actor.userId ||

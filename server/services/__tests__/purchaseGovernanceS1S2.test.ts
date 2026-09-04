@@ -434,3 +434,60 @@ describe("S2 — طلبات الشراء والتخصيص", () => {
     expect(Number(after.orderedBaseQuantity)).toBe(10);
   });
 });
+
+describe("S2ب — قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك على طلب الشراء الداخليّ", () => {
+  it("مالكٌ نشطٌ يطلب طلب شراءٍ ثم يعتمد قراره هو نفسه بلا رفض FORBIDDEN", async () => {
+    await db()
+      .insert(schema.users)
+      .values({
+        id: 4,
+        openId: "po-gov-owner",
+        name: "المالك",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+        isOwner: true,
+      });
+    const owner = { userId: 4, branchId: 1, role: "manager" as const };
+
+    const requisition = await createPurchaseRequisition(
+      {
+        branchId: 1,
+        purpose: "تغطية احتياج الورق اليومي",
+        clientRequestId: "req-owner-self-approval-create",
+        items: [
+          {
+            variantId: 1,
+            productUnitId: 1,
+            requestedBaseQuantity: 10,
+            justification: "الرصيد أقل من الحد",
+          },
+        ],
+      },
+      owner,
+    );
+    const submitted = await submitPurchaseRequisition(
+      {
+        requisitionId: requisition.requisitionId,
+        expectedVersion: 1,
+        requestKey: "req-owner-self-approval-submit",
+        reason: "إرسال الاحتياج للمراجعة",
+      },
+      owner,
+    );
+
+    // نفس المالك (id=4) طلب القرار وسيعتمده — كان هذا يُرفض بـFORBIDDEN (فصل المهام)
+    // قبل توسيع قرار ٣/٩/٢٦ إلى هذا المسار (purchase/requisitions.ts).
+    await expect(
+      decidePurchaseRequisitionControl(
+        {
+          requestId: submitted.requestId,
+          decisionKey: "req-owner-self-approval-decide",
+          approve: true,
+          reason: "اعتمدتُ طلبي هو نفسه بصفتي مالكاً",
+        },
+        owner,
+      ),
+    ).resolves.toMatchObject({ status: "APPROVED" });
+  });
+});

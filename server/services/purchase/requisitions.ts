@@ -818,11 +818,15 @@ export async function decidePurchaseRequisitionControl(
     // طلبُ الشراء الداخليّ هو **الوحيد** في المشتريات الذي صمد تصنيفُه أمام التفنيد العدائيّ:
     // لا خروجَ مالٍ ولا محوَ أثر — يكتب كمّياتٍ معتمَدة وحالةً داخل مستنده، والالتزامُ
     // التعاقديّ (أمر الشراء) لاحقٌ له. ⇒ بوّابتُه تسقط كاملةً بالسياسة الجديدة.
+    // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — توسيعُ قرار ٣/٩/٢٦ (voucher/approval.ts)
+    // إلى هذا المسار. بلا انتظار علَم ownerOnlyApproval؛ التفصيل هناك.
+    const purchaseRequisitionControlApprover = await resolveApprovalActor(tx, actor);
     assertApprover({
       actor: await resolveApprovalActor(tx, actor),
       trigger: purchaseRequisitionControlTrigger(),
       subject: `طلب الشراء ${requisition.requisitionNumber}`,
       legacy: () => {
+        if (purchaseRequisitionControlApprover.isOwner) return;
         if (
           actor.userId === Number(request.requestedBy) ||
           actor.userId === Number(requisition.createdBy) ||
