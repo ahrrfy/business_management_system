@@ -15,7 +15,7 @@ import {
   Calculator, Receipt, Banknote, Clock, Clock8, Palmtree, User, Archive,
   Handshake, Recycle, Microscope, ShoppingCart, Users, Truck, Boxes,
   Wallet, Printer, Briefcase, Server, ShieldCheck, Factory, FileStack,
-  LayoutDashboard, Star, MessageCircle, type LucideIcon,
+  LayoutDashboard, Star, MessageCircle, UserCheck, type LucideIcon,
 } from "lucide-react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { RoleKey } from "@shared/permissions";
@@ -169,6 +169,9 @@ const SECTIONS: Section[] = [
     items: [
       { title: "سجلّ التدقيق", desc: "كل العمليات الحسّاسة (من/ماذا/متى)", href: "/audit", icon: ScrollText, gate: "admin", status: "ready" },
       { title: "تدقيق التوافق المالي", desc: "كشف الانجراف في الأرصدة/المخزون/الدفتر", href: "/reconcile", icon: Microscope, gate: "admin", status: "ready" },
+      // الضابط التعويضي لقرار المالك «لا اعتماد ثانٍ بعد المالك» (٣/٩/٢٦، PR #962) —
+      // راجع shared/approvalPolicy.ts. مرئيٌّ للمُلّاك فقط (يعتمدون على بعضهم بعضاً).
+      { title: "الاعتماد الذاتي", desc: "كل فعلٍ ماليّ اعتمده المالك على نفسه — مرتّبٌ بالمبلغ", href: "/reports/self-approvals", icon: UserCheck, gate: "admin", status: "ready", ownerOnly: true },
     ],
   },
 ];

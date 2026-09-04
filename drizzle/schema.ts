@@ -6391,10 +6391,9 @@ export const purchaseReturnRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_return_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_return_request_maker_checker`) أُسقط بالهجرة 0333؛ التطبيقُ وحده
+    // يفرض الآن «معتمِدٌ نشطٌ isOwner» (لا يمكن للقيد أن يقرأ isOwner من جدولٍ آخر).
   }),
 );
 
@@ -6543,10 +6542,9 @@ export const purchaseReturnReversalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_return_reversal_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_return_reversal_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker` أعلاه.
   }),
 );
 
@@ -6843,10 +6841,9 @@ export const supplierPaymentRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_payment_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_supplier_payment_request_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -7129,10 +7126,9 @@ export const supplierPaymentRefundRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_payment_refund_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_supplier_payment_refund_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -7479,10 +7475,9 @@ export const purchaseChargeControlRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_charge_control_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_purchase_charge_control_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق
+    // الموازي على `chk_purchase_return_request_maker_checker`.
   }),
 );
 
@@ -10093,10 +10088,9 @@ export const payrollRemittanceRequests = mysqlTable(
       "chk_payroll_remittance_positive_amount",
       sql`${t.requestedAmount} > 0`,
     ),
-    makerChecker: check(
-      "chk_payroll_remittance_maker_checker",
-      sql`${t.approvedBy} IS NULL OR ${t.approvedBy} <> ${t.createdBy}`,
-    ),
+    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — قيدُ maker-checker السابق
+    // (`chk_payroll_remittance_maker_checker`) أُسقط بالهجرة 0333؛ راجع التعليق الموازي
+    // على `chk_purchase_return_request_maker_checker`.
   }),
 );
 export type PayrollRemittanceRequest =
