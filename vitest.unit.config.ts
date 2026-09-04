@@ -160,6 +160,7 @@ export default defineConfig({
       "client/src/components/workorder/DesignFileCard.test.tsx",
       "client/src/pages/__tests__/TaskDetailDesignApproval.test.tsx",
       "client/src/components/workorder/ReverseDeliveryRequestDialog.test.tsx",
+      "client/src/components/pos/DigitalFulfillmentDialog.test.tsx",
       "client/src/pages/__tests__/workOrderReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceReverseDeliveryUi.test.tsx",
       "client/src/pages/__tests__/invoiceExternalPaymentUi.test.tsx",

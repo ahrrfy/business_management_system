@@ -16,7 +16,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { variantDisplayName } from "@shared/variantDisplay";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
-import { notify } from "@/lib/notify";
+import { notify, errMsg } from "@/lib/notify";
 import { D, formatIqd, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, printShiftClose, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -1818,7 +1818,7 @@ export default function POS() {
       {/* خطوات التنفيذ الخارجيّ (ش٧) — كل كرت يُسجَّل نجاحه لحظةَ إصداره. */}
       <DigitalFulfillmentDialog
         intentId={fulfillIntentId}
-        finalizing={finalizeSale.isPending}
+        finalizing={finalizeSale.isPending} finalizeError={finalizeSale.error ? errMsg(finalizeSale.error) : null}
         onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }}
         onAllExecuted={(intentId) => {
           // كل الكروت صدرت ⇒ التثبيت المالي فوراً. المفتاح نفسه يجعل إعادة الإرسال تُعيد
