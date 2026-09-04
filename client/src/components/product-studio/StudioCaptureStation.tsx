@@ -8,6 +8,8 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { Camera, CheckCircle2, Loader2, ScanLine } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { StudioUnknownBarcodeResolver } from "./StudioUnknownBarcodeResolver";
+import { isUnknownStudioBarcodeFailure, shouldSubmitManualBarcode } from "./studioUnknownBarcode";
 
 const CameraScanner = lazy(() => import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })));
 
@@ -43,6 +45,7 @@ export function StudioCaptureStation({
 }) {
   const [code, setCode] = useState("");
   const [scanError, setScanError] = useState("");
+  const [linkAllowed, setLinkAllowed] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -50,6 +53,7 @@ export function StudioCaptureStation({
     onSuccess: (result) => {
       setCode("");
       setScanError("");
+      setLinkAllowed(false);
       onClaimed({
         taskId: result.taskId,
         productName: result.productName,
@@ -59,20 +63,25 @@ export function StudioCaptureStation({
       });
       notify.ok(result.claimed ? `فُتح «${result.productName}» للتصوير` : `«${result.productName}» بين يديك أصلاً`);
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       // أبقِ الرمز مرئياً كي يستطيع المصوّر والمدير مراجعته/نسخه وربطه، ولا نحوله
       // إلى لغز يختفي لحظة ظهور رسالة «لا يطابق».
+      setCode(variables.barcode);
       setScanError(error.message);
+      setLinkAllowed(isUnknownStudioBarcodeFailure(error.data?.code, error.message));
       notify.err(error);
       inputRef.current?.focus();
     },
   });
 
   const submitCode = (value: string) => {
-    const clean = value.trim();
-    if (!clean || claim.isPending || offline) return;
+    if (!value.trim() || claim.isPending || offline) return;
+    // أبقِ القيمة الأصلية في الحقل؛ حدّ API وحده يطبّع الأطراف، أما مسافتا Code39
+    // الداخليتان (مثل "1  0095") فتبقيان حرفين معنويين طوال التدفق.
+    setCode(value);
     setScanError("");
-    claim.mutate({ barcode: clean });
+    setLinkAllowed(false);
+    claim.mutate({ barcode: value });
   };
 
   // ⚠️ `useBarcodeInput` يُعيد مُعالِجاً يُركَّب على الحقل — لا يُثبّت مستمعاً عامّاً.
@@ -105,10 +114,13 @@ export function StudioCaptureStation({
                 onChange={(event) => {
                   setCode(event.target.value);
                   setScanError("");
+                  setLinkAllowed(false);
                 }}
                 onKeyDown={(event) => {
                   barcodeInput.handleKeyDown(event, setCode);
-                  if (event.key === "Enter") {
+                  // قارئ HID السريع يستهلك Enter ويستدعي submitCode من الـhook؛ لا نرسل
+                  // قيمة state القديمة مرّةً ثانيةً بعده.
+                  if (shouldSubmitManualBarcode(event.key, event.defaultPrevented)) {
                     event.preventDefault();
                     submitCode(code);
                   }
@@ -116,7 +128,14 @@ export function StudioCaptureStation({
               />
               <BarcodeSearchCue />
             </div>
-            {scanError && <p className="text-xs text-destructive" role="alert">{scanError}</p>}
+            {scanError && (
+              <StudioUnknownBarcodeResolver
+                barcode={code}
+                error={scanError}
+                linkAllowed={linkAllowed}
+                onLinked={submitCode}
+              />
+            )}
           </div>
           <Button type="button" variant="outline" className="min-h-11" disabled={offline || claim.isPending} onClick={() => setCameraOpen(true)}>
             <Camera aria-hidden className="size-4" /> الكاميرا
