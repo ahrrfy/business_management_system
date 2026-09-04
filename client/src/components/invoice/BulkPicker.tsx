@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
+import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
 
 export interface BulkPickerProps {
@@ -92,7 +93,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         availableBase: r.stockBase ?? 0,
         isService: false,
         allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
-        price: r.costPriceBase,
+        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل
+        // (نفس ProductSearchBar). `costBase` يبقى مرجعُ الأساس بلا ضربٍ.
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor),
         costBase: r.costPriceBase,
       }));
     }
@@ -274,7 +277,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                     <div dir="ltr" className="text-sm font-extrabold text-primary">
                       {fmtNum(p.price)}
                     </div>
-                    <div className="text-center text-[10px] text-muted-foreground">د.ع</div>
+                    <div className="text-center text-[10px] text-muted-foreground">
+                      د.ع
+                      {/* PUR-UNIT-01: تقديرٌ من آخر تكلفةٍ × معامل الوحدة — قابل للتعديل قبل الإرسال. */}
+                      {isPurchase && (
+                        <span className="ms-1 rounded bg-muted px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                          تقديريّ
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

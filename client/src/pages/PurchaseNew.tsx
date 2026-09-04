@@ -261,7 +261,9 @@ export default function PurchaseNew() {
       return;
     }
     res.prices.forEach((price, idx) => {
-      dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: price });
+      // PUR-UNIT-01 (٤/٩/٢٦): التوزيع يُنتج **أسعار وحدة الصفّ** (distributeToSubtotal يبني
+      // على `price × qty` = إجماليّ السطر بوحدة الصفّ). `costBase` يبقى مرجعُ الأساس بلا كتابة.
+      // قبله: كنّا نطمس `costBase` بسعرِ الدرزن (١٨٠٠) فيصير مرجعُ الأساس مسمَّماً كذباً.
       dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price });
     });
     if (D(res.residual).isZero()) {
@@ -583,9 +585,17 @@ export default function PurchaseNew() {
         productUnitId: l.productUnitId,
         // الكمية بنفس الوحدة المختارة (الخادم يضرب × conversionFactor للحصول على base).
         quantity: D(l.qty).toString(),
-        // سعر الشراء بالوحدة **بعملة الأمر** (price = costBase × convFactor عند الإضافة، قابل
-        // للتعديل). كان `round2(...).toFixed(2)` يقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ
-        // العمود `usdUnitPrice` يحفظ ٤ منازل ⇒ فارقٌ في ذمّة المورّد بحجم الكمية.
+        // سعر الشراء بالوحدة **بعملة الأمر** — بوحدة **الصفّ** المختارة (قطعة/درزن/كرتون)،
+        // ثمّ يقسمه `receive.ts` على معامل الوحدة ليحصل على `costPerBase` الداخل في WAVG.
+        //
+        // PUR-UNIT-01 (٤/٩/٢٦): `l.price` تُملأ في مسارَي الإضافة (ProductSearchBar/BulkPicker)
+        // بـ`estimatedPurchaseUnitPrice = costPriceBase × conversionFactor`، فدرزن (معامل ١٢)
+        // بتكلفةِ قطعةٍ ١٥٠ يُرسَل بسعرِ ١٨٠٠/درزن ⇒ costPerBase=١٥٠ (سليم). قبله كان يُرسَل ١٥٠
+        // ⇒ costPerBase=١٢.٥٠ (سمَّم WAVG). المستعمِل يعدّل `l.price` بحرّية (بيدٍ أو عبر
+        // «وزّع الفرق») والحمولة تحمل ما رآه بلا افتراضٍ صامت.
+        //
+        // `round2(...).toFixed(2)` كان يقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ العمود
+        // `usdUnitPrice` يحفظ ٤ منازل ⇒ فارقٌ في ذمّة المورّد بحجم الكمية.
         unitPrice: toUnitPriceStr(l.price, state.currency),
       })),
     };

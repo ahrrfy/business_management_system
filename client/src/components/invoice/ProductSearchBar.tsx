@@ -17,6 +17,7 @@ import { fmtNum } from "./totals";
 import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -112,7 +113,11 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         availableBase: r.stockBase ?? 0,
         isService: false,
         allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
-        price: r.costPriceBase, // purchase price defaults to last cost (base)
+        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل.
+        // كان الحقلان يُملآن معاً بـcostPriceBase (بوحدة الأساس)، فدرزنٌ (معامل ١٢) بتكلفة
+        // ١٥٠/قطعة يُضاف بسعرِ ١٥٠/درزن ⇒ يقسم الخادم على ١٢ فيصير `costPerBase = 12.50`
+        // ويسمّم WAVG. المساعد المشترك يفصل: `price` بوحدة الصفّ، `costBase` مرجعُ الأساس.
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor),
         costBase: r.costPriceBase,
       }));
     }
@@ -366,7 +371,16 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                   <div dir="ltr" className="text-base font-extrabold text-primary">
                     {fmtNum(p.price)}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">د.ع / {p.unitName}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    د.ع / {p.unitName}
+                    {/* PUR-UNIT-01: على جانب الشراء السعر مشتقٌّ من آخر تكلفةٍ × معامل الوحدة —
+                        ليست ورقة المورّد. الوسم يُعلم المستعمل أنّه قابل للتعديل قبل الإرسال. */}
+                    {isPurchase && (
+                      <span className="ms-1 rounded bg-muted px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                        تقديريّ
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
