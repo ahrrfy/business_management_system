@@ -357,6 +357,7 @@ export default function InvoiceDetail() {
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
+  const [cancelReference, setCancelReference] = useState("");
   const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID(),
   );
 
@@ -401,6 +402,7 @@ export default function InvoiceDetail() {
       setCancelOpen(false);
       setCancelReason("");
       setCancelConfirmText("");
+      setCancelReference("");
       await Promise.all([
         utils.salesControl.list.invalidate(),
       ]);
@@ -587,6 +589,9 @@ export default function InvoiceDetail() {
       ["cashier", "manager"],
     );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
+  // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
+  // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
+  const needsCardReference = paidAmountForRefund.gt(0) && cancelMethod === "CARD";
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
@@ -1001,6 +1006,7 @@ export default function InvoiceDetail() {
                 );
                 setCancelReason("");
                 setCancelConfirmText("");
+                setCancelReference("");
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1649,6 +1655,17 @@ export default function InvoiceDetail() {
                 </p>
               </div>
             )}
+            {needsCardReference && (
+              <div className="space-y-1">
+                <Label htmlFor="cancel-card-ref">مرجع عملية الاسترداد من جهاز الدفع</Label>
+                <Input id="cancel-card-ref" dir="ltr" value={cancelReference} maxLength={100}
+                  onChange={(e) => setCancelReference(e.target.value)}
+                  placeholder="رقم العملية / كود الموافقة" />
+                <p className="text-xs text-muted-foreground">
+                  نفّذ الاسترداد على جهاز الدفع أولاً ثمّ أدخِل مرجعه هنا.
+                </p>
+              </div>
+            )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
               <Input
@@ -1678,12 +1695,13 @@ export default function InvoiceDetail() {
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
             <Button
               variant="destructive"
-              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
+              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3 || (needsCardReference && !cancelReference.trim())}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
                   invoiceId,
                   refundPaymentMethod: cancelMethod,
+                  reference: needsCardReference ? cancelReference.trim() : undefined,
                   reason: cancelReason.trim(),
                   clientRequestId: cancelRequestId,
                 });

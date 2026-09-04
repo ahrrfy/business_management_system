@@ -110,6 +110,35 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     await expect(approveSalesControlRequest(Number(creatorRequest.id), ADMIN)).rejects.toThrow(/منشئ الفاتورة/);
   });
 
+  it("طلب إلغاء ببطاقة + مرجع ⇒ الاعتماد ينفّذه فوراً في استدعاء واحد (لا يعلق PENDING)", async () => {
+    const created = await sale();
+    // إعادة وسم إيصال القبض بطاقةً — يحاكي فاتورة بطاقة (نمط sellPaidByCard في returnRefundRails.test.ts).
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-9" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-immediate",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة",
+      payload: { refundPaymentMethod: "CARD", reference: "TERM-77" },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING"); // إنشاء الطلب صفري الأثر رغم البطاقة
+
+    const approved = await approveSalesControlRequest(Number(requested.id), MANAGER);
+    expect("request" in approved && approved.request.status === "APPROVED").toBe(true);
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+    const [out] = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(out!.status).toBe("COMPLETED");
+    expect(out!.approvalStatus).toBe("APPROVED");
+  });
+
   it("تغيّر اللقطة يوسم الطلب STALE بلا تنفيذ", async () => {
     const created = await sale();
     const request = await requestSalesControl({

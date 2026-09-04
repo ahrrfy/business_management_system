@@ -1433,6 +1433,8 @@ export const saleRouter = router({
         invoiceId: z.number().int().positive(),
         // «لا دينار بلا مسار/سند/قيد» — طريقة الاسترداد إلزاميّة، لا افتراضية.
         refundPaymentMethod: method,
+        // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
+        reference: z.string().trim().min(1).max(100).optional(),
         reason: z.string().trim().min(3).max(500),
         // idempotency: نفس المفتاح ⇒ إلغاءٌ واحد (لا استرداد/عكس مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -1449,7 +1451,7 @@ export const saleRouter = router({
         invoiceId: input.invoiceId,
         requestType: "SALES_CANCEL",
         reason: input.reason,
-        payload: { refundPaymentMethod: input.refundPaymentMethod },
+        payload: { refundPaymentMethod: input.refundPaymentMethod, reference: input.reference ?? null },
       }, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
