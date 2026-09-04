@@ -599,6 +599,66 @@ describe("ordinary snapshot validation", () => {
     ).resolves.toMatchObject({ expectedSubtotal: "4000.00" });
   });
 
+  it("rejects a service line priced under its recipe cost — at prepare() and createSaleInTx alike", async () => {
+    await db()
+      .insert(s.products)
+      .values({ id: 5, name: "خدمة اختبار", productType: "PRINT_SERVICE", isService: true });
+    await db()
+      .insert(s.productVariants)
+      .values({ id: 5, productId: 5, sku: "SVC-TEST", costPrice: "0" });
+    await db().insert(s.productUnits).values({
+      id: 5,
+      variantId: 5,
+      unitName: "خدمة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db()
+      .insert(s.productPrices)
+      .values({ productUnitId: 5, priceTier: "RETAIL", price: "500" });
+    await db().insert(s.products).values({ id: 6, name: "مادة اختبار" });
+    await db()
+      .insert(s.productVariants)
+      .values({ id: 6, productId: 6, sku: "MAT-TEST", costPrice: "30000" });
+    await db()
+      .insert(s.branchStock)
+      .values({ variantId: 6, branchId: 1, quantity: 100 });
+    await db().insert(s.productionRecipes).values({
+      id: 1,
+      name: "[خدمة اختبار]",
+      outputVariantId: 5,
+      outputProductUnitId: 5,
+      laborPerOutputBase: "0",
+      wasteStdPct: "0",
+      isActive: true,
+    });
+    await db()
+      .insert(s.productionRecipeLines)
+      .values({ recipeId: 1, inputVariantId: 6, qtyPerOutputBase: "1.0000" });
+
+    const line = ordinary({ variantId: 5, productUnitId: 5, quantity: "1" });
+    await expect(
+      withTx((tx) => prepareCheckoutSnapshot(tx, { regularLines: [line] }, cashier)),
+    ).rejects.toThrow(/التكلفة/);
+
+    await expect(
+      withTx((tx) =>
+        createSaleInTx(
+          tx,
+          {
+            branchId: 1,
+            shiftId: 1,
+            sourceType: "POS",
+            lines: [{ variantId: 5, productUnitId: 5, quantity: "1" }],
+            payment: { amount: "500", method: "CASH" },
+          },
+          cashier,
+          DIGITAL_SALE_CAPABILITY,
+        ),
+      ),
+    ).rejects.toThrow(/التكلفة/);
+  });
+
   it("uses customer tier and contracts, freezes prices and rejects changed replay payload", async () => {
     await db()
       .insert(s.customerContractPrices)
