@@ -12,7 +12,10 @@ import {
   approveWorkOrderControlRequest,
   requestWorkOrderControl,
 } from "../workOrder/controlRequests";
-import { getWorkOrderReverseDeliveryPreflight } from "../workOrder/reverseDelivery";
+import {
+  getWorkOrderReverseDeliveryPreflight,
+  reverseWorkOrderDelivery,
+} from "../workOrder/reverseDelivery";
 import { approveWorkOrderCancellationRefund } from "../workOrder/cancel";
 import {
   decideWorkOrderDesignApproval,
@@ -402,6 +405,49 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
       eq(s.workOrderEvents.eventType, "CONTROL_APPROVED"),
     ))).toHaveLength(1);
     expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `WO-REVERSE:${order.workOrderId}:${order.invoiceId}`))).toHaveLength(1);
+  });
+
+  it("reverseWorkOrderDelivery المباشر (بلا المرور بـ approveWorkOrderControlRequest) يرفض منشئ الأمر ويكمل فعلياً لمراجع غير مرتبط", async () => {
+    const control = { approvedControlRequestId: 999999 };
+
+    // (1) استدعاء مباشر — الحارس الوحيد الذي يمكن أن يرفض هنا هو reverseDelivery.ts:594-596،
+    // لأن controlRequests.ts لم يُستدعَ إطلاقاً في هذا المسار.
+    const blocked = await deliveredOrder({ key: "reverse-direct-sod-blocked", deposit: "10000.00" });
+    const blockedPreflight = await getWorkOrderReverseDeliveryPreflight(blocked.workOrderId, REQUESTER);
+    if (!blockedPreflight.eligible) throw new Error("not eligible");
+    await expect(reverseWorkOrderDelivery({
+      workOrderId: blocked.workOrderId,
+      expectedVersion: blockedPreflight.version,
+      reason: "اختبار مباشر لحارس SOD في reverseWorkOrderDeliveryInTx",
+      reopen: false,
+      refundShiftId: null,
+      refundSources: blockedPreflight.refundSources,
+      clientRequestId: "reverse-direct-sod-blocked-1",
+    }, CASHIER, control)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const untouchedInvoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, blocked.invoiceId)))[0]!;
+    expect(untouchedInvoice.status).not.toBe("RETURNED");
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+
+    // (2) نفس الاستدعاء المباشر بفاعل غير مرتبط — يجب أن يكتمل العكس فعلياً
+    const allowed = await deliveredOrder({ key: "reverse-direct-sod-allowed", deposit: "10000.00" });
+    const allowedPreflight = await getWorkOrderReverseDeliveryPreflight(allowed.workOrderId, REQUESTER);
+    if (!allowedPreflight.eligible) throw new Error("not eligible");
+    const result = await reverseWorkOrderDelivery({
+      workOrderId: allowed.workOrderId,
+      expectedVersion: allowedPreflight.version,
+      reason: "اختبار مباشر لاكتمال عكس التسليم بمعزل عن اعتماد طلب التحكم",
+      reopen: false,
+      refundShiftId: null,
+      refundSources: allowedPreflight.refundSources,
+      clientRequestId: "reverse-direct-sod-allowed-1",
+    }, REVIEWER, control);
+    expect(result.status).toBe("CANCELLED");
+    const returnedInvoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, allowed.invoiceId)))[0]!;
+    expect(returnedInvoice.status).toBe("RETURNED");
+    const refundOut = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, allowed.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED"),
+    ));
+    expect(round2(refundOut.reduce((sum, row) => sum.plus(money(row.amount)), money(0))).toFixed(2)).toBe("10000.00");
   });
 
   it("مفتاح طلب واحد يرفض payload مختلفاً، وفرع admin يُنسب إلى فرع الأمر الحقيقي", async () => {
