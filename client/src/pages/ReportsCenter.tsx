@@ -171,7 +171,13 @@ const SECTIONS: Section[] = [
       { title: "تدقيق التوافق المالي", desc: "كشف الانجراف في الأرصدة/المخزون/الدفتر", href: "/reconcile", icon: Microscope, gate: "admin", status: "ready" },
       // الضابط التعويضي لقرار المالك «لا اعتماد ثانٍ بعد المالك» (٣/٩/٢٦، PR #962) —
       // راجع shared/approvalPolicy.ts. مرئيٌّ للمُلّاك فقط (يعتمدون على بعضهم بعضاً).
-      { title: "الاعتماد الذاتي", desc: "كل فعلٍ ماليّ اعتمده المالك على نفسه — مرتّبٌ بالمبلغ", href: "/reports/self-approvals", icon: UserCheck, gate: "admin", status: "ready", ownerOnly: true },
+      // ⛔ gate:"admin" هنا كان يُحوَّل إلى adminOnly:true (resolveGate) — قيدٌ **إضافيّ**
+      // فوق ownerOnly (فلترة `(!ownerOnly || isOwner) && canSeeGate(...)`، أي AND لا OR)
+      // فيختفي المدخل عن أيّ مالكٍ دورُه ليس admin حرفياً (مراجعة Codex #982) — وهذا بالضبط
+      // ما دفع القرار كلّه: ملّاكٌ حقيقيون (وليد/شهد/نور) لا يحملون بالضرورة دور admin.
+      // gate:"all" يُرجع undefined من resolveGate ⇒ canSeeGate تعيد true دائماً، فيبقى
+      // ownerOnly وحده الحارس — يطابق حرفياً RequireOwner على المسار في App.tsx.
+      { title: "الاعتماد الذاتي", desc: "كل فعلٍ ماليّ اعتمده المالك على نفسه — مرتّبٌ بالمبلغ", href: "/reports/self-approvals", icon: UserCheck, gate: "all", status: "ready", ownerOnly: true },
     ],
   },
 ];

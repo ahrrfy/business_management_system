@@ -5,14 +5,15 @@
 // مرئيٌّ للمُلّاك فقط (RequireOwner في App.tsx + ownerProcedure خادمياً) — الملّاك يعتمدون
 // على بعضهم بعضاً هنا، لا مديرٌ ولا محاسب.
 import { useMemo, useState } from "react";
-import { UserCheck } from "lucide-react";
+import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { fmtAr, formatIqd } from "@/lib/money";
+import { fmtAr, formatIqd, sum } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -23,14 +24,21 @@ type Row = RouterOutputs["selfApprovalAudit"]["list"][number];
 const NOTE =
   "معيارُ الظهور هنا تساوٍ حرفيّ بين مَن أنشأ المستند ومَن قرّره — لا يعتمد على صفة isOwner الحالية، " +
   "فقد تتغيّر لاحقاً بينما يبقى القرار التاريخيّ ذاتياً. كل صفٍّ هنا اعتمده فاعلٌ نفسه، وكان ذلك ممكناً " +
-  "قانونياً فقط لأنّه مالكٌ نشطٌ وقت القرار.";
+  "قانونياً فقط لأنّه مالكٌ نشطٌ وقت القرار. إيصالات التنفيذ الآلية (كسداد مورّدٍ اعتمده مالكٌ لطلب " +
+  "موظّفٍ آخر) مُستبعَدة — العدّ يقتصر على القرار الأصليّ نفسه فلا يتكرّر.";
 
 export default function SelfApprovalAudit() {
   const [kind, setKind] = useState<SelfApprovalKind | "">("");
   const [branchId, setBranchId] = useState<number | "">("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const branches = trpc.branches.list.useQuery();
-  const q = trpc.selfApprovalAudit.list.useQuery();
+  const q = trpc.selfApprovalAudit.list.useQuery({
+    from: from || undefined,
+    to: to || undefined,
+  });
   const allRows: Row[] = q.data ?? [];
+  const hasFilters = kind !== "" || branchId !== "";
 
   const rows = useMemo(
     () =>
@@ -42,10 +50,7 @@ export default function SelfApprovalAudit() {
     [allRows, kind, branchId],
   );
 
-  const totalAmount = useMemo(
-    () => rows.reduce((sum, r) => sum + Number(r.amount ?? 0), 0),
-    [rows],
-  );
+  const totalAmount = useMemo(() => sum(rows.map((r) => r.amount ?? "0")), [rows]);
   const distinctActors = useMemo(() => new Set(rows.map((r) => r.actorUserId)).size, [rows]);
 
   const kpis: KpiItem[] = [
@@ -70,7 +75,11 @@ export default function SelfApprovalAudit() {
         accessorFn: (r) => r.kindLabel,
         meta: { kind: "status" },
         cell: ({ row }) => (
-          <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-pending">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+              row.original.direction === "IN" ? "badge-status-active" : "badge-stock-out"
+            }`}
+          >
             {row.original.kindLabel}
           </span>
         ),
@@ -80,7 +89,11 @@ export default function SelfApprovalAudit() {
         header: "المرجع",
         accessorFn: (r) => r.subject,
         meta: { kind: "code" },
-        cell: ({ row }) => row.original.subject,
+        cell: ({ row }) => (
+          <Link href={row.original.href} className="text-primary underline-offset-2 hover:underline">
+            {row.original.subject}
+          </Link>
+        ),
       },
       {
         id: "detail",
@@ -98,7 +111,11 @@ export default function SelfApprovalAudit() {
         header: "المبلغ",
         accessorFn: (r) => fmtAr(r.amount ?? 0),
         meta: { kind: "money" },
-        cell: ({ row }) => <span className="text-money-negative">{fmtAr(row.original.amount ?? 0)}</span>,
+        cell: ({ row }) => (
+          <span className={row.original.direction === "IN" ? "text-money-positive" : "text-money-negative"}>
+            {fmtAr(row.original.amount ?? 0)}
+          </span>
+        ),
         footer: () => <span className="font-bold">{fmtAr(totalAmount)}</span>,
       },
       {
@@ -111,17 +128,17 @@ export default function SelfApprovalAudit() {
       {
         id: "branch",
         header: "الفرع",
-        accessorFn: (r) => branches.data?.find((b) => b.id === r.branchId)?.name ?? "—",
-        cell: ({ row }) =>
-          branches.data?.find((b) => b.id === row.original.branchId)?.name ?? "—",
+        accessorFn: (r) => r.branchName ?? "—",
+        cell: ({ row }) => row.original.branchName ?? "—",
       },
     ],
-    [rows.length, totalAmount, branches.data],
+    [rows.length, totalAmount],
   );
 
-  const emptyMessage = (
+  const globalEmptyMessage = (
     <span className="text-money-positive">لا سجلّات اعتمادٍ ذاتيّ — كل قرارٍ اعتمده مالكٌ غير مَن أنشأه.</span>
   );
+  const filteredEmptyMessage = <span>لا سجلّات مطابقة للفلاتر الحالية — جرّب توسيع النوع أو الفرع أو الفترة.</span>;
 
   function onExport() {
     exportRows(rows, {
@@ -133,11 +150,7 @@ export default function SelfApprovalAudit() {
         { key: "detail", header: "التفاصيل", map: (r) => r.detail ?? "" },
         { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
         { key: "actorName", header: "المالك", map: (r) => r.actorName },
-        {
-          key: "branchId",
-          header: "الفرع",
-          map: (r) => branches.data?.find((b) => b.id === r.branchId)?.name ?? "",
-        },
+        { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
       ],
     });
   }
@@ -211,6 +224,14 @@ export default function SelfApprovalAudit() {
               ))}
             </AppSelect>
           </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">من تاريخ</label>
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-36 text-xs" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-muted-foreground">إلى تاريخ</label>
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-36 text-xs" />
+          </div>
         </div>
       }
     >
@@ -222,8 +243,9 @@ export default function SelfApprovalAudit() {
             loading={q.isLoading}
             errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
             searchPlaceholder="بحث بالمرجع أو التفاصيل أو اسم المالك..."
-            emptyState={emptyMessage}
-            emptyFilteredState={emptyMessage}
+            externalFiltersActive={hasFilters}
+            emptyState={globalEmptyMessage}
+            emptyFilteredState={filteredEmptyMessage}
           />
         </CardContent>
       </Card>

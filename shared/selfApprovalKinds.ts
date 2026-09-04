@@ -11,11 +11,13 @@ export type SelfApprovalKind =
   | "supplierPayment"
   | "supplierPaymentRefund"
   | "purchaseCharge"
+  | "purchaseChargeReversal"
   | "purchaseReturn"
   | "purchaseReturnReversal"
   | "payrollAccrualApproval"
   | "payrollNetPayment"
   | "advanceRepayment"
+  | "advanceRepaymentReturn"
   | "payrollRemittanceApproval"
   | "payrollRemittancePayment";
 
@@ -26,11 +28,13 @@ export const SELF_APPROVAL_KIND_LABEL_AR: Record<SelfApprovalKind, string> = {
   supplierPayment: "سداد مورّد",
   supplierPaymentRefund: "استرداد سداد مورّد",
   purchaseCharge: "مصروف شراء",
+  purchaseChargeReversal: "عكس مصروف شراء",
   purchaseReturn: "مرتجع شراء",
   purchaseReturnReversal: "عكس مرتجع شراء",
   payrollAccrualApproval: "اعتماد استحقاق مسيّر",
   payrollNetPayment: "صرف صافي مسيّر",
   advanceRepayment: "تقسيط سلفة موظف",
+  advanceRepaymentReturn: "إرجاع تقسيط سلفة",
   payrollRemittanceApproval: "اعتماد تحويل استقطاعات",
   payrollRemittancePayment: "دفع تحويل استقطاعات",
 };

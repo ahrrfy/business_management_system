@@ -4,6 +4,10 @@
 // ويُرتَّب الناتج بالمبلغ تنازلياً. بقيّة المصادر (السبعة الأخرى) تشترك في نفس نمط
 // الاستعلام (تساوي عمودَي المُنشئ/المُقرِّر) فتغطيتها هنا تمثيلية لا شاملة — راجع
 // server/services/audit/selfApprovalReport.ts لخريطة المصادر كاملةً.
+//
+// اختباران إضافيّان (مراجعة Codex #982): استبعاد إيصال التجسيد (P1) وبقاء اعتماد
+// الاستحقاق بعد إعادة فتح المسيّر (P1) — كلاهما كان يُسقط الضابط التعويضيّ صامتاً.
+import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
@@ -18,6 +22,9 @@ function db() {
 
 beforeEach(async () => {
   await truncateTables([
+    "payrollAccountingEvents",
+    "payrollRuns",
+    "supplierPayments",
     "payrollRemittanceRequests",
     "expenses",
     "receipts",
@@ -159,5 +166,86 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
     const records = await listSelfApprovalRecords();
     const expenseRecord = records.find((r) => r.detail === "صيانة طارئة");
     expect(expenseRecord?.kind).toBe("expense");
+  });
+
+  it("يستبعد إيصال تجسيد سداد المورّد — لا يظهر مرّتين ولا كسندٍ عامّ حين مُنشئ الطلب غير مُقرِّره", async () => {
+    // موظّفٌ (id=3، مُدرَجٌ في beforeEach) يطلب سداد مورّد، ومالكٌ (id=1) يقرّره وينفّذه —
+    // الإيصالُ الناتج createdBy=approvedBy=1 (نفّذه actor نفسه)، لكنّ هذا **ليس** اعتماداً
+    // ذاتياً: الطلبَ الأصليّ أنشأه موظّفٌ آخر. لولا الاستبعاد لظهر صفٌّ "سند مالي" كاذب.
+    const [insertedReceipt] = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "640000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "SUPPLIER-PAY-REQ:1",
+      createdBy: 1,
+      approvedBy: 1,
+    });
+    const receiptId = Number((insertedReceipt as unknown as { insertId: number }).insertId);
+
+    await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    try {
+      await db().insert(s.supplierPayments).values({
+        paymentNumber: "SP-SELF-APPROVAL-TEST-1",
+        requestId: 9001,
+        supplierId: 9001,
+        branchId: 1,
+        currency: "IQD",
+        amount: "640000.00",
+        currencyAmount: "640000.00",
+        paymentMethod: "CASH",
+        receiptId,
+        accountingEntryId: 9001,
+        payloadCanonical: "{}",
+        payloadHash: "a".repeat(64),
+        postedBy: 1,
+      });
+    } finally {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+    }
+
+    const records = await listSelfApprovalRecords();
+    expect(records.some((r) => r.subject === "SUPPLIER-PAY-REQ:1")).toBe(false);
+    expect(records.some((r) => r.amount === "640000.00")).toBe(false);
+  });
+
+  it("يُبقي اعتماد استحقاق مسيّرٍ ذاتيّاً في السجلّ حتى بعد إعادة فتحه (يُصفّر approvedBy/approvedAt)", async () => {
+    // نفس المالك (id=1) أنشأ المسيّر واعتمد استحقاقه — ثم أُعيد فتحه للتصحيح، فصار
+    // payrollRuns.approvedBy/approvedAt NULL (سلوك reopenPayrollAccrualTx الحقيقي). حدثُ
+    // ACCRUAL في الدفتر الإلحاقي يبقى الدليل الوحيد على أنّ الاعتماد الذاتي وقع فعلاً.
+    const [insertedRun] = await db().insert(s.payrollRuns).values({
+      branchId: 1,
+      period: "2026-07",
+      status: "draft",
+      totalNet: "12500000.00",
+      createdBy: 1,
+      // بعد إعادة الفتح: approvedBy/approvedAt عائدان لـNULL (الافتراض) — لا نضبطهما هنا.
+    });
+    const runId = Number((insertedRun as unknown as { insertId: number }).insertId);
+
+    await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    try {
+      await db().insert(s.payrollAccountingEvents).values({
+        runId,
+        revisionNo: 0,
+        eventKind: "ACCRUAL",
+        accountingEntryId: 9002,
+        sourceKey: "PAYROLL:ACCRUAL:SELF-APPROVAL-TEST:1",
+        sourceHash: "b".repeat(64),
+        occurredAt: new Date(),
+        createdBy: 1,
+      });
+    } finally {
+      await db().execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+    }
+
+    const records = await listSelfApprovalRecords();
+    const runRecord = records.find((r) => r.kind === "payrollAccrualApproval" && r.subject === "مسيّر 2026-07");
+    expect(runRecord).toBeDefined();
+    expect(runRecord?.actorUserId).toBe(1);
+    expect(runRecord?.amount).toBe("12500000.00");
   });
 });
