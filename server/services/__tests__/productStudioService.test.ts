@@ -1271,6 +1271,27 @@ describe("product studio governed workflow", () => {
     await expect(resolveStudioBarcode(worker, "١٠٠٩٥")).resolves.toMatchObject({ productId: 108 });
   });
 
+  it("(٤/٩، Codex P1) يرفض الغموض: باركودان إرثيّان لمنتجين يتطبّعان لنفس الرمز ⇒ لا يفتح عملاً لمنتجٍ خاطئ", async () => {
+    // نظير حارس الكاشير: أخذُ أوّل صفٍّ مطابقٍ يجعل الاختيار رهنَ ترتيب الاسم فيفتح تصويراً لمنتجٍ خاطئ.
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 110, name: "دفتر أ" },
+      { id: 111, name: "دفتر ب" },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 110, productId: 110, sku: "DFT-A", costPrice: "1" },
+      { id: 111, productId: 111, sku: "DFT-B", costPrice: "1" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 110, variantId: 110, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: " 77700 " }, // مسافة ⇒ 77700
+      { id: 111, variantId: 111, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "77700\t" }, // تبويب ⇒ 77700
+    ]);
+    await expect(resolveStudioBarcode(manager, "77700")).rejects.toMatchObject({ code: "CONFLICT" });
+    // وحين يبقى منتجٌ واحدٌ ملوَّث (نُظّف الآخر) ⇒ يُحسَم له بلا غموض.
+    await d.update(s.productUnits).set({ barcode: "77701" }).where(eq(s.productUnits.id, 111));
+    await expect(resolveStudioBarcode(manager, "77700")).resolves.toMatchObject({ productId: 110, matchKind: "BARCODE_PRIMARY" });
+  });
+
   it("البديل: يُكشف بباركوده، وصورته منفصلة عن الأساس، ويظهر في كشف الناقصة ثمّ يختفي بصورته", async () => {
     // تحقّقٌ شاملٌ لطلب المالك: (١) الاستوديو يكشف البديل بباركوده المستقلّ (يحلّه إلى
     // متغيّر البديل بالذات)، (٢) صورةُ البديل منفصلةٌ عن الأساس — لكل باركود مسار صورته،

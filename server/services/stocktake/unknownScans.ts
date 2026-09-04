@@ -5,7 +5,7 @@
 //   - DISMISS: صنفٌ مجهولٌ تماماً أو غير ذي صلة ⇒ يُغلق بملاحظة (يبقى في السجل append-only).
 // الحلّ يعبُر الأساسيّ والبديل معاً (نفس منطق resolveBarcodeOwner)، ويُرفض الخدميّ/البكج.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   branchStock,
   products,
@@ -19,6 +19,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { normalizedStoredBarcodeSql } from "../catalog/barcodeAliases";
 import { toDbMoney } from "../money";
 import { requireDb, withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -241,7 +242,13 @@ export async function resolveUnknownScan(
       .where(
         and(
           eq(stocktakeUnknownScans.sessionId, session.id),
-          eq(stocktakeUnknownScans.barcode, barcode),
+          // (٤/٩، مراجعة Codex P2) نطابق العمود المُطبَّع أيضاً: صفوف PENDING الملتقَطة قبل النشر قد
+          // تحمل أرقاماً عربية-هندية، والمساواةُ الخامّة على مُدخلٍ مُطبَّع تُعمي ADD_TO_SCOPE/DISMISS عنها
+          // فتبقى عالقةً في جلسةٍ جارية. الالتقاطُ الجديد مُطبَّعٌ أصلاً فالمساواة الخامّة تكفيه (المسار السريع).
+          or(
+            eq(stocktakeUnknownScans.barcode, barcode),
+            sql`${normalizedStoredBarcodeSql(stocktakeUnknownScans.barcode)} = ${barcode.toLowerCase()}`,
+          ),
           eq(stocktakeUnknownScans.status, "PENDING"),
         ),
       )

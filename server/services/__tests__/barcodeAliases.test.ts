@@ -3,7 +3,7 @@
 //   A1: الأساسيّ + البديل يشيران للوحدة نفسها ⇒ lookupByBarcode يحلّ الاثنين إلى POS row واحد.
 //   A2: تفرّد عالميّ — باركود موجود كأساسيّ لسلعة أخرى، أو بديلاً لسلعة أخرى، يُرفض عند الإضافة كبديل.
 //   A3: حذف الوحدة يحذف بدائلها بـcascade (بلا orphan aliases).
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -367,6 +367,27 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       // وحين يبقى مالكٌ واحدٌ ملوَّث (نُظّف الآخر إلى قيمةٍ مختلفة) ⇒ يُحسَم لصاحبه الوحيد.
       await d.update(s.productUnits).set({ barcode: "55501" }).where(eq(s.productUnits.id, 3));
       expect(await resolveBarcodeOwner(d, "55500")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+    });
+
+    it("الغموض يُكشَف ولو كان مالكٌ يحمل صفَّي بديلٍ ملوّثين (عدُّ المُلّاك لا الصفوف — Codex P1)", async () => {
+      // الحالة التي كان يفوتها حدُّ الصفوف (limit 2): وحدةٌ (1) لها بديلان ملوّثان يتطبّعان لنفس القيمة،
+      // ووحدةٌ أخرى (3) لها بديلٌ ثالثٌ يتطبّع لها أيضاً. حدُّ صفَّين يلتقط بديلَي الوحدة 1 فقط فيحسم لها
+      // خطأً؛ عدُّ المُلّاك المتمايزين (groupBy) يرى وحدتين ⇒ غموضٌ ⇒ null.
+      //
+      // ⚠️ نستعمل تلويثاً بمسافةٍ بادئة/تبويب/سطرٍ جديد (لا أرقاماً عربيةً ولا مسافةً لاحقةً وحدها):
+      // ترتيبُ حروف القاعدة `utf8mb4_unicode_ci` يطوي الأرقام العربية↔اللاتينية ويتجاهل المسافة
+      // اللاحقة في `=` (وفي قيد UNIQUE)، فباركودٌ بأرقامٍ عربية أو مسافةٍ لاحقةٍ **يطابقه المسارُ السريع
+      // نفسه** (وهو الصحيح: مالكٌ فعليّ). التلويثُ الذي يفلت من `=` ومن UNIQUE معاً هو ما يبلغ الاحتياطيّ.
+      const d = db();
+      await d.insert(s.productUnitBarcodes).values([
+        { productUnitId: 1, barcode: " 88800" }, // مسافة بادئة ⇒ يفلت من = (وحدة 1)
+        { productUnitId: 1, barcode: "88800\t" }, // تبويب ⇒ يفلت من = (نفس الوحدة 1)
+        { productUnitId: 3, barcode: "88800\n" }, // سطرٌ جديد ⇒ يفلت من = (وحدة 3 مختلفة)
+      ]);
+      expect(await resolveBarcodeOwner(d, "88800")).toBeNull();
+      // إزالة صفّ الوحدة 3 يُبقي مالكاً واحداً (الوحدة 1) ⇒ يُحسَم لها.
+      await d.delete(s.productUnitBarcodes).where(and(eq(s.productUnitBarcodes.productUnitId, 3), eq(s.productUnitBarcodes.barcode, "88800\n")));
+      expect(await resolveBarcodeOwner(d, "88800")).toMatchObject({ productUnitId: 1, matchKind: "ALIAS" });
     });
 
     it("المسار السريع أوّلاً: الصفّ النظيف يفوز على الإرث الملوَّث المكافئ له", async () => {

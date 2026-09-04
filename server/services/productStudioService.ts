@@ -1028,7 +1028,23 @@ export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: s
     search: barcode,
     includeInactive: isManager(actor),
   });
-  const activeMatch = activeOnly.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  const barcodeMatches = activeOnly.rows.filter((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  // (٤/٩، مراجعة Codex P1) المطابقةُ على العمود المُطبَّع قد تُرجع أكثرَ من منتجٍ حين يتطبّع باركودان
+  // إرثيّان ملوّثان على منتجين مختلفين إلى القيمة نفسها بلا مطابقةٍ خامّةٍ صريحة. أخذُ الأوّل يجعل
+  // الاختيارَ رهنَ ترتيب الاسم فيَفتح عملَ تصويرٍ لمنتجٍ خاطئ — نظير خطر التسعير الخاطئ عند الكاشير.
+  // كالحلّال النقديّ (`resolveNormalizedOwner`): عند تعدّد المالك لا نحسم صامتاً بل نرفع غموضاً.
+  const distinctOwners = new Set(barcodeMatches.map((row) => `${row.productId}:${row.variantId ?? ""}:${row.unitId ?? ""}`));
+  if (distinctOwners.size > 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "الرمز الممسوح يخصّ أكثر من منتج",
+        why: "باركوداتٌ مخزّنةٌ قديمةٌ لعدّة منتجاتٍ تتطابق بعد التطبيع مع هذا الرمز، فلا يُحسَم لأيّها آلياً",
+        doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، واطلب من المدير تصحيح باركودات المنتجات المتضاربة",
+      }),
+    });
+  }
+  const activeMatch = barcodeMatches[0];
   if (activeMatch) {
     return {
       productId: activeMatch.productId,

@@ -2,6 +2,8 @@
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { appErrorMessage } from "@shared/errors";
+import { findBarcodeClashes } from "./barcodeAliases";
 import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
@@ -119,6 +121,32 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
       })
       .where(eq(products.id, input.productId));
+
+    // (٤/٩، مراجعة Codex P1) فحصُ تفرّد الباركود قبل الكتابة عبر `findBarcodeClashes` المُطبَّع (لا الاعتماد
+    // على قيد UNIQUE الخام وحده): القيد يقارن السلاسل حرفياً فيقبل «١٢٣» و«123» معاً، فوحدةٌ تُحفَظ بـ«123»
+    // بينما وحدةٌ أخرى تحمل إرثاً «١٢٣» تُنتج مالكَين لباركودٍ واحدٍ منطقياً — والمسحُ اللاحق (مُطبَّعٌ مدخله)
+    // يحسمه لأحدهما فيُسعّر/يخصم لغير صاحبه. نتجاهل وحدات هذا المنتج نفسه (تحديثٌ ذاتيّ). نظيرُ ما يفعله
+    // `updateProductWithVariants` أصلاً.
+    const editCodes: string[] = [];
+    const ownUnitIds: number[] = [];
+    for (const v of input.variants)
+      for (const u of v.units) {
+        const b = canonicalizeBarcodeInput(u.barcode ?? "");
+        if (b) editCodes.push(b);
+        if (u.id != null) ownUnitIds.push(Number(u.id));
+      }
+    if (editCodes.length) {
+      const clashes = await findBarcodeClashes(tx, editCodes, { ignorePrimaryUnitIds: ownUnitIds });
+      if (clashes[0])
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: `الباركود ${clashes[0].code} مُستعمَلٌ في منتجٍ آخر`,
+            why: `«${clashes[0].takenBy}» يحمل هذا الباركود أصلاً، ولا يخصّ باركودٌ واحدٌ سلعتين`,
+            doThis: "غيّر الباركود لهذه الوحدة، أو احذفه من المنتج الآخر أوّلاً، ثمّ احفظ",
+          }),
+        });
+    }
 
     // أقفال التكلفة متعددة المتغيّرات بترتيب المعرّف نفسه في الشراء/WAVG؛ ترتيب الطلب
     // واجهيّ ولا يجوز أن يصنع دورة أقفال مع طلب آخر معكوس.

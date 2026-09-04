@@ -48,8 +48,9 @@ export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
   return foldDigitsSql(sql`lower(${trimmed})`);
 }
 
-/** شرط «يساوي أيّاً من القيم» على العمود المُطبَّع — لكشف الصدام مع الإرث الملوَّث. */
-function normalizedMatchAny(column: SQLWrapper, codes: string[]): SQL | undefined {
+/** شرط «يساوي أيّاً من القيم» على العمود المُطبَّع — لكشف الصدام مع الإرث الملوَّث. مُصدَّرٌ لإعادة
+ *  استعماله في كشف مُلّاك الإرث الملوَّث بمسار الاستيراد (import/products). */
+export function normalizedMatchAny(column: SQLWrapper, codes: string[]): SQL | undefined {
   const lows = Array.from(new Set(codes.map((c) => c.toLowerCase())));
   if (!lows.length) return undefined;
   return or(...lows.map((v) => sql`${normalizedStoredBarcodeSql(column)} = ${v}`));
@@ -126,10 +127,31 @@ async function findAliasOwner(db: DbOrTx, where: SQL): Promise<BarcodeOwner | nu
  * المتمايزين (بمعرّف الوحدة) عبر الجدولين؛ واحدٌ ⇒ يُعاد، صفرٌ ⇒ غير موجود، أكثرُ ⇒ غموضٌ ⇒ null.
  */
 async function resolveNormalizedOwner(db: DbOrTx, loose: string): Promise<BarcodeOwner | null> {
-  const owners = new Map<number, BarcodeOwner>();
-  const prim = await db
+  // نعدّ المُلّاك المتمايزين بـ **معرّف الوحدة** لا بالصفوف: وحدةٌ واحدة قد تملك عدّة بدائلَ ملوّثة
+  // تتطبّع كلّها إلى القيمة نفسها، فحدُّ الصفوف (limit 2) قد يُرجع صفَّين لمالكٍ واحد ويُخفي مالكاً
+  // ثالثاً مختلفاً ⇒ حسمٌ خاطئ (مراجعة Codex P1). لذا نُجمّع على معرّف الوحدة (`groupBy`) ونحدّ
+  // بمالكَين متمايزين — يكفيان للحكم بالغموض. الأساسيّ صفٌّ لكلّ وحدة فتمايزُه مضمونٌ أصلاً.
+  const primUnits = await db
+    .select({ id: productUnits.id })
+    .from(productUnits)
+    .where(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${loose}`)
+    .groupBy(productUnits.id)
+    .limit(2);
+  const ownerIds = new Set<number>(primUnits.map((r) => Number(r.id)));
+  if (ownerIds.size < 2) {
+    const aliUnits = await db
+      .select({ id: productUnitBarcodes.productUnitId })
+      .from(productUnitBarcodes)
+      .where(sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${loose}`)
+      .groupBy(productUnitBarcodes.productUnitId)
+      .limit(2);
+    for (const r of aliUnits) ownerIds.add(Number(r.id));
+  }
+  if (ownerIds.size !== 1) return null; // صفر = غير موجود، أكثرُ من واحد = غموضٌ لا يُحسَم صامتاً
+  const unitId = ownerIds.values().next().value as number;
+  const isPrimary = primUnits.some((r) => Number(r.id) === unitId);
+  const [row] = await db
     .select({
-      productUnitId: productUnits.id,
       variantId: productVariants.id,
       productName: products.name,
       unitName: productUnits.unitName,
@@ -140,56 +162,19 @@ async function resolveNormalizedOwner(db: DbOrTx, loose: string): Promise<Barcod
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${loose}`)
-    .orderBy(asc(productUnits.id))
-    .limit(2);
-  for (const r of prim) {
-    owners.set(Number(r.productUnitId), {
-      productUnitId: Number(r.productUnitId),
-      variantId: Number(r.variantId),
-      productName: r.productName,
-      unitName: r.unitName,
-      sku: r.sku,
-      matchKind: "PRIMARY",
-      primaryBarcode: r.primaryBarcode,
-      factor: Number(r.factor),
-    });
-  }
-  if (owners.size < 2) {
-    const ali = await db
-      .select({
-        productUnitId: productUnitBarcodes.productUnitId,
-        variantId: productVariants.id,
-        productName: products.name,
-        unitName: productUnits.unitName,
-        sku: productVariants.sku,
-        primaryBarcode: productUnits.barcode,
-        factor: productUnits.conversionFactor,
-      })
-      .from(productUnitBarcodes)
-      .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${loose}`)
-      .orderBy(asc(productUnitBarcodes.id))
-      .limit(2);
-    for (const r of ali) {
-      const id = Number(r.productUnitId);
-      if (owners.has(id)) continue; // بديلٌ يعود لوحدةٍ التقطها الأساسيّ = نفس المالك، لا غموض
-      owners.set(id, {
-        productUnitId: id,
-        variantId: Number(r.variantId),
-        productName: r.productName,
-        unitName: r.unitName,
-        sku: r.sku,
-        matchKind: "ALIAS",
-        primaryBarcode: r.primaryBarcode,
-        factor: Number(r.factor),
-      });
-    }
-  }
-  if (owners.size !== 1) return null; // صفر = غير موجود، أكثرُ من واحد = غموضٌ لا يُحسَم صامتاً
-  return owners.values().next().value ?? null;
+    .where(eq(productUnits.id, unitId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    productUnitId: unitId,
+    variantId: Number(row.variantId),
+    productName: row.productName,
+    unitName: row.unitName,
+    sku: row.sku,
+    matchKind: isPrimary ? "PRIMARY" : "ALIAS",
+    primaryBarcode: row.primaryBarcode,
+    factor: Number(row.factor),
+  };
 }
 
 /** يحلّ باركوداً واحداً إلى وحدة المنتج المالكة — أساسيّاً كان أو بديلاً. للاستعمال الداخليّ. */
