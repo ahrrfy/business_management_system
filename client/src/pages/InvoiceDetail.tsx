@@ -14,6 +14,7 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentDeviceReferenceField } from "@/components/form/PaymentDeviceReferenceField";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
@@ -357,8 +358,8 @@ export default function InvoiceDetail() {
   const [cancelMethod, setCancelMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
-  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID(),
-  );
+  const [cancelReference, setCancelReference] = useState("");
+  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
 
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
@@ -400,7 +401,7 @@ export default function InvoiceDetail() {
       setError("");
       setCancelOpen(false);
       setCancelReason("");
-      setCancelConfirmText("");
+      setCancelConfirmText(""); setCancelReference("");
       await Promise.all([
         utils.salesControl.list.invalidate(),
       ]);
@@ -587,6 +588,9 @@ export default function InvoiceDetail() {
       ["cashier", "manager"],
     );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
+  // مرجع جهاز الدفع إلزاميّ لِـCARD وحدها (تفرضه الخدمة) — ومقصورٌ على حالة وجود استردادٍ فعليّ
+  // كي لا يحجب فاتورةً بلا استرداد بسبب طريقةٍ متبقّية من فتحةٍ سابقة للحوار.
+  const needsCardReference = paidAmountForRefund.gt(0) && cancelMethod === "CARD";
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
@@ -994,13 +998,9 @@ export default function InvoiceDetail() {
               variant="destructive"
               size="sm"
               onClick={() => {
-                setCancelMethod(
-                  (data.paymentMethod as
-                      | (typeof METHODS)[number]["v"] | null) ??
-                    "CASH",
-                );
+                setCancelMethod((data.paymentMethod as (typeof METHODS)[number]["v"] | null) ?? "CASH");
                 setCancelReason("");
-                setCancelConfirmText("");
+                setCancelConfirmText(""); setCancelReference("");
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1649,6 +1649,10 @@ export default function InvoiceDetail() {
                 </p>
               </div>
             )}
+            {needsCardReference && (
+              <PaymentDeviceReferenceField id="cancel-card-ref" value={cancelReference} onChange={setCancelReference}
+                hint="نفّذ الاسترداد على جهاز الدفع أولاً ثمّ أدخِل مرجعه هنا." />
+            )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
               <Input
@@ -1676,16 +1680,14 @@ export default function InvoiceDetail() {
 
           <DialogFooter className="gap-2 sm:justify-between">
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
-            <Button
-              variant="destructive"
-              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3}
+            <Button variant="destructive"
+              disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3 || (needsCardReference && !cancelReference.trim())}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
-                  invoiceId,
-                  refundPaymentMethod: cancelMethod,
-                  reason: cancelReason.trim(),
-                  clientRequestId: cancelRequestId,
+                  invoiceId, refundPaymentMethod: cancelMethod,
+                  reference: needsCardReference ? cancelReference.trim() : undefined,
+                  reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
             >
