@@ -452,7 +452,7 @@ function TwoFactorCard() {
             )}
             {step === "regen" && (
               <div className="space-y-3 rounded-lg border p-3">
-                <p className="text-xs text-muted-foreground">أدخل كلمة المرور والرمز الحالي من تطبيق المصادقة لتوليد ١٠ رموز استرداد جديدة (تُبطل القديمة كلها).</p>
+                <p className="text-xs text-muted-foreground">أدخل كلمة المرور والرمز الحالي من تطبيق المصادقة لتوليد 10 رموز استرداد جديدة (تُبطل القديمة كلها).</p>
                 <div className="space-y-1.5">
                   <Label htmlFor="regen-pw">كلمة المرور</Label>
                   <PasswordInput id="regen-pw" autoComplete="current-password" value={password} onChange={setPassword} />
@@ -542,7 +542,7 @@ function TwoFactorCard() {
             {step === "qr" && (
               <div className="space-y-3 rounded-lg border p-3">
                 <p className="text-xs text-muted-foreground">
-                  ١) افتح تطبيق المصادقة على هاتفك واختر «إضافة حساب» ثم امسح هذا الرمز:
+                  1) افتح تطبيق المصادقة على هاتفك واختر «إضافة حساب» ثم امسح هذا الرمز:
                 </p>
                 <div className="flex justify-center">
                   {qrDataUrl ? (
@@ -558,7 +558,7 @@ function TwoFactorCard() {
                     <Copy className="size-3" aria-hidden />
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">٢) أدخل الرمز الظاهر في التطبيق لتأكيد الربط:</p>
+                <p className="text-xs text-muted-foreground">2) أدخل الرمز الظاهر في التطبيق لتأكيد الربط:</p>
                 {otpSlots((v) => setupConfirm.mutate({ code: v }))}
                 <div className="flex gap-2">
                   <Button size="sm" disabled={busy || otp.length !== 6} onClick={() => setupConfirm.mutate({ code: otp })}>

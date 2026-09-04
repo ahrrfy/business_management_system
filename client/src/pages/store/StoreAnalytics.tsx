@@ -26,8 +26,8 @@ function firstOfMonthBaghdad(): string {
 
 type Preset = "7" | "30" | "month";
 const PRESETS: { key: Preset; label: string; range: () => { fromYmd: string; toYmd: string } }[] = [
-  { key: "7", label: "آخر ٧ أيام", range: () => ({ fromYmd: ymdBaghdad(-6), toYmd: ymdBaghdad() }) },
-  { key: "30", label: "آخر ٣٠ يوماً", range: () => ({ fromYmd: ymdBaghdad(-29), toYmd: ymdBaghdad() }) },
+  { key: "7", label: "آخر 7 أيام", range: () => ({ fromYmd: ymdBaghdad(-6), toYmd: ymdBaghdad() }) },
+  { key: "30", label: "آخر 30 يوماً", range: () => ({ fromYmd: ymdBaghdad(-29), toYmd: ymdBaghdad() }) },
   { key: "month", label: "هذا الشهر", range: () => ({ fromYmd: firstOfMonthBaghdad(), toYmd: ymdBaghdad() }) },
 ];
 

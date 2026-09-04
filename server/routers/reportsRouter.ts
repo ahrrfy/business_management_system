@@ -381,6 +381,44 @@ export const reportsRouter = router({
       .orderBy(asc(suppliers.name));
   }),
 
+  /** بحث موردين لمنتقي كشف الحساب (SupplierPicker) تحت بوّابة reports — لا suppliers.
+   *  مراجعة Codex على #966: دورٌ يملك reports:READ فقط (بلا suppliers:READ) كان يفتح شاشة
+   *  الكشف نفسها لكن يُحجَب 403 عن اختيار مورد لأنّ SupplierPicker كان يستدعي suppliers.search
+   *  المحصور بوحدة suppliers. currentBalance غير مُقنَّع هنا عمداً — نفس ما تُرجعه
+   *  supplierStatement أعلاه بلا قناع، تحت نفس البوّابة بالضبط. */
+  supplierSearch: reportsProcedure
+    .input(z.object({ q: z.string().max(200).optional(), limit: z.number().int().positive().max(50).default(8) }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return { rows: [] };
+      const q = input.q?.trim();
+      if (!q) return { rows: [] };
+      const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+      const rows = await db
+        .select({ id: suppliers.id, name: suppliers.name, phone: suppliers.phone, currentBalance: suppliers.currentBalance })
+        .from(suppliers)
+        .where(and(eq(suppliers.isActive, true), or(sql`${suppliers.name} LIKE ${like}`, sql`${suppliers.phone} LIKE ${like}`)))
+        .orderBy(asc(suppliers.name))
+        .limit(input.limit);
+      return { rows };
+    }),
+
+  /** مورّدٌ واحد لمنتقي كشف الحساب — مرآة supplierSearch أعلاه، لعرض الاسم/الرصيد بعد الاختيار. */
+  supplierGet: reportsProcedure
+    .input(z.object({ supplierId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return null;
+      const row = (
+        await db
+          .select({ id: suppliers.id, name: suppliers.name, phone: suppliers.phone, currentBalance: suppliers.currentBalance })
+          .from(suppliers)
+          .where(eq(suppliers.id, input.supplierId))
+          .limit(1)
+      )[0];
+      return row ?? null;
+    }),
+
   /**
    * تقرير المبيعات التفصيلي — نطاق زمني اختياري + فلاتر.
    * يُعيد قائمة الفواتير مع ملخّص الإجماليات في النهاية.

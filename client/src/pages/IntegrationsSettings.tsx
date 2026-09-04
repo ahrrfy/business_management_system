@@ -508,7 +508,7 @@ function ImageStudioIntegrationCard() {
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground space-y-1">
-          <p>قصّ احترافيّ للخلفية عبر remove.bg — <b>قصّ لا توليد</b> ⇒ بكسلات منتجك تبقى كما هي. مجانيّ حتى ~٥٠ صورة/شهر (دقّة معاينة منخفضة)، ثمّ مدفوع بالرصيد.</p>
+          <p>قصّ احترافيّ للخلفية عبر remove.bg — <b>قصّ لا توليد</b> ⇒ بكسلات منتجك تبقى كما هي. مجانيّ حتى ~50 صورة/شهر (دقّة معاينة منخفضة)، ثمّ مدفوع بالرصيد.</p>
           <p>المفتاح من: remove.bg ← Dashboard ← <span dir="ltr">API Keys</span>. عند التعطيل أو نفاد الرصيد يعمل المسار المجانيّ الآمن (FLATTEN) تلقائياً.</p>
         </div>
 

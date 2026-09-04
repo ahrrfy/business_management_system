@@ -247,9 +247,9 @@ export default function PriceWaves() {
       const v = Number(changeValue);
       if (!Number.isFinite(v) || v <= 0)
         return "قيمة التغيير يجب أن تكون أكبر من صفر.";
-      if (percentMode && v > 1000) return "النسبة تتجاوز الحدّ الأقصى (١٠٠٠٪).";
+      if (percentMode && v > 1000) return "النسبة تتجاوز الحدّ الأقصى (1000٪).";
       if (changeType === "DECREASE_PERCENT" && v >= 100)
-        return "تخفيضٌ ١٠٠٪ أو أكثر يُفرّغ السعر.";
+        return "تخفيضٌ 100٪ أو أكثر يُفرّغ السعر.";
       return null;
     }
     if (step === 2) {
@@ -363,7 +363,7 @@ export default function PriceWaves() {
       setError(
         activeBelowCost > 0
           ? "أدخل سبب التغيير — الموجة تُنزل أسعاراً تحت التكلفة."
-          : "أدخل سبب التغيير — الموجة تمسّ أكثر من ٢٠٠ صفّ.",
+          : "أدخل سبب التغيير — الموجة تمسّ أكثر من 200 صفّ.",
       );
       return;
     }
@@ -499,7 +499,7 @@ export default function PriceWaves() {
 
               {scope === "SELECTED" && (
                 <div className="space-y-2 rounded-md border p-3">
-                  <Field label="ابحث وأضِف منتجات" hint="حتى ٥٠٠ منتج">
+                  <Field label="ابحث وأضِف منتجات" hint="حتى 500 منتج">
                     <Input
                       value={pickQuery}
                       onChange={(e) => setPickQuery(e.target.value)}
@@ -640,7 +640,7 @@ export default function PriceWaves() {
                 </Field>
                 <Field
                   label="تقريب السعر الناتج"
-                  hint="السوق العراقي لا يتعامل بأقلّ من ٢٥٠ د.ع"
+                  hint="السوق العراقي لا يتعامل بأقلّ من 250 د.ع"
                 >
                   <AppSelect
                     value={String(roundToDenom)}
@@ -901,7 +901,7 @@ export default function PriceWaves() {
                 <Input
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  placeholder="ارتفاع سعر الدولار من ١٣٥٠ إلى ١٤٠٠"
+                  placeholder="ارتفاع سعر الدولار من 1350 إلى 1400"
                 />
               </Field>
               <Field label="وصف الموجة (اختياري)">

@@ -680,7 +680,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-exp">سنوات الخبرة</label>
-                <input id="cj-exp" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: ٣ سنوات" />
+                <input id="cj-exp" className="cj-input" value={experience} onChange={(e) => setExperience(e.target.value)} placeholder="مثال: 3 سنوات" />
               </div>
               <div className="cj-field">
                 <label htmlFor="cj-edu">أعلى مؤهل دراسي</label>
@@ -820,7 +820,7 @@ export default function JobApply() {
             <div className="cj-badge">
               <div><div className="n">{ar(7)}<span className="a">+</span></div><div className="l">أقسام وتخصّصات</div></div>
               <div className="sep" />
-              <div><div className="n a">٢٠٢٦</div><div className="l">نوظّف هذا العام</div></div>
+              <div><div className="n a">{ar(2026)}</div><div className="l">نوظّف هذا العام</div></div>
             </div>
           </div>
         </div>

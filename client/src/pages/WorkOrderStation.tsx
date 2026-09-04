@@ -20,6 +20,7 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { paymentMethodCompact } from "@shared/terms";
 
 /**
  * محطة فني التنفيذ — `/work-orders/station` (دور print_operator + الكاشير/المدير).
@@ -57,12 +58,8 @@ const PRIORITIES: Record<string, { label: string; cls: string }> = {
   NORMAL: { label: "عادي", cls: "badge-status-pending border-transparent" },
   LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
-const PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-};
+// وصلُ برنامج v2 §٦ ق٦ (٤/٩/٢٦): تسميةُ طريقة الدفع من `shared/terms.ts` مباشرة — كان
+// قاموساً محلّياً بأربعة مفاتيح ينجرف مع نسخ الشاشات الأخرى. حارس `check:vocabulary`.
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
 
 function pad2(n: number) { return String(n).padStart(2, "0"); }
@@ -490,7 +487,7 @@ function StationDetail({ id, onChanged, canOperateWorkOrders }: { id: number; on
               <div className="flex items-center justify-between gap-3 border-t pt-2"><span className="font-bold">المتبقّي</span><span className="font-extrabold tabular-nums" dir="ltr">{fmtAr(remainingDue.toString())} د.ع</span></div>
               {Number(d.deposit ?? 0) > 0 && (
                 <div className="rounded-lg border bg-muted/20 p-2.5 text-xs">
-                  <div><span className="text-muted-foreground">طريقة الدفع: </span><span className="font-bold">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</span></div>
+                  <div><span className="text-muted-foreground">طريقة الدفع: </span><span className="font-bold">{paymentMethodCompact(d.paymentMethod)}</span></div>
                   {d.paymentReference && <div className="mt-1"><span className="text-muted-foreground">المرجع: </span><span className="font-mono" dir="ltr">{d.paymentReference}</span></div>}
                 </div>
               )}

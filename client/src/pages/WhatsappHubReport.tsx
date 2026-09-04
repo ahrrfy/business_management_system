@@ -164,9 +164,9 @@ const agentColumns: ColumnDef<AgentRow, unknown>[] = [
   {
     id: "avgCsat",
     header: "متوسط CSAT",
-    accessorFn: (r) => (r.avgCsat != null ? `${r.avgCsat} / ٥ (${fmtAr(r.csatCount)})` : "—"),
+    accessorFn: (r) => (r.avgCsat != null ? `${r.avgCsat} / 5 (${fmtAr(r.csatCount)})` : "—"),
     meta: { kind: "number" },
-    cell: ({ row }) => (row.original.avgCsat != null ? `${row.original.avgCsat} / ٥ (${fmtAr(row.original.csatCount)})` : "—"),
+    cell: ({ row }) => (row.original.avgCsat != null ? `${row.original.avgCsat} / 5 (${fmtAr(row.original.csatCount)})` : "—"),
   },
 ];
 
@@ -292,7 +292,7 @@ export default function WhatsappHubReport() {
         { label: "معدّل الاستجابة", value: fmtPctStr(d.responseRatePct), tone: pctTone(d.responseRatePct, 50, 25) },
         {
           label: "متوسط الدرجة",
-          value: d.average ? `${d.average} / ٥` : "—",
+          value: d.average ? `${d.average} / 5` : "—",
           tone: d.average ? (Number(d.average) >= 4 ? "positive" : Number(d.average) >= 3 ? "warning" : "negative") : "default",
         },
       ];
@@ -464,7 +464,7 @@ export default function WhatsappHubReport() {
           resolved: fmtAr(r.resolved),
           open: fmtAr(r.open),
           avgResolution: fmtMinutes(r.avgResolutionMinutes),
-          avgCsat: r.avgCsat != null ? `${r.avgCsat} / ٥ (${fmtAr(r.csatCount)})` : "—",
+          avgCsat: r.avgCsat != null ? `${r.avgCsat} / 5 (${fmtAr(r.csatCount)})` : "—",
         })),
         emptyText: "لا مهام مُسنَدة في هذا النطاق.",
       });
@@ -478,13 +478,13 @@ export default function WhatsappHubReport() {
           { key: "score", label: "الدرجة", align: "left" },
           { key: "count", label: "عدد التقييمات", align: "left" },
         ],
-        rows: rows.map((r) => ({ score: `${r.score} / ٥`, count: fmtAr(r.count) })),
+        rows: rows.map((r) => ({ score: `${r.score} / 5`, count: fmtAr(r.count) })),
         summary: d
           ? [
               { label: "طُلب تقييمها", value: fmtAr(d.requested) },
               { label: "أُجيبت", value: fmtAr(d.answered) },
               { label: "معدّل الاستجابة", value: fmtPctStr(d.responseRatePct) },
-              { label: "متوسط الدرجة", value: d.average ? `${d.average} / ٥` : "—", large: true, bold: true },
+              { label: "متوسط الدرجة", value: d.average ? `${d.average} / 5` : "—", large: true, bold: true },
             ]
           : undefined,
         emptyText: "لا استطلاعات رضا مطلوبة في هذا النطاق.",
@@ -642,7 +642,7 @@ function CsatSection({ data, isLoading, isError, errorMessage, onRetry }: Sectio
           <>
             <p className="text-xs text-muted-foreground">
               {fmtAr(data.answered)} من {fmtAr(data.requested)} طلب تقييم أُجيب ({fmtPctStr(data.responseRatePct)})
-              {data.average && <> — متوسط الدرجة {data.average} / ٥</>}
+              {data.average && <> — متوسط الدرجة {data.average} / 5</>}
             </p>
             <div className="space-y-2">
               {data.distribution.map((d) => {
