@@ -1,0 +1,16 @@
+{
+  "client/src/components/financial/FinancialSourceBadge.tsx": 1,
+  "client/src/components/reception/cartMath.ts": 1,
+  "client/src/components/reception/DepositDialog.tsx": 1,
+  "client/src/components/vouchers/voucherUiPolicy.ts": 1,
+  "client/src/components/workOrders/WorkOrderRefundApprovals.tsx": 1,
+  "client/src/lib/integrationCenter.ts": 1,
+  "client/src/lib/paymentMethod.ts": 1,
+  "client/src/lib/printing/invoiceReceipt.ts": 1,
+  "client/src/lib/printing/printTemplates.ts": 1,
+  "client/src/lib/printing/shiftRaster.ts": 1,
+  "client/src/lib/terminationSettlement.ts": 1,
+  "client/src/pages/_VoucherFormShared.tsx": 1,
+  "client/src/pages/Payroll.tsx": 1,
+  "client/src/pages/WorkOrders.tsx": 1
+}

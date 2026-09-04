@@ -30,6 +30,11 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { paymentMethodTermOptions } from "@shared/terms";
+import {
+  INBOUND_ENABLED_PAYMENT_METHODS,
+  type InboundEnabledPaymentMethod,
+} from "@shared/inboundPaymentPolicy";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -80,13 +85,14 @@ const STATUS_CLS: Record<string, string> = {
   CONVERTED: "bg-violet-100 text-violet-700",
   EXPIRED: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
 };
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string;
-}[] = [
-  { v: "CASH", label: "نقدي" },
-  { v: "TRANSFER", label: "تحويل" },
-  { v: "CARD", label: "بطاقة" },
-  { v: "WALLET", label: "محفظة" },
-];
+/**
+ * وصلُ برنامج v2 §٦ ق٦ (٤/٩/٢٦): خياراتُ طريقة الدفع من `shared/terms.ts` مباشرة —
+ * كانت مصفوفةً محلّية بأربعة عناصر تنجرف مع نسخ الشاشات الأخرى (`نقدي`/`نقداً` مثالاً حيّ).
+ * السياسةُ الحاكمة `INBOUND_ENABLED_PAYMENT_METHODS` (CASH/CARD/TRANSFER/WALLET) — لا
+ * CHECK ولا TELECOM في مسار القبض بقرار المالك. حارس `check:vocabulary`.
+ */
+const METHODS = paymentMethodTermOptions(INBOUND_ENABLED_PAYMENT_METHODS);
+type QuotationPayMethod = InboundEnabledPaymentMethod;
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -128,7 +134,7 @@ export default function QuotationDetail() {
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payMethod, setPayMethod] = useState<QuotationPayMethod>("CASH");
   const [payReference, setPayReference] = useState("");
 
   const [externalAttempt, setExternalAttempt] = useState<{
@@ -351,7 +357,7 @@ export default function QuotationDetail() {
                 }}
               >
                 {METHODS.map((m) => (
-                  <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>
+                  <option key={m.value} value={m.value} disabled={!isPosPaymentMethodEnabled(m.value)}>{m.compact}</option>
                 ))}
               </AppSelect>
             </div>
