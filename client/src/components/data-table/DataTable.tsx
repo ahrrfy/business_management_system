@@ -68,7 +68,7 @@ import { TABLE_TFOOT_CLS } from "@/components/data-table/tableStyles";
 function rowShellClass(custom: string | undefined): string {
   const hasCustomBg = !!custom && /(^|\s)(bg-|dark:bg-)/.test(custom);
   const zebra = hasCustomBg ? "" : "odd:bg-background even:bg-muted/20";
-  return `border-t ${zebra} hover:bg-accent/35 data-[selected=true]:bg-accent/60`;
+  return `border-t ${zebra} [&:not([data-selected=true]):hover]:bg-accent/35 data-[selected=true]:bg-primary/15`;
 }
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
@@ -528,6 +528,14 @@ export function DataTable<T, K = string>({
     setLastIndex(rowIndex);
   };
 
+  const handleSelectionMouseDown = (e: React.MouseEvent<HTMLTableRowElement>) => {
+    if (!selectionEnabled || !e.shiftKey) return;
+    const target = e.target as HTMLElement;
+    if (!e.currentTarget.contains(target) || target.closest("button, a, input, select, textarea, [role=button]")) return;
+    // Shift selects a row range without also extending the browser's text selection.
+    e.preventDefault();
+  };
+
   const columnControls =
     !embedded && table.getAllLeafColumns().length > 5 ? (
       <DropdownMenu>
@@ -756,6 +764,7 @@ export function DataTable<T, K = string>({
                       <tr
                         key={row.id}
                         data-selected={isSelected || undefined}
+                        onMouseDown={handleSelectionMouseDown}
                         className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                         onClick={(e) => {
                           const target = e.target as HTMLElement;
@@ -780,17 +789,16 @@ export function DataTable<T, K = string>({
                         }}
                       >
                         {selectionEnabled && (
-                          <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                          <td className="p-2 w-10 text-center cursor-pointer" onClick={(e) => {
+                            e.stopPropagation();
+                            handleRowToggle(rowIndex, e);
+                          }}>
                             <input
                               type="checkbox"
                               aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
                               className="size-4 cursor-pointer accent-primary"
                               checked={isSelected}
-                              onClick={(e) => {
-                                handleRowToggle(rowIndex, e);
-                                e.preventDefault();
-                              }}
-                              onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                              onChange={() => { /* Selection cell handles clicks and keyboard activation. */ }}
                             />
                           </td>
                         )}
@@ -900,6 +908,7 @@ export function DataTable<T, K = string>({
                   <tr
                     key={row.id}
                     data-selected={isSelected || undefined}
+                    onMouseDown={handleSelectionMouseDown}
                     className={`${rowShellClass(getRowClassName?.(row.original))} ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : onRowClick ? "cursor-pointer" : ""}`}
                     onClick={(e) => {
                       const target = e.target as HTMLElement;
@@ -917,17 +926,16 @@ export function DataTable<T, K = string>({
                     }}
                   >
                     {selectionEnabled && (
-                      <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                      <td className="p-2 w-10 text-center cursor-pointer" onClick={(e) => {
+                        e.stopPropagation();
+                        handleRowToggle(rowIndex, e);
+                      }}>
                         <input
                           type="checkbox"
                           aria-label={getRowSelectionLabel?.(row.original) ?? "تَحديد الصَفّ"}
                           className="size-4 cursor-pointer accent-primary"
                           checked={isSelected}
-                          onClick={(e) => {
-                            handleRowToggle(rowIndex, e);
-                            e.preventDefault();
-                          }}
-                          onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                          onChange={() => { /* Selection cell handles clicks and keyboard activation. */ }}
                         />
                       </td>
                     )}
