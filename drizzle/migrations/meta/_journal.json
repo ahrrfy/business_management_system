@@ -2150,6 +2150,13 @@
 			"when": 1788052405000,
 			"tag": "0332_digital_card_baskets",
 			"breakpoints": true
+		},
+		{
+			"idx": 333,
+			"version": "5",
+			"when": 1788052406000,
+			"tag": "0333_owner_selfapproval_checkconstraints",
+			"breakpoints": true
 		}
 	]
 }

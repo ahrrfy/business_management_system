@@ -148,14 +148,16 @@ export default function CustomerEdit() {
     ]);
 
   const update = trpc.customers.update.useMutation({
-    onSuccess: async () => {
-      notify.ok("تمّ حفظ التعديلات");
-      await invalidate();
-    },
     onError: (e) => {
       setError(e.message);
       notify.err(e);
     },
+    // ⛔ لا نضع onSuccess هنا: مراجعة Codex #978 P2 — TanStack Query يستبدل callbacks الطلبِ الجاري
+    // بأحدث callbacks عند كل render، فقراءة `dirtySnapshot()` وقت وصول الاستجابة تلتقط تعديلاتٍ
+    // أُضيفت **بعد** إرسال الطلب (مثال: عدّل «الملاحظات»، اضغط حفظ، عدّل «الهاتف» قبل الاستجابة
+    // ⇒ baseline يصير «ملاحظات+هاتف» والخادم حفظ «ملاحظات» فقط ⇒ isDirty=false ⇒ يُفقد الهاتف
+    // بلا تحذير). العلاجُ الآمن: التقاطُ اللقطة في اللحظة التي يُستدعى فيها `mutate` وتمريرُها عبر
+    // `onSuccess` الخاصّ بذلك النداء (§ submit) — الإغلاقُ يُثبّت اللقطة على النداء لا على render.
   });
 
   const deactivate = trpc.customers.deactivate.useMutation({
@@ -213,25 +215,42 @@ export default function CustomerEdit() {
     } else {
       creditLimitPayload = "0"; // نقدي فقط.
     }
-    update.mutate({
-      customerId,
-      name: name.trim(),
-      phone: phone.trim() || null,
-      phone2: phone2.trim() || null,
-      phone3: phone3.trim() || null,
-      whatsapp: whatsapp.trim() || null,
-      address: address.trim() || null,
-      city: city.trim() || null,
-      district: district.trim() || null,
-      customerType,
-      defaultPriceTier,
-      creditLimit: creditLimitPayload,
-      // تصحيح الرصيد الافتتاحي — للمرتفعين فقط (undefined ⇒ الخادم لا يمسّ قيد OPENING). فارغ ⇒ "0"
-      // يزيل القيد. القيمة غير المتغيّرة تصير فارقاً صفرياً بلا كتابة (لا مسّ بفترةٍ مُقفَلة).
-      openingBalance: isElevated ? (openingAmount.trim() || "0") : undefined,
-      openingBalanceDirection: isElevated ? openingDir : undefined,
-      notes: notes.trim() || null,
-    });
+    // ⭐ التقاطُ لقطةِ **ما نُرسله الآن** — قبل استدعاء mutate — حتى تُصير baseline عند نجاح
+    // *هذا* الطلب بالذات. تعديلٌ يُضاف بين الإرسال والاستجابة يظلّ dirty (مراجعة Codex #978 P2).
+    const submittedSnapshot = dirtySnapshot();
+    update.mutate(
+      {
+        customerId,
+        name: name.trim(),
+        phone: phone.trim() || null,
+        phone2: phone2.trim() || null,
+        phone3: phone3.trim() || null,
+        whatsapp: whatsapp.trim() || null,
+        address: address.trim() || null,
+        city: city.trim() || null,
+        district: district.trim() || null,
+        customerType,
+        defaultPriceTier,
+        creditLimit: creditLimitPayload,
+        // تصحيح الرصيد الافتتاحي — للمرتفعين فقط (undefined ⇒ الخادم لا يمسّ قيد OPENING). فارغ ⇒ "0"
+        // يزيل القيد. القيمة غير المتغيّرة تصير فارقاً صفرياً بلا كتابة (لا مسّ بفترةٍ مُقفَلة).
+        openingBalance: isElevated ? (openingAmount.trim() || "0") : undefined,
+        openingBalanceDirection: isElevated ? openingDir : undefined,
+        notes: notes.trim() || null,
+      },
+      {
+        // per-call onSuccess: الإغلاقُ يُثبّت `submittedSnapshot` على هذا النداء بالذات، فلا
+        // يُستبدَل بـcallback من render لاحق. `dirtySnapshot()` وقت الاستجابة كان يبتلع تعديلاتٍ
+        // بين الإرسال والاستجابة فيُفقدها بلا تحذير عند المغادرة.
+        onSuccess: async () => {
+          notify.ok("تمّ حفظ التعديلات");
+          await invalidate();
+          // baseline = ما أُرسل فعلاً (لا ما يُعرَض الآن). فشلُ الحفظ يمرّ بـonError ⇒ لا نمسّ
+          // baseline، فتبقى الحقول dirty ويظهر الحوار عند المغادرة.
+          initialSnapshotRef.current = submittedSnapshot;
+        },
+      },
+    );
   }
 
   /** Esc: رجوع مباشر إن لم يُعدَّل شيء، وإلا تأكيدٌ صريح قبل تجاهل التعديلات (بدل مغادرة صامتة). */
