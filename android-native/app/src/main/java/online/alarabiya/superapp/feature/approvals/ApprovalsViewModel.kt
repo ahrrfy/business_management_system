@@ -57,7 +57,7 @@ class ApprovalsViewModel(
         val request = state.requests.firstOrNull { it.key == requestKey } ?: return
         if (!accessPolicy.canManage(request.kind)) return
         val allowed = when (decision) {
-            ApprovalDecision.Approve -> request.capabilities.canApprove
+            is ApprovalDecision.Approve -> request.capabilities.canApprove
             is ApprovalDecision.Reject -> request.capabilities.canReject
         }
         if (allowed) state = state.copy(
