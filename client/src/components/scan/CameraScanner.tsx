@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraOff, Flashlight, FlashlightOff, ScanLine, X } from "lucide-react";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { dispatchManualCameraEntry } from "./cameraScannerLifecycle";
 
 interface Props {
   open: boolean;
@@ -371,8 +372,12 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
       <div className="mt-1 w-full max-w-md border-t border-white/10 pt-3">
         <ManualEntry
           onSubmit={(code) => {
-            stopMedia();
-            onManualDetectRef.current(code);
+            dispatchManualCameraEntry(code, {
+              deliver,
+              stopMedia,
+              manual: onManualDetectRef.current,
+              hasManualOverride: onManualDetect != null,
+            });
           }}
         />
       </div>

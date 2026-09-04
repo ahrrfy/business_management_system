@@ -86,7 +86,10 @@ export function StudioCaptureStation({
 
   // ⚠️ `useBarcodeInput` يُعيد مُعالِجاً يُركَّب على الحقل — لا يُثبّت مستمعاً عامّاً.
   // إهمالُ قيمته كان يجعل الماسح السلكيّ بلا أثر إطلاقاً، خلافاً لما زعمتُه هنا سابقاً.
-  const barcodeInput = useBarcodeInput((scanned) => submitCode(scanned), { enabled: !offline && !claim.isPending });
+  const barcodeInput = useBarcodeInput((scanned) => submitCode(scanned), {
+    enabled: !offline && !claim.isPending,
+    minLength: 2,
+  });
 
   // بعد كل إفراغٍ للمنتج يعود التركيز للحقل: الدورة التالية تبدأ بلا لمس الشاشة.
   useEffect(() => {

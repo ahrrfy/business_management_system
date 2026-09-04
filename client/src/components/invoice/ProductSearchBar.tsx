@@ -18,6 +18,7 @@ import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
+import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -197,7 +198,10 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     inputRef.current?.focus();
   };
 
-  async function resolveExactBarcode(code: string) {
+  async function resolveExactBarcode(
+    code: string,
+    options: { quietNotFound?: boolean } = {},
+  ): Promise<ExactProductResolution> {
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
       if (row) {
@@ -208,7 +212,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
           if (!purchaseRow) {
             onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
-            return;
+            return "BLOCKED";
           }
           addRow({
             productId: purchaseRow.productId,
@@ -233,7 +237,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
             ),
             costBase: purchaseRow.costPriceBase,
           });
-          return;
+          return "FOUND";
         }
         addRow({
           productId: row.productId,
@@ -253,11 +257,13 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           price: row.price ?? "0",
           costBase: "0",
         });
-        return;
+        return "FOUND";
       }
-      onNotify?.(`الباركود غير معروف: ${code}`, "error");
-    } catch {
-      onNotify?.("تعذّر الاتصال بالخادم", "error");
+      if (!options.quietNotFound) onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      return "NOT_FOUND";
+    } catch (error) {
+      onNotify?.(error instanceof Error ? error.message : "تعذّر الاتصال بالخادم", "error");
+      return "BLOCKED";
     }
   }
 
@@ -274,20 +280,15 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       setSelectedIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (selectedIdx >= 0 && results[selectedIdx]) {
-        addRow(results[selectedIdx]);
-        return;
-      }
-      // أثناء التأجيل/الجلب النتائج قد تعود لاستعلام أقدم ⇒ لا نضيف خطأً (انتظر ~٢٠٠ms واضغط من جديد)
-      if (settled && results.length >= 1) {
-        addRow(results[0]);
-        return;
-      }
-      // Enter الصريح يجرّب هوية الباركود من دون regex؛ Code39/128 قد يكون قصيراً أو أبجديّاً
-      // ويحوي مسافات داخلية. في الشراء أيضاً يثبت byBarcode المالك قبل جلب تكلفة الوحدة.
       const code = query.trim();
       if (code) {
-        await resolveExactBarcode(code);
+        const decision = await resolveExactBeforeFuzzy(
+          () => resolveExactBarcode(code, { quietNotFound: true }),
+          () => selectedIdx >= 0
+            ? results[selectedIdx]
+            : settled && results.length === 1 ? results[0] : undefined,
+        );
+        if (decision.status === "NOT_FOUND" && decision.fuzzy) addRow(decision.fuzzy);
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
