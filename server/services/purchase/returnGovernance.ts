@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -96,33 +97,87 @@ export interface DecidePurchaseReturnReversalInput {
 
 function required(value: string | null | undefined, label: string, max: number): string {
   const normalized = value?.trim() ?? "";
-  if (!normalized) throw new TRPCError({ code: "BAD_REQUEST", message: `${label} مطلوب` });
-  if (normalized.length > max) throw new TRPCError({ code: "BAD_REQUEST", message: `${label} يتجاوز ${max} محرفاً` });
+  if (!normalized)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّرت معالجة طلب المرتجع",
+        why: `${label} مطلوب — الحقل وصل فارغاً بعد قصّ الفراغات`,
+        doThis: `اكتب قيمةً واضحة في حقل «${label}»، ثمّ أعد الحفظ`,
+      }),
+    });
+  if (normalized.length > max)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّرت معالجة طلب المرتجع",
+        why: `${label} يتجاوز ${max} محرفاً`,
+        doThis: `اختصر قيمة حقل «${label}» لتصير ${max} محرفاً أو أقل`,
+      }),
+    });
   return normalized;
 }
 
 function positiveUnique(values: number[], label: string): void {
   const seen = new Set<number>();
   for (const value of values) {
-    if (!Number.isSafeInteger(value) || value <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: `${label} غير صالح` });
-    if (seen.has(value)) throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تكرار ${label}` });
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّرت معالجة طلب المرتجع",
+          why: `${label} غير صالح — القيمة إمّا صفر أو سالبة أو ليست عدداً صحيحاً`,
+          doThis: `اختر ${label} من القائمة بدل تحرير معرّفه يدوياً`,
+        }),
+      });
+    if (seen.has(value))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّرت معالجة طلب المرتجع",
+          why: `لا يجوز تكرار ${label} في نفس الطلب`,
+          doThis: `احذف السطر المكرَّر واجمع الكميّات في سطرٍ واحد`,
+        }),
+      });
     seen.add(value);
   }
 }
 
 export function assertIndependentPurchaseReviewer(requestedBy: number, reviewerId: number): void {
   if (requestedBy === reviewerId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "فصل المهام: لا يجوز لمن أنشأ الطلب أن يعتمد أو يرفض طلبه" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر حسم طلب المرتجع",
+        why: "فصل المهام: من أنشأ الطلب لا يعتمده ولا يرفضه — الاعتماد يلزمه شخصٌ مستقلّ",
+        doThis: "اطلب من مستخدمٍ آخر (مديرٍ أو موظّفٍ مؤهَّل) حسم الطلب من قائمة طلبات المراجعة",
+      }),
+    });
   }
 }
 
 export function assertExpectedVersion(actual: number, expected: number, label: string): void {
-  if (actual !== expected) throw new TRPCError({ code: "CONFLICT", message: `تغيّرت نسخة ${label}؛ أعد تحميل المستند` });
+  if (actual !== expected)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر حفظ التعديل على المرتجع",
+        why: `تغيّرت نسخة ${label} في جهةٍ أخرى بين لحظة الفتح والحفظ (نسختك أقدم من النسخة الحاليّة)`,
+        doThis: "أعد تحميل المستند لعرض النسخة الحاليّة، ثمّ أعد إدخال تعديلاتك عليها",
+      }),
+    });
 }
 
 export function proportionalReturnAmount(total: string | number, quantity: number, sourceQuantity: number): Decimal {
   if (!Number.isSafeInteger(quantity) || quantity <= 0 || !Number.isSafeInteger(sourceQuantity) || sourceQuantity <= 0 || quantity > sourceQuantity) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المرتجع غير صالحة" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر حساب مبلغ المرتجع",
+        why: "كمية المرتجع غير صالحة — إمّا صفر أو سالبة أو أكبر من الكمّية الأصليّة الواردة على المستند",
+        doThis: "افتح بند المرتجع وعدّل الكمّية لتكون بين 1 والكمّية الأصليّة",
+      }),
+    });
   }
   return round2(money(total).times(quantity).dividedBy(sourceQuantity));
 }
@@ -146,7 +201,15 @@ export function requiresCashShift(settlement: "CREDIT" | "CASH", method: Payment
 
 export function usdAtAgreedRate(amountIqd: string | number | Decimal, agreedRate: string | number | Decimal | null | undefined): Decimal {
   const rate = money(agreedRate);
-  if (!rate.gt(0)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "فاتورة USD بلا سعر صرف متفق عليه صالح" });
+  if (!rate.gt(0))
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تحويل مبلغ المرتجع إلى الدولار",
+        why: "فاتورة المورد بالدولار مسجَّلة بلا سعر صرفٍ متّفَقٍ عليه صالح، والتحويل يحتاج سعراً موجباً",
+        doThis: "افتح فاتورة المورد وأدخل سعر صرفٍ صالحاً في حقل «سعر الصرف المتّفق عليه»، ثمّ أعد المرتجع",
+      }),
+    });
   return round2(money(amountIqd).dividedBy(rate));
 }
 
@@ -158,7 +221,11 @@ function usdCreditBalanceAtIqd(
   if (invoiceUsdTotal == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "فاتورة USD بلا لقطة مبلغ دولار أصلية",
+      message: appErrorMessage({
+        what: "تعذّر حساب رصيد المرتجع بالدولار",
+        why: "فاتورة المورد بالدولار بلا لقطةِ المبلغ الدولاريّ الأصليّ عند الترحيل، والاشتقاق يحتاجها",
+        doThis: "الفاتورة المرحَّلة لا تُعدَّل مباشرة (`assertDraftMutableTx` يقبل DRAFT فقط). أنشئ **تصحيحَ استحقاقٍ** على الفاتورة عبر مسار حوكمة الفواتير لإدخال قيمة USD، ثم أعد محاولة المرتجع",
+      }),
     });
   }
   const sourceUsd = money(invoiceUsdTotal);
@@ -166,7 +233,11 @@ function usdCreditBalanceAtIqd(
   if (sourceUsd.isNegative() || !sourceIqd.gt(0)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "لقطة فاتورة USD غير صالحة لحساب المرتجع",
+      message: appErrorMessage({
+        what: "تعذّر حساب رصيد المرتجع بالدولار",
+        why: "لقطة الفاتورة المخزَّنة غير متسقة (المبلغ الدولاريّ سالبٌ أو المبلغ الدينارّي صفر أو سالب)",
+        doThis: "افتح فاتورة المورد وأعد ترحيلها بمبلغَين موجبَين، ثمّ أعد إنشاء المرتجع",
+      }),
     });
   }
   const appliedIqd = Decimal.min(Decimal.max(money(creditedIqd), 0), sourceIqd);
@@ -208,7 +279,14 @@ function usdReversalAmountWithFinalResidual(
 
 function assertReturnEvidenceForInstrument(input: Pick<RequestPurchaseReturnInput, "settlement" | "paymentMethod" | "evidenceType">): void {
   if (input.settlement === "CASH" && input.paymentMethod !== "CASH" && input.evidenceType === "RETURN_NOTE") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يحتاج دليلاً خارجياً، ولا تكفي مذكرة المرتجع الداخلية" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد مرتجع الشراء",
+        why: "الاسترداد بالبطاقة/التحويل/المحفظة يحتاج دليلاً خارجياً (رقم إيصال أو تحويل)، ومذكّرة المرتجع الداخلية لا تعوّضه",
+        doThis: "افتح إيصال البطاقة أو صورة التحويل واكتب المرجع في حقل «رقم التأكيد الخارجي»، أو غيّر طريقة الردّ إلى النقد",
+      }),
+    });
   }
 }
 
@@ -218,7 +296,15 @@ async function assertNoPendingSupplierPayment(tx: Tx, supplierInvoiceId: number)
     .innerJoin(supplierPaymentRequests, eq(supplierPaymentRequests.id, supplierPaymentRequestAllocations.requestId))
     .where(and(eq(supplierPaymentRequestAllocations.supplierInvoiceId, supplierInvoiceId), eq(supplierPaymentRequests.status, "PENDING")))
     .limit(1))[0];
-  if (pending) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يوجد طلب دفع معلّق على الفاتورة؛ احسمه قبل اعتماد المرتجع أو عكسه" });
+  if (pending)
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد المرتجع أو عكسه",
+        why: "الفاتورة نفسها تحمل طلب دفعٍ معلّقاً في انتظار الاعتماد، وإتمام المرتجع فوقه يخلط الرصيدَين",
+        doThis: "افتح شاشة سداد المورّد وحدّث طلب الدفع المعلَّق (اعتماد أو رفض)، ثمّ أعد اعتماد المرتجع",
+      }),
+    });
 }
 
 async function netInvoiceCreditReturns(tx: Tx, invoiceId: number): Promise<Decimal> {
@@ -305,10 +391,26 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
   const evidenceReference = required(input.evidenceReference, "مرجع الدليل", 500);
   const reason = required(input.reason, "سبب المرتجع", 500);
   assertReturnEvidenceForInstrument(input);
-  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف بند مرتجع واحداً على الأقل" });
+  if (!input.lines.length)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب المرتجع",
+        why: "الطلب وصل بلا أيّ بندٍ يُطلب إرجاعه",
+        doThis: "أضف بنداً واحداً على الأقل في جدول بنود المرتجع بكميّته، قبل الحفظ",
+      }),
+    });
   positiveUnique(input.lines.map((line) => line.matchAllocationId), "تخصيص المطابقة");
   const normalizedLines = [...input.lines].map((line) => {
-    if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المرتجع يجب أن تكون كمية أساس صحيحة موجبة" });
+    if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "أحد البنود يحمل كمية مرتجعٍ غير موجبة أو ليست عدداً صحيحاً (تُخزَّن بالوحدة الأساس)",
+          doThis: "افتح البند المتضرِّر وعدّل الكمية لتكون عدداً صحيحاً أكبر من صفر بالوحدة الأساس",
+        }),
+      });
     return { matchAllocationId: line.matchAllocationId, baseQuantity: line.baseQuantity, reason: line.reason?.trim() || null };
   }).sort((a, b) => a.matchAllocationId - b.matchAllocationId);
   const canonical = stableCanonical({
@@ -329,22 +431,61 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
     const replay = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.requestKey, requestKey)).limit(1))[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
-      if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مرتجع مختلفة" });
+      if (!payloadHashMatches(payloadHash, replay.payloadHash))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل طلب المرتجع",
+            why: "نفس مفتاح الطلب مسجَّل قبل قليل بحمولةٍ مختلفة (بنودٌ أو كمّياتٌ أو مرجعٌ مختلف)",
+            doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالبيانات المعروضة أمامك",
+          }),
+        });
       return { requestId: Number(replay.id), status: replay.status, idempotent: true as const };
     }
     const invoice = (await tx.select().from(supplierInvoices).where(eq(supplierInvoices.id, input.supplierInvoiceId)).for("update").limit(1))[0];
-    if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة المورد غير موجودة" });
+    if (!invoice)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "فاتورة المورد المُختارة غير موجودة، إمّا حُذفت أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة فواتير الموردين واختر الفاتورة من القائمة، ثمّ ابدأ المرتجع منها",
+        }),
+      });
     assertPurchaseBranch(invoice, actor);
     assertExpectedVersion(Number(invoice.version), input.expectedInvoiceVersion, "فاتورة المورد");
-    if (invoice.status !== "POSTED") throw new TRPCError({ code: "CONFLICT", message: "لا يُنشأ مرتجع إلا من فاتورة مورد مرحّلة" });
+    if (invoice.status !== "POSTED")
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "فاتورة المورد ليست بحالة «مُرحَّلة» — لا يُنشأ مرتجعٌ من فاتورةٍ مسودةٍ أو ملغاة",
+          doThis: "افتح فاتورة المورد ورحّلها أوّلاً، أو ابدأ المرتجع من فاتورةٍ مرحَّلة أخرى",
+        }),
+      });
     const matchRun = (await tx.select().from(supplierInvoiceMatchRuns).where(eq(supplierInvoiceMatchRuns.id, input.matchRunId)).for("update").limit(1))[0];
     if (!matchRun || Number(matchRun.supplierInvoiceId) !== input.supplierInvoiceId || matchRun.outcome === "HOLD") {
-      throw new TRPCError({ code: "CONFLICT", message: "المطابقة غير صالحة للمرتجع" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "تشغيل المطابقة الثلاثية المُختار ليس بحالةٍ تسمح بمرتجعٍ (رفضٌ أو انتظار)",
+          doThis: "افتح شاشة المطابقة الثلاثية على الفاتورة واختر تشغيلاً معتمَداً، ثمّ ابدأ المرتجع",
+        }),
+      });
     }
     const allocationIds = normalizedLines.map((line) => line.matchAllocationId);
     const allocations = await tx.select().from(supplierInvoiceMatchAllocations)
       .where(inArray(supplierInvoiceMatchAllocations.id, allocationIds)).orderBy(asc(supplierInvoiceMatchAllocations.id)).for("update");
-    if (allocations.length !== allocationIds.length) throw new TRPCError({ code: "BAD_REQUEST", message: "بعض تخصيصات المطابقة غير موجودة" });
+    if (allocations.length !== allocationIds.length)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "أحد تخصيصات المطابقة الثلاثية المُشار إليها غير موجود في قاعدة البيانات",
+          doThis: "أعد فتح شاشة إنشاء المرتجع من صفحة فاتورة المورد لتحميل تخصيصات المطابقة الحاليّة",
+        }),
+      });
     const invoiceLineIds = allocations.map((row) => Number(row.supplierInvoiceLineId));
     const grnItemIds = allocations.map((row) => Number(row.goodsReceiptItemId));
     const invoiceLines = await tx.select().from(supplierInvoiceLines).where(inArray(supplierInvoiceLines.id, invoiceLineIds)).orderBy(asc(supplierInvoiceLines.id)).for("update");
@@ -355,7 +496,15 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
       .orderBy(asc(purchaseOrderItems.id))
       .for("update");
     const purchaseOrderIds = Array.from(new Set(sourcePoItems.map((row) => Number(row.purchaseOrderId))));
-    if (purchaseOrderIds.length !== 1) throw new TRPCError({ code: "CONFLICT", message: "طلب المرتجع يجب أن يخص أمر شراء واحداً" });
+    if (purchaseOrderIds.length !== 1)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب المرتجع",
+          why: "بنود المرتجع تعود لأكثر من أمر شراءٍ واحد، والمرتجع الواحد يخصّ أمر شراءٍ واحداً",
+          doThis: "قسّم البنود إلى مرتجعاتٍ منفصلة، مرتجعٌ لكلّ أمر شراءٍ على حدة",
+        }),
+      });
     const purchaseOrderId = purchaseOrderIds[0]!;
     const lineById = new Map(invoiceLines.map((row) => [Number(row.id), row]));
     const grnById = new Map(grnItems.map((row) => [Number(row.id), row]));
@@ -373,14 +522,37 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
     let tax = money(0);
     const items = normalizedLines.map((line, index) => {
       const allocation = allocationById.get(line.matchAllocationId)!;
-      if (Number(allocation.matchRunId) !== input.matchRunId) throw new TRPCError({ code: "BAD_REQUEST", message: "تخصيص لا يخص تشغيل المطابقة المحدد" });
+      if (Number(allocation.matchRunId) !== input.matchRunId)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء طلب المرتجع",
+            why: "أحد تخصيصات المرتجع لا يعود لتشغيل المطابقة الثلاثية المُختار على هذه الفاتورة",
+            doThis: "أعد فتح شاشة إنشاء المرتجع واختر تخصيصاتٍ من نفس تشغيل المطابقة المعروض",
+          }),
+        });
       const invoiceLine = lineById.get(Number(allocation.supplierInvoiceLineId));
       const grnItem = grnById.get(Number(allocation.goodsReceiptItemId));
       if (!invoiceLine || Number(invoiceLine.supplierInvoiceId) !== input.supplierInvoiceId || !grnItem) {
-        throw new TRPCError({ code: "CONFLICT", message: "مصادر المطابقة الثلاثية غير متسقة" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء طلب المرتجع",
+            why: "مصادر المطابقة الثلاثية (أمر الشراء + إذن الاستلام + فاتورة المورد) لا تتّسق فيما بينها",
+            doThis: "افتح شاشة المطابقة الثلاثية على الفاتورة وأعد تشغيل المطابقة، ثمّ ابدأ المرتجع من التشغيل الجديد",
+          }),
+        });
       }
       const available = Number(allocation.matchedBaseQuantity) - (postedById.get(line.matchAllocationId) ?? 0) - (pendingById.get(line.matchAllocationId) ?? 0);
-      if (line.baseQuantity > available) throw new TRPCError({ code: "CONFLICT", message: "كمية المرتجع تتجاوز المتبقي غير المحجوز من المطابقة" });
+      if (line.baseQuantity > available)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء طلب المرتجع",
+            why: "كمية المرتجع على أحد البنود أكبر من المتبقّي غير المحجوز على المطابقة الثلاثية",
+            doThis: "افتح البند وخفّض الكمّية لتكون ≤ المتبقّي المعروض في شاشة المطابقة، أو اعتمد مرتجعاتٍ سابقةً أوّلاً",
+          }),
+        });
       const lineNet = proportionalReturnAmount(invoiceLine.netAmount, line.baseQuantity, Number(invoiceLine.invoicedBaseQuantity));
       const lineTax = proportionalReturnAmount(invoiceLine.taxAmount, line.baseQuantity, Number(invoiceLine.invoicedBaseQuantity));
       net = net.plus(lineNet); tax = tax.plus(lineTax);
@@ -450,7 +622,11 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
       if (!payloadHashMatches(payloadHash, raced.payloadHash)) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "مفتاح الطلب مستعمل بحمولة مرتجع مختلفة",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل طلب المرتجع",
+            why: "نفس مفتاح الطلب مسجَّل قبل قليل بحمولةٍ مختلفة (بنودٌ أو كمّياتٌ أو مرجعٌ مختلف)",
+            doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالبيانات المعروضة أمامك",
+          }),
         });
       }
       return {
@@ -486,7 +662,15 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
   const hash = decisionHash(input.requestId, input.action, reviewReason);
   return withTx(async (tx) => {
     const preview = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.id, input.requestId)).limit(1))[0];
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "طلب المرتجع غير موجود" });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب المرتجع",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات المرتجع واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     assertPurchaseBranch(preview, actor);
     let cash: Awaited<ReturnType<typeof cashContext>> | null = null;
     if (input.action === "APPROVE" && preview.status === "PENDING" && requiresCashShift(preview.settlement, preview.paymentMethod as PaymentMethod)) {
@@ -506,11 +690,25 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
           ? (await tx.select({ id: purchaseReturns.id }).from(purchaseReturns).where(eq(purchaseReturns.requestId, input.requestId)).for("update").limit(1))[0]
           : null;
         if (request.status === "APPROVED" && !existingReturn) {
-          throw new TRPCError({ code: "CONFLICT", message: "طلب المرتجع معتمد بلا مستند مرتجع مرتبط" });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر إعادة محاولة الاعتماد",
+              why: "الطلب مسجَّل معتمَداً في القاعدة، لكن لا يحمل معرّفَ مستند المرتجع الفعليّ",
+              doThis: "افتح سجلّ التدقيق لمعرّف الطلب، ثمّ اطلب من المدير إعادة الترحيل يدوياً",
+            }),
+          });
         }
         return { requestId: input.requestId, status: request.status, purchaseReturnId: existingReturn == null ? null : Number(existingReturn.id), idempotent: true as const };
       }
-      throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب المرتجع مسبقاً" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر حسم طلب المرتجع",
+          why: "الطلب حُسم مسبقاً (اعتماداً أو رفضاً)، وحسم القرار لا يتكرّر بمفتاح جديد",
+          doThis: "ارجع لقائمة طلبات المرتجع وحدّثها لعرض النتيجة المسجَّلة",
+        }),
+      });
     }
     if (input.action === "REJECT") {
       await tx.update(purchaseReturnRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey: key, decisionHash: hash }).where(eq(purchaseReturnRequests.id, input.requestId));
@@ -523,10 +721,26 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     }
     if (request.settlement === "CREDIT") await assertNoPendingSupplierPayment(tx, Number(invoice.id));
     const matchRun = (await tx.select().from(supplierInvoiceMatchRuns).where(eq(supplierInvoiceMatchRuns.id, Number(request.matchRunId))).for("update").limit(1))[0];
-    if (!matchRun || matchRun.outcome === "HOLD") throw new TRPCError({ code: "CONFLICT", message: "المطابقة لم تعد صالحة" });
+    if (!matchRun || matchRun.outcome === "HOLD")
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد المرتجع",
+          why: "تشغيل المطابقة الثلاثية المرجعيّ لم يعد صالحاً (رُفض أو انتظر)، ولا يجوز اعتماد مرتجعٍ بلا مطابقةٍ نافذة",
+          doThis: "افتح شاشة المطابقة الثلاثية على الفاتورة وأعد تشغيلها، ثمّ ارفض هذا الطلب وأنشئ آخرَ من التشغيل الجديد",
+        }),
+      });
     const po = lockedPo;
     const supplier = lockedSupplier;
-    if (!po || !supplier || !supplier.isActive) throw new TRPCError({ code: "CONFLICT", message: "أمر الشراء أو المورد غير صالح" });
+    if (!po || !supplier || !supplier.isActive)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد المرتجع",
+          why: "أمر الشراء المرتبط أو المورد نفسه لم يعد موجوداً أو أنّ المورد موقوف",
+          doThis: "افتح شاشة الموردين وتحقّق من نشاط المورد، أو ارفض هذا الطلب وأنشئ مرتجعاً من فاتورةٍ لموردٍ نشط",
+        }),
+      });
     const requestItems = await tx.select().from(purchaseReturnRequestItems).where(eq(purchaseReturnRequestItems.requestId, input.requestId)).orderBy(asc(purchaseReturnRequestItems.lineNo)).for("update");
     const allocationIds = requestItems.map((row) => Number(row.matchAllocationId));
     const allocations = await tx.select().from(supplierInvoiceMatchAllocations).where(inArray(supplierInvoiceMatchAllocations.id, allocationIds)).orderBy(asc(supplierInvoiceMatchAllocations.id)).for("update");
@@ -541,9 +755,33 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
     for (const item of requestItems) {
       const allocation = allocationById.get(Number(item.matchAllocationId));
       const grn = grnById.get(Number(item.goodsReceiptItemId));
-      if (!allocation || Number(allocation.matchRunId) !== Number(request.matchRunId) || !grn || Number(grn.purchaseOrderItemId) !== Number(item.purchaseOrderItemId)) throw new TRPCError({ code: "CONFLICT", message: "تغيّرت مصادر المرتجع" });
-      if (Number(item.requestedBaseQuantity) + (postedById.get(Number(item.matchAllocationId)) ?? 0) > Number(allocation.matchedBaseQuantity)) throw new TRPCError({ code: "CONFLICT", message: "كمية المرتجع تتجاوز المطابقة بعد طلبه" });
-      if (Number(item.requestedBaseQuantity) + Number(grn.reversedBaseQuantity) + Number(grn.returnedBaseQuantity) > Number(grn.acceptedBaseQuantity)) throw new TRPCError({ code: "CONFLICT", message: "كمية إذن الاستلام لم تعد تكفي للمرتجع" });
+      if (!allocation || Number(allocation.matchRunId) !== Number(request.matchRunId) || !grn || Number(grn.purchaseOrderItemId) !== Number(item.purchaseOrderItemId))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد المرتجع",
+            why: "أحد مصادر المطابقة على المرتجع (تخصيص أو إذن استلام) تغيّر بعد تسجيل الطلب فلم يعد يطابقه",
+            doThis: "ارفض هذا الطلب وأعد إنشاء المرتجع من صفحة فاتورة المورد بمصادرها الحاليّة",
+          }),
+        });
+      if (Number(item.requestedBaseQuantity) + (postedById.get(Number(item.matchAllocationId)) ?? 0) > Number(allocation.matchedBaseQuantity))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد المرتجع",
+            why: "كمية المرتجع مع ما اعتُمد قبله تتجاوز المتبقّي على تخصيص المطابقة الثلاثية",
+            doThis: "ارفض هذا الطلب وأنشئ مرتجعاً جديداً بكمّياتٍ ≤ المتبقّي المعروض على شاشة المطابقة",
+          }),
+        });
+      if (Number(item.requestedBaseQuantity) + Number(grn.reversedBaseQuantity) + Number(grn.returnedBaseQuantity) > Number(grn.acceptedBaseQuantity))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد المرتجع",
+            why: "كمية المرتجع مع ما رُدّ وعُكس سابقاً تتجاوز الكمية المقبولة على إذن الاستلام",
+            doThis: "ارفض هذا الطلب وأنشئ مرتجعاً جديداً بكمّياتٍ ≤ المتبقّي على إذن الاستلام",
+          }),
+        });
     }
     const variantIds = Array.from(new Set(requestItems.map((row) => Number(row.variantId)))).sort((a, b) => a - b);
     await lockInventoryVariants(tx, variantIds);
@@ -599,10 +837,26 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
       const poItem = poItemById.get(Number(item.purchaseOrderItemId))!;
       const grn = grnById.get(Number(item.goodsReceiptItemId))!;
       const variant = variantById.get(Number(item.variantId));
-      if (!variant) throw new TRPCError({ code: "CONFLICT", message: "متغير الصنف غير موجود" });
+      if (!variant)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر ترحيل المرتجع",
+            why: "متغيّر الصنف المرتبط ببند المرتجع لم يعد موجوداً في قاعدة البيانات",
+            doThis: "ارفض هذا الطلب واطلب من المدير التحقّق من تعديلات كتالوج المنتجات الأخيرة",
+          }),
+        });
       const quantity = money(poItem.quantity).times(Number(item.requestedBaseQuantity)).dividedBy(Number(poItem.baseQuantity));
       const movement = await applyMovement(tx, { variantId: Number(item.variantId), branchId: Number(request.branchId), baseQuantity: Number(item.requestedBaseQuantity), movementType: "OUT", referenceType: "PURCHASE_RETURN", referenceId: purchaseReturnId, createdBy: actor.userId });
-      if (movement.movementId <= 0) throw new TRPCError({ code: "CONFLICT", message: "لا يمكن ترحيل مرتجع بلا حركة مخزون" });
+      if (movement.movementId <= 0)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر ترحيل المرتجع",
+            why: "محرّك المخزون لم يُنتج حركةً فعليّة لأحد البنود (رصيدٌ صفريّ أو صنفٌ لا يمسّ المخزون)",
+            doThis: "ارفض هذا الطلب واطلب من المدير التحقّق من نوع الصنف (خدمة/باندل) في كتالوج المنتجات",
+          }),
+        });
       await tx.insert(purchaseReturnItems).values({
         purchaseReturnId,
         purchaseOrderItemId: Number(item.purchaseOrderItemId),
@@ -622,7 +876,15 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
         .where(and(eq(purchaseOrderItems.id, Number(item.purchaseOrderItemId)), sql`${purchaseOrderItems.returnedBaseQuantity} + ${item.requestedBaseQuantity} <= ${purchaseOrderItems.receivedBaseQuantity}`));
       const grnUpdated = await tx.update(goodsReceiptItems).set({ returnedBaseQuantity: sql`${goodsReceiptItems.returnedBaseQuantity} + ${item.requestedBaseQuantity}` })
         .where(and(eq(goodsReceiptItems.id, Number(item.goodsReceiptItemId)), sql`${goodsReceiptItems.returnedBaseQuantity} + ${goodsReceiptItems.reversedBaseQuantity} + ${item.requestedBaseQuantity} <= ${goodsReceiptItems.acceptedBaseQuantity}`));
-      if (extractAffectedRows(poUpdated) !== 1 || extractAffectedRows(grnUpdated) !== 1) throw new TRPCError({ code: "CONFLICT", message: "تغيّرت الكمية القابلة للإرجاع" });
+      if (extractAffectedRows(poUpdated) !== 1 || extractAffectedRows(grnUpdated) !== 1)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر ترحيل المرتجع",
+            why: "الكمية المتاحة للإرجاع تغيّرت على أمر الشراء أو على إذن الاستلام بين لحظة الاعتماد وحفظ الأثر",
+            doThis: "ارفض هذا الطلب وأعد إنشاء مرتجعٍ جديد بالكميات المتاحة الحاليّة",
+          }),
+        });
       inventoryBook = inventoryBook.plus(money(variant.costPrice).times(Number(item.requestedBaseQuantity)));
     }
     inventoryBook = round2(inventoryBook);
@@ -660,7 +922,17 @@ export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, act
       creditOffsetAmount: request.settlement === "CREDIT" ? toDbMoney(total) : "0.00",
     }).where(eq(purchaseReturns.id, purchaseReturnId));
     if (extractAffectedRows(finalized) !== 1) {
-      throw new TRPCError({ code: "CONFLICT", message: "تعذر تثبيت تسوية مرتجع الشراء" });
+      // Codex #965 P2: الشرط هنا يقيس `UPDATE purchaseReturns` (صفّ المرتجع نفسه)، لا
+      // أرصدة المورّد أو الفاتورة. صياغةُ `doThis` القديمة كانت تُرسل الموظّف إلى المكان
+      // الخطأ. الرسالةُ الآن تُشير إلى ما فشل فعلاً.
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت تسوية مرتجع الشراء",
+          why: "لم يُحدَّث صفّ `purchaseReturns` بعد اعتماد التسوية — التزامنُ سباقٌ نادر أو الصفّ اختفى بين لحظة الإدخال والحفظ",
+          doThis: "أعد إنشاء مرتجع الشراء من نفس أمر الشراء وفاتورته، وإن تكرّر الخطأ ارفض هذا الطلب وأبلغ فريق الدعم",
+        }),
+      });
     }
     await tx.update(purchaseReturnRequests).set({ status: "APPROVED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey: key, decisionHash: hash, appliedAt: new Date() }).where(eq(purchaseReturnRequests.id, input.requestId));
     return { requestId: input.requestId, status: "APPROVED" as const, purchaseReturnId, idempotent: false as const };
@@ -671,31 +943,94 @@ export async function requestPurchaseReturnReversal(input: RequestPurchaseReturn
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120);
   const reason = required(input.reason, "سبب العكس", 500);
   const evidenceReference = required(input.evidenceReference, "مرجع الدليل", 500);
-  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف بند عكس واحداً على الأقل" });
+  if (!input.lines.length)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء طلب عكس المرتجع",
+        why: "الطلب وصل بلا أيّ بند عكس",
+        doThis: "أضف بنداً واحداً على الأقل في جدول بنود العكس بكميّته، قبل الحفظ",
+      }),
+    });
   positiveUnique(input.lines.map((line) => line.purchaseReturnItemId), "بند المرتجع");
   const lines = [...input.lines].map((line) => {
-    if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية العكس غير صالحة" });
+    if (!Number.isSafeInteger(line.baseQuantity) || line.baseQuantity <= 0)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب عكس المرتجع",
+          why: "أحد البنود يحمل كمية عكسٍ غير موجبة أو ليست عدداً صحيحاً",
+          doThis: "افتح البند المتضرِّر وعدّل الكمية لتكون عدداً صحيحاً أكبر من صفر بالوحدة الأساس",
+        }),
+      });
     return { ...line, reason: line.reason?.trim() || null };
   }).sort((a, b) => a.purchaseReturnItemId - b.purchaseReturnItemId);
   const canonical = stableCanonical({ purchaseReturnId: input.purchaseReturnId, expectedReturnVersion: input.expectedReturnVersion, evidenceType: input.evidenceType, evidenceReference, reason, lines });
   const payloadHash = sha256(canonical);
   return withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.requestKey, requestKey)).limit(1))[0];
-    if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة عكس مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
+    if (replay) {
+      assertPurchaseBranch(replay, actor);
+      if (!payloadHashMatches(payloadHash, replay.payloadHash))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل طلب عكس المرتجع",
+            why: "نفس مفتاح الطلب مسجَّل قبل قليل بحمولةٍ مختلفة (بنودٌ أو كمّياتٌ أو مرجعٌ مختلف)",
+            doThis: "حدّث الشاشة ليُولَّد مفتاحٌ جديد، ثمّ أعد الحفظ بالبيانات المعروضة أمامك",
+          }),
+        });
+      return { requestId: Number(replay.id), status: replay.status, idempotent: true as const };
+    }
     const purchaseReturn = (await tx.select().from(purchaseReturns).where(eq(purchaseReturns.id, input.purchaseReturnId)).for("update").limit(1))[0];
-    if (!purchaseReturn) throw new TRPCError({ code: "NOT_FOUND", message: "مرتجع الشراء غير موجود" });
+    if (!purchaseReturn)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح مستند المرتجع",
+          why: "مرتجع الشراء المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة مرتجعات الشراء واختر المرتجع من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     assertPurchaseBranch(purchaseReturn, actor); assertExpectedVersion(Number(purchaseReturn.version), input.expectedReturnVersion, "مرتجع الشراء");
-    if (purchaseReturn.origin !== "NATIVE" || purchaseReturn.status === "REVERSED") throw new TRPCError({ code: "CONFLICT", message: "المرتجع غير قابل للعكس" });
+    if (purchaseReturn.origin !== "NATIVE" || purchaseReturn.status === "REVERSED")
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب عكس المرتجع",
+          why: "المرتجع مستوردٌ من نظامٍ خارجيّ أو معكوسٌ بالفعل — لا يُعكس ما نشأ خارج المستودع ولا ما عُكس سابقاً",
+          doThis: "افتح شاشة المرتجع لعرض حالته، وإن كان مستوَرداً فتراجع مع مصدره الخارجيّ",
+        }),
+      });
     const itemIds = lines.map((line) => line.purchaseReturnItemId);
     const items = await tx.select().from(purchaseReturnItems).where(inArray(purchaseReturnItems.id, itemIds)).orderBy(asc(purchaseReturnItems.id)).for("update");
-    if (items.length !== itemIds.length || items.some((item) => Number(item.purchaseReturnId) !== input.purchaseReturnId)) throw new TRPCError({ code: "BAD_REQUEST", message: "بعض بنود العكس لا تخص المرتجع" });
+    if (items.length !== itemIds.length || items.some((item) => Number(item.purchaseReturnId) !== input.purchaseReturnId))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إنشاء طلب عكس المرتجع",
+          why: "بعض البنود المرسلة للعكس لا تخصّ مستند المرتجع المعروض (بندٌ ملغيٌّ أو بندُ مرتجعٍ آخر)",
+          doThis: "أعد فتح شاشة العكس من مستند المرتجع لتحميل بنوده الحاليّة، ثمّ اختر البنود منه",
+        }),
+      });
     const reversed = await tx.select({ itemId: purchaseReturnReversalItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalItems.baseQuantity}),0)` }).from(purchaseReturnReversalItems).where(inArray(purchaseReturnReversalItems.purchaseReturnItemId, itemIds)).groupBy(purchaseReturnReversalItems.purchaseReturnItemId).for("update");
     const reversedById = new Map(reversed.map((row) => [Number(row.itemId), Number(row.quantity)]));
     const pending = await tx.select({ itemId: purchaseReturnReversalRequestItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalRequestItems.baseQuantity}),0)` }).from(purchaseReturnReversalRequestItems)
       .innerJoin(purchaseReturnReversalRequests, eq(purchaseReturnReversalRequests.id, purchaseReturnReversalRequestItems.requestId)).where(and(eq(purchaseReturnReversalRequests.status, "PENDING"), inArray(purchaseReturnReversalRequestItems.purchaseReturnItemId, itemIds))).groupBy(purchaseReturnReversalRequestItems.purchaseReturnItemId).for("update");
     const pendingById = new Map(pending.map((row) => [Number(row.itemId), Number(row.quantity)]));
     const itemById = new Map(items.map((row) => [Number(row.id), row]));
-    for (const line of lines) { const item = itemById.get(line.purchaseReturnItemId)!; if (line.baseQuantity + (reversedById.get(line.purchaseReturnItemId) ?? 0) + (pendingById.get(line.purchaseReturnItemId) ?? 0) > Number(item.baseQuantity)) throw new TRPCError({ code: "CONFLICT", message: "كمية العكس تتجاوز المتبقي غير المحجوز" }); }
+    for (const line of lines) {
+      const item = itemById.get(line.purchaseReturnItemId)!;
+      if (line.baseQuantity + (reversedById.get(line.purchaseReturnItemId) ?? 0) + (pendingById.get(line.purchaseReturnItemId) ?? 0) > Number(item.baseQuantity))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء طلب عكس المرتجع",
+            why: "كمية العكس مع ما عُكس وما هو معلَّق سابقاً تتجاوز كمّية بند المرتجع الأصليّ",
+            doThis: "افتح البند وخفّض الكمّية لتكون ≤ المتبقّي غير المحجوز، أو انتظر حسم طلبات العكس المعلَّقة أوّلاً",
+          }),
+        });
+    }
     const inserted = await tx.insert(purchaseReturnReversalRequests).values({ requestKey, purchaseReturnId: input.purchaseReturnId, branchId: Number(purchaseReturn.branchId), baseReturnVersion: input.expectedReturnVersion, payloadCanonical: canonical, payloadHash, evidenceType: input.evidenceType, evidenceReference, reason, pendingGuard: `RETURN-REV:${input.purchaseReturnId}`, requestedBy: actor.userId });
     const requestId = extractInsertId(inserted);
     await tx.insert(purchaseReturnReversalRequestItems).values(lines.map((line) => ({ requestId, purchaseReturnItemId: line.purchaseReturnItemId, baseQuantity: line.baseQuantity, reason: line.reason })));
@@ -709,7 +1044,15 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
   const hash = decisionHash(input.requestId, input.action, reviewReason);
   return withTx(async (tx) => {
     const preview = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.id, input.requestId)).limit(1))[0];
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "طلب عكس المرتجع غير موجود" });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر فتح طلب عكس المرتجع",
+          why: "الطلب المطلوب بمعرّفه غير موجود، إمّا حُذف أو أُدخل معرّفٌ غير صحيح",
+          doThis: "ارجع لقائمة طلبات عكس المرتجع واختر الطلب من القائمة بدل تحرير المعرّف يدوياً",
+        }),
+      });
     assertPurchaseBranch(preview, actor);
     const previewReturn = (await tx.select().from(purchaseReturns).where(eq(purchaseReturns.id, Number(preview.purchaseReturnId))).limit(1))[0];
     const originalReturnRequest = previewReturn?.requestId == null ? null : (await tx.select({ requestedBy: purchaseReturnRequests.requestedBy }).from(purchaseReturnRequests).where(eq(purchaseReturnRequests.id, Number(previewReturn.requestId))).limit(1))[0];
@@ -734,17 +1077,52 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
     // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — التفصيل في voucher/approval.ts.
     const purchaseReturnReversalApprover = await resolveApprovalActor(tx, actor);
     assertApprover({ actor: await resolveApprovalActor(tx, actor), trigger: purchaseReturnReversalTrigger(input.action), subject: `عكس مرتجع شراء (طلب ${input.requestId})`, legacy: () => { if (purchaseReturnReversalApprover.isOwner) return; assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId); } });
-    if (request.status !== "PENDING") { if (request.decisionKey === key && request.decisionHash === hash) return { requestId: input.requestId, status: request.status, reversalId: null, idempotent: true as const }; throw new TRPCError({ code: "CONFLICT", message: "حُسم طلب العكس مسبقاً" }); }
+    if (request.status !== "PENDING") {
+      if (request.decisionKey === key && request.decisionHash === hash)
+        return { requestId: input.requestId, status: request.status, reversalId: null, idempotent: true as const };
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر حسم طلب عكس المرتجع",
+          why: "الطلب حُسم مسبقاً (اعتماداً أو رفضاً) بمفتاح قرارٍ مختلف، وحسم القرار لا يتكرّر",
+          doThis: "ارجع لقائمة طلبات العكس وحدّثها لعرض النتيجة المسجَّلة",
+        }),
+      });
+    }
     if (input.action === "REJECT") { await tx.update(purchaseReturnReversalRequests).set({ status: "REJECTED", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason, decisionKey: key, decisionHash: hash }).where(eq(purchaseReturnReversalRequests.id, input.requestId)); return { requestId: input.requestId, status: "REJECTED" as const, reversalId: null, idempotent: false as const }; }
     const purchaseReturn = lockedReturn;
-    if (!purchaseReturn) throw new TRPCError({ code: "CONFLICT", message: "مرتجع الشراء مفقود" });
+    if (!purchaseReturn)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد عكس المرتجع",
+          why: "مستند المرتجع الأصليّ لم يعد موجوداً — قد يكون حُذف أو نُقل بين لحظة إنشاء طلب العكس وحسمه",
+          doThis: "ارفض هذا الطلب واطلب من المدير مراجعة سجلّ التدقيق لمستند المرتجع الأصليّ",
+        }),
+      });
     if (purchaseReturn.status === "REVERSED" || Number(purchaseReturn.version) !== Number(request.baseReturnVersion)) {
       await tx.update(purchaseReturnReversalRequests).set({ status: "STALE", pendingGuard: null, reviewedBy: actor.userId, reviewedAt: new Date(), reviewReason: "تغيّر مرتجع الشراء بعد إنشاء طلب العكس", decisionKey: key, decisionHash: hash }).where(eq(purchaseReturnReversalRequests.id, input.requestId));
       return { requestId: input.requestId, status: "STALE" as const, reversalId: null, idempotent: false as const };
     }
-    if (!lockedPo || !lockedSupplier || !lockedSupplier.isActive) throw new TRPCError({ code: "CONFLICT", message: "أمر الشراء أو المورد المرتبط لم يعد صالحاً" });
+    if (!lockedPo || !lockedSupplier || !lockedSupplier.isActive)
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد عكس المرتجع",
+          why: "أمر الشراء المرتبط أو المورد نفسه لم يعد موجوداً أو أنّ المورد موقوف",
+          doThis: "افتح شاشة الموردين وتحقّق من نشاط المورد، أو ارفض هذا الطلب واطلب مراجعة الرصيد يدوياً",
+        }),
+      });
     const invoice = lockedInvoice;
-    if (!invoice || invoice.status !== "POSTED") throw new TRPCError({ code: "CONFLICT", message: "فاتورة المورد المرتبطة لم تعد صالحة" });
+    if (!invoice || invoice.status !== "POSTED")
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد عكس المرتجع",
+          why: "فاتورة المورد المرتبطة لم تعد بحالة «مُرحَّلة» (رُدّت أو أُلغيت أو حُذفت)",
+          doThis: "افتح فاتورة المورد لعرض حالتها، ثمّ ارفض هذا الطلب إن لم تعد الفاتورة قابلةً للعكس",
+        }),
+      });
     if (purchaseReturn.settlement === "CREDIT") await assertNoPendingSupplierPayment(tx, Number(invoice.id));
     const reqItems = await tx.select().from(purchaseReturnReversalRequestItems).where(eq(purchaseReturnReversalRequestItems.requestId, input.requestId)).orderBy(asc(purchaseReturnReversalRequestItems.id)).for("update");
     const itemIds = reqItems.map((row) => Number(row.purchaseReturnItemId));
@@ -753,7 +1131,18 @@ export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnRe
     const reversed = await tx.select({ itemId: purchaseReturnReversalItems.purchaseReturnItemId, quantity: sql<string>`COALESCE(SUM(${purchaseReturnReversalItems.baseQuantity}),0)`, amount: sql<string>`COALESCE(SUM(${purchaseReturnReversalItems.totalAmount}),0)` }).from(purchaseReturnReversalItems).where(inArray(purchaseReturnReversalItems.purchaseReturnItemId, itemIds)).groupBy(purchaseReturnReversalItems.purchaseReturnItemId).for("update");
     const reversedById = new Map(reversed.map((row) => [Number(row.itemId), Number(row.quantity)]));
     const reversedAmountById = new Map(reversed.map((row) => [Number(row.itemId), money(row.amount)]));
-    for (const row of reqItems) { const item = itemById.get(Number(row.purchaseReturnItemId)); if (!item || Number(item.purchaseReturnId) !== Number(purchaseReturn.id) || Number(row.baseQuantity) + (reversedById.get(Number(row.purchaseReturnItemId)) ?? 0) > Number(item.baseQuantity)) throw new TRPCError({ code: "CONFLICT", message: "كمية العكس لم تعد متاحة" }); }
+    for (const row of reqItems) {
+      const item = itemById.get(Number(row.purchaseReturnItemId));
+      if (!item || Number(item.purchaseReturnId) !== Number(purchaseReturn.id) || Number(row.baseQuantity) + (reversedById.get(Number(row.purchaseReturnItemId)) ?? 0) > Number(item.baseQuantity))
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر اعتماد عكس المرتجع",
+            why: "كمية العكس على أحد البنود لم تعد متاحة (عُكس عليها بعد إنشاء الطلب أو أنّها تخصّ مرتجعاً آخر)",
+            doThis: "ارفض هذا الطلب وأنشئ طلب عكسٍ جديداً بالكميات المتاحة الحاليّة",
+          }),
+        });
+    }
     const variantIds = Array.from(new Set(items.map((row) => Number(row.variantId)))).sort((a, b) => a - b);
     await lockInventoryVariants(tx, variantIds); await ensureBranchStockRows(tx, variantIds, Number(purchaseReturn.branchId));
     await tx.select({ id: branchStock.id }).from(branchStock).where(and(eq(branchStock.branchId, Number(purchaseReturn.branchId)), inArray(branchStock.variantId, variantIds))).orderBy(asc(branchStock.variantId)).for("update");
