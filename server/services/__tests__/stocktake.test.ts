@@ -1333,6 +1333,25 @@ describe("فصل المهام على الجرد الدوري NORMAL (تدقيق 
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.ok).toBe(true);
   });
+
+  it("راجع الصنف عالي القيمة مرحلياً بنفسه لا يعتمد نهائياً ولو وقّع غيره أولاً (البوابة الثالثة)", async () => {
+    await setStockRow(4, 10); // تكلفة 100,000
+    const r = await mkSession({ variantIds: [4] }); // منشئ = actor (admin)
+    await insertCount(r.sessionId, 4, r.assignments[0].assignmentId, 8); // ‎−2 ⇒ ‎−200,000 > حد 150,000
+    await forceStocktakeReview(r.sessionId, actor);
+    await decideStocktakeItem(
+      { sessionId: r.sessionId, variantId: 4, action: "ADJUST", reason: "LOSS_THEFT" },
+      actor,
+    );
+    await approveAllReadyItems(r.sessionId, actor2); // actor2 — لا actor — يراجع الفرق عالي القيمة مرحلياً
+    await firstSignStocktake(r.sessionId, actor); // التوقيع الأول من actor: شخص مختلف عن المراجع (actor2)
+
+    await expectTrpc(
+      approveStocktake(r.sessionId, actor2),
+      "FORBIDDEN",
+      /فرقاً عالي القيمة/,
+    );
+  });
 });
 
 describe("الاعتماد الذرّي", () => {
