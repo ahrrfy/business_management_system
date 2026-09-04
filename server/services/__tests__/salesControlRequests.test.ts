@@ -139,6 +139,98 @@ describe("حوكمة عمليات البيع الحرجة", () => {
     expect(out!.approvalStatus).toBe("APPROVED");
   });
 
+  /**
+   * ⭐ مرجع استرداد البطاقة قرارُ **لحظة الاعتماد** لا لحظة الطلب (مراجعة Codex على PR #988،
+   * نظير `cashRouting.shiftId` لمرتجع البيع). الطالب لم ينفّذ الاسترداد الفعليّ بعد — لا مرجع
+   * في حمولته — والمُعتمِد وحده يزوّده بعد تنفيذه هو على الجهاز، لحظة اعتماده الطلب.
+   */
+  it("طلب إلغاء ببطاقة بلا مرجع ⇒ المُعتمِد يزوّده عبر cashRouting فيُنفَّذ", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-10" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-late-ref",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة قبل تنفيذ الاسترداد الفعليّ",
+      payload: { refundPaymentMethod: "CARD" }, // بلا reference — لم يُنفَّذ الاسترداد بعد
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    const approved = await approveSalesControlRequest(
+      Number(requested.id),
+      MANAGER,
+      null,
+      { reference: "TERM-LATE-1" },
+    );
+    expect("request" in approved && approved.request.status === "APPROVED").toBe(true);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+    const [out] = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(out!.referenceNumber).toBe("TERM-LATE-1");
+    expect(out!.status).toBe("COMPLETED");
+  });
+
+  it("طلب إلغاء ببطاقة بلا مرجع ⇒ اعتمادٌ بلا cashRouting.reference يُرفض بلا أي أثر", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-11" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-no-ref-anywhere",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة، لا مرجع في الطلب ولا في الاعتماد",
+      payload: { refundPaymentMethod: "CARD" },
+    }, CASHIER);
+
+    await expect(
+      approveSalesControlRequest(Number(requested.id), MANAGER),
+    ).rejects.toThrow(/مرجع/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+    expect(await db().select().from(s.receipts).where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`)).toHaveLength(0);
+    const stored = (await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id))))[0];
+    expect(stored.status).toBe("PENDING"); // لم يُستهلَك — يمكن اعتماده لاحقاً بمرجعٍ صحيح
+  });
+
+  /**
+   * ⭐ مراجعة Codex P1 على PR #997: `cashRouting.reference: null` صراحةً (لا الغياب) يجب أن
+   * يُرفَض حتماً — لا أن يتراجع صامتاً إلى مرجع الطالب المخزَّن. المُعتمِد قد يمسح مرجعاً
+   * معروضاً لأنّه **لا يطابق** إيصال الجهاز الفعليّ؛ رجوعٌ صامتٌ لذلك المرجع كان يُنفّذ الاعتماد
+   * بمرجعٍ رفضه المُعتمِد بنفسه.
+   */
+  it("طلب إلغاء ببطاقة بمرجعٍ مخزَّن ⇒ المُعتمِد يمسحه صراحةً فيُرفض الاعتماد بلا رجوعٍ للمرجع الأصليّ", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-12" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-cleared-ref",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة بمرجعٍ لاحقاً تبيَّن أنه لا يطابق قسيمة الجهاز",
+      payload: { refundPaymentMethod: "CARD", reference: "WRONG-REF-99" },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    await expect(
+      approveSalesControlRequest(Number(requested.id), MANAGER, null, { reference: null }),
+    ).rejects.toThrow(/مرجع/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+    expect(await db().select().from(s.receipts).where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`)).toHaveLength(0);
+    const stored = (await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id))))[0];
+    expect(stored.status).toBe("PENDING"); // لم يُستهلَك — يمكن اعتماده لاحقاً بمرجعٍ صحيح، لا بالمرجع الخاطئ المخزَّن
+  });
+
   it("تغيّر اللقطة يوسم الطلب STALE بلا تنفيذ", async () => {
     const created = await sale();
     const request = await requestSalesControl({
