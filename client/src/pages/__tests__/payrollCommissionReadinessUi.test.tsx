@@ -30,7 +30,7 @@ describe("بانر جاهزية العمولة في شاشة الرواتب", ()
   });
 
   it("يحجب زرّ اعتماد الاستحقاق فعلياً حين تكون العمولة غير جاهزة، مع سبب في tooltip", () => {
-    expect(page).toContain("disabled={busy || !independentOwner || commissionBlocking}");
+    expect(page).toContain("disabled={busy || !isOwner || commissionBlocking}");
     expect(page).toContain("commissionBlock.title} — ${commissionBlock.body}");
   });
 
