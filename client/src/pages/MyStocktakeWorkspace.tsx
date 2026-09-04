@@ -25,10 +25,7 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
-import {
-  resolveProductBarcodeMatch,
-  type ProductBarcodeMatch,
-} from "@shared/productScan";
+import { resolveProductBarcodeItem, type ProductBarcodeMatch } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { PageHeader } from "@/components/PageHeader";
@@ -69,15 +66,9 @@ import { Input } from "@/components/ui/input";
 // `usePulsedCountState`، فاشتقاق النوع من شكل الردّ لم يعد يمثّل الحالة المعروضة.
 type State = PortalState;
 type CountItem = State["items"][number];
-type CountUnit = CountItem["units"][number];
 /** نوع العدّة كما تُسمّيها بوابة العدّ: أول عدّ · إعادة عدّ مطلوبة · عدّ تحقّقي فوق عدّ زميل. */
 type CountMode = "FIRST" | "RECOUNT" | "VERIFY";
 type SubmitResult = RouterOutputs["count"]["submit"];
-
-/** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
-function unitHasBarcode(unit: CountUnit, value: string) {
-  return resolveProductBarcodeMatch([unit], value) != null;
-}
 
 function productLabel(item: CountItem) {
   return item.variantName
@@ -326,16 +317,16 @@ export default function MyStocktakeWorkspace() {
     (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const value = raw.trim();
       if (!value) return;
-      let found: CountItem | undefined;
-      let scanMatch: ProductBarcodeMatch | null = null;
-      // نفحص فضاء الباركود أولاً كي لا يتحوّل SKU مصادف إلى «مسح» ولا يحجب باركود مادة أخرى.
-      for (const item of items) {
-        const match = resolveProductBarcodeMatch(item.units, value);
-        if (!match) continue;
-        found = item;
-        scanMatch = match;
-        break;
+      const resolution = resolveProductBarcodeItem(items, value);
+      if (resolution.status === "AMBIGUOUS") {
+        notify.err(
+          "الباركود يطابق أكثر من مادة في جلسة الجرد — لم تُفتح أيّ بطاقة",
+          "اطلب من المشرف تصحيح الباركودات المتعارضة قبل متابعة العدّ.",
+        );
+        return;
       }
+      let found: CountItem | undefined = resolution.status === "FOUND" ? resolution.item : undefined;
+      let scanMatch: ProductBarcodeMatch | null = resolution.status === "FOUND" ? resolution.match : null;
       // SKU مدخل بحث فقط؛ لا نمنحه إثبات المسح حتى لو وصل من قارئ HID أو الكاميرا.
       found ??= items.find((item) => item.sku === value);
       if (!found) {
@@ -390,12 +381,17 @@ export default function MyStocktakeWorkspace() {
   const tryOpenByQuery = useCallback(() => {
     const exact = query.trim();
     if (!exact) return;
-    const hit =
-      items.find((i) => i.units.some((u) => unitHasBarcode(u, exact))) ??
-      items.find((i) => i.sku === exact);
+    const resolution = resolveProductBarcodeItem(items, exact);
+    if (resolution.status === "AMBIGUOUS") {
+      notify.err("الباركود يطابق أكثر من مادة — صحّح التعارض قبل الاختيار.");
+      return;
+    }
+    const hit = resolution.status === "FOUND"
+      ? resolution.item
+      : items.find((i) => i.sku === exact);
     if (!hit) return;
     setQuery("");
-    openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName, {
+    openItem(hit, resolution.status === "FOUND" ? resolution.match.unitName : undefined, {
       method: "SEARCH_PICK",
       scannedBarcode: null,
       scanMatch: null,

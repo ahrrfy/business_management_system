@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Image as ImageIcon, ScanLine } from "lucide-react";
 import { useState } from "react";
 import { ProductImageGallery } from "./ProductImageGallery";
@@ -25,8 +27,9 @@ export function StudioStandaloneImageManagerCard() {
   const [productName, setProductName] = useState<string | null>(null);
   const [isLooking, setIsLooking] = useState(false);
 
-  async function openByQuery() {
-    const clean = query.trim();
+  async function openByQuery(raw = query) {
+    // تقليم الحافتين فقط؛ المسافة الداخلية جزءٌ من هوية Code39 (مثل `1  0095`).
+    const clean = raw.trim();
     if (!clean) return;
     setIsLooking(true);
     try {
@@ -53,6 +56,10 @@ export function StudioStandaloneImageManagerCard() {
       setIsLooking(false);
     }
   }
+  const barcodeInput = useBarcodeInput((barcode) => {
+    setQuery(barcode);
+    void openByQuery(barcode);
+  });
 
   return (
     <Card>
@@ -69,18 +76,24 @@ export function StudioStandaloneImageManagerCard() {
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-56 flex-1 space-y-1.5">
               <Label htmlFor="studio-standalone-lookup">باركود أو معرّف المنتج بصيغة #123</Label>
-              <Input
-                id="studio-standalone-lookup"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="امسح الباركود أو اكتب # ثم المعرّف"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void openByQuery();
-                  }
-                }}
-              />
+              <div className="relative">
+                <Input
+                  id="studio-standalone-lookup"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="امسح الباركود أو اكتب # ثم المعرّف"
+                  className={barcodeSearchInputClass}
+                  onKeyDown={(e) => {
+                    barcodeInput.handleKeyDown(e, setQuery);
+                    if (e.defaultPrevented) return;
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void openByQuery();
+                    }
+                  }}
+                />
+                <BarcodeSearchCue />
+              </div>
             </div>
             <Button type="button" className="min-h-11" disabled={isLooking || !query.trim()} onClick={() => void openByQuery()}>
               <ScanLine aria-hidden className="size-4" /> افتح المعرض

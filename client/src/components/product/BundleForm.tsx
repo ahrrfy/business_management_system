@@ -133,34 +133,39 @@ export default function BundleForm() {
   }
 
   const [busy, setBusy] = useState(false);
-  /** استرجاع مكوّن بالباركود. يعيد true فقط عند إضافة **حقيقية** — لا عند تكرار أو فشل. */
-  async function lookupByBarcode(code: string): Promise<boolean> {
-    if (busy) return false;
+  /** استرجاع مكوّن بالباركود؛ NOT_FOUND وحده يسمح لـEnter اليدويّ بالرجوع إلى بحث الاسم. */
+  async function lookupByBarcode(
+    code: string,
+    options: { quietNotFound?: boolean } = {},
+  ): Promise<"ADDED" | "NOT_FOUND" | "FAILED"> {
+    if (busy) return "FAILED";
     setBusy(true);
     setError("");
     try {
       const res = await utils.bundles.lookupComponentByBarcode.fetch({ barcode: code });
       if (!res.item) {
-        setError(`لا يوجد منتج مؤهّل بالباركود «${code}» (قد يكون بكجاً/خدمة/غير نشط).`);
-        showFlash("err");
-        return false;
+        if (!options.quietNotFound) {
+          setError(`لا يوجد منتج مؤهّل بالباركود «${code}» (قد يكون بكجاً/خدمة/غير نشط).`);
+          showFlash("err");
+        }
+        return "NOT_FOUND";
       }
       // تكرار = فشل UX (لا وميض أخضر متضارب مع رسالة الخطأ).
       if (components.some((c) => c.componentVariantId === res.item!.variantId)) {
         setError(`المكوّن «${res.item.productName}» مضاف مسبقاً — زد كميّته بدل تكرار السطر.`);
         showFlash("err");
-        return false;
+        return "FAILED";
       }
       addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice);
       setPicker("");
       showFlash("ok");
       pickerInputRef.current?.focus();
-      return true;
+      return "ADDED";
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "تعذّر البحث عن الباركود.";
       setError(msg);
       showFlash("err");
-      return false;
+      return "FAILED";
     } finally {
       setBusy(false);
     }
@@ -168,8 +173,8 @@ export default function BundleForm() {
   const barcodeInput = useBarcodeInput((code) => { void lookupByBarcode(code); });
 
   /** Enter على الحقل الذكيّ:
-   *  - نصّ كلّه أرقام (≥٤ خانات) ⇒ يُعامَل كباركود ⇒ نداء `lookupByBarcode`.
-   *  - غير ذلك، وثمّة نتائج بحث حيّة (`hasQuery||hasCategory`) وتُطابق النصّ الحاليّ ⇒ إضافة أوّل نتيجة.
+   *  - يجرّب أولاً هوية الباركود الحرفية؛ باركود المورد قد يكون Code39/128 أبجديّاً أو يحوي مسافات.
+   *  - عند NOT_FOUND فقط يرجع إلى نتيجة بحث الاسم/SKU المستقرّة.
    *  ⚠️ حواجز: (١) IME العربي/الجوال قد يُطلق Enter كـcommit — نتجاهله. (٢) نتائج البحث القديمة
    *  المُخبَّأة (TanStack Query cache) قد تبقى بعد تقصير النصّ تحت العتبة — نلزم `hasQuery||hasCategory`
    *  ليكون الاستعلام مفعَّلاً فعلاً، مع مطابقة `pickerDeb === v`. */
@@ -181,12 +186,14 @@ export default function BundleForm() {
     e.preventDefault();
     const v = picker.trim();
     if (!v) return;
-    if (/^\d{4,}$/.test(v)) {
-      await lookupByBarcode(v);
+    const barcodeResult = await lookupByBarcode(v, { quietNotFound: true });
+    if (barcodeResult !== "NOT_FOUND") return;
+    const settled = (hasQuery || hasCategory) && pickerDeb.trim() === v && !searchQ.isFetching;
+    if (!settled || searchRows.length === 0) {
+      setError(`لا يوجد منتج مؤهّل بالباركود أو البحث «${v}».`);
+      showFlash("err");
       return;
     }
-    const settled = (hasQuery || hasCategory) && pickerDeb.trim() === v && !searchQ.isFetching;
-    if (!settled || searchRows.length === 0) return;
     const first = searchRows[0];
     if (components.some((c) => c.componentVariantId === first.variantId)) return;
     addComponent(first.variantId, first.productName, first.sku ?? "", first.costPrice);

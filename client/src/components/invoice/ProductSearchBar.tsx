@@ -198,15 +198,43 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   };
 
   async function resolveExactBarcode(code: string) {
-    // جانب الشراء لا يملك byBarcode؛ نملأ النص المصحّح ليعمل البحث الخادميّ المعتاد.
-    if (isPurchase) {
-      setQuery(code);
-      setShowDrop(true);
-      return;
-    }
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
       if (row) {
+        if (isPurchase) {
+          // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
+          // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
+          const purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
+          if (!purchaseRow) {
+            onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
+            return;
+          }
+          addRow({
+            productId: purchaseRow.productId,
+            variantId: purchaseRow.variantId,
+            productUnitId: purchaseRow.productUnitId,
+            name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+            sku: purchaseRow.sku,
+            barcode: row.barcode ?? null,
+            unitName: purchaseRow.unitName,
+            conversionFactor: purchaseRow.conversionFactor,
+            stockBase: purchaseRow.stockBase ?? 0,
+            stockBranchId: branchId,
+            reservedBase: 0,
+            availableBase: purchaseRow.stockBase ?? 0,
+            isService: false,
+            allowBackorder: false,
+            price: estimatedPurchaseUnitPrice(
+              purchaseRow.costPriceBase,
+              purchaseRow.conversionFactor,
+              purchaseCurrency,
+              purchaseAgreedRate || null,
+            ),
+            costBase: purchaseRow.costPriceBase,
+          });
+          return;
+        }
         addRow({
           productId: row.productId,
           variantId: row.variantId,
@@ -255,12 +283,10 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         addRow(results[0]);
         return;
       }
-      // Try exact barcode resolution (sale side only — has byBarcode endpoint).
-      // فقط لما يشبه باركوداً (أرقام/لاتيني متصل ≥4) — نصّ بحث عربي عادي لا يُرمى عليه
-      // «باركود غير معروف»؛ رسالة «لا نتائج» تظهر في القائمة نفسها.
+      // Enter الصريح يجرّب هوية الباركود من دون regex؛ Code39/128 قد يكون قصيراً أو أبجديّاً
+      // ويحوي مسافات داخلية. في الشراء أيضاً يثبت byBarcode المالك قبل جلب تكلفة الوحدة.
       const code = query.trim();
-      const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-      if (code && !isPurchase && looksLikeBarcode) {
+      if (code) {
         await resolveExactBarcode(code);
       }
     } else if (e.key === "Escape") {
