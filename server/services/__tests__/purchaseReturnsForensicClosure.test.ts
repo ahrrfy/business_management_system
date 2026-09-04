@@ -6,6 +6,10 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createGoodsReceipt } from "../purchase/goodsReceipts";
 import {
+  decidePurchaseReturnReversal,
+  requestPurchaseReturnReversal,
+} from "../purchase/returnGovernance";
+import {
   createSupplierInvoice,
   decideSupplierInvoiceApproval,
   requestSupplierInvoiceApproval,
@@ -39,6 +43,10 @@ const TABLES = [
   "journalLines",
   "journalEntries",
   "doubleEntrySettings",
+  "purchaseReturnReversalItems",
+  "purchaseReturnReversals",
+  "purchaseReturnReversalRequestItems",
+  "purchaseReturnReversalRequests",
   "purchaseReturnItems",
   "purchaseReturns",
   "purchaseReturnRequestItems",
@@ -1073,5 +1081,373 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
       reservedSources.find((row) => row.id === source.supplierInvoiceId)
         ?.allocations[0]?.availableBaseQuantity,
     ).toBe(1);
+  });
+});
+
+describe("عكس مرتجع الشراء المحكوم (requestReversal/decideReversal)", () => {
+  it("يرفض اعتماد عكس مرتجع CREDIT من مُنشئ طلب العكس نفسه، ويقبله من مراجعٍ مستقل ويعيد الذمّة والمخزون والقيد إلى ما قبل المرتجع", async () => {
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
+      unitPrice: "100.00",
+    });
+    const [supplierBeforeReturn] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+
+    const requested =
+      await purchasingCaller().purchaseReturnGovernance.requestReturn({
+        supplierInvoiceId: source.supplierInvoiceId,
+        matchRunId: source.matchRunId,
+        expectedInvoiceVersion: source.supplierInvoiceVersion,
+        requestKey: `return-reversal-credit-request:${randomUUID()}`,
+        settlement: "CREDIT",
+        paymentMethod: "TRANSFER",
+        evidenceType: "RETURN_NOTE",
+        evidenceReference: `return-reversal-credit-note:${randomUUID()}`,
+        reason: "إرجاع كامل الكمية لعيبٍ ظهر بعد الفحص",
+        lines: [
+          {
+            matchAllocationId: source.matchAllocationId,
+            baseQuantity: 2,
+            reason: "وحدتان تالفتان مثبتتان بمحضر الفحص",
+          },
+        ],
+      });
+    const approved =
+      await approverCaller().purchaseReturnGovernance.decideReturn({
+        requestId: Number(requested.requestId),
+        decisionKey: `return-reversal-credit-decision:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "راجعت المطابقة والكمية والدليل واعتمدت المرتجع",
+      });
+    expect(approved).toMatchObject({ status: "APPROVED" });
+
+    const [returnRow] = await db()
+      .select()
+      .from(s.purchaseReturns)
+      .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId)));
+    const [returnItem] = await db()
+      .select()
+      .from(s.purchaseReturnItems)
+      .where(
+        eq(
+          s.purchaseReturnItems.purchaseReturnId,
+          Number(approved.purchaseReturnId),
+        ),
+      );
+    expect(returnItem).toMatchObject({ baseQuantity: 2, lineTotal: "200.00" });
+
+    const reversalRequested = await requestPurchaseReturnReversal(
+      {
+        purchaseReturnId: Number(approved.purchaseReturnId),
+        expectedReturnVersion: Number(returnRow.version),
+        requestKey: `return-reversal-request:${randomUUID()}`,
+        evidenceType: "SUPPLIER_ACKNOWLEDGEMENT",
+        evidenceReference: `return-reversal-evidence:${randomUUID()}`,
+        reason: "المورد أنكر استلام البضاعة المرتجعة فعلياً وطلب التراجع",
+        lines: [
+          {
+            purchaseReturnItemId: Number(returnItem.id),
+            baseQuantity: 2,
+            reason: "عكس كامل الكمية المرتجعة",
+          },
+        ],
+      },
+      PURCHASING,
+    );
+    expect(reversalRequested).toMatchObject({
+      status: "PENDING",
+      idempotent: false,
+    });
+
+    await expect(
+      decidePurchaseReturnReversal(
+        {
+          requestId: reversalRequested.requestId,
+          decisionKey: `return-reversal-self-decision:${randomUUID()}`,
+          action: "APPROVE",
+          reviewReason: "محاولة منشئ طلب العكس اعتماد طلبه نفسه مرفوضة",
+        },
+        PURCHASING,
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const [pendingAfterSelfAttempt] = await db()
+      .select()
+      .from(s.purchaseReturnReversalRequests)
+      .where(
+        eq(s.purchaseReturnReversalRequests.id, reversalRequested.requestId),
+      );
+    expect(pendingAfterSelfAttempt).toMatchObject({
+      status: "PENDING",
+      reviewedBy: null,
+    });
+
+    const reversed = await decidePurchaseReturnReversal(
+      {
+        requestId: reversalRequested.requestId,
+        decisionKey: `return-reversal-decision:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "تحقّقت من إنكار المورد استلام المرتجع واعتمدت العكس",
+      },
+      WAREHOUSE,
+    );
+    expect(reversed.status).toBe("APPROVED");
+    expect(reversed.reversalId).toBeGreaterThan(0);
+
+    const [
+      [returnAfter],
+      [poItemAfter],
+      [grnItemAfter],
+      [reversalRow],
+      [reversalItem],
+      [movement],
+      [entry],
+      [supplierAfter],
+      [reversalRequestRow],
+    ] = await Promise.all([
+      db()
+        .select()
+        .from(s.purchaseReturns)
+        .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId))),
+      db()
+        .select()
+        .from(s.purchaseOrderItems)
+        .where(eq(s.purchaseOrderItems.id, source.purchaseOrderItemId)),
+      db()
+        .select()
+        .from(s.goodsReceiptItems)
+        .where(eq(s.goodsReceiptItems.id, source.goodsReceiptItemId)),
+      db()
+        .select()
+        .from(s.purchaseReturnReversals)
+        .where(
+          eq(
+            s.purchaseReturnReversals.purchaseReturnId,
+            Number(approved.purchaseReturnId),
+          ),
+        ),
+      db()
+        .select()
+        .from(s.purchaseReturnReversalItems)
+        .where(
+          eq(
+            s.purchaseReturnReversalItems.reversalId,
+            Number(reversed.reversalId),
+          ),
+        ),
+      db()
+        .select()
+        .from(s.inventoryMovements)
+        .where(
+          and(
+            eq(
+              s.inventoryMovements.referenceType,
+              "PURCHASE_RETURN_REVERSAL",
+            ),
+            eq(s.inventoryMovements.referenceId, Number(reversed.reversalId)),
+          ),
+        ),
+      db()
+        .select()
+        .from(s.accountingEntries)
+        .where(
+          eq(
+            s.accountingEntries.dedupeKey,
+            `PURCHASE_RETURN_REVERSAL_REQUEST:${reversalRequested.requestId}`,
+          ),
+        ),
+      db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)),
+      db()
+        .select()
+        .from(s.purchaseReturnReversalRequests)
+        .where(
+          eq(s.purchaseReturnReversalRequests.id, reversalRequested.requestId),
+        ),
+    ]);
+
+    expect(returnAfter).toMatchObject({ status: "REVERSED" });
+    expect(poItemAfter).toMatchObject({ returnedBaseQuantity: 0 });
+    expect(grnItemAfter).toMatchObject({ returnedBaseQuantity: 0 });
+    expect(reversalRow).toMatchObject({
+      netAmount: "200.00",
+      taxAmount: "0.00",
+      totalAmount: "200.00",
+    });
+    expect(reversalItem).toMatchObject({
+      baseQuantity: 2,
+      totalAmount: "200.00",
+    });
+    expect(movement).toMatchObject({ movementType: "IN", quantity: 2 });
+    expect(entry).toMatchObject({ entryType: "RETURN", amount: "200.00" });
+    expect(supplierAfter.currentBalance).toBe(
+      supplierBeforeReturn.currentBalance,
+    );
+    expect(reversalRequestRow).toMatchObject({
+      status: "APPROVED",
+      requestedBy: PURCHASING.userId,
+      reviewedBy: WAREHOUSE.userId,
+    });
+  });
+
+  it("يثبت مسار CASH لعكس المرتجع: إيصال OUT من الخزينة وقيدا RETURN وPAYMENT_OUT، وبلا أثرٍ صافٍ على ذمّة المورد", async () => {
+    const source = await makeGovernedReturnSource({
+      acceptedBaseQuantity: 2,
+      unitPrice: "100.00",
+    });
+    const [supplierBeforeReturn] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+
+    const requested =
+      await purchasingCaller().purchaseReturnGovernance.requestReturn({
+        supplierInvoiceId: source.supplierInvoiceId,
+        matchRunId: source.matchRunId,
+        expectedInvoiceVersion: source.supplierInvoiceVersion,
+        requestKey: `return-reversal-cash-request:${randomUUID()}`,
+        settlement: "CASH",
+        paymentMethod: "CASH",
+        evidenceType: "RETURN_NOTE",
+        evidenceReference: `return-reversal-cash-note:${randomUUID()}`,
+        reason: "إرجاع كامل الكمية واستلام رد نقدي موثق من المورد",
+        lines: [
+          {
+            matchAllocationId: source.matchAllocationId,
+            baseQuantity: 2,
+            reason: "رفض كامل الشحنة بعد الفحص",
+          },
+        ],
+      });
+    const approved =
+      await approverCaller().purchaseReturnGovernance.decideReturn({
+        requestId: Number(requested.requestId),
+        decisionKey: `return-reversal-cash-decision:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "تحققت من مذكرة المرتجع واستلام الرد النقدي من المورد",
+      });
+    expect(approved).toMatchObject({ status: "APPROVED" });
+
+    const [returnRow] = await db()
+      .select()
+      .from(s.purchaseReturns)
+      .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId)));
+    const [returnItem] = await db()
+      .select()
+      .from(s.purchaseReturnItems)
+      .where(
+        eq(
+          s.purchaseReturnItems.purchaseReturnId,
+          Number(approved.purchaseReturnId),
+        ),
+      );
+
+    const reversalRequested = await requestPurchaseReturnReversal(
+      {
+        purchaseReturnId: Number(approved.purchaseReturnId),
+        expectedReturnVersion: Number(returnRow.version),
+        requestKey: `return-reversal-cash-req:${randomUUID()}`,
+        evidenceType: "SUPPLIER_ACKNOWLEDGEMENT",
+        evidenceReference: `return-reversal-cash-evidence:${randomUUID()}`,
+        reason: "الرد النقدي لم يصل فعلياً والمورد يطلب استرجاع البضاعة",
+        lines: [
+          {
+            purchaseReturnItemId: Number(returnItem.id),
+            baseQuantity: 2,
+            reason: "عكس كامل الكمية المرتجعة",
+          },
+        ],
+      },
+      PURCHASING,
+    );
+
+    const reversed = await decidePurchaseReturnReversal(
+      {
+        requestId: reversalRequested.requestId,
+        decisionKey: `return-reversal-cash-decision-2:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "تحقّقت من عدم وصول الرد النقدي واعتمدت عكس المرتجع",
+      },
+      APPROVER,
+    );
+    expect(reversed.status).toBe("APPROVED");
+
+    const [reversalReceipt] = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        eq(
+          s.receipts.referenceNumber,
+          `PURCHASE-RETURN-REV:${reversalRequested.requestId}`,
+        ),
+      );
+    expect(reversalReceipt).toMatchObject({
+      direction: "OUT",
+      amount: "200.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "SUPPLIER",
+      partyId: 1,
+    });
+
+    const [returnEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        eq(
+          s.accountingEntries.dedupeKey,
+          `PURCHASE_RETURN_REVERSAL_REQUEST:${reversalRequested.requestId}`,
+        ),
+      );
+    const [paymentOutEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        eq(
+          s.accountingEntries.dedupeKey,
+          `PURCHASE_RETURN_REVERSAL_PAYMENT:${reversalRequested.requestId}`,
+        ),
+      );
+    expect(returnEntry).toMatchObject({ entryType: "RETURN", amount: "200.00" });
+    expect(paymentOutEntry).toMatchObject({ entryType: "PAYMENT_OUT" });
+
+    const journalLines = await db()
+      .select({
+        role: s.journalLines.role,
+        debit: s.journalLines.debit,
+        credit: s.journalLines.credit,
+      })
+      .from(s.journalLines)
+      .innerJoin(
+        s.journalEntries,
+        eq(s.journalEntries.id, s.journalLines.journalId),
+      )
+      .where(eq(s.journalEntries.entryId, Number(paymentOutEntry.id)));
+    expect(journalLines.map((line) => [line.role, line.debit, line.credit])).toEqual(
+      expect.arrayContaining([
+        ["AP", "200.00", "0.00"],
+        ["TREASURY_CASH", "0.00", "200.00"],
+      ]),
+    );
+
+    const [supplierAfter] = await db()
+      .select()
+      .from(s.suppliers)
+      .where(eq(s.suppliers.id, 1));
+    expect(supplierAfter.currentBalance).toBe(
+      supplierBeforeReturn.currentBalance,
+    );
+    expect(supplierAfter.currentBalanceUsd).toBe(
+      supplierBeforeReturn.currentBalanceUsd,
+    );
+
+    const [returnAfter] = await db()
+      .select()
+      .from(s.purchaseReturns)
+      .where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId)));
+    expect(returnAfter).toMatchObject({ status: "REVERSED" });
   });
 });
