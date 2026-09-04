@@ -533,7 +533,9 @@ export default function PrintPOS() {
     const cashTotal = riqd(total);
     const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
     if (paid < cashTotal) {
-      setMessage({ kind: "err", text: `دون اتصال: الدفع الكامل فقط — المطلوب ${cashTotal.toFixed(2)} د.ع.` });
+      // كان رقماً خاماً بلا فواصل آلاف (١,٨٩٦,٥٠٠ ← 1896500.00) في شريطٍ ظاهرٍ دائماً أثناء
+      // الانقطاع، لا Toast عابر — formatIqd المستوردة أصلاً في هذا الملف تكفي.
+      setMessage({ kind: "err", text: `دون اتصال: الدفع الكامل فقط — المطلوب ${formatIqd(cashTotal)}.` });
       return false;
     }
     const gate = await assertCanCapture(cashTotal);

@@ -29,13 +29,14 @@ import { exportRows } from "@/lib/export";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { D, fmt } from "@/lib/money";
 
 type Severity = "blocker" | "warning" | "info";
 type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
 type Finding = RouterOutputs["catalogAnomalies"]["list"]["findings"][number];
 
 const LENS_LABELS: Record<LensCode, string> = {
-  L1: "L1 · تكلفة ≥ ٥× بيع",
+  L1: "L1 · تكلفة ≥ 5× بيع",
   L2: "L2 · تكلفة > بيع (خسارة)",
   L3: "L3 · هامش صفر",
   L4: "L4 · تكلفة صفر مع نشاط",
@@ -63,12 +64,15 @@ function overrideStatusLabel(f: Finding): string {
 /** صفُّ سجلّ تغيّرات التكلفة — مشتقٌّ من عقد `catalogAnomalies.changeLog`. */
 type CostLogRow = RouterOutputs["catalogAnomalies"]["changeLog"][number];
 
-/** نصّ «قبل → بعد (نسبة)» — نفسه في الخليّة وفي «نسخ القيمة». */
+/** نصّ «قبل → بعد (نسبة)» — نفسه في الخليّة وفي «نسخ القيمة».
+ *  §٥: كانت تستعمل Number(...).toLocaleString("en-US") مباشرةً على تكلفةٍ (مالٌ) — يخالف
+ *  «لا parseFloat/Number على الأموال» ويفتح باباً لعلّة تقريب النقطة العائمة، ويتجاوز fmt/fmtAr
+ *  المشتركتين فيفقد توحيد التنسيق (لا هذا الملف كان يستورد @/lib/money أصلاً). */
 function costChangeText(r: CostLogRow): string {
-  const oldV = Number(r.oldValue);
-  const newV = Number(r.newValue);
-  const ratio = oldV > 0 ? newV / oldV : 0;
-  return `${oldV.toLocaleString("en-US")} → ${newV.toLocaleString("en-US")} (${ratio.toFixed(2)}×)`;
+  const oldV = D(r.oldValue);
+  const newV = D(r.newValue);
+  const ratio = oldV.gt(0) ? newV.dividedBy(oldV) : D(0);
+  return `${fmt(r.oldValue)} → ${fmt(r.newValue)} (${ratio.toFixed(2)}×)`;
 }
 
 /** تسمية حالة الاستعادة كما تُقرأ — تُطابق ما يعرضه العمود مهما كان شكلُه (شارة/زرّ/رابط). */

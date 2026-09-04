@@ -338,7 +338,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   function submitExtend() {
     if (!extendTarget) return;
     const hours = Number(extendHours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (١–٧٢ ساعة)"); return; }
+    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (1–72 ساعة)"); return; }
     extend.mutate({ id: Number(extendTarget.id), hours });
   }
 
@@ -857,7 +857,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (١–٧٢)</Label>
+            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (<bdi dir="ltr">1–72</bdi>)</Label>
             <Input
               id="res-extend-hours"
               dir="ltr"
@@ -1024,7 +1024,7 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
               </AppSelect>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤٧٢)</Label>
+              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤72)</Label>
               <Input id="res-hours" dir="ltr" type="number" min={1} max={72} value={expiresInHours} onChange={(e) => setExpiresInHours(e.target.value)} />
             </div>
           </div>

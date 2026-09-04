@@ -600,31 +600,38 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "purchases") {
-        const [row] = await db
-          .select({
-            count: sql<number>`sum(case when ${purchaseOrders.status} in ('DRAFT', 'SENT', 'CONFIRMED') then 1 else 0 end)`,
-            total: sql<string>`coalesce(sum(case when ${purchaseOrders.status} <> 'CANCELLED' then greatest(${purchaseOrders.total} - ${purchaseOrders.paidAmount}, 0) else 0 end), 0)`,
-          })
-          .from(purchaseOrders)
-          .where(
-            scopedBranchId == null
-              ? undefined
-              : eq(purchaseOrders.branchId, scopedBranchId),
-          );
+        // «غير مسدد» كان يُحسب من purchaseOrders.total-paidAmount الخام لكل أمر — فلا يطابق
+        // ذمّة المورّد الحقيقية (دفعاتٌ غير مخصَّصة لأمرٍ بعينه تُخفّض الرصيد الفعلي بلا أن تُخفّض
+        // هذا المجموع الساذج) ويحسب DRAFT/SENT رغم أنها غير ملتزمة مالياً بعد. نستعمل نفس دالّة
+        // AP الحاكمة (GL) المستخدمة في كشف حساب المورد ووحدة الموردين — مصدرٌ واحد للحقيقة.
+        const [countRow, supplierPulse] = await Promise.all([
+          db
+            .select({
+              count: sql<number>`sum(case when ${purchaseOrders.status} in ('DRAFT', 'SENT', 'CONFIRMED') then 1 else 0 end)`,
+            })
+            .from(purchaseOrders)
+            .where(
+              scopedBranchId == null
+                ? undefined
+                : eq(purchaseOrders.branchId, scopedBranchId),
+            )
+            .then((rows) => rows[0]),
+          getScopedSupplierPulse(scopedBranchId),
+        ]);
         return {
           moduleKey: input.moduleKey,
           metrics: [
             metric(
               "open-orders",
               "أوامر مفتوحة",
-              row?.count,
+              countRow?.count,
               "count",
               "/purchases",
             ),
             metric(
               "outstanding",
               "غير مسدد",
-              row?.total,
+              supplierPulse.balance,
               "money",
               "/purchases",
             ),

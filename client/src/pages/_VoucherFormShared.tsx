@@ -455,7 +455,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       return "الرقم المرجعي إلزامي لطريقة الدفع «تحويل».";
     }
     if (method === "CARD" && !/^\d{4}$/.test(cardLastFour.trim())) {
-      return "آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام).";
+      return "آخر 4 من البطاقة إلزامي لطريقة الدفع «بطاقة» (4 أرقام).";
     }
     return "";
   }
@@ -746,7 +746,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             )}
             {method === "CARD" && (
               <div className="space-y-1">
-                <Label>آخر ٤ من البطاقة *</Label>
+                <Label>آخر 4 من البطاقة *</Label>
                 <Input
                   value={cardLastFour}
                   onChange={(e) =>
@@ -933,7 +933,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                         onKeyDown={(e) =>
                           invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)
                         }
-                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
+                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر 50 فقط)"
                         className={barcodeSearchInputClass}
                       />
                       <BarcodeSearchCue />
@@ -1019,7 +1019,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               <div className="rounded-md border bg-muted/30 p-2 text-[12px] space-y-1">
                 <div className="font-bold text-foreground flex items-center gap-1">
                   <Info aria-hidden className="size-3.5" />
-                  آخر سندات لنفس الطَرف (٧ أيام):
+                  آخر سندات لنفس الطَرف (7 أيام):
                 </div>
                 {(recent.data ?? []).map((r) => (
                   <div

@@ -961,7 +961,7 @@ export default function PurchaseNew() {
           <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
             <span className="font-extrabold text-foreground" dir="ltr">
-              {landed.grand.toFixed(2)}
+              {fmtAr(landed.grand.toFixed(2))}
             </span>{" "}
             د.ع
           </span>
