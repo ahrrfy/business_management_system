@@ -9,6 +9,7 @@ import {
   decidePurchaseChargeControl,
   requestPurchaseChargeControl,
 } from "../purchase/purchaseCharges";
+import type { Actor } from "../tx";
 
 /**
  * مصروفُ الشراء (شحن/كمرك/…) خروجُ مالٍ حقيقيّ خلف بوّابة فصل مهامٍ
@@ -98,7 +99,7 @@ async function makePurchaseOrderId(): Promise<number> {
 }
 
 /** ينشئ مصروف شراءٍ PAID/TRANSFER مسوَّدةً، ثم يطلب ترحيله بهويّة `requester`. */
-async function createChargeAndRequestPost(requester: typeof maker) {
+async function createChargeAndRequestPost(requester: Actor) {
   const purchaseOrderId = await makePurchaseOrderId();
   const created = await createPurchaseCharge(
     {
