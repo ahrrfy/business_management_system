@@ -1,0 +1,22 @@
+{
+  "client/src/pages/CountPortal.tsx": 1331,
+  "client/src/pages/Dashboard.tsx": 1488,
+  "client/src/pages/DeliveryHub.tsx": 1560,
+  "client/src/pages/Expenses.tsx": 2576,
+  "client/src/pages/HrDevices.tsx": 1263,
+  "client/src/pages/InstallmentPlans.tsx": 1375,
+  "client/src/pages/IntegrationsSettings.tsx": 1348,
+  "client/src/pages/InvoiceDetail.tsx": 1586,
+  "client/src/pages/MyStocktakeWorkspace.tsx": 1217,
+  "client/src/pages/POS.tsx": 3119,
+  "client/src/pages/PrintPOS.tsx": 1467,
+  "client/src/pages/ProductImageStudio.tsx": 2461,
+  "client/src/pages/Reception.tsx": 2497,
+  "client/src/pages/Reconcile.tsx": 1692,
+  "client/src/pages/Shifts.tsx": 1500,
+  "client/src/pages/StocktakeReview.tsx": 2271,
+  "client/src/pages/Storefront.tsx": 3326,
+  "client/src/pages/Treasury.tsx": 1349,
+  "client/src/pages/Vouchers.tsx": 1426,
+  "client/src/pages/WorkOrders.tsx": 1907
+}

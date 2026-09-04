@@ -1,6 +1,7 @@
 import { router } from "./trpc";
 import { systemRouter } from "./routers/systemRouter";
 import { authRouter } from "./routers/authRouter";
+import { selfApprovalAuditRouter } from "./routers/selfApprovalAuditRouter";
 import { saleRouter } from "./routers/saleRouter";
 import { purchaseRouter } from "./routers/purchaseRouter";
 import { inventoryRouter } from "./routers/inventoryRouter";
@@ -215,6 +216,9 @@ export const appRouter = router({
   documentDelivery: documentDeliveryRouter,
   // إعلانات الموظفين الداخلية (ش١): إدارة تنشر/تستهدف/تتابع الإقرار + قراءة ذاتيّة للموظف.
   announcements: announcementsRouter,
+  // تقريرُ الاعتماد الذاتي (٤/٩/٢٦): الضابطُ التعويضيّ لقرار المالك «لا اعتماد ثانٍ بعد
+  // المالك» (٣/٩/٢٦، PR #962) — راجع shared/approvalPolicy.ts.
+  selfApprovalAudit: selfApprovalAuditRouter,
 });
 
 export type AppRouter = typeof appRouter;

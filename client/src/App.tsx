@@ -155,6 +155,7 @@ const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
 const WhatsappHubReport = lazy(() => import("@/pages/WhatsappHubReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
+const SelfApprovalAudit = lazy(() => import("@/pages/SelfApprovalAudit"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const MonthlyAttendanceReport = lazy(() => import("@/pages/MonthlyAttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
@@ -534,6 +535,7 @@ export default function App() {
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
           الخادم التي بلا قائمة أدوار. */}
       <Route path="/reports/payroll"><Shell><RequireOwner><PayrollReport /></RequireOwner></Shell></Route>
+      <Route path="/reports/self-approvals"><Shell><RequireOwner><SelfApprovalAudit /></RequireOwner></Shell></Route>
       <Route path="/reports/attendance-monthly"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><MonthlyAttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>

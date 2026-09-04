@@ -211,6 +211,12 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0327_offline_recovery_return_channel.sql",
   // Run after 0128 so the reference owner, not each basket member, holds uniqueness.
   "drizzle/migrations/0332_digital_card_baskets.sql",
+  // ٤/٩/٢٦: تُسقط ستّة قيود CHECK maker-checker قائمة (راجع رأس الملف) — إتمامُ قرار
+  // المالك ٣/٩/٢٦ (PR #962) الذي طبّقته طبقة التطبيق فقط. `db:push` الطازج (test:db:init)
+  // يبني الصيغة الصحيحة أصلاً من schema.ts بعد إزالة check()، لكن قاعدةً بها هذه القيود
+  // مسبقاً (كإنتاج، أو دفعٍ تزايديّ لم يُعِد بناء الجدول) تبقى على الصيغة القديمة بصمتٍ —
+  // نفس فخّ #675/0326.
+  "drizzle/migrations/0333_owner_selfapproval_checkconstraints.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
