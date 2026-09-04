@@ -1,7 +1,7 @@
 // دورة حياة أمر الشراء قبل الاستلام: الإنشاء (بالدينار أو بتثبيت دولاري) والإلغاء.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, inArray, like } from "drizzle-orm";
+import { desc, eq, inArray, like, sql } from "drizzle-orm";
 import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
 import { extractInsertId } from "../../lib/insertId";
@@ -623,6 +623,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
       lastEditedBy: actor.userId,
+      // بلا هذا السطر يبقى `version` ثابتاً بعد التعديل الناجح ⇒ فحص `expectedVersion` أعلاه
+      // يفقد قدرته على كشف تعديلٍ متزامنٍ ثانٍ (تحديثٌ ضائع صامت — راجع نمط الترقيم في
+      // purchaseCharges.ts/supplierPayments.ts/returnGovernance.ts/requisitions.ts).
+      version: sql`${purchaseOrders.version} + 1`,
     }).where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     await tx.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
