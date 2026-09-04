@@ -38,7 +38,7 @@ export default function SelfApprovalAudit() {
     to: to || undefined,
   });
   const allRows: Row[] = q.data ?? [];
-  const hasFilters = kind !== "" || branchId !== "";
+  const hasFilters = kind !== "" || branchId !== "" || from !== "" || to !== "";
 
   const rows = useMemo(
     () =>
