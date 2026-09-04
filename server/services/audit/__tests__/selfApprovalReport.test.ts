@@ -217,7 +217,10 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
   });
 
   describe("توسيعُ قرار المالك (٤/٩/٢٦) على المشتريات — عكس استلام + عكس فاتورة مورّد", () => {
-    it("عكسُ استلامٍ اعتمده المالك على طلبه هو نفسه يظهر بمبلغ الإذن؛ الرفضُ (بلا بوّابة) لا يظهر", async () => {
+    it("عكسٌ جزئيّ اعتمده المالك على طلبه هو نفسه يظهر بمبلغ العكس الفعليّ لا مبلغ الإذن كاملاً؛ الرفضُ (بلا بوّابة) لا يظهر", async () => {
+      // ⚠️ (مراجعة Codex على #998): الإذن قيمته الكاملة ٨٠٠٬٠٠٠، لكنّ العكس المعتمَد هنا
+      // جزئيٌّ (سطرٌ واحدٌ من عدّة) بقيمة ١٦٠٬٠٠٠ فقط — لو استُعمل `goodsReceipts.totalAmount`
+      // خطأً لظهر ٨٠٠٬٠٠٠ (تضخيمٌ ٥×). المصدر الصحيح `goodsReceiptReversals.totalAmount`.
       await db().execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
       try {
         await db().insert(s.goodsReceipts).values({
@@ -226,6 +229,7 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
           clientRequestId: "grn-self-approval-1",
           origin: "LEGACY_AGGREGATE",
           purchaseOrderId: 9001,
+          purchaseOrderRevisionId: 9001,
           supplierId: 9001,
           branchId: 1,
           currency: "IQD",
@@ -235,7 +239,7 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
           payloadCanonical: "{}",
           payloadHash: "c".repeat(64),
         });
-        await db().insert(s.goodsReceiptReversalRequests).values({
+        const [insertedRequest] = await db().insert(s.goodsReceiptReversalRequests).values({
           requestKey: "grn-reversal-self-approval-1",
           goodsReceiptId: 1,
           branchId: 1,
@@ -251,6 +255,23 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
           decisionKey: "grn-reversal-self-approval-decision-1",
           decisionHash: "e".repeat(64),
           appliedAt: new Date(),
+        });
+        const requestId = Number((insertedRequest as unknown as { insertId: number }).insertId);
+        await db().insert(s.goodsReceiptReversals).values({
+          reversalNumber: "GRR-SELF-APPROVAL-1",
+          requestId,
+          goodsReceiptId: 1,
+          purchaseOrderId: 9001,
+          purchaseOrderRevisionId: 9001,
+          supplierId: 9001,
+          branchId: 1,
+          netAmount: "160000.00",
+          taxAmount: "0.00",
+          totalAmount: "160000.00",
+          payloadCanonical: "{}",
+          payloadHash: "g".repeat(64),
+          reason: "اختبار",
+          postedBy: 1,
         });
         // طلبٌ آخر مرفوضٌ (REJECT بلا بوّابة أصلاً — لا معنى لاعتمادٍ ذاتيّ عليه) — يجب ألّا يظهر.
         await db().insert(s.goodsReceiptReversalRequests).values({
@@ -277,7 +298,7 @@ describe("تقرير الاعتماد الذاتي (listSelfApprovalRecords)", (
       const record = records.find((r) => r.kind === "goodsReceiptReversal");
       expect(record).toBeDefined();
       expect(record?.subject).toBe("عكس GRN-SELF-APPROVAL-1");
-      expect(record?.amount).toBe("800000.00");
+      expect(record?.amount).toBe("160000.00");
       expect(record?.actorUserId).toBe(1);
       expect(records.filter((r) => r.kind === "goodsReceiptReversal")).toHaveLength(1);
     });

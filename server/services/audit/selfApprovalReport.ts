@@ -283,12 +283,16 @@ export async function listSelfApprovalRecords(
       ),
     // ⭐ توسيعُ قرار المالك (٤/٩/٢٦) على المشتريات: عكسُ استلام البضاعة — الاعتمادُ فقط
     // (goodsReceiptReversalTrigger: APPROVE ⇒ ERASE_EFFECT، وREJECT بلا بوّابة أصلاً فلا
-    // يُقاس عليه اعتمادٌ ذاتيّ). `goodsReceipts.totalAmount` عمودٌ محسوبٌ على الرأس
-    // (netAmount+taxAmount) فلا حاجة لتجميع بنودٍ.
+    // يُقاس عليه اعتمادٌ ذاتيّ). ⚠️ (مراجعة Codex على #998): `goodsReceipts.totalAmount`
+    // قيمةُ **الإذن كاملاً**، بينما `requestGoodsReceiptReversal` يسمح بعكسٍ جزئيٍّ
+    // (بنودٍ/كمّياتٍ مُنتقاة) — فلو عُكس جزءٌ فقط، إظهار إجمالي الإذن كان يُضخّم المبلغ
+    // (ويُضاعِفه حرفياً لو تكرّر عكسٌ جزئيٌّ ذاتيٌّ على نفس الإذن مرّتين). المصدر الصحيح
+    // `goodsReceiptReversals.totalAmount` — قيمةُ العكس الفعليّ وحده، بربطٍ فريدٍ عبر
+    // `requestId` (UNIQUE، سطرٌ واحدٌ لكل طلب).
     db
       .select({
         id: s.goodsReceiptReversalRequests.id,
-        amount: s.goodsReceipts.totalAmount,
+        amount: s.goodsReceiptReversals.totalAmount,
         receiptNumber: s.goodsReceipts.receiptNumber,
         branchId: s.goodsReceiptReversalRequests.branchId,
         reviewedBy: s.goodsReceiptReversalRequests.reviewedBy,
@@ -300,6 +304,7 @@ export async function listSelfApprovalRecords(
       })
       .from(s.goodsReceiptReversalRequests)
       .leftJoin(s.goodsReceipts, eq(s.goodsReceipts.id, s.goodsReceiptReversalRequests.goodsReceiptId))
+      .leftJoin(s.goodsReceiptReversals, eq(s.goodsReceiptReversals.requestId, s.goodsReceiptReversalRequests.id))
       .leftJoin(s.users, eq(s.users.id, s.goodsReceiptReversalRequests.reviewedBy))
       .where(
         and(

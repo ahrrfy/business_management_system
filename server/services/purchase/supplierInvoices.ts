@@ -885,7 +885,11 @@ export async function decideSupplierInvoiceApproval(
       });
     const decidedAt = new Date();
     if (input.action === "REJECT") {
-      if (Number(request.requestedBy) === actor.userId)
+      // ⭐ قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بعد المالك — هذا الفحص سابقٌ على استدعاء
+      // assertApprover أدناه (الرفضُ يعود مبكراً قبل الوصول إليه، مراجعة Codex على #998)،
+      // فيلزم نفس الاستثناء هنا صراحةً وإلّا بقي المالك عاجزاً عن سحب طلبه هو نفسه.
+      const rejectApprover = await resolveApprovalActor(tx, actor);
+      if (!rejectApprover.isOwner && Number(request.requestedBy) === actor.userId)
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "فصل المهام: منشئ الطلب لا يرفضه أو يعتمده",
