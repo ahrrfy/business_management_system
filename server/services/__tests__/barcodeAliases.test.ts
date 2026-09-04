@@ -419,13 +419,12 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await resolveBarcodeOwner(d, "88800")).toMatchObject({ productUnitId: 1, matchKind: "ALIAS" });
     });
 
-    it("المسار السريع أوّلاً: الصفّ النظيف يفوز على الإرث الملوَّث المكافئ له", async () => {
-      // نظيفٌ على الوحدة ١ وملوَّثٌ مكافئ على الوحدة ٣ — المساواة الخامّة (المُفهرَسة) تُرجع النظيف
-      // قبل أن يُدفَع ثمنُ المسار الاحتياطيّ، فلا يتبدّل مالك الباركود بين مسحٍ وآخر.
+    it("يرفض تعارض الصفّ النظيف مع الإرث الملوَّث حتى عند وجود تطابق حرفي", async () => {
       const d = db();
       await d.update(s.productUnits).set({ barcode: "10095" }).where(eq(s.productUnits.id, 1));
       await d.update(s.productUnits).set({ barcode: " 10095 " }).where(eq(s.productUnits.id, 3));
-      expect(await resolveBarcodeOwner(d, "10095")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      expect(await resolveBarcodeOwnerResult(d, "10095")).toEqual({ status: "AMBIGUOUS" });
+      expect(await lookupByBarcode("10095", 1, "RETAIL")).toBeNull();
     });
 
     it("الحفظ يُطبّع: assignBarcode/addUnitBarcodeAlias/createProduct تخزّن القيمة مقلَّمةً ومطويّة الأرقام", async () => {

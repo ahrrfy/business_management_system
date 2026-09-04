@@ -22,6 +22,7 @@ async function searchProducts(
     allowNormalizedFallback: kind !== "TEXT" || !/^[A-Za-z\u0600-\u065f\u0670-\u06ef\u06fa-\u06ff\s]+$/.test(query),
   });
   const owner = resolution.status === "FOUND" ? resolution.owner : null;
+  if (resolution.status === "AMBIGUOUS") return [];
   if (owner) {
     const rows = await db
       .select({

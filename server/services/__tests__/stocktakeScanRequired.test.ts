@@ -254,6 +254,16 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
     expect(res.ok).toBe(true);
   });
 
+  it.each(["FREE", "SCAN_REQUIRED"] as const)("%s: يرفض دليل المسح المتعارض بين وحدتين قبل تسجيل العد", async (countMethod) => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 2, barcode: " BC-PEN-1 " });
+    const r = await mkSession({ countMethod });
+    const id = await loginPin(r.code, pinOf(r));
+    await expect(submitCount(id, {
+      variantId: 1, qty: 3, entryMethod: "SCAN_CAMERA", scannedBarcode: "BC-PEN-1", clientRequestId: randomUUID(),
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.stocktakeCountOperations).where(eq(s.stocktakeCountOperations.sessionId, r.sessionId))).toHaveLength(0);
+  });
+
   it("SCAN_REQUIRED: يقبل UPC-A من الكاميرا إذا كان EAN-13 المكافئ محفوظاً", async () => {
     await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: "0036000291452" });
     const r = await mkSession({ countMethod: "SCAN_REQUIRED" });

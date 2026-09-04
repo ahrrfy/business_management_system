@@ -1290,6 +1290,12 @@ describe("product studio governed workflow", () => {
       unitId: 119,
       matchKind: "BARCODE_PRIMARY",
     });
+    await expect(listStudioProducts(manager, { search: "AB  12" })).resolves.toMatchObject({ rows: [{ unitId: 109, matchKind: "BARCODE_PRIMARY" }] });
+    await expect(listStudioProducts(manager, { search: "036000291452" })).resolves.toMatchObject({ rows: [{ unitId: 119, matchKind: "BARCODE_PRIMARY" }] });
+    await d.update(s.productUnits).set({ barcode: "1  0095" }).where(eq(s.productUnits.id, 109));
+    await expect(resolveStudioBarcode(worker, "1  0095")).resolves.toMatchObject({ productId: 109, unitId: 109 });
+    await expect(listStudioProducts(manager, { search: "1  0095" })).resolves.toMatchObject({ rows: [{ unitId: 109, matchKind: "BARCODE_PRIMARY" }] });
+    await expect(resolveStudioBarcode(worker, "10095")).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("(٤/٩، Codex P1) يرفض الغموض: باركودان إرثيّان لمنتجين يتطبّعان لنفس الرمز ⇒ لا يفتح عملاً لمنتجٍ خاطئ", async () => {

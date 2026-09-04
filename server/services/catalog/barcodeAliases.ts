@@ -53,9 +53,8 @@ export function barcodeAmbiguityMessage(what: string): string {
  * الباركود المخزَّن بعد تطبيعه داخل SQL: تقليم + حالةٌ موحّدة (صغيرة) + طيّ الأرقام العربية-الهندية
  * والفارسية — يُقارَن بمُدخلٍ مُطبَّعٍ **بحروفٍ صغيرة**.
  *
- * ⚠️ دالّةٌ على العمود ⇒ تُعطّل فهرس `barcode` الفريد. لذلك هي **المسار الاحتياطيّ** بعد إخفاق المساواة
- * الخامّة على مسار الكاشير الساخن (`resolveBarcodeOwner`)، ولا تُدفَع كلفتُها إلّا حين يُخطئ المسار
- * السريع. في الاستوديو (`listStudioProducts`) الاستعلامُ مسحٌ متعدّد الشروط أصلاً فتُستعمل مباشرةً.
+ * تُستعمل أيضاً للتحقق من تعارض الإرث قبل قبول التطابق الحرفي: وجود صف نظيف لا يثبت
+ * انفراده بالهوية. لا نخزّن نتيجة هذا الفحص في كاش كي تظهر الكتابات المتزامنة فوراً.
  */
 export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
   // يجب أن يُطابق `canonicalizeBarcodeInput` (الذي يقلّم بـJS `String.prototype.trim()`): وهذا يزيل
@@ -68,8 +67,8 @@ export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
   for (const mark of ["\u00ad", "\u061c", "\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2060", "\u2061", "\u2062", "\u2063", "\u2064", "\u2066", "\u2067", "\u2068", "\u2069", "\ufeff"]) {
     visible = sql`replace(${visible}, ${mark}, '')`;
   }
-  const denbsp = sql`replace(${visible}, unhex('C2A0'), ' ')`;
-  const trimmed = sql`regexp_replace(${denbsp}, '^[[:space:]]+|[[:space:]]+$', '')`;
+  const edge = "[\\x{0000}-\\x{0020}\\x{007f}-\\x{00a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]";
+  const trimmed = sql`regexp_replace(${visible}, ${`^${edge}+|${edge}+$`}, '')`;
   return foldDigitsSql(sql`lower(${trimmed})`);
 }
 
@@ -259,11 +258,8 @@ export async function resolveBarcodeOwnerResult(
   const exactOwners = new Set([...primaryMatches, ...aliasMatches].map((owner) => owner.productUnitId));
   if (exactOwners.size > 1) return { status: "AMBIGUOUS" };
   if (exactOwners.size === 1) {
-    const unitId = exactOwners.values().next().value as number;
-    const owner = primaryMatches.find((match) => match.productUnitId === unitId)
-      ?? aliasMatches.find((owner) => owner.productUnitId === unitId)
-      ?? null;
-    return owner ? { status: "FOUND", owner } : { status: "NOT_FOUND" };
+    // التطابق الحرفي لا يجيز تجاوز تعارض مع صف إرثي على وحدة أخرى.
+    return resolveNormalizedOwner(db, candidates);
   }
   if (options?.allowNormalizedFallback === false) return { status: "NOT_FOUND" };
   // المسار الاحتياطيّ (٤/٩): صفٌّ حُفظ قبل تطبيع الحفظ قد يحمل فراغاً طرفياً أو رقماً عربياً-هندياً ⇒

@@ -234,6 +234,7 @@ export default defineConfig({
       "server/lib/__tests__/ttlCache.test.ts",
       "shared/errorMap.ar.test.ts",
       "shared/barcodeNormalize.test.ts",
+      "shared/productScan.test.ts",
       "server/lib/__tests__/barcodeSchemas.test.ts",
       "server/tenancy/__tests__/expressMiddlewareLease.test.ts",
       "server/tenancy/__tests__/tenantPoolLifecycle.test.ts",

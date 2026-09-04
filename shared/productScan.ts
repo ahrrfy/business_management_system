@@ -28,7 +28,7 @@ export type ProductBarcodeMatch = {
 
 /**
  * نفس عقد الحلّ الخادمي: تطبيع مدخل الماسح + تكافؤ UPC-A/EAN-13 + عدم حساسية الحالة
- * المتوارثة في الكتالوج. الأساسي له الأولوية الدفاعية، ثم البديل.
+ * المتوارثة في الكتالوج. لا نحسم بين وحدتين متعارضتين؛ أولوية الأساسي داخل الوحدة نفسها فقط.
  */
 export function resolveProductBarcodeMatch(
   units: readonly ScannableProductUnit[],
@@ -37,7 +37,9 @@ export function resolveProductBarcodeMatch(
   const scannedBarcode = canonicalizeBarcodeInput(raw);
   if (!scannedBarcode) return null;
 
-  const primary = units.find((unit) => unit.barcode != null && barcodesEquivalent(unit.barcode, scannedBarcode));
+  const matches = units.filter((unit) => unitMatchesBarcode(unit, scannedBarcode));
+  if (matches.length !== 1) return null;
+  const primary = matches.find((unit) => unit.barcode != null && barcodesEquivalent(unit.barcode, scannedBarcode));
   if (primary) {
     return {
       kind: "PRIMARY",
@@ -48,7 +50,7 @@ export function resolveProductBarcodeMatch(
     };
   }
 
-  const alias = units.find((unit) => unit.aliases.some((code) => barcodesEquivalent(code, scannedBarcode)));
+  const alias = matches[0];
   if (!alias) return null;
   return {
     kind: "ALIAS",
@@ -57,4 +59,21 @@ export function resolveProductBarcodeMatch(
     unitName: alias.unitName,
     factor: alias.factor,
   };
+}
+
+function unitMatchesBarcode(unit: ScannableProductUnit, raw: string): boolean {
+  return (unit.barcode != null && barcodesEquivalent(unit.barcode, raw))
+    || unit.aliases.some((code) => barcodesEquivalent(code, raw));
+}
+
+/** لا تُفتح بطاقة أول صنف عند اشتراك صنفين أو وحدتين في هوية المسح. */
+export function resolveProductBarcodeItem<T extends { units: readonly ScannableProductUnit[] }>(
+  items: readonly T[],
+  raw: string,
+): { status: "FOUND"; item: T; match: ProductBarcodeMatch } | { status: "NOT_FOUND" | "AMBIGUOUS" } {
+  const matches = items.filter((item) => item.units.some((unit) => unitMatchesBarcode(unit, raw)));
+  if (!matches.length) return { status: "NOT_FOUND" };
+  if (matches.length > 1) return { status: "AMBIGUOUS" };
+  const match = resolveProductBarcodeMatch(matches[0].units, raw);
+  return match ? { status: "FOUND", item: matches[0], match } : { status: "AMBIGUOUS" };
 }

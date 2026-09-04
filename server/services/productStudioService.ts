@@ -8,7 +8,8 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { normalizedStoredBarcodeSql, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
@@ -579,6 +580,7 @@ function normalizedStudioVariantNameSql() {
 export async function listStudioProducts(actor: ProductStudioActor, input: StudioProductSearchInput = {}) {
   const db = requireDb();
   const q = normalizeSearchText(input.search ?? "").slice(0, 80);
+  const barcodeQuery = canonicalizeBarcodeInput(input.search ?? "");
   const showInactive = input.includeInactive === true && isManager(actor);
   const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q, showInactive) : null;
   const numericId = /^\d+$/.test(q) ? Number(q) : 0;
@@ -592,8 +594,8 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   // (المُطبَّع منذ #912)، فيصل الماسحَ «الرمز لا يطابق» على منتجٍ موجود. هذا الاستعلام مسحٌ متعدّد
   // الشروط أصلاً (LIKE على الأسماء المُطبَّعة) لا مسارَ نقطيّ على فهرس الباركود، فالتغليف لا يغيّر كلفته.
   // وهو مرآةُ `contextFor` أدناه بالضبط: ما يُطابقه SQL يُصنّفه JS باركوداً، لا أقلّ.
-  const exactBarcode = q
-    ? or(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${q}`, sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${q}`)
+  const exactBarcode = barcodeQuery
+    ? or(normalizedMatchAny(productUnits.barcode, [barcodeQuery]), normalizedMatchAny(productUnitBarcodes.barcode, [barcodeQuery]))
     : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
@@ -662,9 +664,9 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
     // MySQL (`utf8mb4_0900_ai_ci`) لا يُميّز الحالة فيجد صفّه في SQL. النتيجة: صفٌّ يُطابقه
     // الاستعلامُ لكنّ التصنيف يسقط إلى NAME_CONTAINS، فيعيد `resolveStudioBarcode` (بلا
     // BARCODE_PRIMARY/ALIAS) خطأ «الباركود غير معروف» على منتجٍ موجود فعلاً.
-    if (q && row.primaryBarcode != null && normalizeSearchText(row.primaryBarcode) === q)
+    if (barcodeQuery && row.primaryBarcode != null && barcodesEquivalent(row.primaryBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: row.primaryBarcode };
-    if (q && row.aliasBarcode != null && normalizeSearchText(row.aliasBarcode) === q)
+    if (barcodeQuery && row.aliasBarcode != null && barcodesEquivalent(row.aliasBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: row.aliasBarcode };
     if (q && normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
     if (q && numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };

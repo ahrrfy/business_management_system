@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProductBarcodeMatch } from "./productScan";
+import { resolveProductBarcodeItem, resolveProductBarcodeMatch } from "./productScan";
 
 const units = [
   { unitName: "قطعة", factor: 1, barcode: "BC-ONE", aliases: ["ALT-ONE"] },
@@ -7,6 +7,19 @@ const units = [
 ] as const;
 
 describe("resolveProductBarcodeMatch", () => {
+  it("يحفظ رمز الملصق الفعلي بمسافتين ويرفض الحسم بين صنفين", () => {
+    const first = { id: 1, units: [{ unitName: "قطعة", factor: 1, barcode: "1  0095", aliases: [] }] };
+    expect(resolveProductBarcodeItem([first], "1  0095")).toMatchObject({ status: "FOUND", item: { id: 1 } });
+    expect(resolveProductBarcodeItem([first], "10095")).toEqual({ status: "NOT_FOUND" });
+    expect(resolveProductBarcodeItem([first, { ...first, id: 2 }], "1  0095")).toEqual({ status: "AMBIGUOUS" });
+  });
+  it("يرفض التباس الأساسي والبديل بين وحدتين حتى لو كانت إحداهما مطابقة حرفياً", () => {
+    expect(resolveProductBarcodeMatch([
+      { unitName: "قطعة", factor: 1, barcode: "10095", aliases: [] },
+      { unitName: "كرتون", factor: 12, barcode: "BOX", aliases: [" ١٠٠٩٥ "] },
+    ], "10095")).toBeNull();
+  });
+
   it("يميّز الباركود الأساسي ويعيد الوحدة ومعاملها", () => {
     expect(resolveProductBarcodeMatch(units, " BC-BOX ")).toEqual({
       kind: "PRIMARY",
