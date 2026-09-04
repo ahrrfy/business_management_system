@@ -54,6 +54,7 @@ import {
   type InvoiceActionKind,
   type InvoiceLine,
 } from "@/components/invoice";
+import { derivePurchaseLinePriceFromRequisition } from "@/components/invoice/purchasePrice";
 import { PageHeader } from "@/components/PageHeader";
 
 const INVOICE_TYPE = "PURCHASE" as const;
@@ -155,7 +156,15 @@ export default function PurchaseNew() {
           reservedBase: row.reservedBase ?? 0,
           availableBase: row.availableBase ?? 0,
           isService: row.isService ?? false,
-          price: item.estimatedUnitPrice ?? row.costPriceBase ?? "0",
+          // Codex #980 (٤/٩/٢٦) — Finding 4: مسار الاستحضار من طلب شراء يتخطّى ProductSearchBar
+          // و`BulkPicker`. `estimatedUnitPrice` القادم مُخزَّنٌ بالدينار (عمود `decimal(15,2)`
+          // بلا عمود عملة على `purchaseRequisitionItems`) وقد يكون **مصاباً** بعطب PUR-UNIT-01
+          // القديم (حُقن بـ`costPriceBase` بلا ضربٍ بالمعامل) ⇒ درزنٌ يصل هنا بسعرِ ١٥٠ لا
+          // ١٨٠٠. المساعد المشتَرَك يكشف الإصابة (القادم ≤ تكلفة الأساس بينما المعامل > ١)
+          // ويُعيد الحساب. الأمر يبدأ بالدينار (لا عمود عملة على `purchaseRequisitions`) —
+          // تحويلُ العملة قرارُ المستخدم قبل الحفظ، والمحرّر يرفض الحفظَ الدولاريّ بلا
+          // `agreedRate > 0`.
+          price: derivePurchaseLinePriceFromRequisition(item.estimatedUnitPrice, row.costPriceBase, conversionFactor),
           costBase: row.costPriceBase ?? "0",
           discount: "0",
           discountType: "percent",
@@ -1024,6 +1033,9 @@ export default function PurchaseNew() {
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
             tier={state.tier}
+            // Codex #980: عملة الأمر وسعرُ تثبيته يمرَّان لتقدير سعر وحدة الصفّ بالدولار عند الإضافة الجماعية.
+            purchaseCurrency={state.currency}
+            purchaseAgreedRate={state.agreedRate}
           />
         </div>
 

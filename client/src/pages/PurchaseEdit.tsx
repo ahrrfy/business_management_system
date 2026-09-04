@@ -557,8 +557,12 @@ export default function PurchaseEdit() {
         barcode: l.barcode ?? "—",
         name: l.name,
         unit: l.unit || "—",
-        // السعر المعروض في الخليّة هو `costBase || price` بدقّة عملة الأمر (مرآة ProductTable).
-        price: fmtPrice(l.costBase || l.price),
+        // Codex #980 (٤/٩/٢٦) — Finding 3: `l.price` وحده لا `costBase || price`. الأخيرُ كان
+        // يُخالف ما يعرضه محرّرُ الشاشة نفسه (خليّة السعر تعرض `item.price` وتكتب فيه، و
+        // `costBase` مرجعُ الأساس لا يُمَسّ من التحرير). بعد تعديلٍ يدويٍّ للسعر: الشاشةُ والحمولةُ
+        // تحملان القيمةَ الجديدة بينما الطباعة تُخرج الأصلَ ⇒ ورقةُ المورّد لا تطابق ما وقّعه
+        // المستخدم. الآن تُطبع القيمةُ نفسها التي رآها وحفظها.
+        price: fmtPrice(l.price),
         qty: fmtAr(safeMoney(String(l.qty)).toString()),
         total: fmtAr(lineTotal),
         iqd: showIqdEquivalent
@@ -868,6 +872,9 @@ export default function PurchaseEdit() {
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
             tier={state.tier}
+            // Codex #980: عملة الأمر وسعرُ تثبيته لتقدير سعر وحدة الصفّ بالدولار عند الإضافة الجماعية.
+            purchaseCurrency={state.currency}
+            purchaseAgreedRate={state.agreedRate}
           />
         </div>
 

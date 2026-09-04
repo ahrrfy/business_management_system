@@ -257,6 +257,10 @@ export function ProductTable({
             tier={tier}
             onAddProduct={(line) => { dispatch({ type: "ADD_ITEM", item: line }); setAddTick((t) => t + 1); }}
             onNotify={onNotify}
+            // Codex #980: عملة الأمر وسعرُ تثبيته يمرَّان لِتقدير سعر الوحدة **بالدولار** بالقسمة
+            // على `agreedRate` (الفرع الدولاريّ)، وبلا تثبيتٍ يترك حقلَ السعر فارغاً بدل ادّعاءٍ.
+            purchaseCurrency={purchaseCurrency}
+            purchaseAgreedRate={purchaseRate}
           />
         </div>
       )}
@@ -345,7 +349,16 @@ export function ProductTable({
               const marginNum = Number(margin);
               const stock = stockState(item);
               const allocations = allocationsByVariant.get(item.variantId) ?? [];
-              const purchaseInsight = isPurchase
+              // Codex #980 (٤/٩/٢٦) — Finding 2: صفوف `purchaseOrderItems` التاريخيّة لوحدةٍ
+              // غير أساس (معامل ≠ ١) قد تكون **الصفوف المفسدة** التي يُصلحها PUR-UNIT-01
+              // نفسه: `unitPrice` فيها كان يحمل تكلفة الأساس (١٥٠) بدل سعر وحدة الصفّ (١٨٠٠).
+              // مقارنةُ سعرِ ٱليوم المُصحَّح (١٨٠٠) بها تُبلّغ «١٦٥٠ فوق الأدنى التاريخيّ» فتُغري
+              // المستخدم باستعادة القيمة المفسدة. الآن نُعطّل تلميحَ الأرخص التاريخيّ للوحدات
+              // غير الأساس حتى يُصلَح تراث البيانات — الوحدة الأساس (معامل ١) لم تتأثّر
+              // بالعطب فتبقى المقارنة موثوقة عليها.
+              const conversionFactorRaw = Number(item.conversionFactor);
+              const isBaseUnit = Number.isFinite(conversionFactorRaw) && conversionFactorRaw === 1;
+              const purchaseInsight = isPurchase && isBaseUnit
                 ? purchasePriceInsights?.[`${item.variantId}:${item.productUnitId}`]
                 : undefined;
               // PUR-UNIT-01 (٤/٩/٢٦): مقارنةٌ بـ`item.price` (وحدة الصفّ) لا `item.costBase`

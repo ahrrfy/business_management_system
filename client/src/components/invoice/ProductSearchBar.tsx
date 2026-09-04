@@ -14,7 +14,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
-import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
@@ -26,6 +26,14 @@ export interface ProductSearchBarProps {
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
+  /**
+   * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته — يمرَّرا من `PurchaseNew`/`PurchaseEdit`
+   * عبر `ProductTable`. الحقلان يخصّان جانب الشراء فقط، والقيم الافتراضية (`IQD`/`""`) تجعل
+   * جانب البيع لا يتأثّر. `catalog.forPurchase.costPriceBase` يبقى بالدينار حتى للأمر الدولاريّ
+   * ⇒ الفرع الدولاريّ يحتاج القسمةَ على `agreedRate`، وإلّا انتفخت ذمّةُ المورّد بمقداره.
+   */
+  purchaseCurrency?: Currency;
+  purchaseAgreedRate?: string;
 }
 
 interface NormalizedRow {
@@ -58,7 +66,7 @@ function stockBadgeColor(stock: number): string {
   return "text-muted-foreground";
 }
 
-export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify }: ProductSearchBarProps) {
+export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -117,7 +125,9 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         // كان الحقلان يُملآن معاً بـcostPriceBase (بوحدة الأساس)، فدرزنٌ (معامل ١٢) بتكلفة
         // ١٥٠/قطعة يُضاف بسعرِ ١٥٠/درزن ⇒ يقسم الخادم على ١٢ فيصير `costPerBase = 12.50`
         // ويسمّم WAVG. المساعد المشترك يفصل: `price` بوحدة الصفّ، `costBase` مرجعُ الأساس.
-        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor),
+        // Codex #980 (٤/٩/٢٦): الفرع الدولاريّ يقسم على سعر التثبيت، وبلا تثبيتٍ يترك الحقل
+        // فارغاً حتى يضبطه المستخدم يدوياً (لا يضع رقماً دينارياً في حقل دولار).
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor, isPurchase ? purchaseCurrency : "IQD", isPurchase ? purchaseAgreedRate : null),
         costBase: r.costPriceBase,
       }));
     }
@@ -142,7 +152,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
       costBase: r.costPriceBase ?? "0",
     }));
-  }, [isPurchase, posQ.data, purQ.data, query]);
+  }, [isPurchase, posQ.data, purQ.data, query, purchaseCurrency, purchaseAgreedRate]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
