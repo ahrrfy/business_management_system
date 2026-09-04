@@ -293,16 +293,23 @@ describe("حوكمة عكس مرتجع الشراء — فصل المهام عل
       OWNER,
     );
     expect(approved.status).toBe("APPROVED");
-    const [item] = await db().select().from(s.purchaseReturnItems).where(eq(s.purchaseReturnItems.purchaseReturnId, Number(approved.purchaseReturnId)));
-    return { purchaseReturnId: Number(approved.purchaseReturnId), purchaseReturnItemId: Number(item.id) };
+    const [[item], [purchaseReturn]] = await Promise.all([
+      db().select().from(s.purchaseReturnItems).where(eq(s.purchaseReturnItems.purchaseReturnId, Number(approved.purchaseReturnId))),
+      db().select().from(s.purchaseReturns).where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId))),
+    ]);
+    return {
+      purchaseReturnId: Number(approved.purchaseReturnId),
+      purchaseReturnItemId: Number(item.id),
+      purchaseReturnVersion: Number(purchaseReturn.version),
+    };
   }
 
   it("يرفض اعتماد طالب العكس لطلبه ذاته", async () => {
-    const { purchaseReturnId, purchaseReturnItemId } = await approveFreshReturn();
+    const { purchaseReturnId, purchaseReturnItemId, purchaseReturnVersion } = await approveFreshReturn();
     const requested = await requestPurchaseReturnReversal(
       {
         purchaseReturnId,
-        expectedReturnVersion: 1,
+        expectedReturnVersion: purchaseReturnVersion,
         requestKey: `pr-gov-reversal-request:${randomUUID()}`,
         evidenceType: "SIGNED_APPROVAL",
         evidenceReference: `reversal-evidence:${randomUUID()}`,
@@ -325,11 +332,11 @@ describe("حوكمة عكس مرتجع الشراء — فصل المهام عل
   });
 
   it("يعتمد المالكُ طلب عكسٍ أنشأه هو بنفسه فيُعكَس المرتجع فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
-    const { purchaseReturnId, purchaseReturnItemId } = await approveFreshReturn();
+    const { purchaseReturnId, purchaseReturnItemId, purchaseReturnVersion } = await approveFreshReturn();
     const requested = await requestPurchaseReturnReversal(
       {
         purchaseReturnId,
-        expectedReturnVersion: 1,
+        expectedReturnVersion: purchaseReturnVersion,
         requestKey: `pr-gov-reversal-request:${randomUUID()}`,
         evidenceType: "SIGNED_APPROVAL",
         evidenceReference: `reversal-evidence:${randomUUID()}`,
