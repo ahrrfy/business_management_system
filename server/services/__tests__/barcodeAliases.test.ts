@@ -23,6 +23,7 @@ import { assignBarcode } from "../catalog/barcode";
 import { createProduct } from "../catalog/productCreate";
 import { lookupByBarcode } from "../catalog/pos";
 import { kioskLookup } from "../kioskService";
+import { barcodeComparisonKey } from "../../../shared/barcodeNormalize";
 
 const TABLES = [
   "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "productImages", "products",
@@ -64,6 +65,32 @@ async function seedBase() {
 
 describe("barcodeAliases — ثوابت السلامة", () => {
   beforeEach(async () => { await reset(); await seedBase(); });
+
+  it("generated identity keys match JS normalization and preserve the supplier's raw Code39 value", async () => {
+    const samples = [
+      "1  0095", "00095", "\u0000\u001b ١  ۰۰۹۵\r\n\u009f", "\u200fA\u2066B\u2069-95\ufeff",
+      "\u00a0ABC\u3000", "A\u00a0B", "A\tB", "Ä-95", "$95/+",
+    ];
+    for (let i = 0; i < samples.length; i++) {
+      const raw = samples[i];
+      await db().update(s.productUnits).set({ barcode: raw }).where(eq(s.productUnits.id, 1));
+      await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: raw });
+      const [primary] = await db().select().from(s.productUnits).where(eq(s.productUnits.id, 1));
+      const [alias] = await db().select().from(s.productUnitBarcodes).where(eq(s.productUnitBarcodes.productUnitId, 1));
+      expect(primary.barcode).toBe(raw);
+      expect(primary.barcodeNormalized).toBe(barcodeComparisonKey(raw));
+      expect(alias.barcodeNormalized).toBe(barcodeComparisonKey(raw));
+      await db().delete(s.productUnitBarcodes).where(eq(s.productUnitBarcodes.productUnitId, 1));
+    }
+  });
+
+  it("normalized ownership queries use persistent indexes on both barcode tables", async () => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: "1  0095" });
+    for (const [table, indexName] of [[s.productUnits, "idx_unit_barcode_normalized"], [s.productUnitBarcodes, "idx_alias_barcode_normalized"]] as const) {
+      const [plan] = await db().execute(sql`EXPLAIN SELECT ${table.id} FROM ${table} WHERE ${table.barcodeNormalized} IN (${"1  0095"})`);
+      expect((plan as unknown as Array<{ key: string }>)[0].key).toBe(indexName);
+    }
+  });
 
   describe("A1: البحث يمرّ على الأساسيّ والبديل معاً", () => {
     it("resolveBarcodeOwner يعيد نفس الوحدة للأساسيّ", async () => {

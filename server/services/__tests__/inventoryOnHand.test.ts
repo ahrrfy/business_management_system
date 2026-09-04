@@ -204,6 +204,7 @@ describe("inventory.onHand", () => {
         isBaseUnit: false,
         barcode: "0036000291452",
       },
+      { id: 22, variantId: 2, unitName: "ملصق المورد", conversionFactor: "1", isBaseUnit: false, barcode: "1  0095" },
     ]);
     await db().insert(s.products).values({ id: 3, name: "000 10095 036000291452" });
     await db().insert(s.productVariants).values({ id: 3, productId: 3, sku: "DISTRACTOR" });
@@ -211,11 +212,14 @@ describe("inventory.onHand", () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
     const healed = await caller.inventory.onHand({ branchId: 1, q: "10095", limit: 1 });
     const upc = await caller.inventory.onHand({ branchId: 1, q: "036000291452", limit: 1 });
+    const supplierLabel = await caller.inventory.onHand({ branchId: 1, q: "1  0095", limit: 1 });
 
     expect(healed.map((row) => Number(row.variantId))).toEqual([2]);
     expect(healed[0]?.scanMatch?.unitName).toBe("مورد");
     expect(upc.map((row) => Number(row.variantId))).toEqual([2]);
     expect(upc[0]?.scanMatch?.unitName).toBe("UPC");
+    expect(supplierLabel.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(supplierLabel[0]?.scanMatch?.scannedBarcode).toBe("1  0095");
   });
 
   it("يفشل مغلقاً إذا امتلك UPC-A وEAN-13 المكافئ وحدتان مختلفتان", async () => {

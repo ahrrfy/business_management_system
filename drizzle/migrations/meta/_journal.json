@@ -2164,6 +2164,13 @@
 			"when": 1788052407000,
 			"tag": "0334_purchases_owner_selfapproval_checkconstraints",
 			"breakpoints": true
+		},
+		{
+			"idx": 335,
+			"version": "5",
+			"when": 1788563114188,
+			"tag": "0335_supplier_barcode_identity_index",
+			"breakpoints": true
 		}
 	]
 }

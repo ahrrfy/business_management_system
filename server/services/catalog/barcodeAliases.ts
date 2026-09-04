@@ -57,12 +57,14 @@ export function barcodeAmbiguityMessage(what: string): string {
  * انفراده بالهوية. لا نخزّن نتيجة هذا الفحص في كاش كي تظهر الكتابات المتزامنة فوراً.
  */
 export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
+  if (column === productUnits.barcode) return sql`${productUnits.barcodeNormalized}`;
+  if (column === productUnitBarcodes.barcode) return sql`${productUnitBarcodes.barcodeNormalized}`;
   // يجب أن يُطابق `canonicalizeBarcodeInput` (الذي يقلّم بـJS `String.prototype.trim()`): وهذا يزيل
   // **كلّ** الفراغات الطرفية (space + \t \n \r \f \v + NBSP)، لا مسافة ASCII وحدها كما يفعل MySQL
   // `TRIM()` بلا وسيط. عدمُ التكافؤ كان يُعمي المسارَ الاحتياطيّ وكشفَ الصدام عن إرثٍ ملوَّث بتبويب/سطرٍ
   // جديد (لاحقة Excel/الماسح CR/LF/Tab — وهي المصدر الذي صرّح به هذا الإصلاح). التقليم **طرفيٌّ فقط**
   // (`^…|…$`) حفاظاً على مسافة Code39 الداخليّة المعنويّة التي يُبقيها التطبيعُ نفسه. NBSP (بايتاه C2A0)
-  // قد لا يلتقطه `[[:space:]]` في بعض البناءات فنُحوّله مسافةً أوّلاً. القيم كلّها معاملات ⇒ لا حقن.
+  // قد لا يلتقطه `[[:space:]]` في بعض البناءات فنذكره صراحةً عند الحواف فقط. القيم كلّها معاملات ⇒ لا حقن.
   let visible: SQL = sql`${column}`;
   for (const mark of ["\u00ad", "\u061c", "\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2060", "\u2061", "\u2062", "\u2063", "\u2064", "\u2066", "\u2067", "\u2068", "\u2069", "\ufeff"]) {
     visible = sql`replace(${visible}, ${mark}, '')`;
@@ -79,7 +81,7 @@ export function normalizedMatchAny(column: SQLWrapper, codes: string[]): SQL | u
     new Set(codes.flatMap(barcodeIdentityCandidates).map((candidate) => candidate.toLowerCase())),
   );
   if (!lows.length) return undefined;
-  return or(...lows.map((v) => sql`${normalizedStoredBarcodeSql(column)} = ${v}`));
+  return inArray(normalizedStoredBarcodeSql(column), lows);
 }
 
 async function findPrimaryOwners(db: DbOrTx, where: SQL): Promise<BarcodeOwner[]> {
