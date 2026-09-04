@@ -629,6 +629,65 @@ describe("إغلاق جنائي لمرتجع الشراء", () => {
     },
   );
 
+  it("يعتمد مديرٌ آخر (غير مالكٍ ومستقلٌّ عن مُنشئ الطلب) مرتجعاً بنجاح", async () => {
+    await db()
+      .insert(s.users)
+      .values({
+        id: 4,
+        openId: "return-closure-independent-manager",
+        name: "مديرٌ مستقلٌّ غير مالك",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+      });
+    const independentManagerCaller = () =>
+      appRouter.createCaller({
+        req: { headers: {}, ip: "127.0.0.1" },
+        res: { cookie() {}, clearCookie() {} },
+        user: { id: 4, role: "manager", branchId: 1 },
+      } as any);
+
+    const source = await makeGovernedReturnSource({ acceptedBaseQuantity: 1 });
+    const requested =
+      await purchasingCaller().purchaseReturnGovernance.requestReturn({
+        supplierInvoiceId: source.supplierInvoiceId,
+        matchRunId: source.matchRunId,
+        expectedInvoiceVersion: source.supplierInvoiceVersion,
+        requestKey: `return-closure-independent-request:${randomUUID()}`,
+        settlement: "CREDIT",
+        paymentMethod: "TRANSFER",
+        evidenceType: "RETURN_NOTE",
+        evidenceReference: `independent-return-note:${randomUUID()}`,
+        reason: "إرجاع وحدة معيبة إلى المورد بعد المطابقة الثلاثية",
+        lines: [
+          {
+            matchAllocationId: source.matchAllocationId,
+            baseQuantity: 1,
+            reason: "وحدة تالفة مثبتة بمحضر الفحص",
+          },
+        ],
+      });
+
+    const approved =
+      await independentManagerCaller().purchaseReturnGovernance.decideReturn({
+        requestId: Number(requested.requestId),
+        decisionKey: `return-closure-independent-decision:${randomUUID()}`,
+        action: "APPROVE",
+        reviewReason: "مديرٌ مستقلٌّ غير مالكٍ راجع الدليل واعتمد المرتجع",
+      });
+
+    expect(approved).toMatchObject({ status: "APPROVED", idempotent: false });
+    const [decidedRequest] = await db()
+      .select()
+      .from(s.purchaseReturnRequests)
+      .where(eq(s.purchaseReturnRequests.id, Number(requested.requestId)));
+    expect(decidedRequest).toMatchObject({
+      status: "APPROVED",
+      requestedBy: PURCHASING.userId,
+      reviewedBy: 4,
+    });
+  });
+
   it("يجعل requestKey المتزامن replay واحداً ويرفض الحمولة المختلفة", async () => {
     const source = await makeGovernedReturnSource({ acceptedBaseQuantity: 2 });
     const requestKey = `return-closure-concurrent:${randomUUID()}`;
