@@ -95,6 +95,8 @@ const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGove
 const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
 const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
 const PurchaseIntegrityCases = lazy(() => import("@/pages/PurchaseIntegrityCases"));
+const GoodsReceiptReversalGovernance = lazy(() => import("@/pages/GoodsReceiptReversalGovernance"));
+const SupplierInvoiceApprovalGovernance = lazy(() => import("@/pages/SupplierInvoiceApprovalGovernance"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
@@ -397,6 +399,8 @@ export default function App() {
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
+      <Route path="/purchases/goods-receipt-reversals"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><GoodsReceiptReversalGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/supplier-invoice-approvals"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierInvoiceApprovalGovernance /></RequireRole></Shell></Route>
       {/* بعد المسارات الأخصّ عمداً: مسارٌ عامّ لا يبتلعها. */}
       <Route path="/purchases/:id"><Shell><RequireRole module="purchases" level="READ"><PurchaseOrderDetail /></RequireRole></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>

@@ -91,6 +91,8 @@ import { purchaseReturnGovernanceRouter } from "./routers/purchaseReturnGovernan
 import { supplierPaymentsRouter } from "./routers/supplierPaymentsRouter";
 import { purchaseChargesRouter } from "./routers/purchaseChargesRouter";
 import { purchaseIntegrityRouter } from "./routers/purchaseIntegrityRouter";
+import { goodsReceiptReversalRouter } from "./routers/goodsReceiptReversalRouter";
+import { supplierInvoiceApprovalRouter } from "./routers/supplierInvoiceApprovalRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -114,6 +116,8 @@ export const appRouter = router({
   supplierPayments: supplierPaymentsRouter,
   purchaseCharges: purchaseChargesRouter,
   purchaseIntegrity: purchaseIntegrityRouter,
+  goodsReceiptReversal: goodsReceiptReversalRouter,
+  supplierInvoiceApproval: supplierInvoiceApprovalRouter,
   inventory: inventoryRouter,
   accounts: accountsRouter,
   returns: returnRouter,
