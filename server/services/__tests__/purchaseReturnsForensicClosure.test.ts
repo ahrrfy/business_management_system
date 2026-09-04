@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
@@ -201,6 +201,19 @@ async function installFinalizeFaultTrigger() {
   `),
   );
 }
+
+// يفحص هذا الملفّ فصل المهام تحت سياسة الاعتماد **القديمة** (OFF) — ثبّته صراحةً بدل
+// افتراض بيئة التشغيل، مطابقةً لنمط ownerGate.test.ts (مراجعة Codex).
+const ROLLOUT_FLAG = "ROLLOUT_OWNER_ONLY_APPROVAL";
+let savedRolloutFlag: string | undefined;
+beforeEach(() => {
+  savedRolloutFlag = process.env[ROLLOUT_FLAG];
+  delete process.env[ROLLOUT_FLAG];
+});
+afterEach(() => {
+  if (savedRolloutFlag === undefined) delete process.env[ROLLOUT_FLAG];
+  else process.env[ROLLOUT_FLAG] = savedRolloutFlag;
+});
 
 beforeEach(async () => {
   await dropFinalizeFaultTrigger();
@@ -1250,7 +1263,10 @@ describe("عكس مرتجع الشراء المحكوم (requestReversal/decideR
         action: "APPROVE",
         reviewReason: "تحقّقت من إنكار المورد استلام المرتجع واعتمدت العكس",
       },
-      WAREHOUSE,
+      // مراجعٌ مستقلٌّ عن الطالب PURCHASING **ومخوَّلٌ فعلياً**: `decideReversal` محصورٌ
+      // بـ`purchasesManagerProcedure` (manager/purchasing) — WAREHOUSE لا يبلغه عبر الراوتر
+      // أصلاً، فاستعمالُه هنا كان يثبت سيناريو مستحيلاً في الإنتاج (مراجعة Codex).
+      APPROVER,
     );
     expect(reversed.status).toBe("APPROVED");
     expect(reversed.reversalId).toBeGreaterThan(0);
@@ -1346,7 +1362,7 @@ describe("عكس مرتجع الشراء المحكوم (requestReversal/decideR
     expect(reversalRequestRow).toMatchObject({
       status: "APPROVED",
       requestedBy: PURCHASING.userId,
-      reviewedBy: WAREHOUSE.userId,
+      reviewedBy: APPROVER.userId,
     });
   });
 

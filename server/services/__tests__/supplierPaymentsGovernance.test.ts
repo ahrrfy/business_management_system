@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -96,9 +96,12 @@ async function seed() {
         isOwner: true,
       },
     ]);
+  // الرصيد الابتدائيّ = totalAmount الفاتورة أدناه: مسار الترحيل الحقيقيّ
+  // (decideSupplierInvoiceApproval) يزيد ذمّة المورّد بإجمالي الفاتورة عند POSTED — إدراجُها
+  // هنا مباشرةً بـPOSTED يتخطّى ذلك المسار، فبذرُ الرصيد يدوياً يطابق أثره (مراجعة Codex).
   await db()
     .insert(schema.suppliers)
-    .values({ id: 1, name: "مورد الاختبار", currentBalance: "0" });
+    .values({ id: 1, name: "مورد الاختبار", currentBalance: "100000" });
   // فاتورة المورد POSTED/NATIVE تلزمها chk_supplier_invoice_lifecycle (قيد ترحيلٍ حقيقي)
   // وchk_supplier_invoice_native_document (رقمٌ خارجيّ + منشئ) — قيدٌ محاسبيّ بسيط يكفي؛
   // decideSupplierPayment لا يقرأ منه سوى وجوده (لا يتحقّق من نوعه أو مبلغه).
@@ -137,6 +140,19 @@ async function seed() {
       postedAt: new Date(),
     });
 }
+
+// يفحص هذا الملفّ فصل المهام تحت سياسة الاعتماد **القديمة** (OFF) — ثبّته صراحةً بدل
+// افتراض بيئة التشغيل، مطابقةً لنمط ownerGate.test.ts (مراجعة Codex).
+const ROLLOUT_FLAG = "ROLLOUT_OWNER_ONLY_APPROVAL";
+let savedRolloutFlag: string | undefined;
+beforeEach(() => {
+  savedRolloutFlag = process.env[ROLLOUT_FLAG];
+  delete process.env[ROLLOUT_FLAG];
+});
+afterEach(() => {
+  if (savedRolloutFlag === undefined) delete process.env[ROLLOUT_FLAG];
+  else process.env[ROLLOUT_FLAG] = savedRolloutFlag;
+});
 
 beforeEach(async () => {
   await reset();
@@ -224,7 +240,7 @@ describe("حوكمة سداد المورد — فصل المهام على قاع
       .select()
       .from(schema.suppliers)
       .where(eq(schema.suppliers.id, 1));
-    expect(Number(supplier.currentBalance)).toBe(0);
+    expect(Number(supplier.currentBalance)).toBe(100000);
   });
 
   it("يعتمد مراجعٌ مستقلّ طلب السداد فتتحرك الخزينة وذمّة المورّد فعلياً", async () => {
@@ -265,7 +281,7 @@ describe("حوكمة سداد المورد — فصل المهام على قاع
       .select()
       .from(schema.suppliers)
       .where(eq(schema.suppliers.id, 1));
-    expect(Number(supplier.currentBalance)).toBe(-10000);
+    expect(Number(supplier.currentBalance)).toBe(90000); // 100000 مرحّلةً − 10000 مدفوعة
 
     const [paymentRow] = await db()
       .select()
@@ -390,7 +406,7 @@ describe("حوكمة استرداد سداد المورد — فصل المها�
       .select()
       .from(schema.suppliers)
       .where(eq(schema.suppliers.id, 1));
-    expect(Number(supplier.currentBalance)).toBe(-7000); // -10000 دفعاً + 3000 استرداداً
+    expect(Number(supplier.currentBalance)).toBe(93000); // 100000 مرحّلةً − 10000 دفعاً + 3000 استرداداً
 
     const [allocation] = await db()
       .select()

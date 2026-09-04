@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
@@ -11,6 +11,19 @@ import { createPurchaseOrder } from "../purchaseService";
 
 const creator = { userId: 1, branchId: 1, role: "manager" as const };
 const independentApprover = { userId: 2, branchId: 1, role: "manager" as const };
+
+// يفحص هذا الملفّ فصل المهام تحت سياسة الاعتماد **القديمة** (OFF) — ثبّته صراحةً بدل
+// افتراض بيئة التشغيل، مطابقةً لنمط ownerGate.test.ts (مراجعة Codex).
+const ROLLOUT_FLAG = "ROLLOUT_OWNER_ONLY_APPROVAL";
+let savedRolloutFlag: string | undefined;
+beforeEach(() => {
+  savedRolloutFlag = process.env[ROLLOUT_FLAG];
+  delete process.env[ROLLOUT_FLAG];
+});
+afterEach(() => {
+  if (savedRolloutFlag === undefined) delete process.env[ROLLOUT_FLAG];
+  else process.env[ROLLOUT_FLAG] = savedRolloutFlag;
+});
 
 function db() {
   const value = getDb();
