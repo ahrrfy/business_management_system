@@ -14,6 +14,7 @@ import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentDeviceReferenceField } from "@/components/form/PaymentDeviceReferenceField";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
@@ -358,8 +359,7 @@ export default function InvoiceDetail() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelConfirmText, setCancelConfirmText] = useState("");
   const [cancelReference, setCancelReference] = useState("");
-  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID(),
-  );
+  const [cancelRequestId, setCancelRequestId] = useState(() => crypto.randomUUID());
 
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
@@ -401,8 +401,7 @@ export default function InvoiceDetail() {
       setError("");
       setCancelOpen(false);
       setCancelReason("");
-      setCancelConfirmText("");
-      setCancelReference("");
+      setCancelConfirmText(""); setCancelReference("");
       await Promise.all([
         utils.salesControl.list.invalidate(),
       ]);
@@ -999,14 +998,9 @@ export default function InvoiceDetail() {
               variant="destructive"
               size="sm"
               onClick={() => {
-                setCancelMethod(
-                  (data.paymentMethod as
-                      | (typeof METHODS)[number]["v"] | null) ??
-                    "CASH",
-                );
+                setCancelMethod((data.paymentMethod as (typeof METHODS)[number]["v"] | null) ?? "CASH");
                 setCancelReason("");
-                setCancelConfirmText("");
-                setCancelReference("");
+                setCancelConfirmText(""); setCancelReference("");
                 setError("");
                 setCancelOpen(true);
               }}
@@ -1656,15 +1650,8 @@ export default function InvoiceDetail() {
               </div>
             )}
             {needsCardReference && (
-              <div className="space-y-1">
-                <Label htmlFor="cancel-card-ref">مرجع عملية الاسترداد من جهاز الدفع</Label>
-                <Input id="cancel-card-ref" dir="ltr" value={cancelReference} maxLength={100}
-                  onChange={(e) => setCancelReference(e.target.value)}
-                  placeholder="رقم العملية / كود الموافقة" />
-                <p className="text-xs text-muted-foreground">
-                  نفّذ الاسترداد على جهاز الدفع أولاً ثمّ أدخِل مرجعه هنا.
-                </p>
-              </div>
+              <PaymentDeviceReferenceField id="cancel-card-ref" value={cancelReference} onChange={setCancelReference}
+                hint="نفّذ الاسترداد على جهاز الدفع أولاً ثمّ أدخِل مرجعه هنا." />
             )}
             <div className="space-y-1">
               <Label htmlFor="cancel-reason">سبب الإلغاء *</Label>
@@ -1693,17 +1680,14 @@ export default function InvoiceDetail() {
 
           <DialogFooter className="gap-2 sm:justify-between">
             <Button variant="outline" onClick={() => setCancelOpen(false)}>رجوع</Button>
-            <Button
-              variant="destructive"
+            <Button variant="destructive"
               disabled={cancel.isPending || cancelConfirmText.trim() !== data.invoiceNumber || cancelReason.trim().length < 3 || (needsCardReference && !cancelReference.trim())}
               onClick={() => {
                 if (cancelConfirmText.trim() !== data.invoiceNumber) return;
                 cancel.mutate({
-                  invoiceId,
-                  refundPaymentMethod: cancelMethod,
+                  invoiceId, refundPaymentMethod: cancelMethod,
                   reference: needsCardReference ? cancelReference.trim() : undefined,
-                  reason: cancelReason.trim(),
-                  clientRequestId: cancelRequestId,
+                  reason: cancelReason.trim(), clientRequestId: cancelRequestId,
                 });
               }}
             >
