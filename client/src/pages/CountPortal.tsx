@@ -433,16 +433,15 @@ export default function CountPortal() {
     },
     [canCount, dupBlocked, scanRequired],
   );
-
   const handleBarcode = useCallback(
-    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const scanned = raw.trim();
       if (!scanned) return;
       const resolved = findBarcodeMatch(items, scanned);
       if (!resolved) {
         // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُوضَع في طابورٍ يُزامَن (كالعدّات) فيصمد الانقطاع
         // (مراجعة Codex #2: الإرسال-وانسَ كان يفقده أوفلاين رغم إبلاغ العامل بأنّه سُجّل).
-        if (canCount) {
+        if (source !== "SEARCH_PICK" && canCount) {
           const queued = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: scanned,
@@ -461,7 +460,7 @@ export default function CountPortal() {
             );
           }
         } else {
-          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
+          notify.warn(source === "SEARCH_PICK" ? "الرمز المُدخل يدوياً غير موجود ضمن منتجات هذه الجلسة" : "الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         }
         return;
       }
@@ -481,7 +480,7 @@ export default function CountPortal() {
       }
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
-      openCard(hit, { method: source, scannedBarcode: scanned });
+      openCard(hit, { method: source, scannedBarcode: source === "SEARCH_PICK" ? null : scanned });
       // فتحُ بطاقةٍ في وضع التجميع يبدأ الوحدة الممسوحة عند ١ (عدٌّ طازج بالمسح).
       if (tallyMode) setBump({ unit: unitName, token: 1 });
     },
@@ -1284,7 +1283,7 @@ export default function CountPortal() {
         onDetect={(raw) => {
           setCameraOpen(false);
           handleBarcode(raw, "SCAN_CAMERA");
-        }}
+        }} onManualDetect={(raw) => { setCameraOpen(false); handleBarcode(raw, "SEARCH_PICK"); }}
       />
     </>,
   );

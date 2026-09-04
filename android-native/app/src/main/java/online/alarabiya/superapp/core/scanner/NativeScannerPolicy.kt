@@ -28,6 +28,49 @@ private val AllowedPunctuationTypes = setOf(
     Character.OTHER_PUNCTUATION.toInt(),
 )
 
+private val InvisibleBarcodeMarks = Regex("[\\u00ad\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff]")
+private val EdgeScannerFraming = Regex("^[\\s\\u0000-\\u001f\\u007f-\\u009f]+|[\\s\\u0000-\\u001f\\u007f-\\u009f]+$")
+private val UnsupportedBarcodeWhitespace = Regex("[\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]")
+
+/** نفس عقد هوية الباركود في الخادم: framing طرفي، أرقام عربية، وعلامات RTL الخفية. */
+fun normalizeNativeBarcode(rawValue: String): String? {
+    val visible = rawValue.replace(InvisibleBarcodeMarks, "").replace(EdgeScannerFraming, "")
+    val normalized = buildString(visible.length) {
+        visible.forEach { char ->
+            append(
+                when (char) {
+                    in '٠'..'٩' -> ('0'.code + (char.code - '٠'.code)).toChar()
+                    in '۰'..'۹' -> ('0'.code + (char.code - '۰'.code)).toChar()
+                    else -> char
+                },
+            )
+        }
+    }
+    if (normalized.isBlank() || normalized.any(Char::isISOControl) || UnsupportedBarcodeWhitespace.containsMatchIn(normalized)) return null
+    return normalized
+}
+
+private fun gtinCheckDigit(body: String, firstWeight: Int): Int {
+    val sum = body.mapIndexed { index, char -> (char - '0') * if (index % 2 == 0) firstWeight else 4 - firstWeight }.sum()
+    return (10 - sum % 10) % 10
+}
+
+fun nativeBarcodeCandidates(rawValue: String): List<String> {
+    val code = normalizeNativeBarcode(rawValue) ?: return emptyList()
+    val upc = code.length == 12 && code.all(Char::isDigit) && (code.last() - '0') == gtinCheckDigit(code.dropLast(1), 3)
+    val ean = code.length == 13 && code.startsWith('0') && code.all(Char::isDigit) && (code.last() - '0') == gtinCheckDigit(code.dropLast(1), 1)
+    return when {
+        upc -> listOf(code, "0$code")
+        ean -> listOf(code, code.drop(1))
+        else -> listOf(code)
+    }
+}
+
+fun nativeBarcodesEquivalent(left: String, right: String): Boolean {
+    val rightKeys = nativeBarcodeCandidates(right).map(String::lowercase).toSet()
+    return nativeBarcodeCandidates(left).any { it.lowercase() in rightKeys }
+}
+
 private fun isLatinReference(value: String): Boolean {
     var index = 0
     while (index < value.length) {
@@ -65,17 +108,18 @@ fun NativeScanField.scanEngineOrNull(): NativeScanEngine? = when (this) {
 fun normalizeNativeScanResult(field: NativeScanField, rawValue: String): String? {
     if (field.scanEngineOrNull() == null) return null
     val normalized = when (field.scanEngineOrNull()) {
-        NativeScanEngine.BARCODE -> rawValue.trim().replace(Regex("[\\r\\n\\t]+"), "")
+        NativeScanEngine.BARCODE -> normalizeNativeBarcode(rawValue) ?: return null
         NativeScanEngine.OCR -> rawValue.trim().replace(Regex("\\s+"), " ")
         null -> return null
     }
     if (normalized.isBlank() || normalized.any(Char::isISOControl)) return null
     if (field.scanEngineOrNull() == NativeScanEngine.OCR && !isLatinReference(normalized)) return null
     val limit = when (field) {
-        NativeScanField.BARCODE, NativeScanField.SKU_OR_BARCODE -> 128
+        NativeScanField.BARCODE -> 64
+        NativeScanField.SKU_OR_BARCODE -> 120
         NativeScanField.DOCUMENT_REFERENCE -> 160
         NativeScanField.LATIN_REFERENCE_SEARCH -> 240
         else -> return null
     }
-    return normalized.take(limit)
+    return normalized.takeIf { it.length <= limit }
 }

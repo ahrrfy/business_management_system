@@ -1,3 +1,5 @@
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "./barcodeNormalize";
+
 /**
  * هوية مسح المنتج الدنيا المشتركة بين مسارات الجرد والتسوية.
  *
@@ -25,17 +27,17 @@ export type ProductBarcodeMatch = {
 };
 
 /**
- * مطابقة حرفية بعد trim فقط؛ لا نطبّع الأرقام أو الحروف لأن الباركود هوية لا نص بحث.
- * الأساسي له الأولوية الدفاعية، ثم البديل، اتساقاً مع فضاء التفرّد الخادمي.
+ * نفس عقد الحلّ الخادمي: تطبيع مدخل الماسح + تكافؤ UPC-A/EAN-13 + عدم حساسية الحالة
+ * المتوارثة في الكتالوج. الأساسي له الأولوية الدفاعية، ثم البديل.
  */
 export function resolveProductBarcodeMatch(
   units: readonly ScannableProductUnit[],
   raw: string,
 ): ProductBarcodeMatch | null {
-  const scannedBarcode = raw.trim();
+  const scannedBarcode = canonicalizeBarcodeInput(raw);
   if (!scannedBarcode) return null;
 
-  const primary = units.find((unit) => unit.barcode === scannedBarcode);
+  const primary = units.find((unit) => unit.barcode != null && barcodesEquivalent(unit.barcode, scannedBarcode));
   if (primary) {
     return {
       kind: "PRIMARY",
@@ -46,7 +48,7 @@ export function resolveProductBarcodeMatch(
     };
   }
 
-  const alias = units.find((unit) => unit.aliases.includes(scannedBarcode));
+  const alias = units.find((unit) => unit.aliases.some((code) => barcodesEquivalent(code, scannedBarcode)));
   if (!alias) return null;
   return {
     kind: "ALIAS",

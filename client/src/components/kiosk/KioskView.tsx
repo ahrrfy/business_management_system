@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 import { X, Maximize } from "lucide-react";
 
 export type KProduct = {
@@ -315,7 +316,7 @@ export default function KioskView({
   const utils = trpc.useUtils();
   const [scan, setScan] = useState<ScanState>({ mode: "idle", token: 0 });
   const handleScan = useCallback(async (code: string) => {
-    const clean = String(code).trim();
+    const clean = normalizeBarcodeScannerInput(String(code));
     if (!clean) return;
     if (!isDevice && staffBranchId == null) return;
     try {
@@ -344,7 +345,9 @@ export default function KioskView({
         buf.s = "";
         return;
       }
-      if (e.key.length === 1 && /[\w\-]/.test(e.key)) buf.s += e.key;
+      // نقبل كل محرف مطبوع يرسله القارئ؛ Code39/128 قد يحتويان . $ / + % ومسافة،
+      // كما قد تظهر محارف لوحة عربية قبل أن يصححها normalizeBarcodeScannerInput.
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) buf.s += e.key;
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

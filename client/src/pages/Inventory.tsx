@@ -372,7 +372,9 @@ export default function Inventory() {
     scannedSearchActive &&
     (dq.trim() !== lastScannedBarcode || onHand.isLoading || onHand.isFetching);
   const scannedRow =
-    scannedSearchActive && !scannedLookupLoading ? rows[0] ?? null : null;
+    scannedSearchActive && !scannedLookupLoading
+      ? rows.find((row) => row.scanMatch != null) ?? null
+      : null;
   useEffect(() => {
     if (!scannedSearchActive) return;
     const frame = window.requestAnimationFrame(() => {

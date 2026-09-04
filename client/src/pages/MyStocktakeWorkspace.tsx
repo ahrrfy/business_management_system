@@ -322,9 +322,8 @@ export default function MyStocktakeWorkspace() {
     },
     [openItem],
   );
-
   const onBarcode = useCallback(
-    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const value = raw.trim();
       if (!value) return;
       let found: CountItem | undefined;
@@ -341,7 +340,7 @@ export default function MyStocktakeWorkspace() {
       found ??= items.find((item) => item.sku === value);
       if (!found) {
         // باركودٌ خارج الجلسة (ب-٤): يُوضَع في طابورٍ يُزامَن فلا يضيع أوفلاين (مراجعة Codex #2).
-        if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
+        if (source !== "SEARCH_PICK" && st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
           const persisted = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: value,
@@ -360,7 +359,7 @@ export default function MyStocktakeWorkspace() {
             );
           }
         } else {
-          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
+          notify.warn(source === "SEARCH_PICK" ? "الرمز المُدخل يدوياً غير موجود ضمن منتجات هذه الجلسة" : "الباركود غير موجود ضمن منتجات هذه الجلسة", value);
         }
         return;
       }
@@ -371,7 +370,7 @@ export default function MyStocktakeWorkspace() {
       openItem(
         found,
         scanMatch?.unitName,
-        scanMatch
+        scanMatch && source !== "SEARCH_PICK"
           ? { method: source, scannedBarcode: value, scanMatch }
           : { method: "SEARCH_PICK", scannedBarcode: null, scanMatch: null },
       );
@@ -1035,7 +1034,7 @@ export default function MyStocktakeWorkspace() {
         onDetect={(raw) => {
           setCameraOpen(false);
           onBarcode(raw, "SCAN_CAMERA");
-        }}
+        }} onManualDetect={(raw) => { setCameraOpen(false); onBarcode(raw, "SEARCH_PICK"); }}
       />
     </div>
   );

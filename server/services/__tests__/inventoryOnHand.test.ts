@@ -186,6 +186,45 @@ describe("inventory.onHand", () => {
     });
   });
 
+  it("يحسم إرث الباركود الملوّث وتكافؤ UPC-A/EAN-13 قبل المطابقة النصية العَرَضية", async () => {
+    await db().insert(s.productUnits).values([
+      {
+        id: 20,
+        variantId: 2,
+        unitName: "مورد",
+        conversionFactor: "1",
+        isBaseUnit: false,
+        barcode: " 10095\t",
+      },
+      {
+        id: 21,
+        variantId: 2,
+        unitName: "UPC",
+        conversionFactor: "1",
+        isBaseUnit: false,
+        barcode: "0036000291452",
+      },
+    ]);
+    await db().insert(s.products).values({ id: 3, name: "000 10095 036000291452" });
+    await db().insert(s.productVariants).values({ id: 3, productId: 3, sku: "DISTRACTOR" });
+
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const healed = await caller.inventory.onHand({ branchId: 1, q: "10095", limit: 1 });
+    const upc = await caller.inventory.onHand({ branchId: 1, q: "036000291452", limit: 1 });
+
+    expect(healed.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(healed[0]?.scanMatch?.unitName).toBe("مورد");
+    expect(upc.map((row) => Number(row.variantId))).toEqual([2]);
+    expect(upc[0]?.scanMatch?.unitName).toBe("UPC");
+  });
+
+  it("يفشل مغلقاً إذا امتلك UPC-A وEAN-13 المكافئ وحدتان مختلفتان", async () => {
+    await db().update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 10));
+    await db().update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 12));
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    await expect(caller.inventory.onHand({ branchId: 1, q: "036000291452", limit: 1 })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
   it("لا يرفق scanMatch لبحث نصي غير حرفي", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
     const rows = await caller.inventory.onHand({ branchId: 1, q: "SKU-2" });

@@ -49,7 +49,7 @@ interface InventoryDataSource {
     suspend fun cancelStocktake(sessionId: Long, reason: String)
     suspend fun countAssignments(): List<CountAssignment>
     suspend fun countSession(sessionCode: String): CountSession
-    suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String)
+    suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String, entryMethod: String, scannedBarcode: String?)
     suspend fun finishCount(sessionCode: String)
 }
 
@@ -245,14 +245,17 @@ class InventoryRepository(
         api.query("count.state", JSONObject().put("sessionCode", sessionCode)),
     )
 
-    override suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String) {
+    override suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String, entryMethod: String, scannedBarcode: String?) {
+        val input = JSONObject()
+            .put("sessionCode", sessionCode)
+            .put("variantId", variantId)
+            .put("qty", quantity)
+            .put("clientRequestId", clientRequestId)
+            .put("entryMethod", entryMethod)
+            .apply { scannedBarcode?.let { put("scannedBarcode", it) } }
         api.mutate(
             "count.submit",
-            JSONObject()
-                .put("sessionCode", sessionCode)
-                .put("variantId", variantId)
-                .put("qty", quantity)
-                .put("clientRequestId", clientRequestId),
+            input,
         )
     }
 

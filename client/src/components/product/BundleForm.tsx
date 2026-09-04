@@ -12,7 +12,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { barcodeState, genEan13, onlyDigits } from "@/lib/variants";
+import { barcodeInfo, genEan13 } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -93,7 +93,7 @@ export default function BundleForm() {
     { enabled: debouncedCode.length > 0, staleTime: 10_000 }
   );
   const taken = useMemo(() => (checkQ.data ?? []).find((r) => r.code === code), [checkQ.data, code]);
-  const bcState = barcodeState(code, { countInForm: 1, takenInDb: !!taken });
+  const bcInfo = barcodeInfo(code, { countInForm: 1, takenInDb: !!taken });
 
   // ── بحث المكوّنات المؤهّلة (نصّ + فئة، مباشرة على الشاشة) ──
   const pickerDeb = useDebouncedValue(picker, 300);
@@ -542,14 +542,16 @@ export default function BundleForm() {
             <div className="flex items-center gap-2">
               <Input
                 value={barcode}
-                onChange={(e) => setBarcode(onlyDigits(e.target.value))}
+                onChange={(e) => setBarcode(e.target.value.slice(0, 64))}
+                inputMode="text"
+                dir="ltr"
                 placeholder="EAN-13 أو Code128"
                 className={cn(
-                  bcState === "takenInDb"
+                  bcInfo.state === "takenInDb"
                     ? "border-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]"
-                    : bcState === "invalid"
+                    : bcInfo.state === "invalid"
                       ? "border-[var(--sem-warn)]"
-                      : bcState === "valid"
+                      : bcInfo.state === "valid"
                         ? "border-[var(--sem-pos)]/60"
                         : ""
                 )}
@@ -558,6 +560,9 @@ export default function BundleForm() {
             </div>
             {taken && (
               <div className="mt-1 text-xs text-[var(--sem-warn)]">مُستخدَم في «{taken.takenBy}» — غيّره.</div>
+            )}
+            {!taken && bcInfo.message && (
+              <div className="mt-1 text-xs text-muted-foreground">{bcInfo.message}</div>
             )}
           </Field>
           <Field label="سعر المفرد" required hint="سعر البيع الرئيسي للبكج.">

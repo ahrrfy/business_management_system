@@ -16,6 +16,7 @@ import {
   migrateAliases,
   removeUnitBarcodeAlias,
   resolveBarcodeOwner,
+  resolveBarcodeOwnerResult,
   resolveProductUnitId,
 } from "../catalog/barcodeAliases";
 import { assignBarcode } from "../catalog/barcode";
@@ -308,6 +309,20 @@ describe("barcodeAliases — ثوابت السلامة", () => {
         ),
       ).rejects.toThrow(/مكرّر|CONFLICT/);
     });
+
+    it("createProduct يرفض UPC-A وEAN-13 المكافئ داخل الحمولة نفسها", async () => {
+      await expect(createProduct({
+        name: "منتج UPC مزدوج",
+        variants: [{
+          sku: "UPC-DUP",
+          costPrice: "50.00",
+          units: [
+            { unitName: "قطعة", conversionFactor: "1", barcode: "036000291452", isBaseUnit: true },
+            { unitName: "علبة", conversionFactor: "12", barcode: "0036000291452" },
+          ],
+        }],
+      }, { userId: 1, branchId: 1 })).rejects.toThrow(/مكرّر|CONFLICT/);
+    });
   });
 
   describe("A7: findBarcodeClashes يحترم استثناءات المفاتيح", () => {
@@ -339,6 +354,20 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       // الكاشير (POS) والكشك يمرّان بالحلّال نفسه ⇒ يريان الصفّ الإرثيّ أيضاً بلا هجرة بيانات.
       expect(await lookupByBarcode("10095", 1, "RETAIL")).toMatchObject({ productUnitId: 3 });
       expect(await kioskLookup("9990000000044", 1)).toMatchObject({ productName: "قلم أزرق" });
+    });
+
+    it("يوحّد UPC-A مع EAN-13 ذي الصفر البادئ ويرفض الغموض بين مالكين", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 1));
+      expect(await resolveBarcodeOwner(d, "036000291452")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      expect(await findBarcodeClashes(d, ["036000291452"])).toHaveLength(1);
+      await expect(assignBarcode(3, "036000291452")).rejects.toThrow(/مُستخدَم|CONFLICT/);
+
+      // صفّان إرثيان متكافئان في جدولٍ واحد: لا يُحسم أحدهما صامتاً.
+      await d.update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 3));
+      expect(await resolveBarcodeOwner(d, "036000291452")).toBeNull();
+      expect(await resolveBarcodeOwner(d, "0036000291452")).toBeNull();
+      expect(await resolveBarcodeOwnerResult(d, "036000291452")).toEqual({ status: "AMBIGUOUS" });
     });
 
     it("يشفي إرثاً ملوَّثاً بتبويب/سطرٍ جديد/مسافةٍ غير قابلة للكسر (لا مسافة ASCII وحدها)", async () => {

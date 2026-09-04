@@ -3,6 +3,7 @@ package online.alarabiya.superapp.feature.warehouseTools
 import online.alarabiya.superapp.model.AppBootstrap
 import online.alarabiya.superapp.model.ModuleAccess
 import online.alarabiya.superapp.model.UserIdentity
+import online.alarabiya.superapp.data.inputJson
 import online.alarabiya.superapp.model.warehouseTools.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,9 +13,19 @@ import org.junit.Test
 
 class WarehouseToolsContractTest {
     @Test
+    fun countJsonOmitsOptionalBarcodeButPreservesRealScanEvidence() {
+        val manual = CountSubmission("CNT-1", 9, 2, "[]", "request", "SEARCH_PICK", null).inputJson()
+        assertFalse(manual.has("scannedBarcode"))
+        val camera = CountSubmission("CNT-1", 9, 2, "[]", "request", "SCAN_CAMERA", "036000291452").inputJson()
+        assertEquals("036000291452", camera.getString("scannedBarcode"))
+        val replay = PendingCount("CNT-1", 9, 2, "[]", "request", "now", entryMethod = "SEARCH_PICK").inputJson()
+        assertFalse(replay.has("scannedBarcode"))
+    }
+
+    @Test
     fun mapsBlindCountStateWithoutLedgerQuantities() {
         val state = WarehouseToolsMappers.countSession(mapOf(
-            "session" to mapOf("code" to "CNT-2026-8", "name" to "جرد المستودع", "branchName" to "الرئيسي", "status" to "COUNTING", "dupPolicy" to "VERIFY", "blind" to true),
+            "session" to mapOf("code" to "CNT-2026-8", "name" to "جرد المستودع", "branchName" to "الرئيسي", "status" to "COUNTING", "dupPolicy" to "VERIFY", "blind" to true, "countMethod" to "SCAN_REQUIRED"),
             "assignment" to mapOf("id" to 4, "name" to "عامل العد", "status" to "ACTIVE", "zone" to "A"),
             "progress" to mapOf("mine" to mapOf("counted" to 1, "total" to 2), "session" to mapOf("counted" to 1, "total" to 2)),
             "recountTasks" to listOf(mapOf("variantId" to 9, "reason" to "تحقق")),
@@ -27,6 +38,7 @@ class WarehouseToolsContractTest {
         ), "etag-1")
 
         assertTrue(state.blind)
+        assertEquals("SCAN_REQUIRED", state.countMethod)
         assertEquals(24, state.items.single().myCount?.quantity)
         assertTrue(state.items.single().colleagueCounted)
         assertEquals("تحقق", state.items.single().recountReason)
@@ -77,6 +89,21 @@ class WarehouseToolsContractTest {
         assertEquals("جلسة العد أو التكليف غير نشط", WarehouseValidation.count(session.copy(assignmentStatus = "SUBMITTED"), item, draft))
         val blockedItem = item.copy(colleagueCounted = true)
         assertFalse(session.copy(duplicatePolicy = "BLOCK", items = listOf(blockedItem)).canCount(blockedItem))
+
+        val eanItem = item.copy(units = listOf(CountUnit("قطعة", "1", "0036000291452", emptyList())))
+        val required = session.copy(countMethod = "SCAN_REQUIRED", items = listOf(eanItem))
+        assertEquals(
+            "هذه الجلسة تتطلب مسح الباركود بالكاميرا أو القارئ",
+            WarehouseValidation.count(required, eanItem, draft.copy(entries = listOf(CountUnitEntry("قطعة", "1", "3")))),
+        )
+        val scannedDraft = draft.copy(
+            entries = listOf(CountUnitEntry("قطعة", "1", "3")),
+            entryMethod = "SCAN_CAMERA",
+            scannedBarcode = "036000291452",
+        )
+        assertNull(WarehouseValidation.count(required, eanItem, scannedDraft))
+        assertEquals("SCAN_CAMERA", WarehouseValidation.submission(scannedDraft).entryMethod)
+        assertEquals("036000291452", WarehouseValidation.submission(scannedDraft).scannedBarcode)
     }
 
     @Test

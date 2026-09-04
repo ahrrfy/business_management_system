@@ -88,7 +88,7 @@ class WarehouseToolsRepository(
             store.enqueue(pending)
             return CountSubmitOutcome.Queued(pending)
         }
-        val input = submission.input()
+        val input = submission.inputJson()
         return try {
             CountSubmitOutcome.Submitted(WarehouseToolsMappers.countReceipt(api.mutate("count.submit", input)))
         } catch (error: ApiException) {
@@ -114,7 +114,7 @@ class WarehouseToolsRepository(
         var rejected = 0
         for (pending in store.pending().filter { it.status == PendingCountStatus.QUEUED }) {
             try {
-                api.mutate("count.submit", pending.input())
+                api.mutate("count.submit", pending.inputJson())
                 store.removePending(pending.clientRequestId)
                 sent++
             } catch (error: ApiException) {
@@ -257,8 +257,19 @@ class EncryptedWarehouseStore(context: Context, private val userId: Long) {
     }
 }
 
-private fun CountSubmission.input() = JSONObject().put("sessionCode", sessionCode).put("variantId", variantId)
+internal fun CountSubmission.inputJson() = JSONObject().put("sessionCode", sessionCode).put("variantId", variantId)
     .put("qty", quantityBase).put("unitBreakdown", unitBreakdown).put("clientRequestId", clientRequestId)
-private fun CountSubmission.pending(createdAt: String) = PendingCount(sessionCode, variantId, quantityBase, unitBreakdown, clientRequestId, createdAt)
-private fun PendingCount.input() = JSONObject().put("sessionCode", sessionCode).put("variantId", variantId)
+    .put("entryMethod", entryMethod).apply { scannedBarcode?.let { put("scannedBarcode", it) } }
+private fun CountSubmission.pending(createdAt: String) = PendingCount(
+    sessionCode = sessionCode,
+    variantId = variantId,
+    quantityBase = quantityBase,
+    unitBreakdown = unitBreakdown,
+    clientRequestId = clientRequestId,
+    createdAt = createdAt,
+    entryMethod = entryMethod,
+    scannedBarcode = scannedBarcode,
+)
+internal fun PendingCount.inputJson() = JSONObject().put("sessionCode", sessionCode).put("variantId", variantId)
     .put("qty", quantityBase).put("unitBreakdown", unitBreakdown).put("clientRequestId", clientRequestId)
+    .put("entryMethod", entryMethod).apply { scannedBarcode?.let { put("scannedBarcode", it) } }

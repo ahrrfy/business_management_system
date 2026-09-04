@@ -2,6 +2,8 @@ package online.alarabiya.superapp.model.warehouseTools
 
 import java.math.BigDecimal
 import java.util.UUID
+import online.alarabiya.superapp.core.scanner.nativeBarcodesEquivalent
+import online.alarabiya.superapp.core.scanner.normalizeNativeBarcode
 import online.alarabiya.superapp.model.AppBootstrap
 
 enum class WarehouseSection { SCANNER, COUNTS, OFFLINE }
@@ -57,8 +59,8 @@ data class WarehouseCatalogItem(
 ) {
     val label get() = listOfNotNull(productName, variantName).joinToString(" · ")
     fun exactMatch(raw: String): Boolean {
-        val value = raw.trim()
-        return value.isNotEmpty() && (sku.equals(value, true) || barcodes.any { it.equals(value, true) })
+        val value = normalizeNativeBarcode(raw) ?: return false
+        return sku.equals(value, true) || barcodes.any { nativeBarcodesEquivalent(it, value) }
     }
 }
 
@@ -100,8 +102,13 @@ data class CountItem(
 ) {
     val label get() = listOfNotNull(productName, variantName, sku.takeIf(String::isNotBlank)).joinToString(" · ")
     fun exactMatch(raw: String): Boolean {
-        val value = raw.trim()
-        return value.isNotEmpty() && (sku.equals(value, true) || units.any { unit -> unit.barcodes.any { it.equals(value, true) } })
+        val value = normalizeNativeBarcode(raw) ?: return false
+        return sku.equals(value, true) || barcodeMatch(value) != null
+    }
+
+    fun barcodeMatch(raw: String): String? {
+        val value = normalizeNativeBarcode(raw) ?: return null
+        return value.takeIf { units.any { unit -> unit.barcodes.any { nativeBarcodesEquivalent(it, value) } } }
     }
 }
 
@@ -122,9 +129,13 @@ data class CountSession(
     val sessionCounted: Int,
     val sessionTotal: Int,
     val items: List<CountItem>,
+    val countMethod: String = "FREE",
 ) {
     val active get() = sessionStatus == "COUNTING" && assignmentStatus == "ACTIVE"
     fun exactMatch(raw: String): CountItem? = items.firstOrNull { it.exactMatch(raw) }
+    fun barcodeMatch(raw: String): Pair<CountItem, String>? = items.firstNotNullOfOrNull { item ->
+        item.barcodeMatch(raw)?.let { item to it }
+    }
     fun canCount(item: CountItem): Boolean = active && (item.myCount != null || item.recountReason != null || duplicatePolicy != "BLOCK" || !item.colleagueCounted)
 }
 
@@ -134,6 +145,8 @@ data class CountDraft(
     val variantId: Long,
     val entries: List<CountUnitEntry>,
     val clientRequestId: String,
+    val entryMethod: String = "SEARCH_PICK",
+    val scannedBarcode: String? = null,
 )
 data class CountSubmission(
     val sessionCode: String,
@@ -141,6 +154,8 @@ data class CountSubmission(
     val quantityBase: Int,
     val unitBreakdown: String,
     val clientRequestId: String,
+    val entryMethod: String = "SEARCH_PICK",
+    val scannedBarcode: String? = null,
 )
 data class CountReceipt(val kind: String, val verifyMatch: Boolean?, val idempotent: Boolean)
 sealed interface CountSubmitOutcome {
@@ -158,6 +173,8 @@ data class PendingCount(
     val createdAt: String,
     val status: PendingCountStatus = PendingCountStatus.QUEUED,
     val lastError: String? = null,
+    val entryMethod: String = "SEARCH_PICK",
+    val scannedBarcode: String? = null,
 )
 data class QueueReplayResult(val sent: Int, val rejected: Int, val remaining: Int)
 data class FinishCountResult(val movedToReview: Boolean)
@@ -170,6 +187,11 @@ object WarehouseValidation {
         if (item.variantId <= 0) return "معرّف الصنف غير صالح"
         if (runCatching { UUID.fromString(draft.clientRequestId).toString().equals(draft.clientRequestId, true) }.getOrDefault(false).not()) return "مفتاح الطلب غير صالح"
         if (draft.entries.isEmpty()) return "أدخل كمية واحدة على الأقل"
+        if (session.countMethod == "SCAN_REQUIRED") {
+            if (draft.entryMethod != "SCAN_CAMERA" && draft.entryMethod != "SCAN_HID") return "هذه الجلسة تتطلب مسح الباركود بالكاميرا أو القارئ"
+            val scanned = draft.scannedBarcode ?: return "امسح باركود الصنف قبل تسجيل العد"
+            if (item.barcodeMatch(scanned) == null) return "الباركود الممسوح لا يخص هذا الصنف"
+        }
         val allowed = item.units.ifEmpty { listOf(CountUnit("الوحدة الأساس", "1", null, emptyList())) }
         if (draft.entries.size != allowed.size || draft.entries.map { it.unitName }.toSet().size != draft.entries.size) return "وحدات الإدخال لا تطابق الصنف"
         draft.entries.forEach { entry ->
@@ -203,7 +225,15 @@ object WarehouseValidation {
         }.intValueExact()
         val breakdown = breakdown(populated)
         require(breakdown.length <= 500) { "تفصيل الوحدات أطول من المسموح" }
-        return CountSubmission(draft.sessionCode, draft.variantId, total, breakdown, draft.clientRequestId)
+        return CountSubmission(
+            draft.sessionCode,
+            draft.variantId,
+            total,
+            breakdown,
+            draft.clientRequestId,
+            draft.entryMethod,
+            draft.scannedBarcode,
+        )
     }
 
     private fun breakdown(entries: List<CountUnitEntry>) = entries.joinToString(prefix = "[", postfix = "]") { entry ->

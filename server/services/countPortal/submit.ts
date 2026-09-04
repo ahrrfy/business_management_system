@@ -29,7 +29,7 @@ import {
   type CountEntryMethod,
   type CountMethod,
 } from "../../../shared/stocktakeCountMethod";
-import { canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
 
 function scannerPrefix(code: string | null | undefined): number | null {
   const digits = String(code ?? "").replace(/\D/g, "");
@@ -294,11 +294,11 @@ export async function submitCount(
           // مسحٌ فعليّ ⇒ الباركود الممسوح يجب أن يعيد الحلّ إلى **هذا** المتغيّر خادمياً
           // (لا ثقة بالواجهة): يطابق باركود وحدةٍ **نشطة** أو بديلَ وحدةٍ نشطة لنفس المتغيّر.
           // (#6) الوحدة المتقاعدة لا تُقبل دليلاً — لا تعرضها الواجهة ولا تعدّها التغطية «متاحة».
-          const variantCodes = new Set<string>();
+          const variantCodes: string[] = [];
           for (const u of units)
-            if (u.barcode && u.isActive !== false) variantCodes.add(canonicalizeBarcodeInput(u.barcode));
+            if (u.barcode && u.isActive !== false) variantCodes.push(u.barcode);
           for (const a of aliases)
-            if (a.barcode && a.isActive !== false) variantCodes.add(canonicalizeBarcodeInput(a.barcode));
+            if (a.barcode && a.isActive !== false) variantCodes.push(a.barcode);
           if (!scannedBarcode) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -306,7 +306,7 @@ export async function submitCount(
                 "هذه الجلسة بأسلوب المسح الإلزامي — امسح باركود الصنف لفتح بطاقة العدّ.",
             });
           }
-          if (!variantCodes.has(scannedBarcode)) {
+          if (!variantCodes.some((code) => barcodesEquivalent(code, scannedBarcode))) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message:

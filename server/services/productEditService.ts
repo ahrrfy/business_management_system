@@ -9,12 +9,12 @@
  * (متغيّر×وحدة)**. لا يلمس المخزون — أرصدة الفروع تُدار عبر شاشات الجرد/الحركات.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
@@ -377,18 +377,13 @@ async function assertEditUniqueness(tx: Tx, input: UpdateProductVariantsInput) {
   }
   const seen = new Set<string>();
   for (const c of codes) {
-    if (seen.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.` });
-    seen.add(c);
+    const identities = barcodeIdentityCandidates(c).map(barcodeComparisonKey);
+    if (identities.some((identity) => seen.has(identity))) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.` });
+    identities.forEach((identity) => seen.add(identity));
   }
   if (seen.size) {
-    const taken = await tx
-      .select({ code: productUnits.barcode, name: products.name })
-      .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(inArray(productUnits.barcode, Array.from(seen)), ne(productVariants.productId, input.productId)))
-      .limit(1);
-    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].name}».` });
+    const taken = await findBarcodeClashes(tx, codes, { ignoreProductIds: [input.productId] });
+    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}».` });
   }
 
   const skus = input.variants.map((v) => v.sku.trim()).filter(Boolean);

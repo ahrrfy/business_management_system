@@ -42,12 +42,14 @@ export function StudioCaptureStation({
   offline: boolean;
 }) {
   const [code, setCode] = useState("");
+  const [scanError, setScanError] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const claim = trpc.productStudio.claimByBarcode.useMutation({
     onSuccess: (result) => {
       setCode("");
+      setScanError("");
       onClaimed({
         taskId: result.taskId,
         productName: result.productName,
@@ -58,7 +60,9 @@ export function StudioCaptureStation({
       notify.ok(result.claimed ? `فُتح «${result.productName}» للتصوير` : `«${result.productName}» بين يديك أصلاً`);
     },
     onError: (error) => {
-      setCode("");
+      // أبقِ الرمز مرئياً كي يستطيع المصوّر والمدير مراجعته/نسخه وربطه، ولا نحوله
+      // إلى لغز يختفي لحظة ظهور رسالة «لا يطابق».
+      setScanError(error.message);
       notify.err(error);
       inputRef.current?.focus();
     },
@@ -67,6 +71,7 @@ export function StudioCaptureStation({
   const submitCode = (value: string) => {
     const clean = value.trim();
     if (!clean || claim.isPending || offline) return;
+    setScanError("");
     claim.mutate({ barcode: clean });
   };
 
@@ -93,11 +98,14 @@ export function StudioCaptureStation({
                 ref={inputRef}
                 className={barcodeSearchInputClass}
                 value={code}
-                inputMode="numeric"
+                inputMode="text"
                 autoComplete="off"
                 disabled={offline || claim.isPending}
                 placeholder="وجّه الماسح أو اكتب الباركود ثم Enter"
-                onChange={(event) => setCode(event.target.value)}
+                onChange={(event) => {
+                  setCode(event.target.value);
+                  setScanError("");
+                }}
                 onKeyDown={(event) => {
                   barcodeInput.handleKeyDown(event, setCode);
                   if (event.key === "Enter") {
@@ -108,6 +116,7 @@ export function StudioCaptureStation({
               />
               <BarcodeSearchCue />
             </div>
+            {scanError && <p className="text-xs text-destructive" role="alert">{scanError}</p>}
           </div>
           <Button type="button" variant="outline" className="min-h-11" disabled={offline || claim.isPending} onClick={() => setCameraOpen(true)}>
             <Camera aria-hidden className="size-4" /> الكاميرا

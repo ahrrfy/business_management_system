@@ -74,7 +74,7 @@ class InventoryContractTest {
             mapOf(
                 "changed" to true,
                 "state" to mapOf(
-                    "session" to mapOf("code" to "ST-26-4", "name" to "جرد أغسطس", "branchName" to "بغداد"),
+                    "session" to mapOf("code" to "ST-26-4", "name" to "جرد أغسطس", "branchName" to "بغداد", "countMethod" to "SCAN_REQUIRED"),
                     "assignment" to mapOf("name" to "الممر الأول", "zone" to "A"),
                     "progress" to mapOf("mine" to mapOf("counted" to 1, "total" to 2)),
                     "recountTasks" to listOf(mapOf("variantId" to 9, "reason" to "تحقق من العبوة")),
@@ -87,6 +87,7 @@ class InventoryContractTest {
                             "counted" to true,
                             "myCount" to mapOf("qty" to 12),
                             "colleagueCounted" to true,
+                            "units" to listOf(mapOf("unitName" to "قطعة", "factor" to "1", "barcode" to "0036000291452", "aliases" to listOf("ALT-9"))),
                         ),
                     ),
                 ),
@@ -98,6 +99,9 @@ class InventoryContractTest {
         assertEquals(12, count.items.single().myQuantity)
         assertTrue(count.items.single().colleagueCounted)
         assertEquals("تحقق من العبوة", count.items.single().recountReason)
+        assertEquals("SCAN_REQUIRED", count.countMethod)
+        assertEquals("036000291452", count.items.single().barcodeMatch("036000291452"))
+        assertEquals("alt-9", count.items.single().barcodeMatch("alt-9"))
     }
 
     @Test

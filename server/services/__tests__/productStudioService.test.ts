@@ -1271,6 +1271,27 @@ describe("product studio governed workflow", () => {
     await expect(resolveStudioBarcode(worker, "١٠٠٩٥")).resolves.toMatchObject({ productId: 108 });
   });
 
+  it("يستعمل محلّل الباركود المركزي للمسافة الداخلية وتكافؤ UPC-A/EAN-13", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 109, name: "منتج مورد متعدد الترميز" });
+    await d.insert(s.productVariants).values({ id: 109, productId: 109, sku: "SUP-109", variantName: "قياسي", costPrice: "1" });
+    await d.insert(s.productUnits).values([
+      { id: 109, variantId: 109, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "AB  12" },
+      { id: 119, variantId: 109, unitName: "علبة", conversionFactor: "10", isBaseUnit: false, barcode: "0036000291452" },
+    ]);
+
+    await expect(resolveStudioBarcode(worker, "AB  12")).resolves.toMatchObject({
+      productId: 109,
+      unitId: 109,
+      matchKind: "BARCODE_PRIMARY",
+    });
+    await expect(resolveStudioBarcode(worker, "036000291452")).resolves.toMatchObject({
+      productId: 109,
+      unitId: 119,
+      matchKind: "BARCODE_PRIMARY",
+    });
+  });
+
   it("(٤/٩، Codex P1) يرفض الغموض: باركودان إرثيّان لمنتجين يتطبّعان لنفس الرمز ⇒ لا يفتح عملاً لمنتجٍ خاطئ", async () => {
     // نظير حارس الكاشير: أخذُ أوّل صفٍّ مطابقٍ يجعل الاختيار رهنَ ترتيب الاسم فيفتح تصويراً لمنتجٍ خاطئ.
     const d = db();

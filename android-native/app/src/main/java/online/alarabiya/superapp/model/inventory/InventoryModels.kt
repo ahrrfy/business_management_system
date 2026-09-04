@@ -1,5 +1,8 @@
 package online.alarabiya.superapp.model.inventory
 
+import online.alarabiya.superapp.core.scanner.nativeBarcodesEquivalent
+import online.alarabiya.superapp.core.scanner.normalizeNativeBarcode
+
 import online.alarabiya.superapp.model.AppBootstrap
 
 enum class InventorySection { BALANCES, MOVEMENTS, TRANSFERS, ADJUSTMENTS, STOCKTAKES, MY_COUNTS }
@@ -270,9 +273,23 @@ data class CountItem(
     val myQuantity: Int?,
     val colleagueCounted: Boolean,
     val recountReason: String?,
+    val units: List<CountUnit> = emptyList(),
 ) {
     val label: String get() = listOfNotNull(productName, variantName, sku.takeIf(String::isNotBlank)).joinToString(" · ")
+    fun barcodeMatch(raw: String): String? {
+        val scanned = normalizeNativeBarcode(raw) ?: return null
+        return units.asSequence().flatMap { unit -> (listOfNotNull(unit.barcode) + unit.aliases).asSequence() }
+            .firstOrNull { nativeBarcodesEquivalent(it, scanned) }
+            ?.let { scanned }
+    }
 }
+
+data class CountUnit(
+    val name: String,
+    val factor: String,
+    val barcode: String?,
+    val aliases: List<String>,
+)
 
 data class CountSession(
     val code: String,
@@ -283,6 +300,7 @@ data class CountSession(
     val counted: Int,
     val total: Int,
     val items: List<CountItem>,
+    val countMethod: String = "FREE",
 )
 
 object InventoryValidation {

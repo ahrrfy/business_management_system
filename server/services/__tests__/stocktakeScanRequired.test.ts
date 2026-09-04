@@ -254,6 +254,20 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
     expect(res.ok).toBe(true);
   });
 
+  it("SCAN_REQUIRED: يقبل UPC-A من الكاميرا إذا كان EAN-13 المكافئ محفوظاً", async () => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: "0036000291452" });
+    const r = await mkSession({ countMethod: "SCAN_REQUIRED" });
+    const id = await loginPin(r.code, pinOf(r));
+    const res = await submitCount(id, {
+      variantId: 1,
+      qty: 3,
+      entryMethod: "SCAN_CAMERA",
+      scannedBarcode: "036000291452",
+      clientRequestId: randomUUID(),
+    });
+    expect(res.ok).toBe(true);
+  });
+
   it("SCAN_REQUIRED: الإدخال اليدويّ من عامل PIN مرفوض (لا مشرف)", async () => {
     const r = await mkSession({ countMethod: "SCAN_REQUIRED" });
     const id = await loginPin(r.code, pinOf(r));

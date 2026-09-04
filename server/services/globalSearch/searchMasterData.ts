@@ -14,12 +14,15 @@ async function searchProducts(
   query: string,
   limit: number,
 ): Promise<SearchResult[]> {
-  // الباركود: تطابق دقيق على الأساسيّ (`productUnits.barcode`) والبديل (`productUnitBarcodes`) معاً
-  // ⇒ أعلى رتبة (rank=0). البديل ينتج نفس الصفّ كالأساسيّ.
-  if (kind === "BARCODE") {
-    const { resolveBarcodeOwner } = await import("../catalog/barcodeAliases");
-    const owner = await resolveBarcodeOwner(db, query);
-    if (!owner) return [];
+  // نحاول حلّ هوية المنتج قبل تصنيف الاستعلام. باركودات الموردين ليست محصورة في EAN:
+  // قد تكون قصيرة مثل 10095، أو Code39/128 حروفية، أو تبدأ بـ+؛ وتصنيفها كوثيقة/نص/هاتف
+  // لا يجوز أن يحجب المنتج. الوثائق والعملاء يبقون يعملون بالتوازي في المُنسّق.
+  const { resolveBarcodeOwnerResult } = await import("../catalog/barcodeAliases");
+  const resolution = await resolveBarcodeOwnerResult(db, query, {
+    allowNormalizedFallback: kind !== "TEXT" || !/^[A-Za-z\u0600-\u065f\u0670-\u06ef\u06fa-\u06ff\s]+$/.test(query),
+  });
+  const owner = resolution.status === "FOUND" ? resolution.owner : null;
+  if (owner) {
     const rows = await db
       .select({
         unitId: productUnits.id,
@@ -48,6 +51,7 @@ async function searchProducts(
       rank: 0,
     }));
   }
+  if (kind === "BARCODE") return [];
   if (kind === "PHONE" || kind === "DOC_NUMBER") return []; // المنتجات لا تُطابِق هاتفاً ولا رقم وثيقة
 
   const like_ = `%${escLike(query)}%`;

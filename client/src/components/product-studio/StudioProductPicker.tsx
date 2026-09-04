@@ -43,6 +43,9 @@ export function StudioProductPicker({
   const resolveBarcode = async (barcode: string) => {
     const token = barcodeResolutionGate.current.next();
     setIsResolvingBarcode(true);
+    // المسحُ حلّ هوية قاطع؛ لا نعرض أثناءه نتائج LIKE قد تسمح باختيار منتجٍ آخر
+    // يحمل الرقم مصادفةً في اسمه.
+    setOpen(false);
     try {
       const match = await utils.productStudio.resolveBarcode.fetch({ barcode });
       if (!barcodeResolutionGate.current.isCurrent(token)) return;
@@ -54,8 +57,11 @@ export function StudioProductPicker({
       setQuery("");
       setOpen(false);
       setUnknownBarcode("");
-    } catch {
-      if (barcodeResolutionGate.current.isCurrent(token)) setUnknownBarcode("الباركود غير معروف. راجعه أو ابحث بالاسم.");
+    } catch (error) {
+      if (barcodeResolutionGate.current.isCurrent(token)) {
+        setOpen(false);
+        setUnknownBarcode(error instanceof Error ? error.message : "الباركود غير معروف. راجعه أو ابحث بالاسم.");
+      }
     } finally {
       if (barcodeResolutionGate.current.isCurrent(token)) setIsResolvingBarcode(false);
     }

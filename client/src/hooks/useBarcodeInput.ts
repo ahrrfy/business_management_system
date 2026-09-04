@@ -8,7 +8,9 @@ export function useBarcodeInput(
   onScan: (code: string) => void,
   {
     enabled = true,
-    minLength = 4,
+    // باركودات الموردين الداخلية قد تكون من 3 محارف (مثل B1X). أقلّ من ذلك يبقى
+    // كتابةً بشرية لتجنّب سرقة Enter من حقول البحث والنماذج.
+  minLength = 2,
     thresholdMs = 80,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ) {
