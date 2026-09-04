@@ -89,6 +89,7 @@ export async function listSelfApprovalRecords(
     purchaseReturnRows,
     purchaseReturnReversalRows,
     payrollAccrualRows,
+    payrollAccrualZeroCompRows,
     payrollPaidRows,
     advanceRepaymentRows,
     remittanceApprovedRows,
@@ -278,13 +279,25 @@ export async function listSelfApprovalRecords(
           ),
         ),
       ),
-    // اعتمادُ استحقاق مسيّر — من دفتر الأحداث الإلحاقيّ (payrollAccountingEvents) لا من
-    // العمودين المتقلّبين payrollRuns.approvedBy/approvedAt: `reopenPayrollAccrualTx`
-    // يُصفّرهما صراحةً عند إعادة الفتح للتصحيح (مراجعة Codex #982) — فقرارٌ ذاتيٌّ وقع
-    // فعلاً كان يختفي من هذا التقرير بعد إعادة فتحٍ لاحقة رغم أنه حدثٌ تاريخيٌّ لا يُمحى.
-    // ⚠️ المقارنة تبقى ضد `payrollRuns.createdBy` **الحاليّ** (لا لقطة وقت القرار — لا عمود
-    // لها اليوم)، والمبلغ ضد `totalNet` **الحاليّ**: فجوةٌ متبقّية ضيّقة إن أُعيد فتح المسيّر
-    // ونُسب لاحقاً لمُعدٍّ آخر، أو عُدّل الإجمالي بعد ذلك الاعتماد التاريخيّ بالذات.
+    // اعتمادُ استحقاق مسيّر — دفتر الأحداث الإلحاقيّ (payrollAccountingEvents) بشرطِ تطابق
+    // revisionNo مع payrollRuns **الحاليّ** (مراجعة Codex الثانية على #984، تصحيحٌ لمحاولةٍ
+    // أولى كانت تقارن كل حدثٍ تاريخيّ بعمودَي payrollRuns.createdBy/totalNet المتقلّبَين
+    // بلا قيدٍ زمنيّ — فكانت تُسيء نسبة/تسعير مراجعاتٍ سابقة عدّلها معدٌّ لاحق):
+    //   - `server/services/payroll/update.ts` يعيد كتابة `payrollRuns.createdBy` لآخر معدّلٍ
+    //     ماليّ، فمقارنةُ حدثٍ قديم بهذا العمود الحاليّ قد تُسقط اعتماداً ذاتياً حقيقياً أو
+    //     تنسبه خطأً لشخصٍ لم يعتمده.
+    //   - `totalNet` الحاليّ قد يخصّ مراجعةً لاحقة، لا المراجعة التي وقع فيها ذلك الاعتماد.
+    // تطابقُ revisionNo يحسم الالتباس: `reopenPayrollAccrualTx` يرفع revisionNo عند كل
+    // إعادة فتحٍ، فطالما لم يتغيّر منذ الحدث، تبقى أعمدة payrollRuns الحالية مرآةً دقيقة
+    // لتلك المراجعة بالذات — بلا حاجة للقطةٍ إضافية. **الأثر الجانبي المقصود**: مراجعةٌ
+    // أُعيد فتحها ولم تُعتمَد مجدداً بعد (لا تزال مسودّة) لا تظهر مؤقتاً — وهذا صحيحٌ دلالياً
+    // (لا اعتماد ذاتيّ "حاليّ" أثناء المسودّة)، وأدقّ من عرض بياناتٍ خاطئة.
+    // ⚠️ الفجوة المتبقّية المقصودة: اعتمادٌ ذاتيٌّ من مراجعةٍ سابقةٍ استُبدلت بمراجعةٍ
+    // أحدث (سواءٌ آلت الأحدث لاعتمادٍ ذاتيٍّ آخر أو لا تزال مسودّة) لا سبيل لعرضه بدقّة
+    // بلا عمودَي لقطةٍ جديدين (maker/amount وقت الاعتماد) — تغييرٌ مخطّطيّ خارج نطاق هذا الـPR.
+    // ⚠️ `createdAt` لا `occurredAt` للتاريخ (Codex): `occurredAt` هو تاريخ استحقاق الفترة
+    // المحاسبية (accrualDate)، لا لحظة الاعتماد الفعلية — فلترة/عرضٌ به يُصنّف مسيّر آب
+    // المُعتمَد في ٥ أيلول كأنه قرارُ آب، ويختفي من تدقيق أيلول.
     db
       .select({
         id: s.payrollRuns.id,
@@ -292,20 +305,62 @@ export async function listSelfApprovalRecords(
         amount: s.payrollRuns.totalNet,
         branchId: s.payrollRuns.branchId,
         approvedBy: s.payrollAccountingEvents.createdBy,
-        approvedAt: s.payrollAccountingEvents.occurredAt,
-        revisionNo: s.payrollAccountingEvents.revisionNo,
+        approvedAt: s.payrollAccountingEvents.createdAt,
         approverName: s.users.name,
         approverUsername: s.users.username,
         approverEmail: s.users.email,
       })
       .from(s.payrollAccountingEvents)
-      .innerJoin(s.payrollRuns, eq(s.payrollRuns.id, s.payrollAccountingEvents.runId))
+      .innerJoin(
+        s.payrollRuns,
+        and(
+          eq(s.payrollRuns.id, s.payrollAccountingEvents.runId),
+          eq(s.payrollRuns.revisionNo, s.payrollAccountingEvents.revisionNo),
+        ),
+      )
       .leftJoin(s.users, eq(s.users.id, s.payrollAccountingEvents.createdBy))
       .where(
         and(
           eq(s.payrollAccountingEvents.eventKind, "ACCRUAL"),
           sql`${s.payrollAccountingEvents.createdBy} = ${s.payrollRuns.createdBy}`,
-          ...dateBound(s.payrollAccountingEvents.occurredAt, from, to),
+          ...dateBound(s.payrollAccountingEvents.createdAt, from, to),
+        ),
+      ),
+    // مسيّرٌ ذاتيّ الاعتماد **بلا** أيّ حدث ACCRUAL — حالةٌ حقيقية لا عطب (مراجعة Codex):
+    // `approvePayrollAccrualTx` لا يكتب حدثاً إلا لبندٍ بمصروفٍ غير صفري
+    // (`item.breakdown.expenseTotal.gt(0)`)، فمسيّرٌ كل موظّفيه بتعويضٍ صفريّ (فترة تطوّعية/
+    // مجمَّدة) يبقى بلا أثرٍ في الدفتر الإلحاقيّ رغم أنّ عمودَي payrollRuns الحاليّين يثبتان
+    // اعتماداً ذاتياً حقيقياً. الاستعلام أعلاه لا يلتقطه فيسقط من التقرير صامتاً؛ هذا يلتقط
+    // تلك الحالة النادرة وحدها (LEFT JOIN + IS NULL على أيّ حدث للمراجعة الحالية).
+    db
+      .select({
+        id: s.payrollRuns.id,
+        period: s.payrollRuns.period,
+        amount: s.payrollRuns.totalNet,
+        branchId: s.payrollRuns.branchId,
+        approvedBy: s.payrollRuns.approvedBy,
+        approvedAt: s.payrollRuns.approvedAt,
+        createdAt: s.payrollRuns.createdAt,
+        approverName: s.users.name,
+        approverUsername: s.users.username,
+        approverEmail: s.users.email,
+      })
+      .from(s.payrollRuns)
+      .leftJoin(
+        s.payrollAccountingEvents,
+        and(
+          eq(s.payrollAccountingEvents.runId, s.payrollRuns.id),
+          eq(s.payrollAccountingEvents.revisionNo, s.payrollRuns.revisionNo),
+          eq(s.payrollAccountingEvents.eventKind, "ACCRUAL"),
+        ),
+      )
+      .leftJoin(s.users, eq(s.users.id, s.payrollRuns.approvedBy))
+      .where(
+        and(
+          isNotNull(s.payrollRuns.approvedBy),
+          sql`${s.payrollRuns.createdBy} = ${s.payrollRuns.approvedBy}`,
+          isNull(s.payrollAccountingEvents.id),
+          ...dateBound(sql`COALESCE(${s.payrollRuns.approvedAt}, ${s.payrollRuns.createdAt})`, from, to),
         ),
       ),
     db
@@ -516,7 +571,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.reviewedAt ?? row.requestedAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/purchases/returns",
+      href: "/purchases/returns-governance",
     });
   }
 
@@ -534,16 +589,17 @@ export async function listSelfApprovalRecords(
       decidedAt: row.reviewedAt ?? row.requestedAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/purchases/returns",
+      href: "/purchases/returns-governance",
     });
   }
 
-  // حدثٌ واحد لكل (المسيّر، المراجعة) — الأحداث بند-موظّفٍ فرديّة، فتُطوى هنا بأوّل حدثٍ فقط.
-  const seenAccrual = new Set<string>();
+  // حدثٌ واحدٌ لكل مسيّر — الأحداث بند-موظّفٍ فرديّة (JOIN على revisionNo الحاليّ يضمن أنها
+  // كلّها لنفس المراجعة)، فتُطوى هنا بأوّل حدثٍ فقط. seenAccrual تُشارَك مع مصدر الاستثناء
+  // الصفريّ التالي كي لا يظهر نفس المسيّر مرّتين لو تغيّرت الحالة أثناء القراءتين.
+  const seenAccrual = new Set<number>();
   for (const row of payrollAccrualRows) {
-    const dedupeKey = `${row.id}:${row.revisionNo}`;
-    if (seenAccrual.has(dedupeKey)) continue;
-    seenAccrual.add(dedupeKey);
+    if (seenAccrual.has(Number(row.id))) continue;
+    seenAccrual.add(Number(row.id));
     records.push({
       kind: "payrollAccrualApproval",
       kindLabel: SELF_APPROVAL_KIND_LABEL_AR.payrollAccrualApproval,
@@ -557,7 +613,27 @@ export async function listSelfApprovalRecords(
       decidedAt: row.approvedAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/payroll",
+      href: "/hr?tab=payroll",
+    });
+  }
+
+  for (const row of payrollAccrualZeroCompRows) {
+    if (seenAccrual.has(Number(row.id))) continue;
+    seenAccrual.add(Number(row.id));
+    records.push({
+      kind: "payrollAccrualApproval",
+      kindLabel: SELF_APPROVAL_KIND_LABEL_AR.payrollAccrualApproval,
+      id: Number(row.id),
+      subject: `مسيّر ${row.period}`,
+      detail: null,
+      amount: row.amount,
+      direction: "OUT",
+      actorUserId: Number(row.approvedBy),
+      actorName: displayName({ name: row.approverName, username: row.approverUsername, email: row.approverEmail }),
+      decidedAt: row.approvedAt ?? row.createdAt,
+      branchId: row.branchId == null ? null : Number(row.branchId),
+      branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
+      href: "/hr?tab=payroll",
     });
   }
 
@@ -575,7 +651,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.paidAt ?? row.createdAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/payroll",
+      href: "/hr?tab=payroll",
     });
   }
 
@@ -595,7 +671,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.reviewedAt ?? row.createdAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/hr/advances",
+      href: "/hr?tab=advances",
     });
   }
 
@@ -613,7 +689,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.approvedAt ?? row.createdAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/payroll",
+      href: "/hr?tab=payroll",
     });
   }
 
@@ -631,7 +707,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.paidAt ?? row.createdAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/payroll",
+      href: "/hr?tab=payroll",
     });
   }
 
