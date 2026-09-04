@@ -14,6 +14,8 @@ export type SelfApprovalKind =
   | "purchaseChargeReversal"
   | "purchaseReturn"
   | "purchaseReturnReversal"
+  | "goodsReceiptReversal"
+  | "supplierInvoiceReversal"
   | "payrollAccrualApproval"
   | "payrollNetPayment"
   | "advanceRepayment"
@@ -31,6 +33,8 @@ export const SELF_APPROVAL_KIND_LABEL_AR: Record<SelfApprovalKind, string> = {
   purchaseChargeReversal: "عكس مصروف شراء",
   purchaseReturn: "مرتجع شراء",
   purchaseReturnReversal: "عكس مرتجع شراء",
+  goodsReceiptReversal: "عكس استلام بضاعة",
+  supplierInvoiceReversal: "عكس فاتورة مورّد",
   payrollAccrualApproval: "اعتماد استحقاق مسيّر",
   payrollNetPayment: "صرف صافي مسيّر",
   advanceRepayment: "تقسيط سلفة موظف",

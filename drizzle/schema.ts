@@ -5176,7 +5176,10 @@ export const purchaseRequisitionControlRequests = mysqlTable(
       OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
       OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
     )`),
-    makerChecker: check("chk_purchase_req_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_purchase_req_control_maker_checker`) أُسقط بالهجرة 0334. راجع
+    // [[owner-decision-no-second-approval]] والتعليق الموازي على الجداول الستّة
+    // الأولى (هجرة 0333).
   }),
 );
 
@@ -5413,10 +5416,8 @@ export const goodsReceiptReversalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_grn_reversal_request_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_grn_reversal_request_maker_checker`) أُسقط بالهجرة 0334.
   }),
 );
 
@@ -6088,10 +6089,8 @@ export const supplierInvoiceApprovalRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.pendingGuard} IS NULL AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_supplier_invoice_approval_maker_checker",
-      sql`${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy}`,
-    ),
+    // ⭐ قرار المالك (٤/٩/٢٦): توسيع «لا اعتماد ثانٍ بعد المالك» — قيدُ maker-checker
+    // السابق (`chk_supplier_invoice_approval_maker_checker`) أُسقط بالهجرة 0334.
   }),
 );
 
