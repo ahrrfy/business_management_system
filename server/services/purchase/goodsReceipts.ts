@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, like, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, like, sql } from "drizzle-orm";
 import {
   branchStock,
   goodsReceiptItems,
@@ -10,6 +10,7 @@ import {
   goodsReceiptReversals,
   goodsReceipts,
   productVariants,
+  products,
   purchaseOrderItems,
   purchaseOrderRevisionItems,
   purchaseOrderRevisions,
@@ -1517,8 +1518,26 @@ export async function getGoodsReceipt(goodsReceiptId: number, actor: Actor) {
         });
       assertPurchaseBranch(receipt, actor);
       const items = await tx
-        .select()
+        .select({
+          id: goodsReceiptItems.id,
+          goodsReceiptId: goodsReceiptItems.goodsReceiptId,
+          lineNo: goodsReceiptItems.lineNo,
+          purchaseOrderItemId: goodsReceiptItems.purchaseOrderItemId,
+          variantId: goodsReceiptItems.variantId,
+          productName: products.name,
+          variantSku: productVariants.sku,
+          receivedBaseQuantity: goodsReceiptItems.receivedBaseQuantity,
+          acceptedBaseQuantity: goodsReceiptItems.acceptedBaseQuantity,
+          rejectedBaseQuantity: goodsReceiptItems.rejectedBaseQuantity,
+          reversedBaseQuantity: goodsReceiptItems.reversedBaseQuantity,
+          returnedBaseQuantity: goodsReceiptItems.returnedBaseQuantity,
+          unitCostIqd: goodsReceiptItems.unitCostIqd,
+          netAmount: goodsReceiptItems.netAmount,
+          taxAmount: goodsReceiptItems.taxAmount,
+        })
         .from(goodsReceiptItems)
+        .innerJoin(productVariants, eq(productVariants.id, goodsReceiptItems.variantId))
+        .innerJoin(products, eq(products.id, productVariants.productId))
         .where(eq(goodsReceiptItems.goodsReceiptId, goodsReceiptId))
         .orderBy(asc(goodsReceiptItems.lineNo));
       const reversalRequests = await tx
@@ -1578,6 +1597,11 @@ export async function listPendingGoodsReceiptReversals(
         doThis: "بدّل الفرع في الشاشة إلى فرعك، أو اطلب من المدير مراجعة طلبات الفرع الآخر (عبورُ الفروع له وحده)",
       }),
     });
+  // ⭐ لا فلترةَ بـ`requestedBy` هنا (خلافاً لنسخةٍ سابقة كانت تستعمل `ne(...)`) — مطابقةً
+  // لنمط `listPendingPurchaseChargeControls`/نظائرها: القائمة الخادميّة تُرجع كل المعلَّق
+  // في الفرع بلا استثناء، والعميلُ (`GovernanceApprovalQueue`) هو من يقرّر زرّ الاعتماد
+  // عبر `isOwner`/`canReviewGovernanceRequest` — فلترةٌ خادميّة هنا كانت تُخفي طلب المالك
+  // عن نفسه فلا يظهر زرٌّ ليُعتمَد أصلاً، رغم أنّ طبقة القرار تسمح له.
   return withTx(
     (tx) =>
       tx
@@ -1587,7 +1611,6 @@ export async function listPendingGoodsReceiptReversals(
           and(
             eq(goodsReceiptReversalRequests.branchId, branchId),
             eq(goodsReceiptReversalRequests.status, "PENDING"),
-            ne(goodsReceiptReversalRequests.requestedBy, actor.userId),
           ),
         )
         .orderBy(asc(goodsReceiptReversalRequests.requestedAt)),

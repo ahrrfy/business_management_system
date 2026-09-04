@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   purchaseReturnReversals,
   purchaseReturns,
@@ -1262,6 +1262,8 @@ export async function listPendingSupplierInvoiceApprovals(
 ) {
   if (actor.role !== "admin" && actor.branchId !== branchId)
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك عرض فرع آخر" });
+  // ⭐ لا فلترةَ بـ`requestedBy` هنا (خلافاً لنسخةٍ سابقة كانت تستعمل `ne(...)`) — راجع
+  // التعليق الموازي على `listPendingGoodsReceiptReversals` في goodsReceipts.ts.
   return withTx(
     (tx) =>
       tx
@@ -1271,7 +1273,6 @@ export async function listPendingSupplierInvoiceApprovals(
           and(
             eq(supplierInvoiceApprovalRequests.branchId, branchId),
             eq(supplierInvoiceApprovalRequests.status, "PENDING"),
-            ne(supplierInvoiceApprovalRequests.requestedBy, actor.userId),
           ),
         )
         .orderBy(asc(supplierInvoiceApprovalRequests.requestedAt)),

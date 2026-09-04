@@ -21,6 +21,12 @@ const PurchaseIntegrityCases = lazy(
 const PurchaseControlSettings = lazy(
   () => import("@/pages/PurchaseControlSettings"),
 );
+const GoodsReceiptReversalGovernance = lazy(
+  () => import("@/pages/GoodsReceiptReversalGovernance"),
+);
+const SupplierInvoiceApprovalGovernance = lazy(
+  () => import("@/pages/SupplierInvoiceApprovalGovernance"),
+);
 
 const TABS: HubTab[] = [
   {
@@ -103,6 +109,26 @@ const TABS: HubTab[] = [
       level: "FULL",
     },
     Component: PurchaseIntegrityCases,
+  },
+  {
+    value: "goods-receipt-reversals",
+    label: "عكس الاستلام",
+    gate: {
+      roles: ["manager", "purchasing"],
+      module: "purchases",
+      level: "FULL",
+    },
+    Component: GoodsReceiptReversalGovernance,
+  },
+  {
+    value: "supplier-invoice-approvals",
+    label: "اعتماد فواتير الموردين",
+    gate: {
+      roles: ["manager", "purchasing"],
+      module: "purchases",
+      level: "FULL",
+    },
+    Component: SupplierInvoiceApprovalGovernance,
   },
   {
     value: "control-settings",
