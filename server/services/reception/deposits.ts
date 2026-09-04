@@ -189,7 +189,7 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
         message: anyShift
           ? appErrorMessage({
               what: "لا يمكن قبض العربون على هذه الوردية",
-              why: `ورديتك المفتوحة نوعها «${anyShift.shiftType}» وليس RECEPTION — العربون يُقبض على وردية استقبال يدخل درجها ويُحاسَب عليها`,
+              why: `ورديتك المفتوحة ليست وردية استقبال (نوعها «${anyShift.shiftType}» لا RECEPTION) — العربون يُقبض على وردية استقبال يدخل درجها ويُحاسَب عليها`,
               doThis: "أغلق ورديتك الحالية من شاشة الورديات وافتح وردية استقبال (RECEPTION)، ثم أعد قبض العربون",
             })
           : appErrorMessage({

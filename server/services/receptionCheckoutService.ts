@@ -578,7 +578,7 @@ export async function checkoutReceptionInTx(
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
-            what: "قيمة الأمانة تخالف أجرة التوصيل",
+            what: "قيمة الأمانة يجب أن تساوي أجرة التوصيل",
             why: `الأمانة المقبوضة ${feeHeldD.toFixed(2)} لا تساوي أجرة التوصيل ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} — الفرق سيترك مالاً بلا مسار ردٍّ عند التوريد`,
             doThis: `اضبط الأمانة على ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} بالضبط، أو عدّل أجرة التوصيل لتطابقها`,
           }),

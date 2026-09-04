@@ -439,7 +439,7 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
-          what: "لم يُؤكَّد الدفع الخارجي بعد",
+          what: "أكّد الدفع الخارجي قبل تحويل العرض",
           why: "الطرق غير النقدية (بطاقة/محفظة/تحويل) تحتاج محاولة دفع خارجية مؤكَّدة برقم ومعرّف جهاز قبل التحويل",
           doThis: "شغّل الدفع من الطرفية الخارجية وانتظر تأكيدها، ثم أعد التحويل ومعك رقم المحاولة",
         }),
@@ -553,7 +553,7 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
       code: "BAD_REQUEST",
       message: appErrorMessage({
         what: "لا يمكن تحويل هذا العرض إلى فاتورة",
-        why: `التحويل لا يُقبل إلا على عرض مقبول (ACCEPTED)، وحالة العرض حالياً «${q.status}»`,
+        why: `التحويل لا يُقبل إلا على عرض مقبول (ACCEPTED)، ولا يُحوَّل عرضٌ قبل قبوله — وحالة العرض حالياً «${q.status}»`,
         doThis: "اطلب من العميل قبول العرض أوّلاً (يُغيَّر حالته إلى ACCEPTED)، ثم أعد التحويل",
       }),
     });
