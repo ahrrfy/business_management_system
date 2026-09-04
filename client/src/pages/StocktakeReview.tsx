@@ -39,6 +39,12 @@ import { useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
 import {
+  willRowSettleNegative,
+  CorrectedCountCell,
+  NegativeSettlementPill,
+  NegativeSettlementBanner,
+} from "@/components/stocktake/NegativeSettlementUi";
+import {
   Printer,
   Download,
   Lock,
@@ -505,18 +511,8 @@ export default function StocktakeReview() {
     (r.decision?.reason as Reason | undefined) ??
     "UNSPECIFIED";
 
-  /** هل سيكتب الاعتماد رصيداً سالباً فعلياً لهذا الصنف؟ يطابق تحديد action في finalize.ts
-   * تماماً (KEEP لا يستدعي setStock أبداً) — لا نحذّر من صفٍّ لن يُسوّى فعلياً لمجرّد
-   * سالبية adjustedCount (مراجعة عدائية: صنفٌ اختير له KEEP صراحةً يبقى برصيده الدفتري
-   * الحالي، وقد يكون موجباً، فيُخالف التحذير الحقيقة). */
-  const willRowSettleNegative = (r: Row): boolean => {
-    if (r.adjustedCount == null || r.adjustedCount >= 0) return false;
-    if (r.diff === 0) return false;
-    const action =
-      r.decision?.action ??
-      (r.withinThreshold && effectiveDirectUnderThreshold ? "ADJUST" : undefined);
-    return action === "ADJUST";
-  };
+  const rowSettlesNegative = (r: Row) =>
+    willRowSettleNegative(r, effectiveDirectUnderThreshold);
 
   /* ───── الفلاتر + البحث المحلي ───── */
   const qNorm = q.trim().toLowerCase();
@@ -669,7 +665,7 @@ export default function StocktakeReview() {
   ).length;
   /* بيعٌ استمرّ بعد العدّ وتجاوزه ⇒ العدّ المصحَّح سالب. تُثبَّت برصيدها الحقيقي عند الاعتماد
    * (لا تُحجَب — انظر finalize.ts) وتظهر في تقرير السوالب؛ هذا العدّ للتنبيه المسبق فقط. */
-  const negativeSettleCount = rows.filter(willRowSettleNegative).length;
+  const negativeSettleCount = rows.filter(rowSettlesNegative).length;
   const hasShort = D(ledgerPreview.shortExpense).gt(0);
   const hasOver = D(ledgerPreview.overGain).gt(0);
 
@@ -1447,7 +1443,7 @@ export default function StocktakeReview() {
                 const recPending = r.recount?.status === "PENDING";
                 const recDone = r.recount?.status === "DONE";
                 const uncounted = r.rawCount == null;
-                const willSettleNegative = willRowSettleNegative(r);
+                const willSettleNegative = rowSettlesNegative(r);
                 const movesTitle = r.movesAfter
                   .map(
                     (m: {
@@ -1615,40 +1611,13 @@ export default function StocktakeReview() {
                         </p>
                       )}
                     </td>
-                    {/* المعدود المصحَّح */}
-                    <td
-                      className={`p-2.5 text-center font-mono font-bold tabular-nums ${willSettleNegative ? "text-[var(--sem-neg)]" : ""}`}
-                      dir="ltr"
-                    >
-                      {r.adjustedCount == null ? (
-                        "—"
-                      ) : (
-                        <span
-                          title={
-                            willSettleNegative
-                              ? `بيعٌ استمرّ بعد العدّ وتجاوزه — العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة. يُثبَّت برصيده السالب الحقيقي عند الاعتماد ويظهر في تقرير السوالب.`
-                              : r.netAfter !== 0 && autoAdjust && r.rawCount != null
-                                ? `العدّ الخام ${nf(r.rawCount)} ${signed(r.netAfter)} حركات لاحقة`
-                                : ""
-                          }
-                        >
-                          {nf(r.adjustedCount)}
-                          {willSettleNegative ? (
-                            <AlertTriangle
-                              aria-hidden
-                              className="ms-0.5 inline size-3 text-[var(--sem-neg)]"
-                            />
-                          ) : (
-                            r.netAfter !== 0 &&
-                            autoAdjust && (
-                              <span className="text-[10px] text-[var(--sem-info)]">
-                                *
-                              </span>
-                            )
-                          )}
-                        </span>
-                      )}
-                    </td>
+                    <CorrectedCountCell
+                      adjustedCount={r.adjustedCount}
+                      netAfter={r.netAfter}
+                      rawCount={r.rawCount}
+                      autoAdjust={autoAdjust}
+                      willSettleNegative={willSettleNegative}
+                    />
                     {/* رصيد الدفتر الآن */}
                     <td
                       className="p-2.5 text-center font-mono tabular-nums"
@@ -1753,15 +1722,7 @@ export default function StocktakeReview() {
                             <Pen aria-hidden className="size-3" /> توقيعان
                           </Pill>
                         )}
-                        {willSettleNegative && (
-                          <Pill
-                            tone="rose"
-                            title="بيعٌ استمرّ بعد العدّ وتجاوزه — سيُثبَّت الرصيد سالباً حقيقياً عند الاعتماد بدل حجب الجلسة، ويظهر في تقرير السوالب للمتابعة."
-                          >
-                            <AlertTriangle aria-hidden className="size-3" />{" "}
-                            سيُسجَّل سالباً
-                          </Pill>
-                        )}
+                        {willSettleNegative && <NegativeSettlementPill />}
                         {recDone && !conflictOpen && (
                           <Pill tone="violet">
                             <Undo2 aria-hidden className="size-3" /> إعادة عدّ
@@ -2380,19 +2341,7 @@ export default function StocktakeReview() {
                 </span>
               </p>
             )}
-            {negativeSettleCount > 0 && (
-              <p className="flex items-start gap-1.5 rounded-md bg-money-negative/10 px-3 py-2 text-xs text-money-negative">
-                <AlertTriangle
-                  aria-hidden
-                  className="mt-0.5 size-3.5 shrink-0"
-                />
-                <span>
-                  {nf(negativeSettleCount)} صنف سيُثبَّت برصيدٍ سالب حقيقي —
-                  بيعٌ استمرّ بعد العدّ وتجاوزه. لن يُحجَب الاعتماد بسببها؛
-                  ستظهر في تقرير السوالب (المخزون ← تقرير السوالب) للمتابعة.
-                </span>
-              </p>
-            )}
+            <NegativeSettlementBanner count={negativeSettleCount} />
             {barriers.requiresDualSign && s.firstSign && (
               <p className="flex items-start gap-1.5 rounded-md bg-violet-50 px-3 py-2 text-xs text-violet-800">
                 <Pen aria-hidden className="mt-0.5 size-3.5 shrink-0" />
