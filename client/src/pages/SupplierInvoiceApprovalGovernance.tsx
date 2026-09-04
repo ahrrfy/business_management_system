@@ -15,16 +15,19 @@ import { trpc } from "@/lib/trpc";
 export default function SupplierInvoiceApprovalGovernance() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branches = trpc.branches.list.useQuery();
+  // ⭐ (مراجعة Codex على #1001) عبورُ الفروع صلاحيّةٌ، لا غيابُ فرعٍ رئيسيّ — طابِق
+  // Purchases.tsx وGoodsReceiptReversalGovernance.tsx.
+  const canCrossBranches = me.data?.role === "admin" || me.data?.isOwner === true;
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
   const [pickedBranchId, setPickedBranchId] = useState("");
   useEffect(() => {
     if (me.data?.branchId != null) setPickedBranchId(String(me.data.branchId));
   }, [me.data?.branchId]);
   const branchId =
-    me.data?.branchId != null
-      ? Number(me.data.branchId)
-      : pickedBranchId
-        ? Number(pickedBranchId)
+    canCrossBranches && pickedBranchId
+      ? Number(pickedBranchId)
+      : me.data?.branchId != null
+        ? Number(me.data.branchId)
         : null;
   const queryBranchId = branchId === null ? 0 : branchId;
   const enabled = queryBranchId > 0;
@@ -96,7 +99,7 @@ export default function SupplierInvoiceApprovalGovernance() {
         backHref="/purchases"
         backLabel="المشتريات"
         actions={
-          me.data?.branchId == null ? (
+          canCrossBranches || me.data?.branchId == null ? (
             <AppSelect
               value={pickedBranchId}
               onValueChange={setPickedBranchId}
@@ -128,11 +131,12 @@ export default function SupplierInvoiceApprovalGovernance() {
           pendingApprovals={pendingApprovals}
           currentUserId={me.data?.id}
           isOwner={me.data?.isOwner === true}
-          loading={invoicesQuery.isLoading || pendingQuery.isLoading}
-          error={invoicesQuery.error ?? pendingQuery.error}
-          onRetry={() =>
-            void Promise.all([invoicesQuery.refetch(), pendingQuery.refetch()])
-          }
+          documentsLoading={invoicesQuery.isLoading}
+          documentsError={invoicesQuery.error}
+          onRetryDocuments={() => void invoicesQuery.refetch()}
+          pendingLoading={pendingQuery.isLoading}
+          pendingError={pendingQuery.error}
+          onRetryPending={() => void pendingQuery.refetch()}
           requestPending={requestReversal.isPending}
           decisionPending={decideApproval.isPending}
           onRequestReversal={(input) =>

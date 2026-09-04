@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
 import {
   branchStock,
   goodsReceiptItems,
@@ -1578,7 +1578,9 @@ export async function listGoodsReceipts(
               : eq(goodsReceipts.purchaseOrderId, input.purchaseOrderId),
           ),
         )
-        .orderBy(asc(goodsReceipts.receivedAt), asc(goodsReceipts.id))
+        // الأحدث أولاً (مراجعة Codex على #1001): سقفٌ ٢٠٠ بلا ترقيمِ صفحات — ترتيبٌ تصاعديّ
+        // كان يُسقط أيّ إذنٍ جديد بعد أن يتجاوز الفرع ٢٠٠ إذن، فيصير غير قابلٍ للعكس أبداً.
+        .orderBy(desc(goodsReceipts.receivedAt), desc(goodsReceipts.id))
         .limit(limit),
     { gate: "NONE" },
   );

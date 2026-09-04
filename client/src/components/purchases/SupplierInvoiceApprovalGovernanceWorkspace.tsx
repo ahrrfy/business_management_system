@@ -49,9 +49,12 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   pendingApprovals,
   currentUserId,
   isOwner,
-  loading,
-  error,
-  onRetry,
+  documentsLoading,
+  documentsError,
+  onRetryDocuments,
+  pendingLoading,
+  pendingError,
+  onRetryPending,
   requestPending,
   decisionPending,
   onRequestReversal,
@@ -61,9 +64,12 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
   pendingApprovals: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
   isOwner?: boolean;
-  loading: boolean;
-  error?: unknown;
-  onRetry: () => void;
+  documentsLoading: boolean;
+  documentsError?: unknown;
+  onRetryDocuments: () => void;
+  pendingLoading: boolean;
+  pendingError?: unknown;
+  onRetryPending: () => void;
   requestPending: boolean;
   decisionPending: boolean;
   onRequestReversal: (input: {
@@ -171,8 +177,8 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
               type="button"
               size="sm"
               variant="ghost"
-              disabled={loading}
-              onClick={onRetry}
+              disabled={documentsLoading}
+              onClick={onRetryDocuments}
             >
               <RotateCcw aria-hidden className="size-4" />
               {ACTION_LABELS.refresh}
@@ -185,7 +191,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
             الشاشة لعكس فاتورةٍ مرحَّلة فقط — قيدٌ عكسيّ يمحو التزام الذمّة، ويحتاج اعتماداً
             مستقلاً قبل أي أثر، ولا يُتاح إن كان عليها سدادٌ أو مرتجعٌ مرتبط لم يُسوَّ.
           </GovernanceRequestNotice>
-          {error ? (
+          {documentsError ? (
             <p role="alert" className="text-sm text-destructive">
               تعذّر تحميل فواتير الموردين. أعد المحاولة.
             </p>
@@ -193,7 +199,7 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
           <DataTable
             columns={columns}
             data={invoices}
-            loading={loading}
+            loading={documentsLoading}
             searchable
             searchPlaceholder="بحث برقم الفاتورة"
             emptyText="لا توجد فواتير موردين بعد."
@@ -207,10 +213,10 @@ export function SupplierInvoiceApprovalGovernanceWorkspace({
         rows={pendingApprovals}
         currentUserId={currentUserId}
         isOwner={isOwner}
-        loading={loading}
-        error={error}
+        loading={pendingLoading}
+        error={pendingError}
         pending={decisionPending}
-        onRetry={onRetry}
+        onRetry={onRetryPending}
         onDecide={onDecideApproval}
       />
 

@@ -18551,7 +18551,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:52"
+      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:54"
     },
     {
       "surface": "trpc",
@@ -18602,7 +18602,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:62"
+      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:64"
     },
     {
       "surface": "trpc",
@@ -18619,7 +18619,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:36"
+      "loc": "server/routers/supplierInvoiceApprovalRouter.ts:39"
     },
     {
       "surface": "trpc",

@@ -18,7 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Textarea } from "@/components/ui/textarea";
@@ -56,9 +55,12 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   pendingReversals,
   currentUserId,
   isOwner,
-  loading,
-  error,
-  onRetry,
+  documentsLoading,
+  documentsError,
+  onRetryDocuments,
+  pendingLoading,
+  pendingError,
+  onRetryPending,
   requestPending,
   decisionPending,
   selectedReceiptId,
@@ -72,9 +74,12 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   pendingReversals: GovernanceQueueRow[];
   currentUserId: number | null | undefined;
   isOwner?: boolean;
-  loading: boolean;
-  error?: unknown;
-  onRetry: () => void;
+  documentsLoading: boolean;
+  documentsError?: unknown;
+  onRetryDocuments: () => void;
+  pendingLoading: boolean;
+  pendingError?: unknown;
+  onRetryPending: () => void;
   requestPending: boolean;
   decisionPending: boolean;
   selectedReceiptId: number | null;
@@ -90,29 +95,30 @@ export function GoodsReceiptReversalGovernanceWorkspace({
   }) => Promise<unknown>;
   onDecideReversal: Parameters<typeof GovernanceApprovalQueue>[0]["onDecide"];
 }) {
-  const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [reason, setReason] = useState("");
   const selectedReceipt = receipts.find((row) => row.id === selectedReceiptId) ?? null;
 
   useEffect(() => {
-    if (!selectedReceiptId) {
-      setQuantities({});
-      setReason("");
-    }
+    if (!selectedReceiptId) setReason("");
   }, [selectedReceiptId]);
 
+  // ⛔ (مراجعة Codex على #1001) عكسٌ كاملٌ إلزاميّ — لا اختيار كمّيةٍ جزئية: الشاشات
+  // الحاليّة بلا مسار استلامٍ أو فوترة يدويّ (الدورة كلّها آليّة ضمن purchases.decideControl)،
+  // فعكسٌ جزئيّ يُبقي الإذن PARTIALLY_REVERSED وأمر الشراء CONFIRMED بلا أيّ طريقٍ لاحقٍ
+  // لإعادة استلام الباقي أو فوترته — بضاعةٌ ومالٌ عالقان بلا مخرج. كلّ بندٍ بمتاحه بالكامل
+  // أو لا شيء.
   const lines = useMemo(
     () =>
-      Object.entries(quantities)
-        .map(([goodsReceiptItemId, qty]) => ({
-          goodsReceiptItemId: Number(goodsReceiptItemId),
-          baseQuantity: Number(qty),
+      detailItems
+        .map((item) => ({
+          goodsReceiptItemId: item.id,
+          baseQuantity:
+            item.acceptedBaseQuantity - item.reversedBaseQuantity - item.returnedBaseQuantity,
         }))
-        .filter((line) => Number.isInteger(line.baseQuantity) && line.baseQuantity > 0),
-    [quantities],
+        .filter((line) => line.baseQuantity > 0),
+    [detailItems],
   );
-  const requestValid =
-    selectedReceipt != null && lines.length > 0 && reason.trim().length >= 3;
+  const requestValid = selectedReceipt != null && lines.length > 0 && reason.trim().length >= 3;
 
   function close() {
     if (requestPending) return;
@@ -195,8 +201,8 @@ export function GoodsReceiptReversalGovernanceWorkspace({
               type="button"
               size="sm"
               variant="ghost"
-              disabled={loading}
-              onClick={onRetry}
+              disabled={documentsLoading}
+              onClick={onRetryDocuments}
             >
               <RotateCcw aria-hidden className="size-4" />
               {ACTION_LABELS.refresh}
@@ -207,8 +213,9 @@ export function GoodsReceiptReversalGovernanceWorkspace({
           <GovernanceRequestNotice>
             عكس الاستلام يُخرج مخزوناً أُدخل ويمحو التزام GRNI — طلبٌ يحتاج اعتماداً مستقلاً
             قبل أي أثر، ولا يُتاح لبنودٍ سبق ربطها بفاتورة مورّد مطابَقة أو مرتجعٍ سابق.
+            العكسُ يشمل الإذن بالكامل دائماً — لا عكس جزئيّ.
           </GovernanceRequestNotice>
-          {error ? (
+          {documentsError ? (
             <p role="alert" className="text-sm text-destructive">
               تعذّر تحميل أذون الاستلام. أعد المحاولة.
             </p>
@@ -216,7 +223,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
           <DataTable
             columns={columns}
             data={receipts}
-            loading={loading}
+            loading={documentsLoading}
             searchable
             searchPlaceholder="بحث برقم الإذن"
             emptyText="لا توجد أذون استلامٍ بعد."
@@ -230,10 +237,10 @@ export function GoodsReceiptReversalGovernanceWorkspace({
         rows={pendingReversals}
         currentUserId={currentUserId}
         isOwner={isOwner}
-        loading={loading}
-        error={error}
+        loading={pendingLoading}
+        error={pendingError}
         pending={decisionPending}
-        onRetry={onRetry}
+        onRetry={onRetryPending}
         onDecide={onDecideReversal}
       />
 
@@ -242,8 +249,8 @@ export function GoodsReceiptReversalGovernanceWorkspace({
           <DialogHeader>
             <DialogTitle>طلب عكس إذن الاستلام {selectedReceipt?.receiptNumber}</DialogTitle>
             <DialogDescription>
-              حدّد الكمّية المطلوب عكسها من كلّ بند بالوحدة الأساس. الطلب لا يغيّر المخزون
-              أو القيود حتى يعتمده مستخدمٌ مستقل.
+              يعكس الطلب الإذن بالكامل — كل بندٍ بكامل كمّيته المتاحة. الطلب لا يغيّر
+              المخزون أو القيود حتى يعتمده مستخدمٌ مستقل.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -259,33 +266,33 @@ export function GoodsReceiptReversalGovernanceWorkspace({
                   return (
                     <div
                       key={item.id}
-                      className="grid items-center gap-2 sm:grid-cols-[1fr_10rem]"
+                      className="flex items-center justify-between gap-2 text-sm"
                     >
-                      <div className="text-sm">
+                      <div>
                         <p>{item.productName}</p>
                         <p className="text-xs text-muted-foreground">
-                          <bdi dir="ltr">{item.variantSku}</bdi> — المتاح للعكس {available}
+                          <bdi dir="ltr">{item.variantSku}</bdi>
                         </p>
                       </div>
-                      <Input
-                        type="number"
+                      <span
                         dir="ltr"
-                        min={0}
-                        max={available}
-                        step={1}
-                        disabled={available <= 0}
-                        value={quantities[item.id] ?? ""}
-                        onChange={(event) =>
-                          setQuantities((current) => ({
-                            ...current,
-                            [item.id]: event.target.value,
-                          }))
+                        className={
+                          available > 0
+                            ? "font-semibold"
+                            : "text-muted-foreground line-through"
                         }
-                        aria-label={`الكمّية المطلوب عكسها — ${item.productName}`}
-                      />
+                      >
+                        {available > 0 ? `يُعكَس بالكامل: ${available}` : "لا شيء متاحٌ للعكس"}
+                      </span>
                     </div>
                   );
                 })}
+                {!detailLoading && lines.length === 0 ? (
+                  <p role="alert" className="text-sm text-destructive">
+                    لا كمّيةَ متاحةً للعكس على هذا الإذن — كلّ بنودها مربوطةٌ بفاتورة مورّدٍ
+                    مطابَقة أو مرتجعٍ سابق.
+                  </p>
+                ) : null}
               </div>
             )}
             <div className="space-y-2">
@@ -310,7 +317,7 @@ export function GoodsReceiptReversalGovernanceWorkspace({
               disabled={!requestValid}
               onClick={() => void submit()}
             >
-              إرسال طلب العكس للاعتماد
+              إرسال طلب عكس الإذن كاملاً للاعتماد
             </SubmitButton>
           </DialogFooter>
         </DialogContent>

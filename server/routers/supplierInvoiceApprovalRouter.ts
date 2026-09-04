@@ -29,18 +29,20 @@ export const supplierInvoiceApprovalRouter = router({
   get: purchasesReadProcedure
     .input(z.object({ supplierInvoiceId: z.number().int().positive() }))
     .query(({ input, ctx }) => getSupplierInvoice(input.supplierInvoiceId, actor(ctx))),
-  // ⛔ يقبل POST_INVOICE أيضاً (قدرة الخدمة الفعلية) لكن الشاشة الحاليّة لا تعرض إلا
-  // REVERSE_INVOICE — الترحيلَ الاعتياديّ يُنشئه postApprovedPurchaseInvoiceInTx تلقائياً
-  // ضمن معاملة purchases.decideControl (راجع server/services/purchase/automaticInvoicePosting.ts)،
-  // وهذا المسار اليدويّ مُعَدٌّ لحالاتٍ استثنائية فقط (لا شاشةَ لها اليوم).
+  // ⛔ (مراجعة Codex على #1001) يقبل REVERSE_INVOICE فقط عمداً — لا POST_INVOICE.
+  // الترحيلَ الاعتياديّ يُنشئه postApprovedPurchaseInvoiceInTx تلقائياً ضمن معاملة
+  // purchases.decideControl الذرّية (GRN → stock/WAVG → GRNI → فاتورة مورّد ومطابقة
+  // وترحيل إلى AP → RECEIVED، راجع automaticInvoicePosting.ts) — منفذٌ مباشرٌ لـPOST_INVOICE
+  // هنا كان يسمح لأيّ مستخدم مشترياتٍ بترحيل فاتورةٍ MATCHED مباشرةً (قيد AP/GRNI + تعديل
+  // رصيد المورّد) **بلا** تحديث حالة أمر الشراء ولا معالجة مصاريف الشحن/الكمرك التي تؤدّيها
+  // السلسلة الذرّية — يتجاوز الحظر الموثَّق على واجهة برمجة تطبيقاتٍ مستقلّة لفاتورة المورّد.
   requestApproval: purchasesManagerProcedure
     .input(
       z.object({
         supplierInvoiceId: z.number().int().positive(),
         expectedInvoiceVersion: z.number().int().positive(),
         requestKey: key,
-        kind: z.enum(["POST_INVOICE", "REVERSE_INVOICE"]),
-        matchRunId: z.number().int().positive().nullish(),
+        kind: z.literal("REVERSE_INVOICE"),
         reason,
         evidenceType: z
           .enum(["DOCUMENT_IMAGE", "PDF", "EMAIL", "SIGNED_APPROVAL", "OTHER"])

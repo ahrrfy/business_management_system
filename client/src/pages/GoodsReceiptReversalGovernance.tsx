@@ -16,16 +16,20 @@ import { trpc } from "@/lib/trpc";
 export default function GoodsReceiptReversalGovernance() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const branches = trpc.branches.list.useQuery();
+  // ⭐ (مراجعة Codex على #1001) عبورُ الفروع صلاحيّةٌ، لا غيابُ فرعٍ رئيسيّ — أدمن/مالكٌ
+  // بفرعٍ أساسيّ محدَّد كان لا يرى منتقي الفرع إطلاقاً فيُحبَس على فرعه رغم تخويله عبور
+  // الفروع خادمياً (assertPurchaseBranch يسمح لـrole==='admin'). طابِق Purchases.tsx.
+  const canCrossBranches = me.data?.role === "admin" || me.data?.isOwner === true;
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
   const [pickedBranchId, setPickedBranchId] = useState("");
   useEffect(() => {
     if (me.data?.branchId != null) setPickedBranchId(String(me.data.branchId));
   }, [me.data?.branchId]);
   const branchId =
-    me.data?.branchId != null
-      ? Number(me.data.branchId)
-      : pickedBranchId
-        ? Number(pickedBranchId)
+    canCrossBranches && pickedBranchId
+      ? Number(pickedBranchId)
+      : me.data?.branchId != null
+        ? Number(me.data.branchId)
         : null;
   const queryBranchId = branchId === null ? 0 : branchId;
   const enabled = queryBranchId > 0;
@@ -114,7 +118,7 @@ export default function GoodsReceiptReversalGovernance() {
         backHref="/purchases"
         backLabel="المشتريات"
         actions={
-          me.data?.branchId == null ? (
+          canCrossBranches || me.data?.branchId == null ? (
             <AppSelect
               value={pickedBranchId}
               onValueChange={setPickedBranchId}
@@ -146,11 +150,12 @@ export default function GoodsReceiptReversalGovernance() {
           pendingReversals={pendingReversals}
           currentUserId={me.data?.id}
           isOwner={me.data?.isOwner === true}
-          loading={receiptsQuery.isLoading || pendingQuery.isLoading}
-          error={receiptsQuery.error ?? pendingQuery.error}
-          onRetry={() =>
-            void Promise.all([receiptsQuery.refetch(), pendingQuery.refetch()])
-          }
+          documentsLoading={receiptsQuery.isLoading}
+          documentsError={receiptsQuery.error}
+          onRetryDocuments={() => void receiptsQuery.refetch()}
+          pendingLoading={pendingQuery.isLoading}
+          pendingError={pendingQuery.error}
+          onRetryPending={() => void pendingQuery.refetch()}
           requestPending={requestReversal.isPending}
           decisionPending={decideReversal.isPending}
           selectedReceiptId={selectedReceiptId}
