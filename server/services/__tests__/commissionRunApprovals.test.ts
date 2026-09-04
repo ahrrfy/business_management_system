@@ -8,6 +8,7 @@ import {
   rejectCommissionRunRequest,
   requestCommissionRunApproval,
 } from "../commissions/runApprovals";
+import { lockPeriod } from "../periodLockService";
 
 const service = readFileSync("server/services/commissions/runApprovals.ts", "utf8");
 const runs = readFileSync("server/services/commissions/runs.ts", "utf8");
@@ -310,5 +311,53 @@ describe.skipIf(!SAFE_TEST_DATABASE_URL)("طلبات اعتماد العمولا
       expect(run.status).toBe("approved");
       expect(Number(run.approvedBy)).toBe(REVIEWER.userId);
     });
+  });
+
+  /*
+   * حارس إقفال الفترة المالية (assertPeriodOpen) — كان approveRunInTx يفحص فقط وجود صفّ
+   * payrollRuns معتمَد/مدفوع لنفس الشهر (فحصٌ خاصّ)، بلا استشارة القفل العامّ (فحصٌ عامّ) على
+   * الإطلاق. شهرٌ مُقفَل بلا مسيّر رواتب بعد (قفلٌ سابق للرواتب، أو مسيّرٌ حُذف) كان يمرّ اعتمادُ
+   * عمولته بلا رادع رغم كونه اعتماداً append-only لا رجوع عنه. هذا الاختبار الأخير عمداً — تثبيت
+   * قفلٍ في financialPeriods لا تُصفّره resetApprovalFixtures (تصفّر فقط جداول العمولات/المستخدمين
+   * أعلاه)، فوضعه قبل تشغيلاتٍ لاحقة كان يُسرّب القفل إليها.
+   */
+  it("يمنع اعتماد تشغيلة عمولة لشهرٍ مُقفَل مالياً حتى بلا مسيّر رواتب لذلك الشهر", async () => {
+    await db().transaction((tx) => lockPeriod(tx, { cutoffDate: "2097-06-30", lockedBy: MAKER.userId }));
+
+    const lockedRunId = await seedDraftRun("2097-06"); // بلا صفّ payrollRuns لهذا الشهر عمداً
+    const lockedRequest = await requestCommissionRunApproval({
+      requestKey: "commission-period-lock-request",
+      runId: lockedRunId,
+      reason: "طلب اعتماد شهرٍ مُقفَل ماليّاً",
+      scopeBranchId: null,
+    }, MAKER, null);
+
+    await expect(approveCommissionRunRequest({
+      id: Number(lockedRequest.id),
+      expectedVersion: Number(lockedRequest.baseRunVersion),
+      decisionKey: "commission-period-lock-decision",
+    }, REVIEWER, null)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("الفترة المالية مُقفَلة"),
+    });
+
+    const [lockedRun] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, lockedRunId));
+    expect(lockedRun.status).toBe("draft");
+
+    // شهرٌ يلي المُقفَل مباشرةً يبقى قابلاً للاعتماد — الحارس مقصورٌ على الشهر المُقفَل وحده.
+    const openRunId = await seedDraftRun("2097-07");
+    const openRequest = await requestCommissionRunApproval({
+      requestKey: "commission-period-open-request",
+      runId: openRunId,
+      reason: "طلب اعتماد شهرٍ مفتوح بعد القفل",
+      scopeBranchId: null,
+    }, MAKER, null);
+
+    const result = await approveCommissionRunRequest({
+      id: Number(openRequest.id),
+      expectedVersion: Number(openRequest.baseRunVersion),
+      decisionKey: "commission-period-open-decision",
+    }, REVIEWER, null);
+    expect(result.runApproval?.status).toBe("approved");
   });
 });
