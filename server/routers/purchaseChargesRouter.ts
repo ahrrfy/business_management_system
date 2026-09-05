@@ -1,0 +1,15 @@
+import { z } from "zod";
+import { positiveMoneyString } from "../lib/schemas";
+import { createPurchaseCharge, decidePurchaseChargeControl, listPendingPurchaseChargeControls, listPurchaseCharges, listPurchaseChargeSources, requestPurchaseChargeControl } from "../services/purchase/purchaseCharges";
+import { purchasesManagerProcedure, purchasesReadProcedure, router } from "../trpc";
+
+const actor = (ctx: { user: { id: number; branchId?: number | null; role?: string } }) => ({ userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role }); const key = z.string().trim().min(1).max(120); const reason = z.string().trim().min(3).max(500);
+
+export const purchaseChargesRouter = router({
+  create: purchasesManagerProcedure.input(z.object({ branchId: z.number().int().positive(), clientRequestId: key, payeeSupplierId: z.number().int().positive().nullish(), expenseAccountId: z.number().int().positive(), chargeType: z.enum(["SHIPPING", "CUSTOMS", "FREIGHT", "INSURANCE", "INSPECTION", "OTHER"]), settlement: z.enum(["PAID", "PAYABLE"]), paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]).nullish(), amount: positiveMoneyString, expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), externalReference: z.string().trim().max(160).nullish(), evidenceType: z.enum(["SUPPLIER_INVOICE", "CARRIER_INVOICE", "CUSTOMS_RECEIPT", "BANK_ADVICE", "DOCUMENT_IMAGE", "PDF", "OTHER"]), evidenceReference: z.string().trim().min(1).max(500), allocations: z.array(z.object({ purchaseOrderId: z.number().int().positive().nullish(), goodsReceiptId: z.number().int().positive().nullish(), supplierInvoiceId: z.number().int().positive().nullish(), allocatedAmount: positiveMoneyString })).min(1).max(500) })).mutation(({ input, ctx }) => createPurchaseCharge(input, actor(ctx))),
+  requestControl: purchasesManagerProcedure.input(z.object({ purchaseChargeId: z.number().int().positive(), expectedChargeVersion: z.number().int().positive(), requestKey: key, kind: z.enum(["POST", "REVERSE"]), evidenceReference: z.string().trim().min(1).max(500), reason })).mutation(({ input, ctx }) => requestPurchaseChargeControl(input, actor(ctx))),
+  decideControl: purchasesManagerProcedure.input(z.object({ requestId: z.number().int().positive(), decisionKey: key, action: z.enum(["APPROVE", "REJECT"]), reviewReason: reason })).mutation(({ input, ctx }) => decidePurchaseChargeControl(input, actor(ctx))),
+  list: purchasesReadProcedure.input(z.object({ branchId: z.number().int().positive(), status: z.enum(["DRAFT", "POSTED", "REVERSED"]).optional(), limit: z.number().int().positive().max(200).optional() })).query(({ input, ctx }) => listPurchaseCharges(input, actor(ctx))),
+  pendingControls: purchasesManagerProcedure.input(z.object({ branchId: z.number().int().positive() })).query(({ input, ctx }) => listPendingPurchaseChargeControls(input.branchId, actor(ctx))),
+  sources: purchasesReadProcedure.input(z.object({ branchId: z.number().int().positive(), limit: z.number().int().positive().max(200).optional() })).query(({ input, ctx }) => listPurchaseChargeSources(input, actor(ctx))),
+});

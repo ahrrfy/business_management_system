@@ -19,7 +19,7 @@ const jitterPause = () => new Promise((r) => setTimeout(r, 15 + randomInt(60)));
  * للحلقات اليدوية في الراوترات (تحمل logAudit داخلها فلا تلائم الغلاف أدناه):
  * يُرجع true إن كان الخطأ يستحقّ إعادة محاولة. الشرط ذاته: العملية المُعادة ذرّية
  * بالكامل (withTx واحد). قبله كانت حلقات sales.create/printPos.createSale/
- * purchases.receive/workOrders.deliver تفحص isDupEntry وحده ⇒ ضحيّة deadlock تصل
+ * مسارات مالية تاريخية وworkOrders.deliver تفحص isDupEntry وحده ⇒ ضحيّة deadlock تصل
  * الكاشير 500 بدل محاولة صامتة (فحص ٣٠/٨/٢٦).
  *
  * الدلالات بحسب الخطأ (مراجعة عدائية ٣٠/٨):

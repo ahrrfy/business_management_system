@@ -1,4 +1,5 @@
 import { DataTable } from "@/components/data-table/DataTable";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -19,6 +20,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type ReportRow = RouterOutputs["reports"]["salesReport"]["rows"][number];
 type TopRow = RouterOutputs["reports"]["topProducts"][number];
@@ -357,7 +359,7 @@ export default function SalesReport() {
             {activeCount > 0 && (
               <Button variant="ghost" size="sm" onClick={resetF} className="text-muted-foreground">
                 <X aria-hidden className="size-4" />
-                مسح الفلاتر
+                {FILTER_LABELS.reset}
               </Button>
             )}
           </div>
@@ -606,7 +608,7 @@ function InvoicesTab({
                 }
               }}
             >
-              {exporting ? "جارٍ التصدير…" : "تصدير Excel"}
+              {exporting ? ACTION_LABELS.exporting : "تصدير Excel"}
             </Button>
           </>
         }

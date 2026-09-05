@@ -4,18 +4,83 @@
 // تركّز سحوبات بضاعة الأمانة (ضابط تعويضيّ لـSOD السحب أحاديّ الفاعل).
 // الجداول تعرض الجميع والأعلام ترتّب لا تحجب. تصدير Excel متعدد الأوراق (ورقة لكل كاشف).
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { AlertTriangle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, presetRange, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr } from "@/lib/money";
 import { exportSheets, type SheetSpec } from "@/lib/export";
-import { cn } from "@/lib/utils";
 import { selectCls } from "@/lib/ui/formStyles";
 
 type AW = RouterOutputs["reports"]["anomalyWatch"];
+
+/* ————— بناة أعمدة الكواشف —————
+ * الكواشف الستّة عشر متطابقةُ الشكل: صفٌّ يُلوَّن حين يُعلَّم، وأعمدةٌ رقمية تُبرَز عند
+ * التعليم، وعمودُ علمٍ أخيرٌ بلا رأس. البناة أدناه تمنع تكرار ذلك ستّ عشرة مرّة —
+ * وتمنع الانجراف الذي بدأت منه هذه الحملة (كل جدولٍ يقرّر تنسيقه بنفسه).
+ */
+
+type Flaggable = { flagged?: boolean };
+
+/** عمود العلم — بلا رأس، في نهاية كل كاشف. */
+function flagCol<T extends Flaggable>(): ColumnDef<T, unknown> {
+  return {
+    id: "flag",
+    header: "",
+    meta: { align: "end", width: "status" },
+    cell: ({ row }) =>
+      row.original.flagged ? (
+        <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+          <AlertTriangle aria-hidden className="size-3" />
+          مؤشر
+        </span>
+      ) : null,
+  };
+}
+
+/**
+ * تلوين الصفّ المُعلَّم. النبرة تتبع طبيعة الكاشف ولا تُوحَّد:
+ * `danger` لخسارةٍ أو عبثٍ مؤكَّد، و`warn` لنمطٍ يستوجب متابعةً لا اتّهاماً.
+ */
+const flagRow =
+  (tone: "danger" | "warn" = "danger") =>
+  (r: Flaggable) =>
+    r.flagged ? (tone === "danger" ? "bg-destructive/5" : "bg-[var(--sem-warn-bg)]") : undefined;
+
+/** يُبرِز قيمةً رقمية حين يكون صفُّها معلَّماً. */
+function strong(flagged: boolean | undefined, node: React.ReactNode) {
+  return flagged ? <span className="font-bold text-destructive">{node}</span> : <>{node}</>;
+}
+
+/*
+ * ⚠️ كلُّ بانٍ يضع `accessorFn` بجانب `cell` (Codex P2 على PR #939): «نسخ القيمة» في قائمة
+ * سياق الجدول يقرأ `row.getValue(id)`، والعمودُ الذي يعرّف `id` و`cell` وحدَهما يُرجع
+ * `undefined` ⇒ تُنسَخ الرؤوسُ بقيمٍ فارغة والأمرُ يختفي رغم وجود محتوى ظاهر.
+ * تمريرُ نفس الجالب آمنٌ: `cellPrimitive` يُسقط عناصر React فيبقى النصُّ والرقم وحدهما.
+ */
+
+/** عمود نصّي بسيط. */
+function txtCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
+  return { id, header, accessorFn: get, cell: ({ row }) => get(row.original) };
+}
+
+/** عمود رقميّ (عدّ أو نسبة) — `kind: "number"` يتكفّل بالمحاذاة وعزل الاتّجاه. */
+function numCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
+  return { id, header, accessorFn: get, meta: { kind: "number" }, cell: ({ row }) => get(row.original) };
+}
+
+/** عمود مبلغ. */
+function moneyCol<T>(id: string, header: string, get: (r: T) => React.ReactNode): ColumnDef<T, unknown> {
+  return { id, header, accessorFn: get, meta: { kind: "money" }, cell: ({ row }) => get(row.original) };
+}
+
+/** الخصائص المشتركة لكل جداول الكواشف: مُضمَّنة في بطاقةٍ تحمل العنوان والعدّ. */
+const DETECTOR_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
 
 const NOTE =
   "كواشف حتمية على بيانات النظام كما هي: «دون الكلفة» يقارن بلقطة الكلفة وقت البيع لا الكلفة الحالية؛ " +
@@ -24,22 +89,6 @@ const NOTE =
 
 /** فترة افتراضية: آخر ٧ أيام (تقرير أسبوعي بطبيعته). */
 const WEEK_PERIOD: PeriodValue = { ...presetRange("week"), preset: "week" };
-
-const thCls = "p-3 text-right font-medium";
-const tdCls = "p-3 text-right";
-const numCls = "p-3 text-right tabular-nums";
-
-function FlagCell({ flagged }: { flagged: boolean }) {
-  if (!flagged) return <td className={tdCls} />;
-  return (
-    <td className={tdCls}>
-      <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
-        <AlertTriangle aria-hidden className="size-3" />
-        مؤشر
-      </span>
-    </td>
-  );
-}
 
 function SectionCard({
   title,
@@ -232,10 +281,10 @@ export default function AnomalyWatch() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }
@@ -255,28 +304,19 @@ export default function AnomalyWatch() {
               subtitle="الترقيم لا يثقب من التطبيق إطلاقاً؛ الفجوة تعني حذف صفوف من قاعدة البيانات مباشرةً."
               count={aw.sequenceGaps.rows.length}
             >
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className={thCls}>الفرع</th>
-                    <th className={thCls}>اليوم</th>
-                    <th className={thCls}>الموجود</th>
-                    <th className={thCls}>أعلى تسلسل</th>
-                    <th className={thCls}>المفقود</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {aw.sequenceGaps.rows.map((r, i) => (
-                    <tr key={i} className="border-b last:border-0 bg-destructive/5">
-                      <td className={tdCls}>{r.branchName}</td>
-                      <td className={numCls} dir="ltr">{r.day}</td>
-                      <td className={numCls} dir="ltr">{r.actualCount}</td>
-                      <td className={numCls} dir="ltr">{r.maxSeq}</td>
-                      <td className={cn(numCls, "font-bold text-destructive")} dir="ltr">{r.missing}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <DataTable<AW["sequenceGaps"]["rows"][number]>
+                {...DETECTOR_TABLE}
+                data={aw.sequenceGaps.rows}
+                /* كل صفٍّ هنا حرجٌ بذاته — لا علمَ يميّز، فالوجودُ هو الإشارة. */
+                getRowClassName={() => "bg-destructive/5"}
+                columns={[
+                  txtCol("branch", "الفرع", (r) => r.branchName),
+                  numCol("day", "اليوم", (r) => r.day),
+                  numCol("actual", "الموجود", (r) => r.actualCount),
+                  numCol("maxSeq", "أعلى تسلسل", (r) => r.maxSeq),
+                  numCol("missing", "المفقود", (r) => <span className="font-bold text-destructive">{r.missing}</span>),
+                ]}
+              />
             </SectionCard>
           )}
 
@@ -290,53 +330,31 @@ export default function AnomalyWatch() {
               <p className="p-6 text-center text-sm text-muted-foreground">لا بيع دون الكلفة في الفترة.</p>
             ) : (
               <>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className={thCls}>الكاشير</th>
-                      <th className={thCls}>الأسطر</th>
-                      <th className={thCls}>الخسارة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {aw.belowCost.cashiers.map((r, i) => (
-                      <tr key={i} className="border-b last:border-0 bg-destructive/5">
-                        <td className={tdCls}>{r.userName}</td>
-                        <td className={numCls} dir="ltr">{r.lineCount}</td>
-                        <td className={cn(numCls, "text-money-negative font-medium")} dir="ltr">{fmtAr(r.lossValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DataTable<AW["belowCost"]["cashiers"][number]>
+                  {...DETECTOR_TABLE}
+                  data={aw.belowCost.cashiers}
+                  getRowClassName={() => "bg-destructive/5"}
+                  columns={[
+                    txtCol("user", "الكاشير", (r) => r.userName),
+                    numCol("lines", "الأسطر", (r) => r.lineCount),
+                    moneyCol("loss", "الخسارة", (r) => <span className="text-money-negative font-medium">{fmtAr(r.lossValue)}</span>),
+                  ]}
+                />
                 <p className="border-t px-3 pt-3 pb-1 text-xs font-medium text-muted-foreground">أسوأ الأسطر (أعلى ١٠ خسارةً)</p>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className={thCls}>الفاتورة</th>
-                      <th className={thCls}>التاريخ</th>
-                      <th className={thCls}>الكاشير</th>
-                      <th className={thCls}>المنتج</th>
-                      <th className={thCls}>الكمية</th>
-                      <th className={thCls}>صافي السطر</th>
-                      <th className={thCls}>كلفته</th>
-                      <th className={thCls}>الخسارة</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {aw.belowCost.worstLines.map((r, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className={cn(tdCls, "font-mono text-xs")} dir="ltr">{r.invoiceNumber}</td>
-                        <td className={numCls} dir="ltr">{r.invoiceDate}</td>
-                        <td className={tdCls}>{r.userName}</td>
-                        <td className={tdCls}>{r.productName}</td>
-                        <td className={numCls} dir="ltr">{fmtAr(r.quantity)}</td>
-                        <td className={numCls} dir="ltr">{fmtAr(r.lineTotal)}</td>
-                        <td className={numCls} dir="ltr">{fmtAr(r.lineCost)}</td>
-                        <td className={cn(numCls, "text-money-negative font-medium")} dir="ltr">{fmtAr(r.lossValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DataTable<AW["belowCost"]["worstLines"][number]>
+                  {...DETECTOR_TABLE}
+                  data={aw.belowCost.worstLines}
+                  columns={[
+                    { id: "invoice", header: "الفاتورة", meta: { kind: "code" }, cell: ({ row }) => row.original.invoiceNumber },
+                    numCol("date", "التاريخ", (r) => r.invoiceDate),
+                    txtCol("user", "الكاشير", (r) => r.userName),
+                    txtCol("product", "المنتج", (r) => r.productName),
+                    numCol("qty", "الكمية", (r) => fmtAr(r.quantity)),
+                    moneyCol("net", "صافي السطر", (r) => fmtAr(r.lineTotal)),
+                    moneyCol("cost", "كلفته", (r) => fmtAr(r.lineCost)),
+                    moneyCol("loss", "الخسارة", (r) => <span className="text-money-negative font-medium">{fmtAr(r.lossValue)}</span>),
+                  ]}
+                />
               </>
             )}
           </SectionCard>
@@ -347,36 +365,21 @@ export default function AnomalyWatch() {
             subtitle={`المؤشر: نسبة ≥ ضعفَي متوسط النطاق (${aw.discounts.scopeAvgRatePct}%) و≥ ٥٪. خصم العروض آليّ ويُعرض للسياق فقط.`}
             count={aw.kpis.flaggedDiscountCashiers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الكاشير</th>
-                  <th className={thCls}>الفواتير</th>
-                  <th className={thCls}>البيع قبل الخصم</th>
-                  <th className={thCls}>الخصم اليدوي</th>
-                  <th className={thCls}>النسبة</th>
-                  <th className={thCls}>خصم العروض</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.discounts.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message="لا مبيعات في الفترة." />
-                ) : (
-                  aw.discounts.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-destructive/5")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={numCls} dir="ltr">{r.invoiceCount}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.grossTotal)}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.manualDiscount)}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.discountRatePct}%</td>
-                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.promoDiscount)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["discounts"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.discounts.rows}
+              getRowClassName={flagRow()}
+              emptyText="لا مبيعات في الفترة."
+              columns={[
+                txtCol("user", "الكاشير", (r) => r.userName),
+                numCol("invoices", "الفواتير", (r) => r.invoiceCount),
+                moneyCol("gross", "البيع قبل الخصم", (r) => fmtAr(r.grossTotal)),
+                moneyCol("manual", "الخصم اليدوي", (r) => fmtAr(r.manualDiscount)),
+                numCol("rate", "النسبة", (r) => strong(r.flagged, `${r.discountRatePct}%`)),
+                moneyCol("promo", "خصم العروض", (r) => <span className="text-muted-foreground">{fmtAr(r.promoDiscount)}</span>),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D3 — المرتجعات */}
@@ -385,53 +388,31 @@ export default function AnomalyWatch() {
             subtitle={`نسبة مرتجعات مبيعات كل بائع (متوسط النطاق ${aw.returns.scopeAvgRatePct}%). «معالجو الإرجاع» من سجلّ التدقيق — قد ينقص.`}
             count={aw.kpis.flaggedReturnSellers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>البائع</th>
-                  <th className={thCls}>الفواتير</th>
-                  <th className={thCls}>المبيعات</th>
-                  <th className={thCls}>المرتجع</th>
-                  <th className={thCls}>النسبة</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.returns.sellers.length === 0 ? (
-                  <TableEmptyRow colSpan={6} message="لا مبيعات في الفترة." />
-                ) : (
-                  aw.returns.sellers.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-destructive/5")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={numCls} dir="ltr">{r.invoiceCount}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.salesTotal)}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.returnedTotal)}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.returnRatePct}%</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["returns"]["sellers"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.returns.sellers}
+              getRowClassName={flagRow()}
+              emptyText="لا مبيعات في الفترة."
+              columns={[
+                txtCol("user", "البائع", (r) => r.userName),
+                numCol("invoices", "الفواتير", (r) => r.invoiceCount),
+                moneyCol("sales", "المبيعات", (r) => fmtAr(r.salesTotal)),
+                moneyCol("returned", "المرتجع", (r) => fmtAr(r.returnedTotal)),
+                numCol("rate", "النسبة", (r) => strong(r.flagged, `${r.returnRatePct}%`)),
+                flagCol(),
+              ]}
+            />
             {aw.returns.processors.length > 0 && (
               <>
                 <p className="border-t px-3 pt-3 pb-1 text-xs font-medium text-muted-foreground">معالجو الإرجاع (من سجلّ التدقيق)</p>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-xs text-muted-foreground">
-                      <th className={thCls}>المستخدم</th>
-                      <th className={thCls}>عمليات إرجاع</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {aw.returns.processors.map((r, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className={tdCls}>{r.userName}</td>
-                        <td className={numCls} dir="ltr">{r.opsCount}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <DataTable<AW["returns"]["processors"][number]>
+                  {...DETECTOR_TABLE}
+                  data={aw.returns.processors}
+                  columns={[
+                    txtCol("user", "المستخدم", (r) => r.userName),
+                    numCol("ops", "عمليات إرجاع", (r) => r.opsCount),
+                  ]}
+                />
               </>
             )}
           </SectionCard>
@@ -442,34 +423,20 @@ export default function AnomalyWatch() {
             subtitle="المؤشر: ورديتا عجزٍ فأكثر بالفترة أو إجمالي عجز ≥ ٢٥٬٠٠٠ د.ع. الفائض يُعرض أيضاً (قد يدل على بيع غير مسجَّل)."
             count={aw.kpis.flaggedShortageCashiers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الكاشير</th>
-                  <th className={thCls}>ورديات مغلقة</th>
-                  <th className={thCls}>ورديات عجز</th>
-                  <th className={thCls}>إجمالي العجز</th>
-                  <th className={thCls}>إجمالي الفائض</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.shiftShortages.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={6} message="لا فروقات صندوق في الفترة." />
-                ) : (
-                  aw.shiftShortages.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-destructive/5")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={numCls} dir="ltr">{r.closedShifts}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.shortageShifts}</td>
-                      <td className={cn(numCls, "text-money-negative")} dir="ltr">{fmtAr(r.totalShortage)}</td>
-                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.totalSurplus)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["shiftShortages"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.shiftShortages.rows}
+              getRowClassName={flagRow()}
+              emptyText="لا فروقات صندوق في الفترة."
+              columns={[
+                txtCol("user", "الكاشير", (r) => r.userName),
+                numCol("closed", "ورديات مغلقة", (r) => r.closedShifts),
+                numCol("short", "ورديات عجز", (r) => strong(r.flagged, r.shortageShifts)),
+                moneyCol("shortTotal", "إجمالي العجز", (r) => <span className="text-money-negative">{fmtAr(r.totalShortage)}</span>),
+                moneyCol("surplus", "إجمالي الفائض", (r) => <span className="text-muted-foreground">{fmtAr(r.totalSurplus)}</span>),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D5 — السندات المعكوسة */}
@@ -478,36 +445,21 @@ export default function AnomalyWatch() {
             subtitle="سندات قبض/صرف عُكست بالفترة. المؤشر: عاكسٌ عكس سندَين فأكثر."
             count={aw.kpis.reversedVouchers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>السند</th>
-                  <th className={thCls}>الاتجاه</th>
-                  <th className={thCls}>المبلغ</th>
-                  <th className={thCls}>منشئه</th>
-                  <th className={thCls}>عاكسه</th>
-                  <th className={thCls}>وقت العكس</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.reversedVouchers.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message="لا سندات معكوسة في الفترة." />
-                ) : (
-                  aw.reversedVouchers.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-destructive/5")}>
-                      <td className={cn(tdCls, "font-mono text-xs")} dir="ltr">{r.voucherNumber}</td>
-                      <td className={tdCls}>{r.direction === "OUT" ? "صرف" : "قبض"}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.amount)}</td>
-                      <td className={tdCls}>{r.createdByName}</td>
-                      <td className={tdCls}>{r.reversedByName}</td>
-                      <td className={numCls} dir="ltr">{r.reversedAt}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["reversedVouchers"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.reversedVouchers.rows}
+              getRowClassName={flagRow()}
+              emptyText="لا سندات معكوسة في الفترة."
+              columns={[
+                { id: "voucher", header: "السند", meta: { kind: "code" }, cell: ({ row }) => row.original.voucherNumber },
+                txtCol("direction", "الاتجاه", (r) => (r.direction === "OUT" ? "صرف" : "قبض")),
+                moneyCol("amount", "المبلغ", (r) => fmtAr(r.amount)),
+                txtCol("createdBy", "منشئه", (r) => r.createdByName),
+                txtCol("reversedBy", "عاكسه", (r) => r.reversedByName),
+                numCol("reversedAt", "وقت العكس", (r) => r.reversedAt),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D7 — تركّز سحوبات بضاعة الأمانة (ضابط تعويضيّ لـSOD السحب أحاديّ الفاعل) */}
@@ -516,32 +468,19 @@ export default function AnomalyWatch() {
             subtitle="سندات سحب/استبدال بضاعة أمانة تُعيدها لمودِعها بلا فاعلٍ ثانٍ. المؤشر: مُنشئٌ أنشأ ٣ سندات فأكثر بالفترة."
             count={aw.kpis.flaggedConsignWithdrawers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>المُنشئ</th>
-                  <th className={thCls}>سندات السحب/الاستبدال</th>
-                  <th className={thCls}>الوحدات المسحوبة</th>
-                  <th className={thCls}>قيمة الحصص</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.consignWithdrawals.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا سحوبات بضاعة أمانة في الفترة." />
-                ) : (
-                  aw.consignWithdrawals.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.noteCount}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.totalQty)}</td>
-                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.totalValue)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["consignWithdrawals"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.consignWithdrawals.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا سحوبات بضاعة أمانة في الفترة."
+              columns={[
+                txtCol("user", "المُنشئ", (r) => r.userName),
+                numCol("notes", "سندات السحب/الاستبدال", (r) => strong(r.flagged, r.noteCount)),
+                numCol("qty", "الوحدات المسحوبة", (r) => fmtAr(r.totalQty)),
+                moneyCol("value", "قيمة الحصص", (r) => <span className="text-muted-foreground">{fmtAr(r.totalValue)}</span>),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D8 (ش٤) — مسوّدات استقبالٍ مموّلة أُلغيت بلا تثبيت (نمط «اقبض ثم رُدّ ثم ألغِ») */}
@@ -550,32 +489,19 @@ export default function AnomalyWatch() {
             subtitle="طلبٌ قُبض عليه عربون ثم رُدَّ وأُلغي بلا فاتورة — كل مستندٍ سليمٌ فردياً، والتكرار هو الإشارة. المؤشر: مُنشئٌ له طلبان فأكثر بالفترة."
             count={aw.kpis.flaggedCancelledFundedDrafters}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>المُنشئ</th>
-                  <th className={thCls}>الطلبات الملغاة المموّلة</th>
-                  <th className={thCls}>المقبوض عليها</th>
-                  <th className={thCls}>المردود منها</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.cancelledFundedDrafts.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا طلبات مموّلة أُلغيت في الفترة." />
-                ) : (
-                  aw.cancelledFundedDrafts.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.draftCount}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.collectedTotal)}</td>
-                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.refundedTotal)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["cancelledFundedDrafts"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.cancelledFundedDrafts.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا طلبات مموّلة أُلغيت في الفترة."
+              columns={[
+                txtCol("user", "المُنشئ", (r) => r.userName),
+                numCol("drafts", "الطلبات الملغاة المموّلة", (r) => strong(r.flagged, r.draftCount)),
+                moneyCol("collected", "المقبوض عليها", (r) => fmtAr(r.collectedTotal)),
+                moneyCol("refunded", "المردود منها", (r) => <span className="text-muted-foreground">{fmtAr(r.refundedTotal)}</span>),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D9 (ش٥ — §٩.٤) — نسبة رصيد زين من تحصيل الموظف: الطريقة الوحيدة بلا مُثبِتٍ خارجيّ */}
@@ -584,34 +510,20 @@ export default function AnomalyWatch() {
             subtitle="رصيد الاتصال بلا قسيمة جهازٍ ولا سجلّ مصرف — تركّزه لدى موظفٍ إشارةُ «نقدٌ قُبض وسُجِّل رصيداً». المؤشر: ≥٣٠٪ من وارده وبمبلغ ≥١٠٠ ألف بالفترة."
             count={aw.kpis.flaggedTelecomCollectors}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الموظف</th>
-                  <th className={thCls}>رصيد زين</th>
-                  <th className={thCls}>إجمالي وارده</th>
-                  <th className={thCls}>النسبة</th>
-                  <th className={thCls}>عدد القبضات</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.telecomShares.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={6} message="لا قبض رصيد زين في الفترة." />
-                ) : (
-                  aw.telecomShares.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{fmtAr(r.telecomIn)}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.totalIn)}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.sharePct}%</td>
-                      <td className={numCls} dir="ltr">{r.receiptCount}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["telecomShares"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.telecomShares.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا قبض رصيد زين في الفترة."
+              columns={[
+                txtCol("user", "الموظف", (r) => r.userName),
+                moneyCol("telecom", "رصيد زين", (r) => strong(r.flagged, fmtAr(r.telecomIn))),
+                moneyCol("total", "إجمالي وارده", (r) => fmtAr(r.totalIn)),
+                numCol("share", "النسبة", (r) => strong(r.flagged, `${r.sharePct}%`)),
+                numCol("receipts", "عدد القبضات", (r) => r.receiptCount),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D10 (ش٦) — مسوّدات مموّلة معلّقة > ٢٤ ساعة: مال زبونٍ محتجزٌ بلا مستند نهائيّ */}
@@ -620,30 +532,19 @@ export default function AnomalyWatch() {
             subtitle="مالُ زبونٍ مقبوضٌ عربوناً وطلبُه ما زال معلّقاً بلا فاتورةٍ ولا إلغاء — كل صفٍّ إنذارٌ يُتابَع (تثبيتٌ أو ردّ). لقطة حاضرة لا تتقيّد بالفترة."
             count={aw.kpis.fundedStaleDrafts}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الطلب</th>
-                  <th className={thCls}>المُنشئ</th>
-                  <th className={thCls}>المحتجز</th>
-                  <th className={thCls}>عمره (ساعات)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.fundedStaleDrafts.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={4} message="لا طلبات مموّلة معلّقة فوق يوم." />
-                ) : (
-                  aw.fundedStaleDrafts.rows.map((r, i) => (
-                    <tr key={i} className="border-b bg-[var(--sem-warn-bg)] last:border-0">
-                      <td className={tdCls}>{r.draftNumber}</td>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, "font-bold text-destructive")} dir="ltr">{fmtAr(r.heldNet)}</td>
-                      <td className={numCls} dir="ltr">{r.ageHours}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["fundedStaleDrafts"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.fundedStaleDrafts.rows}
+              /* كل صفٍّ إنذارٌ بذاته — لا علمَ يميّز. */
+              getRowClassName={() => "bg-[var(--sem-warn-bg)]"}
+              emptyText="لا طلبات مموّلة معلّقة فوق يوم."
+              columns={[
+                txtCol("draft", "الطلب", (r) => r.draftNumber),
+                txtCol("user", "المُنشئ", (r) => r.userName),
+                moneyCol("held", "المحتجز", (r) => <span className="font-bold text-destructive">{fmtAr(r.heldNet)}</span>),
+                numCol("age", "عمره (ساعات)", (r) => r.ageHours),
+              ]}
+            />
           </SectionCard>
 
           {/* D11 (ش٦) — تركّز التسديدات على فواتير الغير لكل موظف */}
@@ -652,30 +553,18 @@ export default function AnomalyWatch() {
             subtitle="القبض على فاتورة أنشأها زميلٌ مشروعٌ بنطاق الفرع — تكرارُه المكثّف لدى موظفٍ إشارةُ التفافٍ على مساءلة الدرج. المؤشر: ≥٥ تسديداتٍ بالفترة."
             count={aw.kpis.flaggedOthersCollectors}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>القابض</th>
-                  <th className={thCls}>تسديداتٌ على فواتير الغير</th>
-                  <th className={thCls}>مجموعها</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.othersCollections.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={4} message="لا تسديدات على فواتير الغير في الفترة." />
-                ) : (
-                  aw.othersCollections.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.receiptCount}</td>
-                      <td className={numCls} dir="ltr">{fmtAr(r.totalAmount)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["othersCollections"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.othersCollections.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا تسديدات على فواتير الغير في الفترة."
+              columns={[
+                txtCol("user", "القابض", (r) => r.userName),
+                numCol("receipts", "تسديداتٌ على فواتير الغير", (r) => strong(r.flagged, r.receiptCount)),
+                moneyCol("total", "مجموعها", (r) => fmtAr(r.totalAmount)),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D12 (ش٦) — خفض إجمالي طلبٍ مموّل بعد القبض (من حدث تدقيق syncDraft) */}
@@ -684,28 +573,17 @@ export default function AnomalyWatch() {
             subtitle="خفضُ الطلب فوق المحتجز مشروعٌ — تكرارُه لدى موظفٍ إشارةُ تلاعبٍ بالأسعار بعد القبض. المؤشر: ≥٣ أحداثٍ بالفترة (من سجلّ التدقيق — best-effort)."
             count={aw.kpis.flaggedFundedReducers}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الفاعل</th>
-                  <th className={thCls}>مرّات الخفض بعد القبض</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.fundedReductions.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={3} message="لا خفض إجمالياتٍ بعد قبضٍ في الفترة." />
-                ) : (
-                  aw.fundedReductions.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.userName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.eventCount}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["fundedReductions"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.fundedReductions.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا خفض إجمالياتٍ بعد قبضٍ في الفترة."
+              columns={[
+                txtCol("user", "الفاعل", (r) => r.userName),
+                numCol("events", "مرّات الخفض بعد القبض", (r) => strong(r.flagged, r.eventCount)),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D13 (توصيل ١٠/٨) — عهدة مناديب متقادمة (لقطة راهنة لا تتقيد بالفترة) */}
@@ -714,32 +592,19 @@ export default function AnomalyWatch() {
             subtitle="نقدٌ بيد مندوب/شركة لم يُورَّد: العلم عند عمر ≥١٤ يوماً لأقدم إرسالية مفتوحة، أو عهدة ≥٢٠٠ ألف. لقطة حالةٍ راهنة — لا تتقيد بفترة التقرير."
             count={aw.kpis.flaggedDeliveryCustody}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الجهة</th>
-                  <th className={thCls}>العهدة</th>
-                  <th className={thCls}>إرساليات مفتوحة</th>
-                  <th className={thCls}>أقدم (يوم)</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.deliveryCustodyAging.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا عُهد توصيل قائمة الآن." />
-                ) : (
-                  aw.deliveryCustodyAging.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.partyName}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{fmtAr(r.balance)}</td>
-                      <td className={numCls} dir="ltr">{r.openCount}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.oldestDays ?? "—"}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["deliveryCustodyAging"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.deliveryCustodyAging.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا عُهد توصيل قائمة الآن."
+              columns={[
+                txtCol("party", "الجهة", (r) => r.partyName),
+                moneyCol("balance", "العهدة", (r) => strong(r.flagged, fmtAr(r.balance))),
+                numCol("open", "إرساليات مفتوحة", (r) => r.openCount),
+                numCol("oldest", "أقدم (يوم)", (r) => strong(r.flagged, r.oldestDays ?? "—")),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
 
           {/* D14 (توصيل ١٠/٨) — توريدات بعجز متكرّرة لنفس الجهة */}
@@ -748,32 +613,19 @@ export default function AnomalyWatch() {
             subtitle="توريدُ أقلَّ من المتوقّع مرةً قد يكون ظرفاً؛ تكرارُه لنفس الجهة (≥٣ بالفترة) نمطُ «سلّم أقل» يستوجب المتابعة."
             count={aw.kpis.flaggedDeliveryShortRemits}
           >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className={thCls}>الجهة</th>
-                  <th className={thCls}>توريدات الفترة</th>
-                  <th className={thCls}>منها بعجز</th>
-                  <th className={thCls}>مجموع العجز</th>
-                  <th className={thCls}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {aw.deliveryShortRemits.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={5} message="لا توريدات بعجز في الفترة." />
-                ) : (
-                  aw.deliveryShortRemits.rows.map((r, i) => (
-                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-[var(--sem-warn-bg)]")}>
-                      <td className={tdCls}>{r.partyName}</td>
-                      <td className={numCls} dir="ltr">{r.remitCount}</td>
-                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.shortCount}</td>
-                      <td className={cn(numCls, "text-money-negative")} dir="ltr">{fmtAr(r.shortfallTotal)}</td>
-                      <FlagCell flagged={r.flagged} />
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            <DataTable<AW["deliveryShortRemits"]["rows"][number]>
+              {...DETECTOR_TABLE}
+              data={aw.deliveryShortRemits.rows}
+              getRowClassName={flagRow("warn")}
+              emptyText="لا توريدات بعجز في الفترة."
+              columns={[
+                txtCol("party", "الجهة", (r) => r.partyName),
+                numCol("remits", "توريدات الفترة", (r) => r.remitCount),
+                numCol("short", "منها بعجز", (r) => strong(r.flagged, r.shortCount)),
+                moneyCol("shortfall", "مجموع العجز", (r) => <span className="text-money-negative">{fmtAr(r.shortfallTotal)}</span>),
+                flagCol(),
+              ]}
+            />
           </SectionCard>
         </div>
       )}

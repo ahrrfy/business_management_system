@@ -1,8 +1,11 @@
+import type { ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "@/components/data-table/DataTable";
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { RowActions } from "@/components/list/RowActions";
@@ -11,6 +14,7 @@ import { ListToolbar } from "@/components/list/ListToolbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { fmt } from "@/lib/money";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -22,7 +26,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -33,6 +36,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
 type Mode = "list" | "in" | "out" | "report" | "campaigns";
@@ -52,6 +56,14 @@ const STATUS_AR: Record<string, string> = {
   CANCELLED: "ملغى",
   REVERSED: "معكوس",
 };
+
+/**
+ * صفُّ الحملة **اتّحادٌ** بقصد: `campaignList` يُرجع الصفوفَ كاملةً لمن يرى التكلفة،
+ * ونسخةً بـ`budgetCost: null, spent: null` لغيره (حجبُ التكلفة، تدقيق Codex P1).
+ * تثبيتُ أحد الفرعَين وحده يكسر البناء — والاتّحادُ يُبقي فحصَ `spent == null` صادقاً.
+ */
+type CampaignRow = RouterOutputs["gifts"]["campaignList"][number];
+type CampaignColumn = ColumnDef<CampaignRow, unknown>;
 
 export default function GiftsHub() {
   const utils = trpc.useUtils();
@@ -158,39 +170,28 @@ export default function GiftsHub() {
   const [repFrom, setRepFrom] = useState(`${todayStr.slice(0, 8)}01`);
   const [repTo, setRepTo] = useState(todayStr);
   const report = trpc.gifts.report.useQuery({ from: repFrom, to: repTo }, { enabled: mode === "report" && canReports });
+  /**
+   * جداولُ تبويب التقرير الأربعة تتشارك هذا البناء: عمودُ تسميةٍ ثمّ أعمدةٌ رقمية.
+   * تحويلُه هنا وحدَه يوحّد المواضعَ الأربعة (٢/٩/٢٦، موجة الجداول ٧).
+   * الأعمدة غير الأولى `kind: "number"` ⇒ محاذاةُ نهايةٍ وأرقامٌ جدوليّة وعزلُ اتّجاه.
+   */
   const reportTable = (title: string, headers: string[], rows: string[][]) => (
-    <div className="overflow-x-auto rounded-lg border">
+    <div className="rounded-lg border">
       <div className="bg-muted/50 px-3 py-2 text-sm font-medium">{title}</div>
-      <table className="w-full text-sm">
-        <thead className="text-muted-foreground">
-          <tr>
-            {headers.map((h, i) => (
-              <th key={i} className={`px-3 py-1.5 ${i === 0 ? "text-start" : "text-end"}`}>
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={headers.length} className="py-4 text-center text-muted-foreground">
-                لا بيانات
-              </td>
-            </tr>
-          ) : (
-            rows.map((r, ri) => (
-              <tr key={ri} className="border-t">
-                {r.map((c, ci) => (
-                  <td key={ci} className={`px-3 py-1.5 ${ci === 0 ? "" : "text-end"}`}>
-                    {c}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+      <DataTable
+        embedded
+        searchable={false}
+        bounded={false}
+        pageSize={Infinity}
+        data={rows}
+        emptyText="لا بيانات"
+        columns={headers.map((h, i) => ({
+          id: `c${i}`,
+          header: h,
+          meta: i === 0 ? undefined : { kind: "number" as const },
+          cell: ({ row }: { row: { original: string[] } }) => row.original[i],
+        }))}
+      />
     </div>
   );
 
@@ -349,6 +350,43 @@ export default function GiftsHub() {
     });
   }
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة بأشرطتها وأزرار الإجراءات).
+  // الصفوف هي المعروضة نفسها (صفحة الخادم الحالية) بلا استعلامٍ جديد — والنطاق مُعلَنٌ في الرأس
+  // لأنّ الترقيم خادميّ: الورقة تحمل الصفحة لا كلّ المطابقات.
+  function printGiftsList() {
+    const branchName = (branches.data ?? []).find((b) => String(b.id) === String(listBranchId))?.name;
+    printReportDoc({
+      title: "سندات الهدايا",
+      headerExtra: [
+        { label: "النطاق", value: `الصفحة المعروضة — ${listRows.length.toLocaleString("ar-IQ-u-nu-latn")} من ${listTotal.toLocaleString("ar-IQ-u-nu-latn")}` },
+        { label: "الفترة", value: listFrom || listTo ? `${listFrom || "البداية"} — ${listTo || "اليوم"}` : "كل الفترات" },
+        { label: "الاتجاه", value: dirFilter === "ALL" ? "الكل" : dirFilter === "IN" ? "واردة" : "صادرة" },
+        { label: "الحالة", value: statusFilter === "ALL" ? "كل الحالات" : (STATUS_AR[statusFilter] ?? statusFilter) },
+        // البحث يُضيّق الصفوف **خادمياً** (`q` في filterInput) ⇒ إسقاطه من الرأس يُنتج ورقةً
+        // تدّعي أنّ التضييق كان بالفلاتر المذكورة وحدها. بقيّةُ شاشات الموجة تذكره — وهذه مثلها.
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+        ...(elevated ? [{ label: "الفرع", value: branchName ?? "كل الفروع" }] : []),
+      ],
+      columns: [
+        { key: "giftNumber", label: "رقم السند" },
+        { key: "direction", label: "الاتجاه" },
+        { key: "date", label: "التاريخ" },
+        { key: "party", label: "الطرف" },
+        { key: "status", label: "الحالة", align: "center" },
+        { key: "value", label: "القيمة التقديرية", align: "left" },
+      ],
+      rows: listRows.map((r) => ({
+        giftNumber: r.giftNumber,
+        direction: r.direction === "IN" ? "وارد" : "صادر",
+        date: r.createdAt ? new Date(r.createdAt as unknown as string).toISOString().slice(0, 10) : "",
+        party: r.supplierName ?? r.customerName ?? "—",
+        status: STATUS_AR[r.status] ?? r.status,
+        value: r.estimatedValue ?? "—",
+      })),
+      emptyText: "لا توجد سندات هدايا مطابقة.",
+    });
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHeader
@@ -401,7 +439,7 @@ export default function GiftsHub() {
             onResetFilters={resetListFilters}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printGiftsList}
             exportSpec={{
               filename: "سندات-الهدايا",
               rows: listRows,
@@ -465,135 +503,126 @@ export default function GiftsHub() {
             }
           />
 
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-start">رقم السند</th>
-                  <th className="px-3 py-2 text-start">الاتجاه</th>
-                  <th className="px-3 py-2 text-start">التاريخ</th>
-                  <th className="px-3 py-2 text-start">الطرف</th>
-                  <th className="px-3 py-2 text-start">الحالة</th>
-                  <th className="px-3 py-2 text-end">القيمة التقديرية</th>
-                  <th className="px-3 py-2 text-end">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.isLoading ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                      جارٍ التحميل…
-                    </td>
-                  </tr>
-                ) : listRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                      لا توجد سندات هدايا مطابقة.
-                    </td>
-                  </tr>
-                ) : (
-                  listRows.map((r) => (
-                    <tr key={r.id} className="border-t">
-                      <td className="px-3 py-2 font-medium">{r.giftNumber}</td>
-                      <td className="px-3 py-2">
-                        <span className={r.direction === "IN" ? "text-money-positive" : "text-[var(--sem-info)]"}>
-                          {r.direction === "IN" ? "وارد" : "صادر"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">{r.createdAt ? new Date(r.createdAt as unknown as string).toISOString().slice(0, 10) : ""}</td>
-                      <td className="px-3 py-2">{r.supplierName ?? r.customerName ?? "—"}</td>
-                      <td className="px-3 py-2">{STATUS_AR[r.status] ?? r.status}</td>
-                      <td className="px-3 py-2 text-end">{r.estimatedValue ?? "—"}</td>
-                      <td className="px-3 py-2 text-end">
-                        <RowActions
-                          mode="auto"
-                          align="start"
-                          actions={[
-                            {
-                              key: "approve",
-                              kind: "approve",
-                              label: "اعتماد",
-                              icon: Check,
-                              hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove,
-                              gate: { roles: ["manager"], module: "gifts", level: "FULL" },
-                              disabled: approve.isPending,
-                              disabledReason: "جارٍ اعتماد السند",
-                              // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
-                              onSelect: () => setApprovingId(Number(r.id)),
-                            },
-                            {
-                              key: "cancelRequest",
-                              kind: "other",
-                              label: "إلغاء الطلب",
-                              icon: X,
-                              // المعلَّق فقط: المُنجَز يُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة.
-                              hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL",
-                              gate: { module: "gifts", level: "FULL" },
-                              disabled: cancelGift.isPending,
-                              disabledReason: "جارٍ الإلغاء",
-                              onSelect: async () => {
-                                if (
-                                  !(await confirmDialog({
-                                    variant: "warning",
-                                    title: "إلغاء طلب الهدية؟",
-                                    description: `سيُلغى الطلب «${r.giftNumber}» المعلَّق. لم يُنفَّذ بعد — الإلغاء لا يمسّ المخزون ولا الحسابات.`,
-                                    confirmText: "إلغاء الطلب",
-                                  }))
-                                )
-                                  return;
-                                cancelGift.mutate({ giftId: Number(r.id) });
-                              },
-                            },
-                            { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
-                            { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
-                          ]}
-                        />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <TablePager page={page} onPageChange={setPage} pageSize={PAGE_SIZE} rowsOnPage={listRows.length} total={listTotal} isLoading={list.isFetching} />
+          <DataTable
+            searchable={false}
+            data={listRows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => list.refetch() }}
+            emptyText="لا توجد سندات هدايا مطابقة."
+            /* المُرقِّم صار داخل الجدول — كان `TablePager` منفصلاً تحته. */
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total: listTotal }}
+            columns={[
+              { id: "number", header: "رقم السند", cell: ({ row }) => <span className="font-medium">{row.original.giftNumber}</span> },
+              {
+                id: "direction",
+                header: "الاتجاه",
+                cell: ({ row }) => (
+                  <span className={row.original.direction === "IN" ? "text-money-positive" : "text-[var(--sem-info)]"}>
+                    {row.original.direction === "IN" ? "وارد" : "صادر"}
+                  </span>
+                ),
+              },
+              {
+                id: "date",
+                header: "التاريخ",
+                meta: { kind: "date" },
+                cell: ({ row }) =>
+                  row.original.createdAt ? new Date(row.original.createdAt as unknown as string).toISOString().slice(0, 10) : "",
+              },
+              { id: "party", header: "الطرف", cell: ({ row }) => row.original.supplierName ?? row.original.customerName ?? "—" },
+              { id: "status", header: "الحالة", meta: { kind: "status" }, cell: ({ row }) => STATUS_AR[row.original.status] ?? row.original.status },
+              { id: "value", header: "القيمة التقديرية", meta: { kind: "money" }, cell: ({ row }) => row.original.estimatedValue != null ? fmt(row.original.estimatedValue) : "—" },
+              {
+                id: "actions",
+                header: "إجراء",
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const r = row.original;
+                  return (
+                    <RowActions
+                      mode="auto"
+                      align="start"
+                      actions={[
+                        {
+                          key: "approve",
+                          kind: "approve",
+                          label: "اعتماد",
+                          icon: Check,
+                          hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL" || !canApprove,
+                          gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                          disabled: approve.isPending,
+                          disabledReason: `${ACTION_LABELS.approving} — السند`,
+                          // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
+                          onSelect: () => setApprovingId(Number(r.id)),
+                        },
+                        {
+                          key: "cancelRequest",
+                          kind: "other",
+                          label: "إلغاء الطلب",
+                          icon: X,
+                          // المعلَّق فقط: المُنجَز يُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة.
+                          hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL",
+                          gate: { module: "gifts", level: "FULL" },
+                          disabled: cancelGift.isPending,
+                          disabledReason: ACTION_LABELS.cancelling,
+                          onSelect: async () => {
+                            if (
+                              !(await confirmDialog({
+                                variant: "warning",
+                                title: "إلغاء طلب الهدية؟",
+                                description: `سيُلغى الطلب «${r.giftNumber}» المعلَّق. لم يُنفَّذ بعد — الإلغاء لا يمسّ المخزون ولا الحسابات.`,
+                                confirmText: "إلغاء الطلب",
+                              }))
+                            )
+                              return;
+                            cancelGift.mutate({ giftId: Number(r.id) });
+                          },
+                        },
+                        { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
+                        { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
 
           <Dialog open={approvingId != null} onOpenChange={(open) => !open && setApprovingId(null)}>
             <DialogContent className="max-w-lg">
               <DialogHeader>
                 <DialogTitle>مراجعة السند قبل الاعتماد</DialogTitle>
                 <DialogDescription>
-                  {approvePreviewQ.data ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}` : "جارٍ التحميل…"}
+                  {/* عند فشل المعاينة كان الوصف يبقى «جارٍ التحميل…» بينما الجسد يقول «تعذّر
+                    * تحميل السند» — رأسٌ يناقض جسده. الانتظارُ يُشتقّ من `isLoading` لا من غياب البيانات. */}
+                  {approvePreviewQ.data
+                    ? `سند ${approvePreviewQ.data.giftNumber} — ${approvePreviewQ.data.partyName ?? "بلا طرف"}`
+                    : approvePreviewQ.isLoading
+                      ? ACTION_LABELS.loading
+                      : "تعذّر تحميل السند."}
                 </DialogDescription>
               </DialogHeader>
               {approvePreviewQ.isLoading ? (
-                <div className="py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>
+                <div className="py-6 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</div>
               ) : approvePreviewQ.data ? (
                 <div className="space-y-3">
                   {approvePreviewQ.data.reason && (
                     <div className="text-sm text-muted-foreground">السبب: {approvePreviewQ.data.reason}</div>
                   )}
-                  <div className="overflow-x-auto rounded-md border">
-                    <table className="w-full text-sm">
-                      <thead className="bg-muted/50 text-xs text-muted-foreground">
-                        <tr>
-                          <th className="px-3 py-2 text-start">المنتج</th>
-                          <th className="px-3 py-2 text-start">SKU</th>
-                          <th className="px-3 py-2 text-start">الوحدة</th>
-                          <th className="px-3 py-2 text-end">الكمية</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {approvePreviewQ.data.lines.map((l, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-2">{l.productName}</td>
-                            <td className="px-3 py-2 text-xs text-muted-foreground">{l.sku}</td>
-                            <td className="px-3 py-2">{l.unitName}</td>
-                            <td className="px-3 py-2 text-end">{Number(l.quantity)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <DataTable
+                    embedded
+                    searchable={false}
+                    pageSize={Infinity}
+                    bounded
+                    maxHeightClass="max-h-64"
+                    data={approvePreviewQ.data.lines}
+                    columns={[
+                      { id: "product", header: "المنتج", meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
+                      { id: "sku", header: "SKU", meta: { kind: "code" }, cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.sku}</span> },
+                      { id: "unit", header: "الوحدة", cell: ({ row }) => row.original.unitName },
+                      { id: "qty", header: "الكمية", meta: { kind: "number" }, cell: ({ row }) => Number(row.original.quantity) },
+                    ]}
+                  />
                 </div>
               ) : (
                 <div className="py-6 text-center text-sm text-muted-foreground">تعذّر تحميل السند.</div>
@@ -601,7 +630,8 @@ export default function GiftsHub() {
               <DialogFooter>
                 <Button variant="outline" onClick={() => setApprovingId(null)} disabled={approve.isPending}>إلغاء</Button>
                 <Button onClick={() => approvingId != null && approve.mutate({ giftId: approvingId })} disabled={approve.isPending || !approvePreviewQ.data}>
-                  {approve.isPending ? "جارٍ الاعتماد…" : "اعتماد السند"}
+                  {/* القاموس الموحَّد بدل نصٍّ يدويّ — «جارٍ» بألف واحدة وشرطة عمودية عربية في مكانٍ واحد. */}
+                  {approve.isPending ? ACTION_LABELS.approving : "اعتماد السند"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -620,13 +650,13 @@ export default function GiftsHub() {
             </div>
           </div>
           {report.isLoading ? (
-            <div className="py-6 text-center text-muted-foreground">جارٍ التحميل…</div>
+            <div className="py-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</div>
           ) : report.data ? (
             <div className="grid gap-4 md:grid-cols-2">
-              {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), String(x.totalCost)]))}
-              {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), String(x.totalCost)]))}
-              {reportTable("تركّز حسب المُنشئ (كشف إساءة)", ["الموظف", "عدد", "التكلفة"], report.data.byCreator.map((x) => [x.userName || "—", String(x.count), String(x.totalCost)]))}
-              {reportTable("تركّز حسب العميل (كشف إساءة)", ["العميل", "عدد", "التكلفة"], report.data.byCustomer.map((x) => [x.customerName || "—", String(x.count), String(x.totalCost)]))}
+              {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("تركّز حسب المُنشئ (كشف إساءة)", ["الموظف", "عدد", "التكلفة"], report.data.byCreator.map((x) => [x.userName || "—", String(x.count), fmt(x.totalCost)]))}
+              {reportTable("تركّز حسب العميل (كشف إساءة)", ["العميل", "عدد", "التكلفة"], report.data.byCustomer.map((x) => [x.customerName || "—", String(x.count), fmt(x.totalCost)]))}
             </div>
           ) : null}
         </div>
@@ -666,67 +696,75 @@ export default function GiftsHub() {
             </div>
           ) : null}
 
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-start">الاسم</th>
-                  <th className="px-3 py-2 text-start">الحالة</th>
-                  <th className="px-3 py-2 text-start">المدى</th>
-                  <th className="px-3 py-2 text-end">المُنفَق / الميزانيّة</th>
-                  {elevated ? <th className="px-3 py-2 text-end">إجراء</th> : null}
-                </tr>
-              </thead>
-              <tbody>
-                {(allCampaigns.data ?? []).length === 0 ? (
-                  <tr>
-                    <td colSpan={elevated ? 5 : 4} className="py-6 text-center text-muted-foreground">
-                      لا حملات بعد.
-                    </td>
-                  </tr>
-                ) : (
-                  (allCampaigns.data ?? []).map((c) => (
-                    <tr key={c.id} className="border-t">
-                      <td className="px-3 py-2 font-medium">{c.name}</td>
-                      <td className="px-3 py-2">
-                        <span className={c.status === "ACTIVE" ? "text-money-positive" : "text-muted-foreground"}>
-                          {c.status === "ACTIVE" ? "نشطة" : "مغلقة"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-muted-foreground">
-                        {c.startDate ? new Date(c.startDate as unknown as string).toISOString().slice(0, 10) : "—"}
-                        {" → "}
-                        {c.endDate ? new Date(c.endDate as unknown as string).toISOString().slice(0, 10) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-end">
-                        {/* budgetCost/spent يُحجَبان (null) خادمياً عمّن لا يرى التكلفة — نمط بقية الشاشة. */}
-                        {c.spent == null ? "—" : `${c.spent}${c.budgetCost ? ` / ${c.budgetCost}` : " (بلا سقف)"}`}
-                      </td>
-                      {elevated ? (
-                        <td className="px-3 py-2 text-end">
-                          <RowActions
-                            mode="inline"
-                            align="start"
-                            actions={[{
-                              key: "close",
-                              kind: "edit",
-                              label: "إغلاق",
-                              icon: X,
-                              hidden: c.status !== "ACTIVE",
-                              gate: { roles: ["manager"], module: "gifts", level: "FULL" },
-                              disabled: closeCampaign.isPending,
-                              disabledReason: "جارٍ إغلاق الحملة",
-                              onSelect: () => closeCampaign.mutate({ campaignId: Number(c.id) }),
-                            }]}
-                          />
-                        </td>
-                      ) : null}
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <DataTable<CampaignRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            data={allCampaigns.data ?? []}
+            loading={allCampaigns.isLoading}
+            emptyText="لا حملات بعد."
+            columns={[
+              { id: "name", header: "الاسم", meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.name}</span> },
+              {
+                id: "status",
+                header: "الحالة",
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span className={row.original.status === "ACTIVE" ? "text-money-positive" : "text-muted-foreground"}>
+                    {row.original.status === "ACTIVE" ? "نشطة" : "مغلقة"}
+                  </span>
+                ),
+              },
+              {
+                id: "range",
+                header: "المدى",
+                meta: { kind: "date", width: "wide" },
+                cell: ({ row }) => (
+                  <span className="text-muted-foreground">
+                    {row.original.startDate ? new Date(row.original.startDate as unknown as string).toISOString().slice(0, 10) : "—"}
+                    {" → "}
+                    {row.original.endDate ? new Date(row.original.endDate as unknown as string).toISOString().slice(0, 10) : "—"}
+                  </span>
+                ),
+              },
+              {
+                id: "budget",
+                header: "المُنفَق / الميزانيّة",
+                meta: { kind: "money" },
+                // budgetCost/spent يُحجَبان (null) خادمياً عمّن لا يرى التكلفة — نمط بقية الشاشة.
+                cell: ({ row }) =>
+                  row.original.spent == null
+                    ? "—"
+                    : `${fmt(row.original.spent)}${row.original.budgetCost ? ` / ${fmt(row.original.budgetCost)}` : " (بلا سقف)"}`,
+              },
+              // عمود الإجراء لمن يملك الصلاحية وحده — كما كان `elevated ? <td/> : null`.
+              ...(elevated
+                ? [{
+                    id: "actions",
+                    header: "إجراء",
+                    meta: { kind: "actions" as const },
+                    cell: ({ row }: { row: { original: { id: number | string; status: string } } }) => (
+                      <RowActions
+                        mode="inline"
+                        align="start"
+                        actions={[{
+                          key: "close",
+                          kind: "edit",
+                          label: "إغلاق",
+                          icon: X,
+                          hidden: row.original.status !== "ACTIVE",
+                          gate: { roles: ["manager"], module: "gifts", level: "FULL" },
+                          disabled: closeCampaign.isPending,
+                          disabledReason: `${ACTION_LABELS.closing} — الحملة`,
+                          onSelect: () => closeCampaign.mutate({ campaignId: Number(row.original.id) }),
+                        }]}
+                      />
+                    ),
+                  } as CampaignColumn]
+                : []),
+            ]}
+          />
         </div>
       ) : (
         <div className="space-y-4 rounded-lg border p-4">
@@ -741,10 +779,10 @@ export default function GiftsHub() {
             {elevated ? (
               <div className="space-y-1">
                 <Label>الفرع *</Label>
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                  value={formBranchId ?? ""}
-                  onChange={(e) => setFormBranchId(e.target.value ? Number(e.target.value) : null)}
+                <AppSelect
+                  className="h-9 px-2 text-sm"
+                  value={String(formBranchId ?? "")}
+                  onValueChange={(value) => setFormBranchId(value ? Number(value) : null)}
                 >
                   <option value="">— اختر الفرع —</option>
                   {(branches.data ?? []).map((b) => (
@@ -752,7 +790,7 @@ export default function GiftsHub() {
                       {b.name}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             ) : null}
 
@@ -794,19 +832,19 @@ export default function GiftsHub() {
             {mode === "out" ? (
               <div className="space-y-1">
                 <Label>الحملة (اختياري)</Label>
-                <select
-                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-                  value={campaignId ?? ""}
-                  onChange={(e) => setCampaignId(e.target.value ? Number(e.target.value) : null)}
+                <AppSelect
+                  className="h-9 px-2 text-sm"
+                  value={String(campaignId ?? "")}
+                  onValueChange={(value) => setCampaignId(value ? Number(value) : null)}
                 >
                   <option value="">— بلا حملة —</option>
                   {(activeCampaigns.data ?? []).map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
-                      {c.budgetCost ? ` (${c.spent}/${c.budgetCost} د.ع)` : ""}
+                      {c.budgetCost ? ` (${fmt(c.spent)}/${fmt(c.budgetCost)} د.ع)` : ""}
                     </option>
                   ))}
-                </select>
+                </AppSelect>
               </div>
             ) : null}
           </div>
@@ -876,7 +914,7 @@ export default function GiftsHub() {
             </Button>
             <Button onClick={mode === "in" ? submitInbound : submitOutbound} disabled={!canSubmit}>
               <Plus aria-hidden className="me-1 size-4" />
-              {busy ? "جارٍ الحفظ…" : mode === "in" ? "استلام" : "منح الهدية"}
+              {busy ? ACTION_LABELS.saving : mode === "in" ? "استلام" : "منح الهدية"}
             </Button>
           </div>
         </div>

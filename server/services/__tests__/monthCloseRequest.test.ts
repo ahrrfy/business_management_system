@@ -255,6 +255,7 @@ describe("طلب إقفال الشهر واعتماده (ش٥ب)", () => {
           "JOURNAL",
           "ROLE_BALANCES",
           "WIP_WORK_ORDERS",
+          "MISSED_DAILY_COUNT_EXCEPTIONS",
           "APPROVAL_READINESS",
           "CLOSE_INTEGRITY",
         ]),

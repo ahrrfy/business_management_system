@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { and, eq } from "drizzle-orm";
 import { stocktakeSessions, stocktakeUnknownScans } from "../../../drizzle/schema";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { requireDb, withTx } from "../tx";
 import type { PortalIdentity } from "./identity";
 
@@ -27,7 +28,9 @@ export async function recordUnknownScan(
   identity: PortalIdentity,
   input: { barcode: string; clientRequestId: string },
 ): Promise<RecordUnknownScanResult> {
-  const barcode = input.barcode.trim();
+  // (٤/٩) يُخزَّن مُطبَّعاً (تقليم + طيّ الأرقام) كي يُطابَق لاحقاً كتالوجاً مُطبَّعاً — والمشرف يحسمه
+  // من الطابور بالقيمة نفسها. بلا التطبيع كان مسحٌ بمسافةٍ طرفية يُخزَّن فلا يُحلّ إلى صنفه المعروف.
+  const barcode = canonicalizeBarcodeInput(input.barcode);
   if (!barcode || barcode.length > 64) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "باركود غير صالح." });
   }

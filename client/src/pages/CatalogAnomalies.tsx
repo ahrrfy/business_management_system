@@ -8,7 +8,10 @@
  * **الصلاحيات:** خلف `catalogAnomalies` — admin/manager (FULL) + accountant/auditor (READ فقط،
  * أفعال markIntentional/markIgnored محجوبة).
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Link } from "wouter";
 import { AlertTriangle, CheckCircle2, ExternalLink, XCircle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,19 +21,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import { TablePager } from "@/components/table/TablePager";
+import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { D, fmt } from "@/lib/money";
 
 type Severity = "blocker" | "warning" | "info";
 type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
 type Finding = RouterOutputs["catalogAnomalies"]["list"]["findings"][number];
 
 const LENS_LABELS: Record<LensCode, string> = {
-  L1: "L1 · تكلفة ≥ ٥× بيع",
+  L1: "L1 · تكلفة ≥ 5× بيع",
   L2: "L2 · تكلفة > بيع (خسارة)",
   L3: "L3 · هامش صفر",
   L4: "L4 · تكلفة صفر مع نشاط",
@@ -47,6 +53,37 @@ const SEVERITY_BADGE: Record<Severity, { className: string; label: string; icon:
 };
 
 const PAGE_SIZE = 200;
+
+/** تسمية حالة الاستثناء كما تُقرأ — مصدرٌ واحد للعرض ولـ«نسخ القيمة». */
+function overrideStatusLabel(f: Finding): string {
+  if (!f.override) return "نشط";
+  const base = f.override.kind === "INTENTIONAL" ? "قصديّ" : "متجاهَل";
+  return f.override.excludeUntil ? `${base} حتى ${String(f.override.excludeUntil).slice(0, 10)}` : base;
+}
+
+/** صفُّ سجلّ تغيّرات التكلفة — مشتقٌّ من عقد `catalogAnomalies.changeLog`. */
+type CostLogRow = RouterOutputs["catalogAnomalies"]["changeLog"][number];
+
+/** نصّ «قبل → بعد (نسبة)» — نفسه في الخليّة وفي «نسخ القيمة».
+ *  §٥: كانت تستعمل Number(...).toLocaleString("en-US") مباشرةً على تكلفةٍ (مالٌ) — يخالف
+ *  «لا parseFloat/Number على الأموال» ويفتح باباً لعلّة تقريب النقطة العائمة، ويتجاوز fmt/fmtAr
+ *  المشتركتين فيفقد توحيد التنسيق (لا هذا الملف كان يستورد @/lib/money أصلاً). */
+function costChangeText(r: CostLogRow): string {
+  const oldV = D(r.oldValue);
+  const newV = D(r.newValue);
+  const ratio = oldV.gt(0) ? newV.dividedBy(oldV) : D(0);
+  return `${fmt(r.oldValue)} → ${fmt(r.newValue)} (${ratio.toFixed(2)}×)`;
+}
+
+/** تسمية حالة الاستعادة كما تُقرأ — تُطابق ما يعرضه العمود مهما كان شكلُه (شارة/زرّ/رابط). */
+function revertStateLabel(r: CostLogRow, canWrite: boolean): string {
+  if (r.reverted) return "مستعادٌ سابقاً";
+  if (canWrite && Number(r.directRevertAllowed) === 1) return "استعادة";
+  if (canWrite && r.revertBlockReason === "STOCK_ON_HAND") return "طلب إعادة تقييم";
+  if (canWrite && r.revertBlockReason === "EXPIRED") return "انتهت المهلة";
+  if (canWrite && r.revertBlockReason === "NON_COST") return "غير مدعوم";
+  return "نشط";
+}
 
 export default function CatalogAnomalies() {
   const [includeOverridden, setIncludeOverridden] = useState(false);
@@ -80,7 +117,6 @@ export default function CatalogAnomalies() {
     offset: page * PAGE_SIZE,
   }, { staleTime: 60 * 1000 });
   const total = listQ.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   /** تصدير كامل — كل صفحات النتائج المطابقة للفلاتر الحاليّة (لا الصفحة المعروضة فقط). */
   async function exportAll() {
@@ -131,6 +167,120 @@ export default function CatalogAnomalies() {
     );
   });
 
+  /*
+   * أعمدة النتائج — داخل المكوّن لأنّها تقرأ الصلاحية وتفتح حوار الاستثناء.
+   * `accessorFn` بالتسمية المعروضة لا الرمز الخامّ، وعمودُ الأفعال معفى (لا قيمة له).
+   */
+  const findingColumns = useMemo<ColumnDef<Finding, unknown>[]>(
+    () => [
+      {
+        id: "severity",
+        header: "الحدّة",
+        accessorFn: (f) => SEVERITY_BADGE[f.severity as Severity]?.label ?? f.severity,
+        meta: { kind: "status" },
+        cell: ({ row }) => {
+          const sev = SEVERITY_BADGE[row.original.severity as Severity];
+          return (
+            <Badge variant="outline" className={sev.className}>
+              {sev.icon} {sev.label}
+            </Badge>
+          );
+        },
+      },
+      {
+        id: "code",
+        header: "العدسة",
+        accessorFn: (f) => LENS_LABELS[f.code as LensCode] ?? f.code,
+        cell: ({ row }) => <span className="text-xs">{LENS_LABELS[row.original.code as LensCode]}</span>,
+      },
+      {
+        id: "productName",
+        header: "المنتج",
+        accessorFn: (f) => f.productName,
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          // القصّ مع title كما كان — اسم المنتج قد يطول فيمدّد الجدول.
+          <span className="block max-w-xs truncate" title={row.original.productName}>
+            {row.original.productName}
+          </span>
+        ),
+      },
+      { id: "sku", header: "SKU", accessorFn: (f) => f.sku, meta: { kind: "code" }, cell: ({ row }) => row.original.sku },
+      {
+        id: "note",
+        header: "تفاصيل",
+        accessorFn: (f) => f.note,
+        meta: { width: "wide", wrap: true },
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note}</span>,
+      },
+      {
+        id: "status",
+        header: "الحالة",
+        accessorFn: (f) => overrideStatusLabel(f),
+        meta: { kind: "status" },
+        cell: ({ row }) =>
+          row.original.override ? (
+            <Badge variant="secondary" className="text-[10px]">
+              {overrideStatusLabel(row.original)}
+            </Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground">نشط</span>
+          ),
+      },
+      {
+        id: "actions",
+        header: "أفعال",
+        meta: { kind: "actions", width: "wide" },
+        cell: ({ row }) => {
+          const f = row.original;
+          return (
+            <div className="flex items-center gap-1">
+              <Link href={`/products/${f.productId}/edit`}>
+                <Button size="sm" variant="outline" className="h-7 text-xs" title="فتح المنتج للتعديل">
+                  <ExternalLink className="size-3 me-1" aria-hidden />
+                  إصلاح
+                </Button>
+              </Link>
+              {canWrite && !f.override && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "INTENTIONAL", productLabel: f.productName })}
+                  >
+                    قصديّ
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "IGNORED", productLabel: f.productName })}
+                  >
+                    تجاهل
+                  </Button>
+                </>
+              )}
+              {canWrite && f.override && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => clearOverride.mutate({ variantId: f.variantId, code: f.code as LensCode })}
+                >
+                  <RotateCcw className="size-3 me-1" aria-hidden />
+                  إلغاء الاستثناء
+                </Button>
+              )}
+            </div>
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canWrite, clearOverride],
+  );
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -148,36 +298,47 @@ export default function CatalogAnomalies() {
         </div>
       )}
 
-      {/* الفلاتر */}
-      <Card>
-        <CardContent className="p-3 flex flex-wrap items-center gap-3">
-          <Input
-            placeholder="بحث بالمنتج/SKU/رقم المتغيّر (في الصفحة المعروضة)…"
+      <FilterShell
+        columns={3}
+        activeCount={(search ? 1 : 0) + (codeFilter ? 1 : 0) + (sevFilter ? 1 : 0) + (includeOverridden ? 1 : 0)}
+        onReset={() => { setSearch(""); setCodeFilter(""); setSevFilter(""); setIncludeOverridden(false); setPage(0); }}
+        headerActions={
+          <Button variant="outline" size="sm" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
+            {/* المخرَج ملفّ Excel لا طباعة ⇒ مفتاح التصدير لا مفتاح الطباعة. */}
+            {exporting ? ACTION_LABELS.exporting : "تصدير Excel (الكل)"}
+          </Button>
+        }
+        toggles={
+          <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer">
+            <input type="checkbox" className="size-4" checked={includeOverridden} onChange={(e) => { setIncludeOverridden(e.target.checked); setPage(0); }} />
+            تضمين المستثنى
+          </label>
+        }
+      >
+        <FilterField label="بحث (منتج / SKU / رقم متغيّر)" hint="ضمن الصفحة المعروضة" wide>
+          <SearchField
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="max-w-xs h-8"
+            onChange={setSearch}
+            placeholder="اسم المنتج أو SKU…"
           />
-          <select value={codeFilter} onChange={(e) => { setCodeFilter(e.target.value as LensCode | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+        </FilterField>
+        <FilterField label="العدسة">
+          <AppSelect value={codeFilter} onValueChange={(v) => { setCodeFilter(v as LensCode | ""); setPage(0); }}>
             <option value="">كل العدسات</option>
             {(Object.keys(LENS_LABELS) as LensCode[]).map((k) => (
               <option key={k} value={k}>{LENS_LABELS[k]}</option>
             ))}
-          </select>
-          <select value={sevFilter} onChange={(e) => { setSevFilter(e.target.value as Severity | ""); setPage(0); }} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          </AppSelect>
+        </FilterField>
+        <FilterField label="الحدّة">
+          <AppSelect value={sevFilter} onValueChange={(v) => { setSevFilter(v as Severity | ""); setPage(0); }}>
             <option value="">كل الحدّات</option>
             <option value="blocker">حاجز</option>
             <option value="warning">تحذير</option>
             <option value="info">إخبار</option>
-          </select>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-            <input type="checkbox" checked={includeOverridden} onChange={(e) => { setIncludeOverridden(e.target.checked); setPage(0); }} />
-            تضمين المستثنى
-          </label>
-          <Button variant="outline" size="sm" className="me-auto h-8" disabled={total === 0 || exporting} onClick={() => void exportAll()}>
-            {exporting ? "جارٍ التحضير…" : "تصدير Excel (الكل)"}
-          </Button>
-        </CardContent>
-      </Card>
+          </AppSelect>
+        </FilterField>
+      </FilterShell>
 
       {/* لافتة اقتطاع: عدسة بلغ عدد نتائجها الخام سقف limitPerLens ⇒ قد توجد نتائج أخرى لم تُكتشف من المصدر. */}
       {(listQ.data?.truncatedLenses?.length ?? 0) > 0 && (
@@ -185,100 +346,63 @@ export default function CatalogAnomalies() {
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>
             العدسات {listQ.data!.truncatedLenses.map((c) => LENS_LABELS[c as LensCode] ?? c).join("، ")} بلغت سقف الكشف
-            (٢٠٠) — قد توجد نتائج إضافية غير ظاهرة. ضيّق الفلتر بعدسة واحدة لرؤية الكل.
+            (200) — قد توجد نتائج إضافية غير ظاهرة. ضيّق الفلتر بعدسة واحدة لرؤية الكل.
           </span>
         </div>
       )}
 
       {/* الجدول */}
       <Card>
+        {/* شريطُ الترقيم اليدويّ حُذف من هنا: الترقيم صار خادمياً داخل الجدول، وشريطان
+            يقفزان بمقدارَين مختلفَين يُتخطّى معهما صفوفٌ بصمت. */}
         <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle className="text-base">النتائج ({filtered.length} من {total})</CardTitle>
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">صفحة {page + 1} من {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page === 0 || listQ.isFetching} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق →</Button>
-              <Button variant="outline" size="sm" disabled={page + 1 >= totalPages || listQ.isFetching} onClick={() => setPage((p) => p + 1)}>← التالي</Button>
-            </div>
-          )}
         </CardHeader>
         <CardContent>
-          {listQ.isLoading ? <LoadingState /> : filtered.length === 0 ? (
-            <div className="text-center py-8 text-sm text-muted-foreground">
-              <CheckCircle2 className="size-8 mx-auto mb-2 text-[var(--sem-pos)]" aria-hidden />
-              لا شذوذ — جميع المتغيّرات ضمن الحدود المعقولة أو مستثناة.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-xs text-muted-foreground border-b">
-                  <tr>
-                    <th className="text-start p-2">الحدّة</th>
-                    <th className="text-start p-2">العدسة</th>
-                    <th className="text-start p-2">المنتج</th>
-                    <th className="text-start p-2">SKU</th>
-                    <th className="text-start p-2">تفاصيل</th>
-                    <th className="text-start p-2">الحالة</th>
-                    <th className="text-start p-2">أفعال</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((f) => {
-                    const sev = SEVERITY_BADGE[f.severity as Severity];
-                    return (
-                      <tr key={`${f.variantId}:${f.code}`} className="border-b hover:bg-muted/30">
-                        <td className="p-2">
-                          <Badge variant="outline" className={sev.className}>
-                            {sev.icon} {sev.label}
-                          </Badge>
-                        </td>
-                        <td className="p-2 text-xs">{LENS_LABELS[f.code as LensCode]}</td>
-                        <td className="p-2 max-w-xs truncate" title={f.productName}>{f.productName}</td>
-                        <td className="p-2 font-mono text-xs">{f.sku}</td>
-                        <td className="p-2 text-xs text-muted-foreground">{f.note}</td>
-                        <td className="p-2">
-                          {f.override ? (
-                            <Badge variant="secondary" className="text-[10px]">
-                              {f.override.kind === "INTENTIONAL" ? "قصديّ" : "متجاهَل"}
-                              {f.override.excludeUntil ? ` حتى ${String(f.override.excludeUntil).slice(0, 10)}` : ""}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">نشط</span>
-                          )}
-                        </td>
-                        <td className="p-2">
-                          <div className="flex items-center gap-1">
-                            <Link href={`/products/${f.productId}/edit`}>
-                              <Button size="sm" variant="outline" className="h-7 text-xs" title="فتح المنتج للتعديل">
-                                <ExternalLink className="size-3 me-1" aria-hidden />
-                                إصلاح
-                              </Button>
-                            </Link>
-                            {canWrite && !f.override && (
-                              <>
-                                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "INTENTIONAL", productLabel: f.productName })}>
-                                  قصديّ
-                                </Button>
-                                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setMarkDialog({ variantId: f.variantId, code: f.code as LensCode, kind: "IGNORED", productLabel: f.productName })}>
-                                  تجاهل
-                                </Button>
-                              </>
-                            )}
-                            {canWrite && f.override && (
-                              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => clearOverride.mutate({ variantId: f.variantId, code: f.code as LensCode })}>
-                                <RotateCcw className="size-3 me-1" aria-hidden />
-                                إلغاء الاستثناء
-                              </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DataTable<Finding>
+            embedded
+            columns={findingColumns}
+            data={filtered}
+            /* البحث والفلاتر في FilterShell أعلاه (تُغذّي `filtered`) — بلا هذا يظهر حقلا
+               بحثٍ متجاوران، وتُعلن الشاشةُ «لا صفوف بعد» بينما الفلترُ وحده هو الحاجب. */
+            searchable={false}
+            pageSize={Infinity}
+            externalFiltersActive={search.trim() !== "" || codeFilter !== "" || sevFilter !== "" || includeOverridden}
+            loading={listQ.isLoading}
+            errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
+            emptyState={
+              <div className="text-sm text-muted-foreground">
+                <CheckCircle2 className="size-8 mx-auto mb-2 text-[var(--sem-pos)]" aria-hidden />
+                لا شذوذ — جميع المتغيّرات ضمن الحدود المعقولة أو مستثناة.
+              </div>
+            }
+            emptyFilteredState={
+              <div className="text-sm text-muted-foreground">
+                <CheckCircle2 className="size-8 mx-auto mb-2 text-[var(--sem-pos)]" aria-hidden />
+                لا شذوذ مطابق للفلاتر الحالية.
+              </div>
+            }
+          />
+          {/*
+           * الترقيم يُقاس بـ**صفوف صفحة الخادم** لا بـ`filtered`: بحثُ الشاشة محلّيّ ويصفّي
+           * الصفحة المعروضة وحدها (كما يقول تلميحُ حقله). لو مُرِّر `filtered` إلى
+           * `serverPagination` لقرأ الشريطُ «عرض 1–3 من 250»، والأسوأ: بحثٌ بلا مطابقٍ في
+           * الصفحة الأولى يجعل `rowsOnPage = 0` فيُخفي `TablePager` زرَّي السابق/التالي
+           * ⇒ بابٌ مسدود: النتيجةُ في صفحةٍ أخرى ولا سبيل للوصول إليها إلّا بمسح البحث.
+           */}
+          <TablePager
+            page={page}
+            onPageChange={setPage}
+            pageSize={PAGE_SIZE}
+            rowsOnPage={listQ.data?.findings.length ?? 0}
+            total={total}
+            isLoading={listQ.isLoading || listQ.isFetching}
+            status={
+              search.trim() && filtered.length !== (listQ.data?.findings.length ?? 0)
+                ? `مطابق للبحث في هذه الصفحة: ${filtered.length}`
+                : undefined
+            }
+          />
         </CardContent>
       </Card>
 
@@ -322,88 +446,144 @@ function CostChangeLogSection({ canWrite }: { canWrite: boolean }) {
     },
     onError: (e) => notify.err(e),
   });
+
+  /*
+   * أعمدة سجلّ التغيّرات — داخل المكوّن لأنّها تقرأ الصلاحية وتستدعي الاستعادة.
+   * عمود «الحالة» يُمرَّر بتسميته المقروءة في `accessorFn` وإن كان محتواه زرّاً أو رابطاً.
+   */
+  const logColumns = useMemo<ColumnDef<CostLogRow, unknown>[]>(
+    () => [
+      {
+        id: "createdAt",
+        header: "الوقت",
+        accessorFn: (r) => new Date(r.createdAt).toLocaleString("ar-IQ-u-nu-latn"),
+        meta: { kind: "datetime", align: "start" },
+        cell: ({ row }) => <span className="text-xs">{new Date(row.original.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</span>,
+      },
+      {
+        id: "product",
+        header: "المنتج",
+        accessorFn: (r) => r.productName ?? `رقم المتغيّر ${r.variantId}`,
+        meta: { width: "wide" },
+        cell: ({ row }) => (
+          <span className="block max-w-xs truncate" title={row.original.productName ?? ""}>
+            {row.original.productName ?? `رقم المتغيّر ${row.original.variantId}`}{" "}
+            <span className="text-[10px] text-muted-foreground">{row.original.sku ?? ""}</span>
+          </span>
+        ),
+      },
+      {
+        id: "change",
+        header: "قبل → بعد",
+        accessorFn: (r) => costChangeText(r),
+        // kind: "number" يعزل اتّجاه الأرقام؛ align: "start" يحفظ محاذاة العمود كما كانت.
+        meta: { kind: "number", align: "start", width: "wide" },
+        cell: ({ row }) => {
+          const oldV = Number(row.original.oldValue);
+          const newV = Number(row.original.newValue);
+          const ratio = oldV > 0 ? newV / oldV : 0;
+          return (
+            <span className="text-xs">
+              {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")}{" "}
+              <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>
+            </span>
+          );
+        },
+      },
+      {
+        id: "severity",
+        header: "الحدّة",
+        accessorFn: (r) => SEVERITY_BADGE[r.severity as Severity]?.label ?? r.severity,
+        cell: ({ row }) => (
+          <span className="text-xs">{SEVERITY_BADGE[row.original.severity as Severity]?.label ?? row.original.severity}</span>
+        ),
+      },
+      {
+        id: "actor",
+        header: "الفاعل",
+        accessorFn: (r) => r.actorName ?? "—",
+        meta: { kind: "actor" },
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.actorName ?? "—"}</span>,
+      },
+      {
+        id: "revertState",
+        header: "الحالة",
+        accessorFn: (r) => revertStateLabel(r, canWrite),
+        cell: ({ row }) => {
+          const r = row.original;
+          const oldV = Number(r.oldValue);
+          return (
+            <span className="text-xs">
+              {r.reverted ? (
+                <Badge variant="secondary" className="text-[10px]">مستعادٌ سابقاً</Badge>
+              ) : canWrite && Number(r.directRevertAllowed) === 1 ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={async () => {
+                    const ok = await confirm({
+                      variant: "warning",
+                      title: "استعادة تكلفة سابقة",
+                      description: `استعادة التكلفة إلى ${oldV.toLocaleString("en-US")} د.ع؟`,
+                      confirmText: "استعادة",
+                    });
+                    if (ok) revert.mutate({ logId: r.id });
+                  }}
+                >
+                  <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
+                </Button>
+              ) : canWrite && r.revertBlockReason === "STOCK_ON_HAND" ? (
+                <Link href="/inventory" className="text-xs text-primary underline-offset-4 hover:underline">
+                  طلب إعادة تقييم
+                </Link>
+              ) : canWrite && r.revertBlockReason === "EXPIRED" ? (
+                <span className="text-muted-foreground">انتهت المهلة</span>
+              ) : canWrite && r.revertBlockReason === "NON_COST" ? (
+                <span className="text-muted-foreground">غير مدعوم</span>
+              ) : (
+                <span className="text-muted-foreground">نشط</span>
+              )}
+            </span>
+          );
+        },
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canWrite, revert],
+  );
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-2">
         <CardTitle className="text-base">سجلّ تغيّرات التكلفة (Trigger BEFORE UPDATE)</CardTitle>
         <div className="flex items-center gap-2">
-          <select value={minSeverity} onChange={(e) => setMinSeverity(e.target.value as typeof minSeverity)} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
+          <AppSelect value={minSeverity} onValueChange={(v) => setMinSeverity(v as typeof minSeverity)} className="h-8 w-36 text-xs">
             <option value="info">إخبار فأعلى</option>
             <option value="warning">تحذير فأعلى</option>
             <option value="blocker">حاجز فأعلى</option>
             <option value="catastrophic">كارثيّ فقط</option>
-          </select>
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs">
-            <option value={7}>٧ أيام</option>
-            <option value={30}>٣٠ يوماً</option>
-            <option value={90}>٩٠ يوماً</option>
-          </select>
+          </AppSelect>
+          <AppSelect value={String(days)} onValueChange={(v) => setDays(Number(v))} className="h-8 w-28 text-xs">
+            <option value={7}>7 أيام</option>
+            <option value={30}>30 يوماً</option>
+            <option value={90}>90 يوماً</option>
+          </AppSelect>
         </div>
       </CardHeader>
       <CardContent>
-        {logQ.isLoading ? <LoadingState /> : (logQ.data ?? []).length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-4">لا تغيّرات مسجّلة في هذه النافذة.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-xs text-muted-foreground border-b">
-                <tr>
-                  <th className="text-start p-2">الوقت</th>
-                  <th className="text-start p-2">المنتج</th>
-                  <th className="text-start p-2">قبل → بعد</th>
-                  <th className="text-start p-2">الحدّة</th>
-                  <th className="text-start p-2">الفاعل</th>
-                  <th className="text-start p-2">الحالة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(logQ.data ?? []).map((row) => {
-                  const oldV = Number(row.oldValue);
-                  const newV = Number(row.newValue);
-                  const ratio = oldV > 0 ? newV / oldV : 0;
-                  return (
-                    <tr key={row.id} className="border-b hover:bg-muted/30">
-                      <td className="p-2 text-xs tabular-nums" dir="ltr">{new Date(row.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
-                      <td className="p-2 max-w-xs truncate" title={row.productName ?? ""}>{row.productName ?? `رقم المتغيّر ${row.variantId}`} <span className="text-[10px] text-muted-foreground">{row.sku ?? ""}</span></td>
-                      <td className="p-2 text-xs tabular-nums" dir="ltr">
-                        {oldV.toLocaleString("en-US")} → {newV.toLocaleString("en-US")} <span className="text-muted-foreground">({ratio.toFixed(2)}×)</span>
-                      </td>
-                      <td className="p-2 text-xs">{SEVERITY_BADGE[row.severity as Severity]?.label ?? row.severity}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{row.actorName ?? "—"}</td>
-                      <td className="p-2 text-xs">
-                        {row.reverted ? (
-                          <Badge variant="secondary" className="text-[10px]">مستعادٌ سابقاً</Badge>
-                        ) : canWrite && Number(row.directRevertAllowed) === 1 ? (
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={async () => {
-                            const ok = await confirm({
-                              variant: "warning",
-                              title: "استعادة تكلفة سابقة",
-                              description: `استعادة التكلفة إلى ${oldV.toLocaleString("en-US")} د.ع؟`,
-                              confirmText: "استعادة",
-                            });
-                            if (ok) revert.mutate({ logId: row.id });
-                          }}>
-                            <RotateCcw className="size-3 me-1" aria-hidden /> استعادة
-                          </Button>
-                        ) : canWrite && row.revertBlockReason === "STOCK_ON_HAND" ? (
-                          <Link href="/inventory" className="text-xs text-primary underline-offset-4 hover:underline">
-                            طلب إعادة تقييم
-                          </Link>
-                        ) : canWrite && row.revertBlockReason === "EXPIRED" ? (
-                          <span className="text-muted-foreground">انتهت المهلة</span>
-                        ) : canWrite && row.revertBlockReason === "NON_COST" ? (
-                          <span className="text-muted-foreground">غير مدعوم</span>
-                        ) : (
-                          <span className="text-muted-foreground">نشط</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* مُضمَّن: العنوان والفلاتر في ترويسة البطاقة أعلاه. */}
+        <DataTable<CostLogRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={logColumns}
+          data={logQ.data ?? []}
+          loading={logQ.isLoading}
+          errorState={{ isError: logQ.isError, message: logQ.error?.message, onRetry: () => void logQ.refetch() }}
+          emptyText="لا تغيّرات مسجّلة في هذه النافذة."
+        />
       </CardContent>
     </Card>
   );
@@ -434,7 +614,7 @@ function MarkOverrideDialog({
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <label className="text-xs font-medium">التبرير <span className="text-[var(--sem-neg)]">*</span> (≥ ١٠ محارف)</label>
+            <label className="text-xs font-medium">التبرير <span className="text-[var(--sem-neg)]">*</span> (≥ 10 محارف)</label>
             <Textarea
               value={justification}
               onChange={(e) => setJustification(e.target.value)}
@@ -459,7 +639,7 @@ function MarkOverrideDialog({
             disabled={disabled}
             onClick={() => onConfirm({ variantId: info.variantId, code: info.code, justification: justification.trim(), excludeUntil: excludeUntil || null })}
           >
-            {isPending ? "جارٍ الحفظ…" : "تأكيد"}
+            {isPending ? ACTION_LABELS.saving : "تأكيد"}
           </Button>
         </DialogFooter>
       </DialogContent>

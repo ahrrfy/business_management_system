@@ -2,6 +2,7 @@
 // عروض: إعادة الطلب · راكد عالي القيمة · خطر النفاد · فروقات الجرد. + رابط الكاردكس (بطاقة المنتج).
 // يُركّب endpoints (stockStatus/deadStockValue/reorderRisk/stocktakeVariance). عرض + Excel + طباعة A4.
 import { useEffect, useMemo, useState } from "react";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { Link } from "wouter";
 import { FolderOpen } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -9,8 +10,9 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtInt, fmtAr, formatIqd } from "@/lib/money";
@@ -18,22 +20,24 @@ import { fmtDate } from "@/lib/date";
 
 type View = "reorder" | "dead" | "risk" | "variance" | "negatives";
 
+/** صفُّ عرضٍ عامّ — العروض الخمسة تختلف حقولاً، والأعمدة تقرأ ما يخصّ عرضها وحده. */
+type OpsRow = Record<string, any>;
+
 const VIEW_LABEL: Record<View, string> = {
   reorder: "إعادة الطلب",
   dead: "راكد عالي القيمة",
   risk: "خطر النفاد",
   variance: "فروقات الجرد",
-  negatives: "السوالب (وضع الافتتاح)",
+  negatives: "السوالب",
 };
 const VIEW_DESC: Record<View, string> = {
   reorder: "منتجات نفدت أو تحت حدّ إعادة الطلب — اطلبها الآن.",
   dead: "رصيد بلا بيع منذ مدّة — رأس مال مجمّد يجب تحريره.",
   risk: "مبيعات عالية ومخزون منخفض — اطلب عاجلاً قبل النفاد.",
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
-  negatives: "أرصدة تحت الصفر — بوصلة أولوية الجرد الافتتاحي: اجرد الأعلى انكشافاً أولاً.",
+  negatives:
+    "أرصدة تحت الصفر أياً كان سببها — صنفٌ لم يُفتتَح بعد، أو يُباع بالطلب عمداً، أو جردٌ تجاوزه بيعٌ لاحق. غير المفتتَح هو بوصلة أولوية الجرد الافتتاحي: اجرده أولاً.",
 };
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
 const STATUS_CLS: Record<string, string> = { out: "badge-stock-out", low: "badge-stock-low", ok: "bg-muted text-muted-foreground" };
 
@@ -318,72 +322,62 @@ export default function InventoryOpsReport() {
         </Link>
       }
       filters={
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">العرض</label>
-            <select className={selectCls} value={view} onChange={(e) => setView(e.target.value as View)}>
+        <FilterShell bare columns={4}>
+          <FilterField label="العرض">
+            <AppSelect value={view} onValueChange={(v) => setView(v as View)}>
               {(Object.keys(VIEW_LABEL) as View[]).map((v) => (<option key={v} value={v}>{VIEW_LABEL[v]}</option>))}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            </AppSelect>
+          </FilterField>
+          <FilterField label="الفرع">
+            <AppSelect value={branchId === "" ? "" : String(branchId)} onValueChange={(v) => setBranchId(v ? Number(v) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
-          </div>
+            </AppSelect>
+          </FilterField>
           {view === "dead" && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">راكد منذ</label>
-              <select className={selectCls} value={deadDays} onChange={(e) => setDeadDays(Number(e.target.value))}>
-                <option value={90}>٩٠ يوماً</option>
-                <option value={180}>١٨٠ يوماً</option>
-                <option value={365}>٣٦٥ يوماً</option>
-              </select>
-            </div>
+            <FilterField label="راكد منذ">
+              <AppSelect value={String(deadDays)} onValueChange={(v) => setDeadDays(Number(v))}>
+                <option value={90}>90 يوماً</option>
+                <option value={180}>180 يوماً</option>
+                <option value={365}>365 يوماً</option>
+              </AppSelect>
+            </FilterField>
           )}
           {view === "risk" && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">مبيعات آخر</label>
-              <select className={selectCls} value={riskDays} onChange={(e) => setRiskDays(Number(e.target.value))}>
-                <option value={30}>٣٠ يوماً</option>
-                <option value={60}>٦٠ يوماً</option>
-                <option value={90}>٩٠ يوماً</option>
-              </select>
-            </div>
+            <FilterField label="مبيعات آخر">
+              <AppSelect value={String(riskDays)} onValueChange={(v) => setRiskDays(Number(v))}>
+                <option value={30}>30 يوماً</option>
+                <option value={60}>60 يوماً</option>
+                <option value={90}>90 يوماً</option>
+              </AppSelect>
+            </FilterField>
           )}
           {view === "variance" && (
             <>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-muted-foreground">من</label>
-                <input type="date" className={selectCls} value={from} onChange={(e) => setFrom(e.target.value)} />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-[11px] text-muted-foreground">إلى</label>
-                <input type="date" className={selectCls} value={to} onChange={(e) => setTo(e.target.value)} />
-              </div>
+              <FilterField label="من">
+                <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+              </FilterField>
+              <FilterField label="إلى">
+                <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+              </FilterField>
             </>
           )}
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">بحث</label>
-            <Input
+          <FilterField label="بحث">
+            <SearchField
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
               placeholder="اسم المنتج/المتغيّر…"
-              aria-label="بحث بالمنتج"
-              className="h-9 w-44"
             />
-          </div>
+          </FilterField>
           {categories.length > 0 && (
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-muted-foreground">الفئة</label>
-              <AppSelect value={category} onValueChange={setCategory} className="w-36">
+            <FilterField label="الفئة">
+              <AppSelect value={category} onValueChange={setCategory}>
                 <option value="">كل الفئات</option>
                 {categories.map((c) => (<option key={c} value={c}>{c}</option>))}
               </AppSelect>
-            </div>
+            </FilterField>
           )}
-        </div>
+        </FilterShell>
       }
     >
       <Card>
@@ -401,6 +395,8 @@ export default function InventoryOpsReport() {
               variance={variance.data ? { ...variance.data, rows: applyFilters((variance.data.rows ?? []) as unknown as AnyRow[]) } : variance.data}
               negatives={negatives.data ? { ...negatives.data, rows: applyFilters((negatives.data.rows ?? []) as unknown as AnyRow[]) } : negatives.data}
               riskDays={riskDays}
+              /* بحث/فئة الشاشة يُصفّيان الصفوف قبل الجدول — بلا هذا يُعلَن «لا صفوف بعد» زوراً. */
+              filtersActive={search.trim() !== "" || category !== ""}
             />
           )}
         </CardContent>
@@ -409,140 +405,280 @@ export default function InventoryOpsReport() {
   );
 }
 
-function Th({ children }: { children: React.ReactNode }) {
-  return <th className="p-2.5 text-right font-medium">{children}</th>;
-}
-function NumTd({ children, cls }: { children: React.ReactNode; cls?: string }) {
-  return <td className={`p-2.5 text-right tabular-nums ${cls ?? ""}`} dir="ltr">{children}</td>;
-}
-
-function ViewTable({
-  view, reorder, dead, risk, variance, negatives, riskDays,
+/** جدول العرض الحالي — DataTable موحّد داخل بطاقة التقرير (بحث الشاشة في شريط الفلاتر). */
+function ViewDataTable({
+  view,
+  columns,
+  rows,
+  emptyMsg,
+  filtersActive,
 }: {
+  /** العرض الحالي — يفصل حالةَ الجدول (إخفاء الأعمدة/الكثافة/الفرز) بين العروض الخمسة. */
   view: View;
-  reorder: any; dead: any; risk: any; variance: any; negatives: any; riskDays: number;
+  columns: ColumnDef<OpsRow, unknown>[];
+  rows: OpsRow[];
+  emptyMsg: string;
+  filtersActive: boolean;
 }) {
-  if (view === "negatives") {
-    const rows = negatives?.rows ?? [];
-    return (
-      <Table
-        head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الفرع</Th><Th>الرصيد</Th><Th>تكلفة الوحدة</Th><Th>قيمة الانكشاف</Th><Th>الحالة</Th><Th>آخر بيع</Th><Th>آخر شراء</Th></>}
-        empty={!rows.length}
-        colSpan={10}
-        emptyMsg="لا أرصدة سالبة في هذا النطاق — كل المبيع مغطّى بالمخزون."
-      >
-        {rows.map((r: any, i: number) => (
-          <tr key={`${r.variantId}-${r.branchId}-${i}`} className="border-b last:border-0 hover:bg-accent/40">
-            <td className="p-2.5 text-right font-medium">
-              {r.productName}
-              {r.costMissing && (
-                <span className="mr-2 inline-block rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)]">
-                  بلا تكلفة
-                </span>
-              )}
-            </td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.branchName}</td>
-            <NumTd cls="text-money-negative font-bold">{fmtAr(r.quantity)}</NumTd>
-            <NumTd cls={r.costMissing ? "text-money-negative" : "text-muted-foreground"}>{r.costMissing ? "غير مُدخلة" : fmtAr(r.costPrice)}</NumTd>
-            <NumTd cls="text-money-negative">{fmtAr(r.negValue)}</NumTd>
-            <td className="p-2.5 text-right">
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-xs ${
-                  r.opened ? "bg-muted text-muted-foreground" : "border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
-                }`}
-              >
-                {r.opened ? "مُفتتَح — عجز بعد الافتتاح" : "بانتظار الجرد الافتتاحي"}
-              </span>
-            </td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.lastSaleDate ?? "—"}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.lastPurchaseDate ?? "—"}</td>
-          </tr>
-        ))}
-      </Table>
-    );
-  }
-  if (view === "reorder") {
-    const rows = reorder?.rows ?? [];
-    return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفرع</Th><Th>الكمية</Th><Th>حدّ الطلب</Th><Th>الحالة</Th></>} empty={!rows.length} colSpan={6} emptyMsg="لا تنبيهات مخزون في هذا النطاق.">
-        {rows.map((r: any, i: number) => (
-          <tr key={`${r.variantId}-${i}`} className="border-b last:border-0 hover:bg-accent/40">
-            <td className="p-2.5 text-right">{r.productName}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-            <NumTd>{fmtInt(r.quantity)}</NumTd>
-            <NumTd cls="text-muted-foreground">{fmtInt(r.minStock)}</NumTd>
-            <td className="p-2.5 text-right"><span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>{STATUS_LABEL[r.status] ?? r.status}</span></td>
-          </tr>
-        ))}
-      </Table>
-    );
-  }
-  if (view === "dead") {
-    const rows = dead?.rows ?? [];
-    return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>تكلفة الوحدة</Th><Th>قيمة المخزون</Th><Th>أيام بلا بيع</Th><Th>آخر بيع</Th></>} empty={!rows.length} colSpan={8} emptyMsg="لا مخزون راكد في هذا النطاق.">
-        {rows.map((r: any) => (
-          <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
-            <td className="p-2.5 text-right font-medium">{r.productName}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
-            <NumTd>{fmtInt(r.qtyInStock)}</NumTd>
-            <NumTd cls="text-muted-foreground">{fmtAr(r.costPrice)}</NumTd>
-            <NumTd cls="text-money-negative">{fmtAr(r.stockValue)}</NumTd>
-            <NumTd cls="text-stock-low">{r.daysSinceLastSale == null ? "لا بيع" : fmtAr(r.daysSinceLastSale)}</NumTd>
-            <td className="p-2.5 text-right text-muted-foreground">{r.lastSaleDate ?? "—"}</td>
-          </tr>
-        ))}
-      </Table>
-    );
-  }
-  if (view === "risk") {
-    const rows = risk?.rows ?? [];
-    return (
-      <Table head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفئة</Th><Th>الرصيد</Th><Th>حدّ الطلب</Th><Th>{`مبيع ${riskDays}ي`}</Th><Th>أيام تغطية</Th></>} empty={!rows.length} colSpan={7} emptyMsg="لا منتجات بخطر نفاد في هذا النطاق.">
-        {rows.map((r: any) => (
-          <tr key={r.variantId} className="border-b last:border-0 hover:bg-accent/40">
-            <td className="p-2.5 text-right font-medium">{r.productName}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
-            <td className="p-2.5 text-right text-muted-foreground">{r.categoryName ?? "—"}</td>
-            <NumTd cls="text-stock-low">{fmtInt(r.qtyInStock)}</NumTd>
-            <NumTd cls="text-muted-foreground">{fmtInt(r.threshold)}</NumTd>
-            <NumTd cls="text-money-positive">{fmtInt(r.qtySoldRecent)}</NumTd>
-            <NumTd>{r.coverDays == null ? "—" : fmtAr(r.coverDays)}</NumTd>
-          </tr>
-        ))}
-      </Table>
-    );
-  }
-  const rows = variance?.rows ?? [];
   return (
-    <Table head={<><Th>التاريخ</Th><Th>الفرع</Th><Th>جلسة الجرد</Th><Th>المعتمِد</Th><Th>المنتج</Th><Th>الفرق</Th><Th>القيمة</Th><Th>السبب</Th></>} empty={!rows.length} colSpan={8} emptyMsg="لا فروقات جرد معتمدة في هذا النطاق.">
-      {rows.map((r: any, i: number) => (
-        <tr key={`${r.sessionId}-${i}`} className="border-b last:border-0 hover:bg-accent/40">
-          <td className="p-2.5 text-right text-muted-foreground">{r.approvedDate ?? "—"}</td>
-          <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-          <td className="p-2.5 text-right text-xs text-muted-foreground">{r.sessionCode || "—"}</td>
-          <td className="p-2.5 text-right text-muted-foreground">{r.approvedByName ?? "—"}</td>
-          <td className="p-2.5 text-right">{r.productName}<span className="text-xs text-muted-foreground"> · {r.variantLabel}</span></td>
-          <NumTd cls={r.diffQty < 0 ? "text-money-negative" : "text-money-positive"}>{fmtAr(r.diffQty)}</NumTd>
-          <NumTd cls={Number(r.value) < 0 ? "text-money-negative" : "text-money-positive"}>{fmtAr(r.value)}</NumTd>
-          <td className="p-2.5 text-right text-muted-foreground">{r.reason}</td>
-        </tr>
-      ))}
-    </Table>
+    /*
+     * `key` و`viewKey` معاً: العروض الخمسة تُصيَّر في **نفس موضع الشجرة**، فبلا `key` يُعيد
+     * React استعمال نفس نسخة `DataTable` عبر تبديل العرض — فإخفاءُ عمودٍ في «الراكد» يُخفي
+     * العمودَ ذا المعرّف نفسه في «خطر النفاد» ويكتبه في تفضيلاته المحفوظة. و`viewKey` يمنح
+     * كل عرضٍ مفتاحَ تخزينٍ ثابتاً بدل مفتاحٍ مشتقٍّ من المسار (واحدٌ للعروض كلّها).
+     */
+    <DataTable<OpsRow>
+      key={view}
+      viewKey={`inventory-ops:${view}`}
+      columns={columns}
+      data={rows}
+      /* البحث والفئة في شريط فلاتر التقرير (يغذّيان rows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+      searchable={false}
+      externalFiltersActive={filtersActive}
+      emptyText={emptyMsg}
+      emptyFilteredState="لا صفوف مطابقة للبحث أو الفئة المختارة."
+    />
   );
 }
 
-function Table({ head, children, empty, colSpan, emptyMsg }: { head: React.ReactNode; children: React.ReactNode; empty: boolean; colSpan: number; emptyMsg: string }) {
+/** عمود نصّي مكتوم (متغيّر/فرع/فئة/سبب). */
+function mutedCol(id: string, header: string, get: (r: OpsRow) => string): ColumnDef<OpsRow, unknown> {
+  return { id, header, accessorFn: get, cell: ({ row }) => <span className="text-muted-foreground">{get(row.original)}</span> };
+}
+
+/** عمود رقميّ — kind: "number" يتكفّل بالمحاذاة وعزل الاتّجاه وtabular-nums. */
+function numCol(id: string, header: string, get: (r: OpsRow) => string, cls?: (r: OpsRow) => string | undefined): ColumnDef<OpsRow, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: get,
+    meta: { kind: "number" },
+    cell: ({ row }) => <span className={cls?.(row.original)}>{get(row.original)}</span>,
+  };
+}
+
+/** عمود مبلغ. */
+function moneyCol(id: string, header: string, get: (r: OpsRow) => string, cls?: (r: OpsRow) => string | undefined): ColumnDef<OpsRow, unknown> {
+  return {
+    id,
+    header,
+    accessorFn: get,
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className={cls?.(row.original)}>{get(row.original)}</span>,
+  };
+}
+
+function ViewTable({
+  view, reorder, dead, risk, variance, negatives, riskDays, filtersActive,
+}: {
+  view: View;
+  reorder: any; dead: any; risk: any; variance: any; negatives: any; riskDays: number;
+  filtersActive: boolean;
+}) {
+  if (view === "negatives") {
+    const rows: OpsRow[] = negatives?.rows ?? [];
+    return (
+      <ViewDataTable
+        view={view}
+        rows={rows}
+        filtersActive={filtersActive}
+        emptyMsg="لا أرصدة سالبة في هذا النطاق — كل المبيع مغطّى بالمخزون."
+        columns={[
+          {
+            id: "product",
+            header: "المنتج",
+            accessorFn: (r) => String(r.productName ?? ""),
+            meta: { width: "wide" },
+            cell: ({ row }) => (
+              <span className="font-medium">
+                {row.original.productName}
+                {row.original.costMissing && (
+                  <span className="mr-2 inline-block rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-neg)]">
+                    بلا تكلفة
+                  </span>
+                )}
+              </span>
+            ),
+          },
+          mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
+          mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
+          mutedCol("branch", "الفرع", (r) => String(r.branchName ?? "")),
+          numCol("quantity", "الرصيد", (r) => fmtAr(r.quantity), () => "text-money-negative font-bold"),
+          moneyCol(
+            "costPrice",
+            "تكلفة الوحدة",
+            (r) => (r.costMissing ? "غير مُدخلة" : fmtAr(r.costPrice)),
+            (r) => (r.costMissing ? "text-money-negative" : "text-muted-foreground"),
+          ),
+          moneyCol("negValue", "قيمة الانكشاف", (r) => fmtAr(r.negValue), () => "text-money-negative"),
+          {
+            id: "openedStatus",
+            header: "الحالة",
+            // التسمية المعروضة لا العلم الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+            accessorFn: (r) => (r.opened ? "مُفتتَح — عجز بعد الافتتاح" : "بانتظار الجرد الافتتاحي"),
+            meta: { align: "center" },
+            cell: ({ row }) => (
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                  row.original.opened ? "bg-muted text-muted-foreground" : "border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                }`}
+              >
+                {row.original.opened ? "مُفتتَح — عجز بعد الافتتاح" : "بانتظار الجرد الافتتاحي"}
+              </span>
+            ),
+          },
+          {
+            id: "lastSaleDate",
+            header: "آخر بيع",
+            accessorFn: (r) => String(r.lastSaleDate ?? "—"),
+            meta: { kind: "date" },
+            cell: ({ row }) => <span className="text-muted-foreground">{row.original.lastSaleDate ?? "—"}</span>,
+          },
+          {
+            id: "lastPurchaseDate",
+            header: "آخر شراء",
+            accessorFn: (r) => String(r.lastPurchaseDate ?? "—"),
+            meta: { kind: "date" },
+            cell: ({ row }) => <span className="text-muted-foreground">{row.original.lastPurchaseDate ?? "—"}</span>,
+          },
+        ]}
+      />
+    );
+  }
+  if (view === "reorder") {
+    const rows: OpsRow[] = reorder?.rows ?? [];
+    return (
+      <ViewDataTable
+        view={view}
+        rows={rows}
+        filtersActive={filtersActive}
+        emptyMsg="لا تنبيهات مخزون في هذا النطاق."
+        columns={[
+          { id: "product", header: "المنتج", accessorFn: (r) => String(r.productName ?? ""), meta: { width: "wide" }, cell: ({ row }) => row.original.productName },
+          mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
+          mutedCol("branch", "الفرع", (r) => String(r.branchName ?? "—")),
+          numCol("quantity", "الكمية", (r) => fmtInt(r.quantity)),
+          numCol("minStock", "حدّ الطلب", (r) => fmtInt(r.minStock), () => "text-muted-foreground"),
+          {
+            id: "status",
+            header: "الحالة",
+            accessorFn: (r) => STATUS_LABEL[String(r.status)] ?? String(r.status),
+            meta: { kind: "status" },
+            cell: ({ row }) => (
+              <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[String(row.original.status)] ?? "bg-muted"}`}>
+                {STATUS_LABEL[String(row.original.status)] ?? row.original.status}
+              </span>
+            ),
+          },
+        ]}
+      />
+    );
+  }
+  if (view === "dead") {
+    const rows: OpsRow[] = dead?.rows ?? [];
+    return (
+      <ViewDataTable
+        view={view}
+        rows={rows}
+        filtersActive={filtersActive}
+        emptyMsg="لا مخزون راكد في هذا النطاق."
+        columns={[
+          {
+            id: "product",
+            header: "المنتج",
+            accessorFn: (r) => String(r.productName ?? ""),
+            meta: { width: "wide" },
+            cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+          },
+          mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
+          mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
+          numCol("qtyInStock", "الرصيد", (r) => fmtInt(r.qtyInStock)),
+          moneyCol("costPrice", "تكلفة الوحدة", (r) => fmtAr(r.costPrice), () => "text-muted-foreground"),
+          moneyCol("stockValue", "قيمة المخزون", (r) => fmtAr(r.stockValue), () => "text-money-negative"),
+          numCol("daysSinceLastSale", "أيام بلا بيع", (r) => (r.daysSinceLastSale == null ? "لا بيع" : fmtAr(r.daysSinceLastSale)), () => "text-stock-low"),
+          {
+            id: "lastSaleDate",
+            header: "آخر بيع",
+            accessorFn: (r) => String(r.lastSaleDate ?? "—"),
+            meta: { kind: "date" },
+            cell: ({ row }) => <span className="text-muted-foreground">{row.original.lastSaleDate ?? "—"}</span>,
+          },
+        ]}
+      />
+    );
+  }
+  if (view === "risk") {
+    const rows: OpsRow[] = risk?.rows ?? [];
+    return (
+      <ViewDataTable
+        view={view}
+        rows={rows}
+        filtersActive={filtersActive}
+        emptyMsg="لا منتجات بخطر نفاد في هذا النطاق."
+        columns={[
+          {
+            id: "product",
+            header: "المنتج",
+            accessorFn: (r) => String(r.productName ?? ""),
+            meta: { width: "wide" },
+            cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+          },
+          mutedCol("variant", "المتغيّر", (r) => String(r.variantLabel ?? "")),
+          mutedCol("category", "الفئة", (r) => String(r.categoryName ?? "—")),
+          numCol("qtyInStock", "الرصيد", (r) => fmtInt(r.qtyInStock), () => "text-stock-low"),
+          numCol("threshold", "حدّ الطلب", (r) => fmtInt(r.threshold), () => "text-muted-foreground"),
+          numCol("qtySoldRecent", `مبيع ${riskDays}ي`, (r) => fmtInt(r.qtySoldRecent), () => "text-money-positive"),
+          numCol("coverDays", "أيام تغطية", (r) => (r.coverDays == null ? "—" : fmtAr(r.coverDays))),
+        ]}
+      />
+    );
+  }
+  const rows: OpsRow[] = variance?.rows ?? [];
   return (
-    <ScrollTableShell bordered={false}>
-      <table className="w-full text-sm">
-        <thead><tr className="border-b text-xs text-muted-foreground">{head}</tr></thead>
-        <tbody>{empty ? <TableEmptyRow colSpan={colSpan} message={emptyMsg} /> : children}</tbody>
-      </table>
-    </ScrollTableShell>
+    <ViewDataTable
+      view={view}
+      rows={rows}
+      filtersActive={filtersActive}
+      emptyMsg="لا فروقات جرد معتمدة في هذا النطاق."
+      columns={[
+        {
+          id: "approvedDate",
+          header: "التاريخ",
+          accessorFn: (r) => String(r.approvedDate ?? "—"),
+          meta: { kind: "date" },
+          cell: ({ row }) => <span className="text-muted-foreground">{row.original.approvedDate ?? "—"}</span>,
+        },
+        mutedCol("branch", "الفرع", (r) => String(r.branchName ?? "—")),
+        {
+          id: "sessionCode",
+          header: "جلسة الجرد",
+          accessorFn: (r) => String(r.sessionCode || "—"),
+          meta: { kind: "code" },
+          cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.sessionCode || "—"}</span>,
+        },
+        {
+          id: "approvedBy",
+          header: "المعتمِد",
+          accessorFn: (r) => String(r.approvedByName ?? "—"),
+          meta: { width: "actor" },
+          cell: ({ row }) => <span className="text-muted-foreground">{row.original.approvedByName ?? "—"}</span>,
+        },
+        {
+          id: "product",
+          header: "المنتج",
+          accessorFn: (r) => `${r.productName ?? ""} · ${r.variantLabel ?? ""}`,
+          meta: { width: "wide" },
+          cell: ({ row }) => (
+            <>
+              {row.original.productName}
+              <span className="text-xs text-muted-foreground"> · {row.original.variantLabel}</span>
+            </>
+          ),
+        },
+        numCol("diffQty", "الفرق", (r) => fmtAr(r.diffQty), (r) => (r.diffQty < 0 ? "text-money-negative" : "text-money-positive")),
+        moneyCol("value", "القيمة", (r) => fmtAr(r.value), (r) => (Number(r.value) < 0 ? "text-money-negative" : "text-money-positive")),
+        mutedCol("reason", "السبب", (r) => String(r.reason ?? "")),
+      ]}
+    />
   );
 }

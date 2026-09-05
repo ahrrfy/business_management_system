@@ -676,9 +676,24 @@ describe("معاينة افتتاح دورة الدفتر المزدوج", () =>
         approvalStatus: "APPROVED",
       })
       .$returningId();
+    await db().insert(s.invoices).values({
+      id: 1,
+      invoiceNumber: "INV-OPEN-CHECK-1",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "19.00",
+      total: "19.00",
+      paidAmount: "0.00",
+      returnedTotal: "0.00",
+      status: "PENDING",
+      paymentMode: "CREDIT",
+      createdBy: 1,
+    });
     await db().insert(s.installmentPlans).values({
       id: 1,
       customerId: 1,
+      invoiceId: 1,
       branchId: 1,
       totalAmount: "19.00",
       createdBy: 1,

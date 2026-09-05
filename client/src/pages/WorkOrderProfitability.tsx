@@ -2,20 +2,24 @@
 // أمرٌ-أمراً: الإيراد (صافٍ قبل الضريبة من الفاتورة المرتبطة) − تكلفة المواد (لقطة
 // startWorkOrder) − كلفة عملٍ اختيارية بالزمن الفعلي المُقاس (workSeconds × كلفة الساعة).
 // حقل «كلفة ساعة العمل» ماذا-لو: تغييره يُعيد الاستعلام فيعيد حساب الربح/الهامش فوراً.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Clock3, FileSpreadsheet, Loader2 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { DateRangeFilter, type DateRange } from "@/components/table/DateRangeFilter";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ErrorState } from "@/components/PageState";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 type Row = RouterOutputs["reports"]["workOrderProfitability"]["rows"][number];
 
@@ -130,6 +134,95 @@ export default function WorkOrderProfitability() {
       setExporting(false);
     }
   }
+  /**
+   * أعمدة ربحية أوامر الشغل — ومعها **ذيلُ الإجماليات** عبر `footer` في ColumnDef
+   * (دعمٌ أُضيف إلى DataTable في هذه الشريحة؛ كان غيابه يمنع تحويل هذه الشاشة أصلاً).
+   * ⚠️ الذيل في TanStack **لكل عمود**: الخليّة المدموجة السابقة (`colSpan={5}`) صارت
+   * تسميةً على العمود الأوّل وخلايا فارغة بعدها — نفس المحاذاة بلا دمج.
+   */
+  const profitColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    {
+      id: "deliveredAt", header: "تاريخ التسليم",
+      accessorFn: (r) => r.deliveredAt,
+      footer: () => (totals ? `الإجمالي (${fmtAr(String(totals.count))} أمر)` : null),
+      meta: { kind: "date" },
+    },
+    {
+      id: "orderNumber", header: "رقم الأمر",
+      accessorFn: (r) => r.orderNumber,
+      cell: ({ row }) => (
+        <Link href={`/work-orders/${row.original.id}`} className="text-primary underline-offset-2 hover:underline">
+          {row.original.orderNumber}
+        </Link>
+      ),
+      meta: { kind: "code" },
+    },
+    {
+      id: "title", header: "العمل",
+      accessorFn: (r) => r.title,
+      cell: ({ row }) => <span className="block max-w-56 truncate" title={row.original.title}>{row.original.title}</span>,
+      meta: { kind: "text" },
+    },
+    { id: "customerName", header: "العميل", accessorFn: (r) => r.customerName ?? "—", meta: { kind: "text", wrap: true } },
+    {
+      id: "invoice", header: "الفاتورة",
+      accessorFn: (r) => r.invoiceNumber ?? (r.invoiceId ? String(r.invoiceId) : "—"),
+      cell: ({ row }) => row.original.invoiceId ? (
+        <Link href={`/invoices/${row.original.invoiceId}`} className="text-primary underline-offset-2 hover:underline">
+          {row.original.invoiceNumber ?? String(row.original.invoiceId)}
+        </Link>
+      ) : "—",
+      meta: { kind: "code" },
+    },
+    {
+      id: "revenue", header: "الإيراد",
+      accessorFn: (r) => Number(r.revenue),
+      cell: ({ row }) => fmtAr(row.original.revenue),
+      footer: () => (totals ? fmtAr(totals.revenue) : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "materialsCost", header: "تكلفة المواد",
+      accessorFn: (r) => Number(r.materialsCost),
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.materialsCost)}</span>,
+      footer: () => (totals ? fmtAr(totals.materialsCost) : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "hours", header: "ساعات العمل",
+      accessorFn: (r) => (r.hours == null ? -1 : Number(r.hours)),
+      cell: ({ row }) => row.original.hours == null ? "—" : fmtAr(row.original.hours),
+      footer: () => (totals ? fmtAr(totals.hours) : null),
+      meta: { kind: "number" },
+    },
+    {
+      id: "laborCost", header: "كلفة العمل",
+      accessorFn: (r) => (r.laborCost == null ? -1 : Number(r.laborCost)),
+      cell: ({ row }) => <span className="text-muted-foreground">{row.original.laborCost == null ? "—" : fmtAr(row.original.laborCost)}</span>,
+      footer: () => (totals ? (totals.laborCost == null ? "—" : fmtAr(totals.laborCost)) : null),
+      meta: { kind: "money" },
+    },
+    {
+      id: "profit", header: "الربح",
+      accessorFn: (r) => Number(r.profit),
+      cell: ({ row }) => (
+        <span className={row.original.profit.startsWith("-") ? "text-destructive font-medium" : "font-medium"}>
+          {fmtAr(row.original.profit)}
+        </span>
+      ),
+      footer: () => totals ? (
+        <span className={totals.profit.startsWith("-") ? "text-destructive" : ""}>{fmtAr(totals.profit)}</span>
+      ) : null,
+      meta: { kind: "money" },
+    },
+    {
+      id: "marginPct", header: "الهامش %",
+      accessorFn: (r) => (r.marginPct == null ? -1 : Number(r.marginPct)),
+      cell: ({ row }) => row.original.marginPct == null ? "—" : `${fmtAr(row.original.marginPct)}%`,
+      footer: () => (totals ? (totals.marginPct == null ? "—" : `${fmtAr(totals.marginPct)}%`) : null),
+      meta: { kind: "number" },
+    },
+  ], [totals]);
 
   return (
     <div className="space-y-4">
@@ -153,11 +246,11 @@ export default function WorkOrderProfitability() {
         <DateRangeFilter value={range} onChange={changeRange} />
         <div className="flex flex-col gap-1">
           <Label className="text-xs text-muted-foreground">الفرع</Label>
-          <select
-            className={selectCls}
-            value={branchId}
-            onChange={(e) => {
-              setBranchId(e.target.value ? Number(e.target.value) : "");
+          <AppSelect
+            className="h-9"
+            value={String(branchId)}
+            onValueChange={(next) => {
+              setBranchId(next ? Number(next) : "");
               setPage(0);
             }}
           >
@@ -167,7 +260,7 @@ export default function WorkOrderProfitability() {
                 {b.name}
               </option>
             ))}
-          </select>
+          </AppSelect>
         </div>
         <div className="flex flex-col gap-1">
           <Label className="text-xs text-muted-foreground">كلفة ساعة العمل (د.ع) — اختياري</Label>
@@ -186,91 +279,25 @@ export default function WorkOrderProfitability() {
           {!rangeReady ? (
             <p className="p-8 text-center text-sm text-muted-foreground">حدّد مدى التاريخ (من/إلى) لعرض التقرير.</p>
           ) : q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <p className="p-8 text-center text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
+          ) : q.isError && !rows.length ? (
+            /* استعلامٌ ساقط كان يُعرَض «لا أوامر مُسلَّمة في هذا النطاق» — ادّعاءُ حقيقةِ عملٍ
+             * مكانَ عطبٍ خادميّ. بلا صفوفٍ يُعرَض الخطأ برسالته وبمخرج إعادة محاولة؛ ومع صفوفٍ
+             * مخزَّنة يتكفّل `errorState` بشريط تحذيرٍ فوق الجدول بدل حجبه. */
+            <ErrorState message={q.error?.message} onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا أوامر مُسلَّمة في هذا النطاق.</p>
           ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">تاريخ التسليم</th>
-                    <th className="p-2.5 text-end font-medium">رقم الأمر</th>
-                    <th className="p-2.5 text-end font-medium">العمل</th>
-                    <th className="p-2.5 text-end font-medium">العميل</th>
-                    <th className="p-2.5 text-end font-medium">الفاتورة</th>
-                    <th className="p-2.5 text-right font-medium">الإيراد</th>
-                    <th className="p-2.5 text-right font-medium">تكلفة المواد</th>
-                    <th className="p-2.5 text-right font-medium">ساعات العمل</th>
-                    <th className="p-2.5 text-right font-medium">كلفة العمل</th>
-                    <th className="p-2.5 text-right font-medium">الربح</th>
-                    <th className="p-2.5 text-right font-medium">الهامش %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.deliveredAt}</td>
-                      <td className="p-2.5 text-end">
-                        <Link href={`/work-orders/${r.id}`} className="text-primary underline-offset-2 hover:underline">
-                          {r.orderNumber}
-                        </Link>
-                      </td>
-                      <td className="p-2.5 text-end max-w-56 truncate" title={r.title}>{r.title}</td>
-                      <td className="p-2.5 text-end">{r.customerName ?? "—"}</td>
-                      <td className="p-2.5 text-end">
-                        {r.invoiceId ? (
-                          <Link href={`/invoices/${r.invoiceId}`} className="text-primary underline-offset-2 hover:underline">
-                            {r.invoiceNumber ?? String(r.invoiceId)}
-                          </Link>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.materialsCost)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.hours == null ? "—" : fmtAr(r.hours)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                        {r.laborCost == null ? "—" : fmtAr(r.laborCost)}
-                      </td>
-                      <td
-                        className={`p-2.5 text-right tabular-nums font-medium ${r.profit.startsWith("-") ? "text-destructive" : ""}`}
-                        dir="ltr"
-                      >
-                        {fmtAr(r.profit)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                        {r.marginPct == null ? "—" : `${fmtAr(r.marginPct)}%`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                {totals && (
-                  <tfoot>
-                    <tr className="border-t-2 bg-muted/60 font-semibold">
-                      <td className="p-2.5 text-end" colSpan={5}>
-                        الإجمالي ({totals.count} أمر)
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(totals.revenue)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(totals.materialsCost)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(totals.hours)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                        {totals.laborCost == null ? "—" : fmtAr(totals.laborCost)}
-                      </td>
-                      <td
-                        className={`p-2.5 text-right tabular-nums ${totals.profit.startsWith("-") ? "text-destructive" : ""}`}
-                        dir="ltr"
-                      >
-                        {fmtAr(totals.profit)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                        {totals.marginPct == null ? "—" : `${fmtAr(totals.marginPct)}%`}
-                      </td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </ScrollTableShell>
+            <DataTable
+              columns={profitColumns}
+              data={rows}
+              loading={q.isLoading}
+              errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => void q.refetch() }}
+              searchable={false}
+              emptyText="لا أوامر مُسلَّمة في هذا النطاق."
+              /* ترقيمٌ خادميّ ⇒ يُعطَّل الفرزُ تلقائياً فلا يفرز صفحةً واحدة ويبدو شاملاً. */
+              serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total: totalCount }}
+            />
           )}
         </CardContent>
       </Card>

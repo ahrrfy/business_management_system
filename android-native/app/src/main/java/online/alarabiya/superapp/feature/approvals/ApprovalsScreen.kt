@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AssignmentReturn
 import androidx.compose.material.icons.rounded.CardGiftcard
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.EventAvailable
@@ -75,7 +76,11 @@ import online.alarabiya.superapp.model.approvals.ApprovalDecision
 import online.alarabiya.superapp.model.approvals.ApprovalKey
 import online.alarabiya.superapp.model.approvals.ApprovalKind
 import online.alarabiya.superapp.model.approvals.ApprovalRequest
+import online.alarabiya.superapp.model.approvals.CardReferenceInput
 import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
+import online.alarabiya.superapp.model.approvals.cardCancelReferenceFact
+import online.alarabiya.superapp.model.approvals.needsCardCancelReference
+import online.alarabiya.superapp.model.approvals.resolveCardReferenceInput
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -365,6 +370,9 @@ private fun ApprovalDetail(
         item { HorizontalDivider() }
         item { DetailLine("التفاصيل", request.detail) }
         request.amount?.let { amount -> item { DetailLine("القيمة", amount) } }
+        // حقائقُ الحمولة قبل القرار: بلا هذه ينفّذ المُعتمِد حركةَ نقدٍ ومخزونٍ ودفترٍ
+        // وهو لا يرى كمّيةً ولا مبلغَ ردٍّ ولا مصيرَ بضاعة (تصويب مراجعة Codex على PR #932).
+        items(request.facts) { fact -> DetailLine(fact.label, fact.value) }
         if (request.currentQuantity != null && request.targetQuantity != null) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -392,7 +400,7 @@ private fun ApprovalDetail(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(
-                    onClick = { onRequestDecision(request.key, ApprovalDecision.Approve) },
+                    onClick = { onRequestDecision(request.key, ApprovalDecision.Approve()) },
                     modifier = Modifier.weight(1f),
                     enabled = !submitting && request.capabilities.canApprove,
                 ) {
@@ -427,7 +435,14 @@ private fun DecisionDialog(
         val rejecting = initialDecision is ApprovalDecision.Reject
         val reasonRequired = rejecting &&
             request.capabilities.rejectionReasonPolicy == RejectionReasonPolicy.REQUIRED
+        // مرجع استرداد البطاقة لطلبات إلغاء البيع ببطاقة وحدها — نظير حقل الويب (تعميم PR #997).
+        // بلا تعبئةٍ مسبقة عمداً: العقد الحاليّ لا يرسل مرجع الطالب الخام، إنما نصّاً عرضياً قد
+        // يكون نائب «لم يُدخَل بعد» — تعبئته في حقلٍ قابلٍ للتعديل تخاطر بإرساله كأنه مرجعٌ فعليّ.
+        // الحقل يبقى فارغاً بلا مساس بمرجع الطلب (`resolveCardReferenceInput` غير المُلمَس).
+        val needsCardReference = !rejecting && request.needsCardCancelReference
         var reason by remember { mutableStateOf("") }
+        var cardReferenceText by remember { mutableStateOf("") }
+        var cardReferenceTouched by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = onDismiss,
             icon = {
@@ -451,12 +466,43 @@ private fun DecisionDialog(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+                    if (needsCardReference) {
+                        request.cardCancelReferenceFact?.let { fact -> DetailLine(fact.label, fact.value) }
+                        OutlinedTextField(
+                            value = cardReferenceText,
+                            onValueChange = {
+                                cardReferenceTouched = true
+                                if (it.length <= 100) cardReferenceText = it
+                            },
+                            label = { Text("مرجع جهاز الدفع") },
+                            supportingText = {
+                                Text(
+                                    "اختياريّ — اتركه لقبول مرجع الطالب أعلاه كما هو. اكتب مرجعاً جديداً لتغييره، " +
+                                        "أو اكتب ثمّ امسحه بالكامل لرفض المرجع الحالي عمداً — يفشل الاعتماد فوراً بلا أثر.",
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onConfirm(if (rejecting) ApprovalDecision.Reject(reason.trim().takeIf { it.isNotEmpty() }) else ApprovalDecision.Approve)
+                        onConfirm(
+                            if (rejecting) {
+                                ApprovalDecision.Reject(reason.trim().takeIf { it.isNotEmpty() })
+                            } else {
+                                ApprovalDecision.Approve(
+                                    cardReference = if (needsCardReference) {
+                                        resolveCardReferenceInput(cardReferenceTouched, cardReferenceText)
+                                    } else {
+                                        CardReferenceInput.Untouched
+                                    },
+                                )
+                            },
+                        )
                     },
                     enabled = !reasonRequired || reason.isNotBlank(),
                     colors = if (rejecting) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -481,6 +527,7 @@ private fun kindIcon(kind: ApprovalKind): ImageVector = when (kind) {
     ApprovalKind.LEAVE -> Icons.Rounded.EventAvailable
     ApprovalKind.VOUCHER -> Icons.Rounded.Payments
     ApprovalKind.GIFT -> Icons.Rounded.CardGiftcard
+    ApprovalKind.SALES_CONTROL -> Icons.Rounded.AssignmentReturn
 }
 
 @Composable
@@ -489,6 +536,7 @@ private fun kindColors(kind: ApprovalKind): Pair<Color, Color> = when (kind) {
     ApprovalKind.LEAVE -> Color(0xFF5267B3) to Color(0xFFEBEEFF)
     ApprovalKind.VOUCHER -> Color(0xFF8B5A00) to Color(0xFFFFF0D1)
     ApprovalKind.GIFT -> ApprovalOrange to Color(0xFFFFEBDD)
+    ApprovalKind.SALES_CONTROL -> Color(0xFF9C2A2A) to Color(0xFFFFE7E7)
 }
 
 @Composable

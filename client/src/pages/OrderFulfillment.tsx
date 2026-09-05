@@ -9,11 +9,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, ClipboardList, FileText, Loader2, Package, Printer, ReceiptText, Store, Truck, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { fmtInt } from "@/lib/money";
+import { D, fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage } from "@/lib/whatsapp";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   ONLINE_ORDER_STATUSES,
   ORDER_NEXT_STEP,
@@ -23,7 +24,8 @@ import {
 } from "@shared/onlineOrderStatus";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
 import { Input } from "@/components/ui/input";
@@ -31,6 +33,7 @@ import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { printOnlineOrderPreparationA4, printOnlineOrderThermal } from "@/lib/printing/onlineOrder";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { storefrontUrl } from "@/lib/siteHosts";
 
 // حالات الطلب + خرائط العرض/الانتقال ⇐ shared/onlineOrderStatus.ts (مصدر الحقيقة الوحيد).
@@ -48,6 +51,11 @@ const FILTERS: { value: OnlineOrderStatus | null; label: string }[] = [
 
 function money(v: string | number | null): string {
   return v == null || v === "" ? "0" : fmtInt(v);
+}
+
+/** حالة الطلب كما يفهمها القاموس المشترك — أيّ قيمة غريبة تُقرأ «وارد» (السلوك القائم). */
+function normalizeOrderStatus(status: string): OnlineOrderStatus {
+  return (ONLINE_ORDER_STATUSES as readonly string[]).includes(status) ? (status as OnlineOrderStatus) : "PENDING";
 }
 
 type OrderRow = { id: number; orderNumber: string; total: string; customerName: string | null };
@@ -111,6 +119,133 @@ export default function OrderFulfillment() {
   }, [orders, query]);
 
   const activeFilterCount = (filter ? 1 : 0) + (f.from || f.to ? 1 : 0);
+
+  // أعمدة الطلبات — داخل المكوّن لأنّ عمود الإجراءات يستدعي الطباعة والطفرات وحالة الصلاحية.
+  const orderColumns = useMemo<ColumnDef<Row, unknown>[]>(() => [
+    { id: "orderNumber", header: "رقم الطلب", accessorFn: (o) => o.orderNumber, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="font-bold tracking-wider">{row.original.orderNumber}</span> },
+    { id: "customerName", header: "العميل", accessorFn: (o) => o.customerName ?? "—", cell: ({ row }) => row.original.customerName ?? "—" },
+    { id: "customerPhone", header: "الهاتف", accessorFn: (o) => o.customerPhone ?? "—", meta: { kind: "phone" }, cell: ({ row }) => row.original.customerPhone ?? "—" },
+    { id: "governorate", header: "المحافظة", accessorFn: (o) => o.governorate ?? "—", cell: ({ row }) => row.original.governorate ?? "—" },
+    { id: "itemCount", header: "أصناف", accessorFn: (o) => o.itemCount, meta: { kind: "number", align: "center" }, cell: ({ row }) => row.original.itemCount },
+    // نصُّ العرض للنسخ، والفرز على القيمة الخامّ: الفرز النصّيّ على «1,234 د.ع» يقرأه أصغر
+    // من «999 د.ع» فيقلب ترتيب مبالغ التحصيل عند الباب.
+    { id: "total", header: "الإجمالي (COD)", accessorFn: (o) => `${money(o.total)} د.ع`, meta: { kind: "money" }, sortDescFirst: true, sortingFn: (a, b) => D(a.original.total ?? 0).cmp(D(b.original.total ?? 0)), cell: ({ row }) => <span className="font-bold">{money(row.original.total)} د.ع</span> },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (o) => orderStatusLabel(normalizeOrderStatus(o.status)),
+      meta: { kind: "status", wrap: true },
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        return (
+          <div className="flex flex-col items-center gap-0.5">
+            <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
+            {st === "CANCELLED" && o.cancelReason && (
+              <span className="max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: "actions",
+      header: "الإجراءات",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const o = row.original;
+        const st = normalizeOrderStatus(o.status);
+        // طلب SHIPPED مُسنَد لمندوب يُسلَّم ويُحصَّل عبر «توصيلاتي» (لا زر «تم التسليم» بلا تحصيل
+        // — يُخفي COD؛ مراجعة عدائية ١٢/٧). النقل اليدوي لـDELIVERED محجوبٌ خادمياً أيضاً.
+        const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
+        const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
+        const isBusy = setStatusM.isPending || printingId === o.id;
+        return (
+          <RowActions
+            mode="menu"
+            contact={{
+              phone: o.customerPhone,
+              label: `واتساب ${o.customerName ?? "العميل"}`,
+              message: buildOnlineOrderFollowupMessage({
+                orderNumber: o.orderNumber,
+                customerName: o.customerName,
+                total: o.total,
+                status: o.status,
+              }),
+              gate: { module: "store", level: "READ" },
+            }}
+            actions={[
+              {
+                key: "print-label",
+                kind: "print",
+                label: printingId === o.id ? "جارٍ طباعة الملصق…" : "طباعة الملصق",
+                icon: printingId === o.id ? Loader2 : Printer,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => printLabel(o.id),
+              },
+              {
+                key: "print-thermal",
+                kind: "print",
+                label: "طباعة فاتورة حرارية",
+                icon: ReceiptText,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => printThermal(o.id),
+              },
+              {
+                key: "print-preparation-a4",
+                kind: "print",
+                label: "طباعة ورقة تجهيز A4",
+                icon: FileText,
+                gate: { module: "store", level: "READ" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => printPreparationA4(o.id),
+              },
+              {
+                key: "dispatch",
+                kind: "approve",
+                label: "إرسال لمندوب",
+                icon: Truck,
+                hidden: !canDispatch || (st !== "CONFIRMED" && st !== "PROCESSING"),
+                gate: { roles: ["manager"], module: "store", level: "FULL" },
+                disabled: isBusy || dispatchM.isPending,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
+              },
+              {
+                key: "advance",
+                kind: "approve",
+                label: next?.label ?? "تحديث الحالة",
+                icon: Check,
+                hidden: !next,
+                gate: { module: "store", level: "FULL" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => next && advance(o, next.to, next.label),
+              },
+              {
+                key: "cancel",
+                kind: "delete",
+                label: "إلغاء الطلب",
+                icon: X,
+                variant: "destructive",
+                hidden: st !== "PENDING" && st !== "CONFIRMED" && st !== "PROCESSING",
+                gate: { module: "store", level: "FULL" },
+                disabled: isBusy,
+                disabledReason: "هناك عملية جارية على الطلب",
+                onSelect: () => setCancelTarget({ id: o.id, orderNumber: o.orderNumber }),
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ], [canDispatch, printingId, setStatusM.isPending, dispatchM.isPending]);
 
   // تصدير/طباعة «الكل»: نمشي بمؤشّر id (لا offset — عقد orders.list) حتى تنضب الصفحات المطابقة
   // لفلاتر الحالة/المدى الحاليّة، بصرف النظر عمّا حُمِّل على الشاشة أو نطاق البحث المحلي.
@@ -189,6 +324,48 @@ export default function OrderFulfillment() {
     finally { setPrintingId(null); }
   }
 
+  // طباعة قائمة الطلبات على A4 بهوية المستند بدل window.print() (كان يطبع الشاشة ببطاقات
+  // الحالة وشريط الأدوات ولافتة «تحميل المزيد» وقوائم الإجراءات). الصفوف هي المعروضة نفسها
+  // (الصفحات المحمَّلة بعد البحث) بلا استعلامٍ جديد — ولافتةُ «قد توجد طلبات أقدم» تنتقل
+  // إلى الرأس كي لا تُقرأ الورقة على أنّها كلّ الطلبات.
+  function printOrdersList() {
+    printReportDoc({
+      title: "قائمة طلبات الموقع",
+      headerExtra: [
+        {
+          label: "النطاق",
+          value: `${visibleOrders.length.toLocaleString("ar-IQ-u-nu-latn")} طلباً معروضاً${listQ.hasNextPage ? " — قد توجد طلبات أقدم غير محمَّلة" : ""}`,
+        },
+        { label: "الحالة", value: FILTERS.find((o) => o.value === filter)?.label ?? "الكل" },
+        { label: "تاريخ الطلب", value: f.from || f.to ? `${f.from || "البداية"} — ${f.to || "اليوم"}` : "كل الفترات" },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      columns: [
+        { key: "orderNumber", label: "رقم الطلب" },
+        { key: "customerName", label: "العميل" },
+        { key: "customerPhone", label: "الهاتف" },
+        { key: "governorate", label: "المحافظة" },
+        { key: "itemCount", label: "أصناف", align: "center" },
+        { key: "total", label: "الإجمالي (COD)", align: "left" },
+        { key: "status", label: "الحالة", align: "center" },
+      ],
+      rows: visibleOrders.map((o) => {
+        const st = normalizeOrderStatus(o.status);
+        return {
+          orderNumber: o.orderNumber,
+          customerName: o.customerName ?? "—",
+          customerPhone: o.customerPhone ?? "—",
+          governorate: o.governorate ?? "—",
+          itemCount: String(o.itemCount),
+          total: `${money(o.total)} د.ع`,
+          // سبب الإلغاء يظهر تحت شارة الحالة على الشاشة — يبقى ملازماً لها على الورق.
+          status: `${orderStatusLabel(st)}${st === "CANCELLED" && o.cancelReason ? ` — ${o.cancelReason}` : ""}`,
+        };
+      }),
+      emptyText: "لا طلبات مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -216,7 +393,7 @@ export default function OrderFulfillment() {
         onResetFilters={() => { setQuery(""); setFilter(null); resetF(); }}
         onRefresh={() => { void listQ.refetch(); void countsQ.refetch(); }}
         refreshing={listQ.isFetching || countsQ.isFetching}
-        onPrint={() => window.print()}
+        onPrint={printOrdersList}
         printDisabled={visibleOrders.length === 0}
         exportSpec={{
           filename: "طلبات-المتجر",
@@ -272,150 +449,22 @@ export default function OrderFulfillment() {
             disabled={listQ.isFetchingNextPage}
             className="shrink-0 rounded-lg border border-[var(--sem-warn)]/60 bg-transparent px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn-bg)] disabled:opacity-50"
           >
-            {listQ.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+            {listQ.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
           </button>
         </div>
       )}
 
-      {/* الجدول */}
-      <ScrollTableShell>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-right">
-              <th className="p-2 font-bold">رقم الطلب</th>
-              <th className="p-2 font-bold">العميل</th>
-              <th className="p-2 font-bold">الهاتف</th>
-              <th className="p-2 font-bold">المحافظة</th>
-              <th className="p-2 text-center font-bold">أصناف</th>
-              <th className="p-2 font-bold">الإجمالي (COD)</th>
-              <th className="p-2 font-bold">الحالة</th>
-              <th className="p-2 font-bold">الإجراءات</th>
-            </tr>
-          </thead>
-          <tbody>
-            {listQ.isLoading ? (
-              <tr>
-                <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                  <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
-                </td>
-              </tr>
-            ) : visibleOrders.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="p-10 text-center text-muted-foreground">لا توجد طلبات</td>
-              </tr>
-            ) : (
-              visibleOrders.map((o) => {
-                const st: OnlineOrderStatus = (ONLINE_ORDER_STATUSES as readonly string[]).includes(o.status)
-                  ? (o.status as OnlineOrderStatus)
-                  : "PENDING";
-                // طلب SHIPPED مُسنَد لمندوب يُسلَّم ويُحصَّل عبر «توصيلاتي» (لا زر «تم التسليم» بلا تحصيل
-                // — يُخفي COD؛ مراجعة عدائية ١٢/٧). النقل اليدوي لـDELIVERED محجوبٌ خادمياً أيضاً.
-                const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
-                const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
-                const isBusy = setStatusM.isPending || printingId === o.id;
-                return (
-                  <tr key={o.id} className="border-t border-border hover:bg-muted/40">
-                    <td className="p-2 font-bold tracking-wider" dir="ltr">{o.orderNumber}</td>
-                    <td className="p-2">{o.customerName ?? "—"}</td>
-                    <td className="p-2 tabular-nums" dir="ltr">{o.customerPhone ?? "—"}</td>
-                    <td className="p-2">{o.governorate ?? "—"}</td>
-                    <td className="p-2 text-center tabular-nums">{o.itemCount}</td>
-                    <td className="p-2 font-bold tabular-nums" dir="ltr">{money(o.total)} د.ع</td>
-                    <td className="p-2">
-                      <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${orderStatusChipClass(st)}`}>{orderStatusLabel(st)}</span>
-                      {st === "CANCELLED" && o.cancelReason && (
-                        <div className="mt-0.5 max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</div>
-                      )}
-                    </td>
-                    <td className="p-2">
-                      <RowActions
-                        mode="menu"
-                        contact={{
-                          phone: o.customerPhone,
-                          label: `واتساب ${o.customerName ?? "العميل"}`,
-                          message: buildOnlineOrderFollowupMessage({
-                            orderNumber: o.orderNumber,
-                            customerName: o.customerName,
-                            total: o.total,
-                            status: o.status,
-                          }),
-                          gate: { module: "store", level: "READ" },
-                        }}
-                        actions={[
-                          {
-                            key: "print-label",
-                            kind: "print",
-                            label: printingId === o.id ? "جارٍ طباعة الملصق…" : "طباعة الملصق",
-                            icon: printingId === o.id ? Loader2 : Printer,
-                            gate: { module: "store", level: "READ" },
-                            disabled: isBusy,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => printLabel(o.id),
-                          },
-                          {
-                            key: "print-thermal",
-                            kind: "print",
-                            label: "طباعة فاتورة حرارية",
-                            icon: ReceiptText,
-                            gate: { module: "store", level: "READ" },
-                            disabled: isBusy,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => printThermal(o.id),
-                          },
-                          {
-                            key: "print-preparation-a4",
-                            kind: "print",
-                            label: "طباعة ورقة تجهيز A4",
-                            icon: FileText,
-                            gate: { module: "store", level: "READ" },
-                            disabled: isBusy,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => printPreparationA4(o.id),
-                          },
-                          {
-                            key: "dispatch",
-                            kind: "approve",
-                            label: "إرسال لمندوب",
-                            icon: Truck,
-                            hidden: !canDispatch || (st !== "CONFIRMED" && st !== "PROCESSING"),
-                            gate: { roles: ["manager"], module: "store", level: "FULL" },
-                            disabled: isBusy || dispatchM.isPending,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName }),
-                          },
-                          {
-                            key: "advance",
-                            kind: "approve",
-                            label: next?.label ?? "تحديث الحالة",
-                            icon: Check,
-                            hidden: !next,
-                            gate: { module: "store", level: "FULL" },
-                            disabled: isBusy,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => next && advance(o, next.to, next.label),
-                          },
-                          {
-                            key: "cancel",
-                            kind: "delete",
-                            label: "إلغاء الطلب",
-                            icon: X,
-                            variant: "destructive",
-                            hidden: st !== "PENDING" && st !== "CONFIRMED" && st !== "PROCESSING",
-                            gate: { module: "store", level: "FULL" },
-                            disabled: isBusy,
-                            disabledReason: "هناك عملية جارية على الطلب",
-                            onSelect: () => setCancelTarget({ id: o.id, orderNumber: o.orderNumber }),
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </ScrollTableShell>
+      {/* الجدول — البحث والفلاتر في `ListToolbar` أعلاه (تغذّي visibleOrders) ⇒ لا بحثَ داخليّ. */}
+      <DataTable<Row>
+        columns={orderColumns}
+        data={visibleOrders}
+        searchable={false}
+        externalFiltersActive={activeFilterCount > 0 || query.trim() !== ""}
+        loading={listQ.isLoading}
+        errorState={{ isError: listQ.isError, message: listQ.error?.message, onRetry: () => void listQ.refetch() }}
+        emptyText="لا توجد طلبات"
+        viewKey="store-order-fulfillment"
+      />
 
       {dispatchTarget && (
         <DispatchModal

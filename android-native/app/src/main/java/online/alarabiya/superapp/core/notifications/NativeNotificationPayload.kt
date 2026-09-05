@@ -18,6 +18,7 @@ data class NativeNotificationPayload(
     val body: String,
     val urgency: NotificationUrgency,
     val sensitive: Boolean,
+    val family: NotificationDeliveryLane,
     val destination: NativeDestination,
 )
 
@@ -61,6 +62,15 @@ object NativeNotificationPayloadParser {
             "false" -> false
             else -> return rejected("invalid_sensitivity")
         }
+        val family = when (data["family"]) {
+            "OPERATIONS" -> NotificationDeliveryLane.OPERATIONS
+            "ADMIN" -> NotificationDeliveryLane.ADMIN
+            "EMPLOYEE" -> NotificationDeliveryLane.EMPLOYEE
+            "SYSTEM" -> NotificationDeliveryLane.SYSTEM
+            "APPROVAL" -> NotificationDeliveryLane.APPROVAL
+            null -> NativeNotificationPrivacyPolicy.deliveryLane(kind, urgency)
+            else -> return rejected("invalid_family")
+        }
         val destination = when (val parsed = data["destination"]?.let(NativeDeepLinkCodec::parse)) {
             is DeepLinkResult.Accepted -> parsed.destination
             else -> return rejected("invalid_destination")
@@ -75,6 +85,7 @@ object NativeNotificationPayloadParser {
                 body = if (sensitive) "افتح سوبر العربية لعرض التفاصيل." else body,
                 urgency = urgency,
                 sensitive = sensitive,
+                family = family,
                 destination = destination,
             ),
         )
@@ -106,6 +117,7 @@ object NativeNotificationPayloadParser {
             intent = NativeFeatureIntent.VIEW,
             requiresEntity = true,
         )
+        "SESSION_EVENT", "SYSTEM" -> destination == NativeDestination.Alerts
         else -> false
     }
 

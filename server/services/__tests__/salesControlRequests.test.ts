@@ -1,0 +1,341 @@
+import { eq, sql } from "drizzle-orm";
+import { beforeEach, describe, expect, it } from "vitest";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { idempotencyHash } from "../idempotency";
+import { createSale } from "../saleService";
+import {
+  approveSalesControlRequest,
+  requestSalesControl,
+} from "../sale/controlRequests";
+import { ensureFinancialPostingGate } from "../reports/monthCloseGate";
+
+const TABLES = [
+  "salesExchangeCommands", "salesControlRequests", "returnRequests", "idempotencyKeys",
+  "auditLogs", "accountingEntries", "receipts", "invoiceItems", "invoices",
+  "inventoryMovements", "branchStock", "productPrices", "productUnits",
+  "productVariants", "products", "shifts", "customers", "branches", "users",
+];
+const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
+const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const ADMIN = { userId: 4, branchId: 0, role: "admin" };
+
+function db() {
+  const value = getDb();
+  if (!value) throw new Error("DATABASE_URL not set for tests");
+  return value;
+}
+
+beforeEach(async () => {
+  const d = db();
+  await d.transaction(async (tx) => {
+    await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    for (const table of TABLES) await tx.execute(sql.raw(`DELETE FROM \`${table}\``));
+    await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  });
+  await ensureFinancialPostingGate(d);
+  await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "m1", name: "مدير مستقل", email: "m1@s.test", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "c1", name: "بائع", email: "c1@s.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "m2", name: "مدير ثان", email: "m2@s.test", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "a1", name: "أدمن", email: "a1@s.test", role: "admin", loginMethod: "local", branchId: null },
+  ]);
+  await d.insert(s.customers).values({ id: 1, name: "عميل", phone: "+9647701111111", currentBalance: "0.00" });
+  await d.insert(s.products).values({ id: 1, name: "دفتر" });
+  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "NB", costPrice: "400.00" });
+  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await d.insert(s.productPrices).values({ productUnitId: 1, priceTier: "RETAIL", price: "1000.00" });
+  await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+  await d.insert(s.shifts).values([
+    { id: 1, branchId: 1, userId: 2, openingBalance: "0", status: "OPEN" },
+    { id: 2, branchId: 1, userId: 1, openingBalance: "10000", status: "OPEN" },
+  ]);
+});
+
+async function sale() {
+  return createSale({
+    branchId: 1,
+    shiftId: 1,
+    sourceType: "POS",
+    customerId: 1,
+    lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+    payment: { amount: "5000.00", method: "CASH" },
+  }, CASHIER);
+}
+
+describe("حوكمة عمليات البيع الحرجة", () => {
+  it("طلب الإلغاء صفري الأثر والاعتماد وحده ينفذه", async () => {
+    const created = await sale();
+    const stockBefore = Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity);
+    const entriesBefore = (await db().select().from(s.accountingEntries)).length;
+    const requested = await requestSalesControl({
+      requestKey: "cancel-one",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "أدخل البائع فاتورة مكررة",
+      payload: { refundPaymentMethod: "CASH" },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+    expect((await db().select().from(s.accountingEntries)).length).toBe(entriesBefore);
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity)).toBe(stockBefore);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+
+    await approveSalesControlRequest(Number(requested.id), MANAGER);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity)).toBe(100);
+  });
+
+  it("فصل المهام لا يملك استثناء admin ولا منشئ الفاتورة", async () => {
+    const created = await sale();
+    const request = await requestSalesControl({
+      requestKey: "cancel-admin",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب رقابي",
+      payload: { refundPaymentMethod: "CARD" },
+    }, ADMIN);
+    await expect(approveSalesControlRequest(Number(request.id), ADMIN)).rejects.toThrow(/لا تراجع طلبك/);
+
+    const second = await sale();
+    const creatorRequest = await requestSalesControl({
+      requestKey: "cancel-creator",
+      invoiceId: second.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب البائع",
+      payload: { refundPaymentMethod: "CARD" },
+    }, MANAGER);
+    // نبدّل منشئ الفاتورة للمراجع إظهاراً لحارس منشئ المستند بصرف النظر عن الدور.
+    await db().update(s.invoices).set({ createdBy: 4 }).where(eq(s.invoices.id, second.invoiceId));
+    await expect(approveSalesControlRequest(Number(creatorRequest.id), ADMIN)).rejects.toThrow(/منشئ الفاتورة/);
+  });
+
+  it("طلب إلغاء ببطاقة + مرجع ⇒ الاعتماد ينفّذه فوراً في استدعاء واحد (لا يعلق PENDING)", async () => {
+    const created = await sale();
+    // إعادة وسم إيصال القبض بطاقةً — يحاكي فاتورة بطاقة (نمط sellPaidByCard في returnRefundRails.test.ts).
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-9" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-immediate",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة",
+      payload: { refundPaymentMethod: "CARD", reference: "TERM-77" },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING"); // إنشاء الطلب صفري الأثر رغم البطاقة
+
+    const approved = await approveSalesControlRequest(Number(requested.id), MANAGER);
+    expect("request" in approved && approved.request.status === "APPROVED").toBe(true);
+
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+    const [out] = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(out!.status).toBe("COMPLETED");
+    expect(out!.approvalStatus).toBe("APPROVED");
+  });
+
+  /**
+   * ⭐ مرجع استرداد البطاقة قرارُ **لحظة الاعتماد** لا لحظة الطلب (مراجعة Codex على PR #988،
+   * نظير `cashRouting.shiftId` لمرتجع البيع). الطالب لم ينفّذ الاسترداد الفعليّ بعد — لا مرجع
+   * في حمولته — والمُعتمِد وحده يزوّده بعد تنفيذه هو على الجهاز، لحظة اعتماده الطلب.
+   */
+  it("طلب إلغاء ببطاقة بلا مرجع ⇒ المُعتمِد يزوّده عبر cashRouting فيُنفَّذ", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-10" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-late-ref",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة قبل تنفيذ الاسترداد الفعليّ",
+      payload: { refundPaymentMethod: "CARD" }, // بلا reference — لم يُنفَّذ الاسترداد بعد
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    const approved = await approveSalesControlRequest(
+      Number(requested.id),
+      MANAGER,
+      null,
+      { reference: "TERM-LATE-1" },
+    );
+    expect("request" in approved && approved.request.status === "APPROVED").toBe(true);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("CANCELLED");
+    const [out] = await db()
+      .select()
+      .from(s.receipts)
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`);
+    expect(out!.referenceNumber).toBe("TERM-LATE-1");
+    expect(out!.status).toBe("COMPLETED");
+  });
+
+  it("طلب إلغاء ببطاقة بلا مرجع ⇒ اعتمادٌ بلا cashRouting.reference يُرفض بلا أي أثر", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-11" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-no-ref-anywhere",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة، لا مرجع في الطلب ولا في الاعتماد",
+      payload: { refundPaymentMethod: "CARD" },
+    }, CASHIER);
+
+    await expect(
+      approveSalesControlRequest(Number(requested.id), MANAGER),
+    ).rejects.toThrow(/مرجع/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+    expect(await db().select().from(s.receipts).where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`)).toHaveLength(0);
+    const stored = (await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id))))[0];
+    expect(stored.status).toBe("PENDING"); // لم يُستهلَك — يمكن اعتماده لاحقاً بمرجعٍ صحيح
+  });
+
+  /**
+   * ⭐ مراجعة Codex P1 على PR #997: `cashRouting.reference: null` صراحةً (لا الغياب) يجب أن
+   * يُرفَض حتماً — لا أن يتراجع صامتاً إلى مرجع الطالب المخزَّن. المُعتمِد قد يمسح مرجعاً
+   * معروضاً لأنّه **لا يطابق** إيصال الجهاز الفعليّ؛ رجوعٌ صامتٌ لذلك المرجع كان يُنفّذ الاعتماد
+   * بمرجعٍ رفضه المُعتمِد بنفسه.
+   */
+  it("طلب إلغاء ببطاقة بمرجعٍ مخزَّن ⇒ المُعتمِد يمسحه صراحةً فيُرفض الاعتماد بلا رجوعٍ للمرجع الأصليّ", async () => {
+    const created = await sale();
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "CARD-IN-12" })
+      .where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='IN'`);
+
+    const requested = await requestSalesControl({
+      requestKey: "cancel-card-cleared-ref",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب إلغاء ببطاقة بمرجعٍ لاحقاً تبيَّن أنه لا يطابق قسيمة الجهاز",
+      payload: { refundPaymentMethod: "CARD", reference: "WRONG-REF-99" },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    await expect(
+      approveSalesControlRequest(Number(requested.id), MANAGER, null, { reference: null }),
+    ).rejects.toThrow(/مرجع/);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+    expect(await db().select().from(s.receipts).where(sql`${s.receipts.invoiceId}=${created.invoiceId} AND ${s.receipts.direction}='OUT'`)).toHaveLength(0);
+    const stored = (await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id))))[0];
+    expect(stored.status).toBe("PENDING"); // لم يُستهلَك — يمكن اعتماده لاحقاً بمرجعٍ صحيح، لا بالمرجع الخاطئ المخزَّن
+  });
+
+  it("تغيّر اللقطة يوسم الطلب STALE بلا تنفيذ", async () => {
+    const created = await sale();
+    const request = await requestSalesControl({
+      requestKey: "stale-cancel",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_CANCEL",
+      reason: "طلب سيصبح قديماً",
+      payload: { refundPaymentMethod: "CARD" },
+    }, CASHIER);
+    await db().update(s.invoices).set({ notes: "تعديل بعد الطلب", updatedAt: new Date(Date.now() + 1000) })
+      .where(eq(s.invoices.id, created.invoiceId));
+    await expect(approveSalesControlRequest(Number(request.id), MANAGER)).rejects.toThrow(/تغيّرت الفاتورة/);
+    const stored = (await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(request.id))))[0];
+    expect(stored.status).toBe("STALE");
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0].status).toBe("PAID");
+  });
+
+  it("طلب تغيير تاريخ الاستحقاق صفري الأثر ولا يطبقه إلا اعتماد مستقل", async () => {
+    const created = await sale();
+    const request = await requestSalesControl({
+      requestKey: "due-date-one",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_DUE_DATE_CHANGE",
+      reason: "تمديد الأجل باتفاق موثق مع العميل",
+      payload: { dueDate: "2026-10-15" },
+    }, CASHIER);
+    const before = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    expect(before.dueDate).toBeNull();
+
+    await approveSalesControlRequest(Number(request.id), MANAGER);
+    const after = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    const appliedDueDate = after.dueDate instanceof Date
+      ? after.dueDate.toISOString().slice(0, 10)
+      : String(after.dueDate).slice(0, 10);
+    expect(appliedDueDate).toBe("2026-10-15");
+    const evidence = (
+      await db().select().from(s.salesControlRequests)
+        .where(eq(s.salesControlRequests.id, Number(request.id)))
+    )[0];
+    expect(evidence.status).toBe("APPROVED");
+    expect(evidence.payloadHash).toHaveLength(64);
+    expect(evidence.snapshotHash).toHaveLength(64);
+  });
+
+  it("الاستبدال يعكس الأصل ويصدر البديل ويسجل الفرق داخل اعتماد واحد", async () => {
+    const created = await sale();
+    const request = await requestSalesControl({
+      requestKey: "exchange-one",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_EXCHANGE",
+      reason: "العميل استبدل الكمية",
+      payload: {
+        customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }],
+        overpayHandling: "CREDIT",
+      },
+    }, CASHIER);
+    const approved = await approveSalesControlRequest(Number(request.id), MANAGER);
+    expect(approved.replayed).toBe(false);
+    const original = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    expect(original.status).toBe("SUPERSEDED");
+    const commands = await db().select().from(s.salesExchangeCommands);
+    expect(commands).toHaveLength(1);
+    expect(commands[0].replacementInvoiceId).not.toBe(created.invoiceId);
+    expect(commands[0].settlementKind).toBe("CUSTOMER_CREDIT");
+    expect(commands[0].deltaAmount).toBe("2000.00");
+  });
+});
+
+/**
+ * بلاغ الإنتاج ٣/٩/٢٦: كلّ مرتجع بيعٍ مطلوبٍ من شاشة ReturnComposer كان يُرفض عند الاعتماد بـ
+ * «حمولة الطلب لا تطابق بصمتها المحفوظة». الراوتر يمرّر `{ ...payload }` وفيه `refund: undefined`
+ * و`resolution: undefined` (يصلان حرفياً عبر superjson ويبقيان بعد zod)؛ البصمةُ حُسبت عليهما
+ * `null` بينما عمودُ JSON أسقطهما ⇒ بصمةُ الإنشاء ≠ بصمةُ المخزَّن، ولا مخرجَ للطلب. الاختبار
+ * يُرسل الحمولة كما تصل فعلاً ويُثبت أنّ الاعتماد ينفّذ المرتجع.
+ */
+describe("بصمة حمولة طلب التحكّم مستقرّة عبر التخزين", () => {
+  it("حمولة فيها مفاتيح undefined كما يرسلها الراوتر تُعتمد وتُنفَّذ", async () => {
+    const created = await sale();
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, created.invoiceId));
+    const requested = await requestSalesControl({
+      requestKey: "ret-undefined-keys",
+      invoiceId: created.invoiceId,
+      requestType: "SALES_RETURN",
+      reason: "رفض الزبون للمنتج",
+      payload: {
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 5 }],
+        refund: undefined,
+        resolution: undefined,
+        restock: true,
+      },
+    }, CASHIER);
+    expect(requested.status).toBe("PENDING");
+
+    const stored = (
+      await db().select().from(s.salesControlRequests).where(eq(s.salesControlRequests.id, Number(requested.id)))
+    )[0];
+    // المخزَّن بلا المفتاحين — وبصمتُه المخزَّنة تُعاد إنتاجها من المخزَّن نفسه.
+    expect(Object.keys(stored.payload as Record<string, unknown>).sort()).toEqual(["lines", "restock"]);
+    expect(idempotencyHash(stored.payload)).toBe(stored.payloadHash);
+
+    const approved = await approveSalesControlRequest(Number(requested.id), MANAGER);
+    expect("request" in approved && approved.request.status).toBe("APPROVED");
+    expect(Number((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity)).toBe(100);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, created.invoiceId)))[0];
+    expect(Number(inv.returnedTotal ?? 0)).toBeGreaterThan(0);
+  });
+});

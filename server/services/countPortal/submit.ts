@@ -1,5 +1,6 @@
 // تسجيل عدّة (submit) داخل withTx واحدة — العقد §٥ من docs/stocktake-contract.md.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -29,6 +30,8 @@ import {
   type CountEntryMethod,
   type CountMethod,
 } from "../../../shared/stocktakeCountMethod";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "../catalog/barcodeAliases";
 
 function scannerPrefix(code: string | null | undefined): number | null {
   const digits = String(code ?? "").replace(/\D/g, "");
@@ -286,18 +289,35 @@ export async function submitCount(
       // مقبول في FREE، مرفوض في SCAN_REQUIRED — فلا تمرّ عدّةٌ حرّة عبر واجهةٍ متجاوِزة.
       const sessionMethod = session.countMethod as CountMethod;
       const entryMethod: CountEntryMethod = input.entryMethod ?? "SEARCH_PICK";
-      const scannedBarcode = input.scannedBarcode?.trim() || null;
+      const scannedBarcode = canonicalizeBarcodeInput(input.scannedBarcode ?? "") || null;
+
+      if (isScanEntry(entryMethod)) {
+        if (!scannedBarcode) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({
+            what: "تعذّر تسجيل العدّ كعملية مسح",
+            why: "لم يصل باركود صالح يثبت المسح، حتى في جلسة العدّ الحر",
+            doThis: "امسح باركود الصنف ثم أعد المحاولة، أو استخدم طريقة الإدخال اليدوي المسموح بها للجلسة",
+          }) });
+        }
+        const resolution = await resolveBarcodeOwnerResult(tx, scannedBarcode);
+        if (resolution.status === "AMBIGUOUS") {
+          throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تسجيل العدّ بهذا الباركود") });
+        }
+        if (resolution.status !== "FOUND" || resolution.owner.variantId !== input.variantId || !resolution.owner.unitActive) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: "تعذّر تسجيل العدّ بهذا الباركود", why: "الباركود الممسوح لا يخصّ هذا الصنف أو أن وحدته معطّلة", doThis: "امسح باركود الصنف الصحيح، أو أبلغ مسؤول الجرد لتصحيح الباركود ووحدته" }) });
+        }
+      }
 
       if (sessionMethod === "SCAN_REQUIRED") {
         if (isScanEntry(entryMethod)) {
           // مسحٌ فعليّ ⇒ الباركود الممسوح يجب أن يعيد الحلّ إلى **هذا** المتغيّر خادمياً
           // (لا ثقة بالواجهة): يطابق باركود وحدةٍ **نشطة** أو بديلَ وحدةٍ نشطة لنفس المتغيّر.
           // (#6) الوحدة المتقاعدة لا تُقبل دليلاً — لا تعرضها الواجهة ولا تعدّها التغطية «متاحة».
-          const variantCodes = new Set<string>();
+          const variantCodes: string[] = [];
           for (const u of units)
-            if (u.barcode && u.isActive !== false) variantCodes.add(String(u.barcode).trim());
+            if (u.barcode && u.isActive !== false) variantCodes.push(u.barcode);
           for (const a of aliases)
-            if (a.barcode && a.isActive !== false) variantCodes.add(String(a.barcode).trim());
+            if (a.barcode && a.isActive !== false) variantCodes.push(a.barcode);
           if (!scannedBarcode) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -305,7 +325,7 @@ export async function submitCount(
                 "هذه الجلسة بأسلوب المسح الإلزامي — امسح باركود الصنف لفتح بطاقة العدّ.",
             });
           }
-          if (!variantCodes.has(scannedBarcode)) {
+          if (!variantCodes.some((code) => barcodesEquivalent(code, scannedBarcode))) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message:

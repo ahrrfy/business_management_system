@@ -235,6 +235,37 @@ describe("posting profile registry and executable policies", () => {
     ).not.toThrow();
   });
 
+  it("يحصر عجز الخزينة اليومية المعتمد في LOSSES بلا ذمة موظف", () => {
+    const loss = createPostingIntent(
+      "CASH_DAILY_SHORTAGE",
+      "ADJUST",
+      [debitLine("LOSSES", "25.00"), creditLine("TREASURY_CASH", "25.00")],
+      {
+        roleDebits: { LOSSES: "25.00" },
+        roleCredits: { TREASURY_CASH: "25.00" },
+      },
+    );
+    expect(() =>
+      validatePostingIntentPolicy(loss, "ADJUST", {
+        amount: "25.00",
+        roleDebits: { LOSSES: "25.00" },
+        roleCredits: { TREASURY_CASH: "25.00" },
+      }),
+    ).not.toThrow();
+
+    const innocentDebt = createPostingIntent(
+      "CASH_DAILY_SHORTAGE",
+      "ADJUST",
+      [
+        debitLine("EMPLOYEE_ADVANCES", "25.00"),
+        creditLine("TREASURY_CASH", "25.00"),
+      ],
+    );
+    expect(() =>
+      validatePostingIntentPolicy(innocentDebt, "ADJUST", { amount: "25.00" }),
+    ).toThrow(InvalidPostingIntentError);
+  });
+
   it("keeps interbranch receipt clearing branch-specific and role-exact", () => {
     const sender = createPostingIntent(
       "INTERBRANCH_CLEARING_OUT",

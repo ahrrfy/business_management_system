@@ -4,6 +4,7 @@
 //   ٣) السندات المستقلّة (بلا فاتورة) تظهر في الكشف وتؤثّر في المُرحَّل باتجاهها.
 //   ٤) بلا from/to ⇒ السلوك القديم نفسه (توافق رجعي).
 //   ٥) المورد بالمثل: orderDate للأوامر، entryDate لدفعات PAYMENT_OUT، وDRAFT لا يلتزم.
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -14,6 +15,10 @@ import { returnSale } from "../returnService";
 import { money } from "../money";
 import { approveVoucher, createVoucher as createVoucherService } from "../voucherService";
 import { getCustomerStatement, getSupplierStatement } from "../reportsService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const actor = { userId: 1, branchId: 1 };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
@@ -33,6 +38,10 @@ async function createVoucher(
 }
 
 const TABLES = [
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -263,12 +272,28 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
 });
 
 describe("كشف حساب المورد بفترة + رصيد مُرحَّل", () => {
+  async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+    const submitted = await submitPurchaseOrderForApproval({
+      purchaseOrderId: po.purchaseOrderId,
+      expectedVersion: po.version,
+      reason: "إرسال أمر اختبار كشف المورد للمراجعة",
+      requestKey: `statement-po-submit:${randomUUID()}`,
+    }, actor);
+    await decidePurchaseOrderControl({
+      requestId: submitted.requestId,
+      decisionKey: `statement-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار واعتمدت الأمر",
+    }, owner, { legacyConfirmOnly: true });
+  }
+
   /** أمر شراء مؤكَّد + استلام (+ دفعة اختيارية). الإجمالي = qty × unitPrice. */
   async function poReceived(supplierId: number, qty: number, unitPrice: string, pay?: string) {
     const po = await createPurchaseOrder(
-      { supplierId, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
+      { supplierId, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
       actor
     );
+    await approvePurchaseOrder(po);
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     const received = await receivePurchase(
       {
@@ -391,9 +416,10 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
     await poReceived(1, 10, "10.00");
     // أمر ثانٍ يُلغى — كان يُدرَج بكامل قيمته في totalPurchases فلا يتّزن الكشف مع currentBalance.
     const cancelled = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "10.00" }] },
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "DRAFT", items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "10.00" }] },
       actor
     );
+    await approvePurchaseOrder(cancelled);
     await db().update(s.purchaseOrders).set({ status: "CANCELLED" }).where(eq(s.purchaseOrders.id, cancelled.purchaseOrderId));
 
     const stmt = await getSupplierStatement(1);

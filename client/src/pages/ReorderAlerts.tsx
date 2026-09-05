@@ -3,6 +3,7 @@
 // - تحرير مباشر للعتبتين (الحد الأدنى/حدّ الطلب) لكل صف — المدير/المخزن.
 // - تحديد صفوف ثم «إنشاء مسوّدة أمر شراء» بحوار اختيار المورّد وكميات مقترحة قابلة للتعديل.
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import { FileEdit, ShoppingCart } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 function variantLabel(r: { variantName: string | null; color: string | null; size: string | null; sku: string }): string {
@@ -149,6 +151,10 @@ export default function ReorderAlerts() {
     clearBranchOverride.mutate({ variantId, branchId: branchIdOfRow });
   }
   const editSaving = setThresholds.isPending || setBranchOverride.isPending || clearBranchOverride.isPending;
+  // نصُّ انتظار زرّ «حفظ» يقتصر على مُغيّرَي العتبة: `editSaving` يشمل أيضاً مسح الـoverride
+  // («استعادة الافتراض») ⇒ استعمالُه في النصّ يجعل الزرّ يدّعي حفظاً لم يطلبه المستخدم أصلاً،
+  // بينما تعطيلُ الأزرار الثلاثة يبقى على العَلَم الجامع كما كان.
+  const thresholdSaving = setThresholds.isPending || setBranchOverride.isPending;
 
   // ── تحديد الصفوف + حوار المسوّدة ─────────────────────────────────────────
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -273,16 +279,16 @@ export default function ReorderAlerts() {
           {canPickBranch && (
             <div className="space-y-1">
               <Label>الفرع</Label>
-              <select
-                className={selectClsFull}
-                value={branchId ?? ""}
-                onChange={(e) => { setPickedBranch(e.target.value === "" ? null : Number(e.target.value)); setPage(0); }}
+              <AppSelect
+                className="h-9"
+                value={String(branchId ?? "")}
+                onValueChange={(next) => { setPickedBranch(next === "" ? null : Number(next)); setPage(0); }}
               >
                 {isAdmin && <option value="">كل الفروع</option>}
                 {(branches.data ?? []).map((b) => (
                   <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div className="space-y-1">
@@ -297,7 +303,7 @@ export default function ReorderAlerts() {
           <CardTitle className="text-base">المنتجات الواجب إعادة طلبها</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
+              {alerts.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} من ${fmtInt(total)} صنف`}
             </span>
             {canWrite && overridesCount > 0 && (
               <span
@@ -436,8 +442,9 @@ export default function ReorderAlerts() {
                                 </label>
                               </div>
                               <div className="flex gap-1 justify-center">
+                                {/* كان نصُّ الانتظار نقاطاً مجرّدة؛ وُحِّد مع بقيّة الأزرار بعَلَمٍ مقصورٍ على الحفظ. */}
                                 <Button size="sm" onClick={() => saveEdit(r.variantId, r.branchId)} disabled={editSaving}>
-                                  {editSaving ? "…" : "حفظ"}
+                                  {thresholdSaving ? ACTION_LABELS.saving : "حفظ"}
                                 </Button>
                                 <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={editSaving}>
                                   إلغاء
@@ -509,16 +516,16 @@ export default function ReorderAlerts() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label>المورّد</Label>
-              <select
-                className={selectClsFull}
-                value={supplierId ?? ""}
-                onChange={(e) => setSupplierId(e.target.value === "" ? null : Number(e.target.value))}
+              <AppSelect
+                className="h-9"
+                value={String(supplierId ?? "")}
+                onValueChange={(next) => setSupplierId(next === "" ? null : Number(next))}
               >
                 <option value="">— اختر المورّد —</option>
                 {(supplierList.data ?? []).map((s) => (
                   <option key={Number(s.id)} value={Number(s.id)}>{s.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
 
             <ScrollTableShell>
@@ -750,14 +757,14 @@ function BranchOverridesPanel(props: {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label>الفرع</Label>
-              <select className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-                value={addBranchId ?? ""}
-                onChange={(e) => setAddBranchId(e.target.value === "" ? null : Number(e.target.value))}>
+              <AppSelect className="h-9 border-input px-3 text-sm"
+                value={String(addBranchId ?? "")}
+                onValueChange={(next) => setAddBranchId(next === "" ? null : Number(next))}>
                 <option value="">— اختر الفرع —</option>
                 {(branches.data ?? []).map((b) => (
                   <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label>SKU المتغيّر (طابق حرفياً)</Label>

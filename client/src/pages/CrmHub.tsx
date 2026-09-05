@@ -16,6 +16,14 @@ const CustomerStatement=lazy(()=>import("@/pages/CustomerStatement"));
 const ARAging=lazy(()=>import("@/pages/ARAging"));
 const InstallmentPlans=lazy(()=>import("@/pages/InstallmentPlans"));
 const ContractPrices=lazy(()=>import("@/pages/ContractPrices"));
+const SalesPipeline=lazy(()=>import("@/pages/SalesPipeline"));
+
+// مرآة reportViewerProcedure: الدور خارج القائمة يحتاج منح reports صريحاً، لا قالباً افتراضياً.
+const REPORT_VIEWER_GATE: NonNullable<HubTab["gate"]> = {
+  roles: ["manager", "accountant", "auditor"],
+  module: "reports",
+  level: "READ",
+};
 
 const TABS:HubTab[]=[
   {value:"overview",label:"نظرة عامة",gate:{module:"campaigns",level:"READ"},Component:CrmOverview},
@@ -24,6 +32,7 @@ const TABS:HubTab[]=[
   {value:"inbox",label:"التواصل والوارد",gate:{module:"channels",level:"READ"},Component:Inbox},
   {value:"contacts",label:"جهات الاتصال",gate:{module:"crm",level:"READ"},Component:ContactsBank},
   {value:"quotations",label:"الفرص وعروض الأسعار",gate:{module:"sales",level:"READ"},Component:Quotations},
+  {value:"pipeline",label:"العملاء المحتملون والفرص",gate:{module:"crm",level:"READ"},Component:SalesPipeline},
   {value:"campaigns",label:"الحملات",gate:{module:"campaigns",level:"READ"},Component:Campaigns},
   {value:"broadcasts",label:"بث واتساب",gate:{module:"campaigns",level:"READ"},Component:WaBroadcasts},
   {value:"offers",label:"العروض والخصومات",gate:{module:"campaigns",level:"READ"},Component:Offers},
@@ -31,7 +40,7 @@ const TABS:HubTab[]=[
   {value:"collections",label:"التحصيل والمتأخرات",gate:{module:"collections",level:"FULL"},Component:ARReminders},
   {value:"installments",label:"الأقساط",gate:{module:"treasury",level:"READ"},Component:InstallmentPlans},
   {value:"contracts",label:"التسعير التعاقدي",gate:{managerOnly:true},Component:ContractPrices},
-  {value:"statement",label:"كشف العميل",gate:{module:"reports",level:"READ"},Component:CustomerStatement},
-  {value:"aging",label:"أعمار الذمم",gate:{module:"reports",level:"READ"},Component:ARAging},
+  {value:"statement",label:"كشف العميل",gate: REPORT_VIEWER_GATE,Component:CustomerStatement},
+  {value:"aging",label:"أعمار الذمم",gate: REPORT_VIEWER_GATE,Component:ARAging},
 ];
 export default function CrmHub(){return <PageTabs tabs={TABS} ariaLabel="أقسام إدارة علاقات العملاء"/>}

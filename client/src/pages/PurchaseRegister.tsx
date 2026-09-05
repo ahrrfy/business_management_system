@@ -1,17 +1,18 @@
 // سجلّ المشتريات — تفصيل بنود أوامر الشراء (مرآة السجلّ التفصيلي للمبيعات). عرض + تصدير + طباعة.
 // المصدر: reports.purchaseRegister (كل البنود عدا الملغاة ضمن الفترة) — ترقيم صفحات بالخادم (limit/offset).
 import { useState } from "react";
+import { ActorCell } from "@/components/data-table/ActorCell";
+import { ATTRIBUTION_LABELS } from "@shared/uiContracts";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -20,6 +21,40 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
 type Row = RouterOutputs["reports"]["purchaseRegister"]["rows"][number];
 const PAGE = 200;
+
+const columns: ColumnDef<Row, unknown>[] = [
+  { id: "orderDate", header: "التاريخ", accessorFn: (r) => r.orderDate, meta: { kind: "date" }, cell: ({ row }) => row.original.orderDate },
+  {
+    id: "poNumber",
+    header: "أمر الشراء",
+    accessorFn: (r) => r.poNumber ?? `#${r.poId}`,
+    meta: { kind: "code" },
+    cell: ({ row }) => (
+      <Link href={`/purchases/${row.original.poId}`} className="text-primary underline-offset-2 hover:underline">
+        {row.original.poNumber ?? `#${row.original.poId}`}
+      </Link>
+    ),
+  },
+  { id: "supplierName", header: "المورّد", accessorFn: (r) => r.supplierName ?? "—", cell: ({ row }) => row.original.supplierName ?? "—" },
+  {
+    id: "orderedByName",
+    header: ATTRIBUTION_LABELS.performedBy,
+    accessorFn: (r) => r.orderedByName ?? "",
+    meta: { kind: "actor" },
+    cell: ({ row }) => <ActorCell actor={{ name: row.original.orderedByName }} />,
+  },
+  { id: "productName", header: "المنتج", accessorFn: (r) => r.productName ?? "—", meta: { width: "wide" }, cell: ({ row }) => row.original.productName ?? "—" },
+  { id: "quantity", header: "الكمية", accessorFn: (r) => fmtInt(r.quantity), meta: { kind: "number" }, cell: ({ row }) => fmtInt(row.original.quantity) },
+  {
+    id: "unitPrice",
+    header: "سعر الوحدة",
+    accessorFn: (r) => fmtAr(r.unitPrice),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="text-muted-foreground">{fmtAr(row.original.unitPrice)}</span>,
+  },
+  { id: "total", header: "الإجمالي", accessorFn: (r) => fmtAr(r.total), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.total) },
+];
+
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -49,7 +84,6 @@ export default function PurchaseRegister() {
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
   const total = q.data?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / PAGE));
 
   const kpis: KpiItem[] = totals
     ? [
@@ -91,6 +125,7 @@ export default function PurchaseRegister() {
           { key: "orderDate", header: "التاريخ" },
           { key: "poNumber", header: "أمر الشراء", map: (r) => r.poNumber ?? `#${r.poId}` },
           { key: "supplierName", header: "المورّد", map: (r) => r.supplierName ?? "" },
+          { key: "orderedByName", header: ATTRIBUTION_LABELS.performedBy, map: (r) => r.orderedByName ?? "" },
           { key: "productName", header: "المنتج", map: (r) => r.productName ?? "" },
           { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
           { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
@@ -123,6 +158,7 @@ export default function PurchaseRegister() {
           { key: "date", label: "التاريخ" },
           { key: "po", label: "أمر الشراء" },
           { key: "supplier", label: "المورّد" },
+          { key: "orderedBy", label: ATTRIBUTION_LABELS.performedBy },
           { key: "product", label: "المنتج" },
           { key: "qty", label: "الكمية", align: "left" },
           { key: "unitPrice", label: "سعر الوحدة", align: "left" },
@@ -132,6 +168,7 @@ export default function PurchaseRegister() {
           date: r.orderDate,
           po: r.poNumber ?? `#${r.poId}`,
           supplier: r.supplierName ?? "—",
+          orderedBy: r.orderedByName ?? "—",
           product: r.productName ?? "—",
           qty: r.quantity,
           unitPrice: fmtAr(r.unitPrice),
@@ -160,10 +197,10 @@ export default function PurchaseRegister() {
           <PeriodFilter value={period} onChange={changePeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => { setBranchId(e.target.value ? Number(e.target.value) : ""); setPage(0); }}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => { setBranchId(value ? Number(value) : ""); setPage(0); }}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">المورّد</label>
@@ -194,56 +231,21 @@ export default function PurchaseRegister() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بنود مشتريات في هذا النطاق.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">التاريخ</th>
-                    <th className="p-2.5 text-end font-medium">أمر الشراء</th>
-                    <th className="p-2.5 text-end font-medium">المورّد</th>
-                    <th className="p-2.5 text-end font-medium">المنتج</th>
-                    <th className="p-2.5 text-start font-medium">الكمية</th>
-                    <th className="p-2.5 text-start font-medium">سعر الوحدة</th>
-                    <th className="p-2.5 text-start font-medium">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r: Row) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.orderDate}</td>
-                      <td className="p-2.5 text-end">
-                        <Link href={`/purchases/${r.poId}`} className="text-primary underline-offset-2 hover:underline">
-                          {r.poNumber ?? `#${r.poId}`}
-                        </Link>
-                      </td>
-                      <td className="p-2.5 text-end">{r.supplierName ?? "—"}</td>
-                      <td className="p-2.5 text-end">{r.productName ?? "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          {/* الترقيم خادميّ (limit/offset) ⇒ شريطٌ واحد داخل الجدول؛ الشريط المنفصل الذي كان
+              تحت البطاقة حُذف كي لا يقفز ترقيمان بمقدارَين فتُتخطّى صفوفٌ صامتاً.
+              والبحث في شريط الفلاتر أعلاه (يغذّي الاستعلام) ⇒ لا بحثَ داخليّ. */}
+          <DataTable<Row>
+            columns={columns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={dq.trim() !== ""}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
+            emptyText="لا بنود مشتريات في هذا النطاق."
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total, isFetching: q.isFetching }}
+          />
         </CardContent>
       </Card>
-
-      {pages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق</Button>
-          <span className="text-muted-foreground tabular-nums">صفحة {page + 1} من {pages}</span>
-          <Button variant="outline" size="sm" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>التالي</Button>
-        </div>
-      )}
     </ReportShell>
   );
 }

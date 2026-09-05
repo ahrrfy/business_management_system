@@ -99,7 +99,16 @@ async function saleThenReturn(opts: {
     {
       invoiceId: sale.invoiceId,
       lines: [{ invoiceItemId: Number(item.id), baseQuantity: opts.returnBase }],
-      ...(opts.refund ? { refund: { amount: opts.refund, method: "CASH" as const, shiftId: seedShiftId } } : {}),
+      ...(opts.refund ? {
+        resolution: {
+          kind: "IMMEDIATE_REFUND" as const,
+          method: "CASH" as const,
+          amount: opts.refund,
+          shiftId: seedShiftId,
+          reason: "مرتجع نقدي موثق لزبون عابر ضمن اختبار سجل المرتجعات",
+          disposition: "RESTOCK" as const,
+        },
+      } : {}),
     },
     actor,
   );

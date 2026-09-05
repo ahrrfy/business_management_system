@@ -1,5 +1,5 @@
 /* ============================================================================
- * دورة حياة تشغيلات العمولة (S3): قراءة + اعتماد/إلغاء اعتماد/حذف مسودة.
+ * دورة حياة تشغيلات العمولة (S3): قراءة + اعتماد نهائي + حذف مسودة لم تدخل الحوكمة.
  *
  * الحالات: draft → approved فقط — «الدفع» ليس هنا: مسيّر الرواتب يلتقط التشغيلة
  * المعتمدة لنفس الشهر (S4) ويثبّت payrollRunId (فكّه التلقائي بحذف مسودة المسيّر
@@ -9,26 +9,54 @@
  * حارس الرواتب: لا اعتماد وثمة مسيّر معتمد/مدفوع للشهر نفسه (فات قطار الالتقاط —
  * يُعاد المسيّر مسودةً أولاً)؛ مسيّر «مسودة» قائم ⇒ الاعتماد يمرّ مع علم
  * requiresPayrollRegeneration كي تنبّه الواجهة لإعادة توليده.
- * حارس السلسلة: لا إلغاء اعتماد وثمة تشغيلة لشهر أحدث (ترحيلها بُني على هذا الشهر).
+ * الاعتماد append-only: لا يعود لمسودة، ودليل طلب/قرار الاعتماد يمنع حذف الرأس.
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import {
   commissionPlans,
+  commissionRunApprovalRequests,
   commissionRunLines,
   commissionRuns,
   employees,
   payrollRuns,
 } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
+import { assertPeriodOpen } from "../periodLockService";
 import { requireDb, withTx, type Actor } from "../tx";
 
-export async function listRuns() {
+export async function listRuns(scopedBranchId: number | null = null) {
   const db = requireDb();
-  return db.select().from(commissionRuns).orderBy(desc(commissionRuns.period), desc(commissionRuns.id));
+  const runs = await db.select().from(commissionRuns).orderBy(desc(commissionRuns.period), desc(commissionRuns.id));
+  if (scopedBranchId == null || runs.length === 0) return runs;
+  const scopedTotals = await db
+    .select({
+      runId: commissionRunLines.runId,
+      employeeCount: sql<number>`COUNT(*)`,
+      totalBaseSales: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseSales}), 0) AS CHAR)`,
+      totalBaseReturns: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseReturns}), 0) AS CHAR)`,
+      totalCommission: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.commissionAmount}), 0) AS CHAR)`,
+    })
+    .from(commissionRunLines)
+    .where(eq(commissionRunLines.branchId, scopedBranchId))
+    .groupBy(commissionRunLines.runId);
+  const byRun = new Map(scopedTotals.map((row) => [Number(row.runId), row]));
+  return runs.flatMap((run) => {
+    const totals = byRun.get(Number(run.id));
+    return totals
+      ? [{
+          ...run,
+          employeeCount: Number(totals.employeeCount),
+          totalBaseSales: totals.totalBaseSales,
+          totalBaseReturns: totals.totalBaseReturns,
+          totalCommission: totals.totalCommission,
+        }]
+      : [];
+  });
 }
 
-export async function getRun(id: number) {
+export async function getRun(id: number, scopedBranchId: number | null = null) {
   const db = requireDb();
   const [run] = await db.select().from(commissionRuns).where(eq(commissionRuns.id, id)).limit(1);
   if (!run) return null;
@@ -64,13 +92,48 @@ export async function getRun(id: number) {
     .from(commissionRunLines)
     .leftJoin(employees, eq(employees.id, commissionRunLines.employeeId))
     .leftJoin(commissionPlans, eq(commissionPlans.id, commissionRunLines.planId))
-    .where(eq(commissionRunLines.runId, id))
+    .where(
+      and(
+        eq(commissionRunLines.runId, id),
+        scopedBranchId == null ? undefined : eq(commissionRunLines.branchId, scopedBranchId),
+      ),
+    )
     .orderBy(desc(commissionRunLines.commissionAmount), commissionRunLines.id);
+
+  if (scopedBranchId != null && lines.length === 0) return null;
+  const scopedTotals = scopedBranchId == null
+    ? null
+    : (await db
+        .select({
+          employeeCount: sql<number>`COUNT(*)`,
+          totalBaseSales: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseSales}), 0) AS CHAR)`,
+          totalBaseReturns: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.baseReturns}), 0) AS CHAR)`,
+          totalCommission: sql<string>`CAST(COALESCE(SUM(${commissionRunLines.commissionAmount}), 0) AS CHAR)`,
+        })
+        .from(commissionRunLines)
+        .where(and(eq(commissionRunLines.runId, id), eq(commissionRunLines.branchId, scopedBranchId))))[0];
 
   return {
     ...run,
+    ...(scopedTotals
+      ? {
+          employeeCount: Number(scopedTotals.employeeCount),
+          totalBaseSales: scopedTotals.totalBaseSales,
+          totalBaseReturns: scopedTotals.totalBaseReturns,
+          totalCommission: scopedTotals.totalCommission,
+        }
+      : {}),
     lines: lines.map((l) => ({ ...l, employeeName: fullEmployeeName(l) })),
   };
+}
+
+function assertCompanyScope(scopedBranchId: number | null): void {
+  if (scopedBranchId != null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "تغيير حالة تشغيلة العمولات إجراء مركزي على مستوى الشركة.",
+    });
+  }
 }
 
 export interface ApproveResult {
@@ -81,96 +144,113 @@ export interface ApproveResult {
   requiresPayrollRegeneration: boolean;
 }
 
-export async function approveRun(id: number, actor: Actor): Promise<ApproveResult> {
-  return withTx(async (tx) => {
-    const [preview] = await tx
-      .select({ period: commissionRuns.period })
-      .from(commissionRuns)
-      .where(eq(commissionRuns.id, id))
-      .limit(1);
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
-    // Global lock order shared with payroll approval: payroll(period) → commission.
-    // The unique payroll period index also gap-locks a missing run.
-    const [payroll] = await tx
-      .select({ id: payrollRuns.id, status: payrollRuns.status })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.period, preview.period))
-      .for("update")
-      .limit(1);
-    const [run] = await tx
-      .select()
-      .from(commissionRuns)
-      .where(eq(commissionRuns.id, id))
-      .for("update")
-      .limit(1);
-    if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
-    if (run.period !== preview.period) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت فترة تشغيلة العمولات أثناء الاعتماد." });
-    }
-    if (run.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "التشغيلة معتمدة فعلاً." });
-    if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
-      // SOD-03 (مرآة الرواتب): فصل مهام حقيقي — من احتسب لا يعتمد.
-      throw new TRPCError({ code: "FORBIDDEN", message: "المعتمِد يجب أن يختلف عن مَن احتسب التشغيلة (فصل مهام)." });
-    }
+export interface ApproveRunInTxOptions {
+  /** يُستدعى بعد قفل payroll(period) ثم commissionRun وقبل أي أثر. */
+  beforeApply?: (run: typeof commissionRuns.$inferSelect) => Promise<void>;
+}
 
-    if (payroll && payroll.status !== "draft") {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: `مسيّر رواتب ${run.period} ${payroll.status === "paid" ? "مدفوع" : "معتمد"} فعلاً — فات قطار الالتقاط. أعد المسيّر إلى مسودة أولاً ثم أعد توليده بعد اعتماد العمولات.`,
-      });
-    }
+export async function approveRunInTx(
+  tx: Tx,
+  id: number,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+  options: ApproveRunInTxOptions = {},
+): Promise<ApproveResult> {
+  assertCompanyScope(scopedBranchId);
+  const [preview] = await tx
+    .select({ period: commissionRuns.period })
+    .from(commissionRuns)
+    .where(eq(commissionRuns.id, id))
+    .limit(1);
+  if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
+  // Global lock order shared with payroll approval: payroll(period) → commission.
+  // The unique payroll period index also gap-locks a missing run.
+  const [payroll] = await tx
+    .select({ id: payrollRuns.id, status: payrollRuns.status })
+    .from(payrollRuns)
+    .where(eq(payrollRuns.period, preview.period))
+    .for("update")
+    .limit(1);
+  const [run] = await tx
+    .select()
+    .from(commissionRuns)
+    .where(eq(commissionRuns.id, id))
+    .for("update")
+    .limit(1);
+  if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
+  if (run.period !== preview.period) {
+    throw new TRPCError({ code: "CONFLICT", message: "تغيّرت فترة تشغيلة العمولات أثناء الاعتماد." });
+  }
+  if (run.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "التشغيلة معتمدة فعلاً." });
+  if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "المعتمِد يجب أن يختلف عن مَن احتسب التشغيلة (فصل مهام)." });
+  }
+  if (payroll && payroll.status !== "draft") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `مسيّر رواتب ${run.period} ${payroll.status === "paid" ? "مدفوع" : "معتمد"} فعلاً — فات قطار الالتقاط. أعد المسيّر إلى مسودة أولاً ثم أعد توليده بعد اعتماد العمولات.`,
+    });
+  }
+  // حارس إقفال الفترة المالية العامّة (مرآة recomputeMonthRates في attendanceService): الفحص أعلاه
+  // يغطي فقط وجود صفّ payrollRuns لنفس الشهر — شهرٌ مُقفَل بلا مسيّرٍ أصلاً (قفلٌ قديم أو شهرٌ
+  // صفريّ الموظفين) يمرّ منه. الاعتماد append-only (لا unapproveRun فعليّ) فلا رجوع لو فات.
+  await assertPeriodOpen(tx, new Date(`${run.period}-01`));
 
-    await tx
-      .update(commissionRuns)
-      .set({ status: "approved", approvedBy: actor.userId, approvedAt: new Date() })
-      .where(eq(commissionRuns.id, id));
+  await options.beforeApply?.(run);
+  await tx
+    .update(commissionRuns)
+    .set({ status: "approved", approvedBy: actor.userId, approvedAt: new Date() })
+    .where(eq(commissionRuns.id, id));
 
-    return {
-      id,
-      period: run.period,
-      status: "approved" as const,
-      requiresPayrollRegeneration: payroll?.status === "draft",
-    };
+  return {
+    id,
+    period: run.period,
+    status: "approved" as const,
+    requiresPayrollRegeneration: payroll?.status === "draft",
+  };
+}
+
+export async function approveRun(
+  id: number,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<ApproveResult> {
+  return withTx((tx) => approveRunInTx(tx, id, actor, scopedBranchId));
+}
+
+export async function unapproveRun(
+  id: number,
+  actor: Actor,
+  scopedBranchId: number | null = null,
+): Promise<{ id: number; status: "draft" }> {
+  assertCompanyScope(scopedBranchId);
+  void id;
+  void actor;
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: "اعتماد تشغيلة العمولات سجل نهائي غير قابل للإلغاء؛ يلزم مسار عكس مستقل يحفظ الدليل.",
   });
 }
 
-export async function unapproveRun(id: number, actor: Actor): Promise<{ id: number; status: "draft" }> {
-  void actor; // الهوية تُدقَّق في الراوتر (logAudit) — أي مدير/أدمن مخوَّل.
-  return withTx(async (tx) => {
-    const [run] = await tx.select().from(commissionRuns).where(eq(commissionRuns.id, id)).for("update");
-    if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
-    if (run.status !== "approved") throw new TRPCError({ code: "CONFLICT", message: "التشغيلة ليست معتمدة." });
-    if (run.payrollRunId != null) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "التقطها مسيّر الرواتب — احذف مسودة المسيّر (أو اعكس مساره) أولاً فيُفكّ الربط تلقائياً.",
-      });
-    }
-    const [later] = await tx
-      .select({ id: commissionRuns.id, period: commissionRuns.period })
-      .from(commissionRuns)
-      .where(gt(commissionRuns.period, run.period))
-      .limit(1);
-    if (later) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: `توجد تشغيلة لشهر أحدث (${later.period}) ترحيلُها مبنيّ على هذا الشهر — احذفها/ألغِ اعتمادها أولاً.`,
-      });
-    }
-    await tx
-      .update(commissionRuns)
-      .set({ status: "draft", approvedBy: null, approvedAt: null })
-      .where(eq(commissionRuns.id, id));
-    return { id, status: "draft" as const };
-  });
-}
-
-export async function deleteDraft(id: number): Promise<{ deleted: true; period: string }> {
+export async function deleteDraft(id: number, scopedBranchId: number | null = null): Promise<{ deleted: true; period: string }> {
+  assertCompanyScope(scopedBranchId);
   return withTx(async (tx) => {
     const [run] = await tx.select().from(commissionRuns).where(eq(commissionRuns.id, id)).for("update");
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
     if (run.status !== "draft") {
-      throw new TRPCError({ code: "CONFLICT", message: "لا تُحذف تشغيلة معتمدة — ألغِ اعتمادها أولاً." });
+      throw new TRPCError({ code: "CONFLICT", message: "لا تُحذف تشغيلة معتمدة." });
+    }
+    const [approvalEvidence] = await tx
+      .select({ id: commissionRunApprovalRequests.id })
+      .from(commissionRunApprovalRequests)
+      .where(eq(commissionRunApprovalRequests.runId, id))
+      .for("update")
+      .limit(1);
+    if (approvalEvidence) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لا تُحذف تشغيلة لها سجل طلب/قرار اعتماد؛ دليل الحوكمة دائم وغير قابل للمحو.",
+      });
     }
     await tx.delete(commissionRunLines).where(eq(commissionRunLines.runId, id));
     await tx.delete(commissionRuns).where(eq(commissionRuns.id, id));

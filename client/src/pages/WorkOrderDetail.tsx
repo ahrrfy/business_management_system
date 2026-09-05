@@ -1,20 +1,28 @@
-import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import { WorkOrderFlowStepper } from "@/components/workorder/WorkOrderFlowStepper";
+import { deriveWorkOrderFlowSteps } from "@shared/workOrderFlowSteps";
 import { PageHeader } from "@/components/PageHeader";
 import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
+import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
+import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
+import ReverseDeliveryRequestDialog from "@/components/workorder/ReverseDeliveryRequestDialog";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
 import { cn } from "@/lib/utils";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterInputs } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
@@ -36,7 +44,16 @@ import { Link, useParams, useSearch } from "wouter";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { newClientRequestId } from "@/lib/countQueue";
-import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import { cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
+import {
+  hasWorkOrderCommercialAuthority,
+  hasWorkOrderExecAuthority,
+  mayCancelWorkOrderWithoutApproval,
+  mayRequestWorkOrderControl,
+} from "@shared/workOrderControlAuthority";
+import { ErrorState, LoadingState } from "@/components/PageState";
+import { NextActionChip } from "@/components/nextAction/NextActionChip";
+import { serverAnsweredDeterministically } from "@/lib/refundDrawer";
 
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
@@ -49,8 +66,14 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
   { v: "WALLET", label: "محفظة" },
 ];
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+type CancelInput = RouterInputs["workOrders"]["cancel"];
+type CancelControlInput = Extract<
+  RouterInputs["workOrders"]["requestControl"],
+  { requestType: "CANCEL" }
+>;
+type PendingCancelAttempt =
+  | { kind: "DIRECT"; input: CancelInput }
+  | { kind: "CONTROL_REQUEST"; input: CancelControlInput };
 
 /** حقل وصفي: عنوان صغير + قيمة. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -87,14 +110,30 @@ export default function WorkOrderDetail() {
   // materialsCost/laborCost/unitCost بالفعل (null) لغير المخوَّلين، والواجهة تُخفي الصفوف/الأعمدة
   // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
   const showCost = me.data ? canSeeCost(me.data.role) : true;
-  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
   const role = me.data?.role as RoleKey | undefined;
   const permissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // مرايا بوابات الخادم نفسها: التنفيذ = كاشير/مدير/فني، والمال/التعديل = كاشير/مدير.
-  const canExecuteWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager", "print_operator"]);
-  const canDeliverWorkOrder = !!role && moduleAccessAllowed(role, permissions, "workorders", "FULL", ["cashier", "manager"]);
+  const canExecuteWorkOrder = hasWorkOrderExecAuthority(role, permissions);
+  const canDeliverWorkOrder = hasWorkOrderCommercialAuthority(role, permissions);
+  /**
+   * **طلبُ الإلغاء صار من حقّ فنّي المطبعة** (قرار المالك ١/٩/٢٦): هو أوّلُ من يتحدّث مع
+   * العميل وإليه يتّصل ليُلغي. أمّا التعديلُ التجاريّ وعكسُ التسليم فيبقيان على كاشير/مدير —
+   * فالمصدرُ الواحد `mayRequestWorkOrderControl` يفرّق بينهما، والخادمُ يُنفّذ الفرق نفسه.
+   */
+  const canRequestCancel = mayRequestWorkOrderControl("CANCEL", role, permissions);
+  /**
+   * **إسنادُ المندوب يقرأ بوّابةَ التوصيل لا بوّابةَ أمر الشغل** (مراجعة Codex P2): الحوارُ
+   * يستعلم `delivery.listParties` (`store:READ`) وينفّذ `delivery.dispatch` (`store:FULL` +
+   * كاشير/مدير). ودورٌ مخصّصٌ بـ`workorders:FULL` و`store:NONE` كان يرى الزرَّ ثمّ يصطدم
+   * بـFORBIDDEN. مرآةُ `canDispatch` في `DeliveryHub` حرفياً.
+   */
+  const canDispatchDelivery = !!role && moduleAccessAllowed(role, permissions, "store", "FULL", ["cashier", "manager"]);
+  const canRequestCommercialControl = mayRequestWorkOrderControl("COMMERCIAL_EDIT", role, permissions);
   const canEditWorkOrder = canDeliverWorkOrder;
-  const canRequestDesignApproval = canExecuteWorkOrder;
+  const controlPreflight = trpc.workOrders.controlPreflight.useQuery(
+    { workOrderId },
+    { enabled: Number.isFinite(workOrderId) && canRequestCancel },
+  );
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -107,7 +146,32 @@ export default function WorkOrderDetail() {
   const [payReference, setPayReference] = useState("");
   const [partialDispatchMessage, setPartialDispatchMessage] = useState("");
   const deliverRequestIdRef = useRef<string | null>(null);
-  const cancelRequestIdRef = useRef<string | null>(null);
+  const cancelAttemptRef = useRef<PendingCancelAttempt | null>(null);
+  const cancelAttemptStorageKey = `work-order-cancel-attempt:${workOrderId}`;
+  const rememberCancelAttempt = (attempt: PendingCancelAttempt) => {
+    cancelAttemptRef.current = attempt;
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem(cancelAttemptStorageKey, JSON.stringify(attempt));
+    }
+  };
+  const forgetCancelAttempt = () => {
+    cancelAttemptRef.current = null;
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(cancelAttemptStorageKey);
+  };
+  const recoverCancelAttempt = (): PendingCancelAttempt | null => {
+    if (cancelAttemptRef.current) return cancelAttemptRef.current;
+    if (typeof window === "undefined") return null;
+    const raw = window.sessionStorage.getItem(cancelAttemptStorageKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as PendingCancelAttempt;
+      if ((parsed.kind !== "DIRECT" && parsed.kind !== "CONTROL_REQUEST") || parsed.input.workOrderId !== workOrderId) return null;
+      cancelAttemptRef.current = parsed;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
 
   useEffect(() => {
     if (!isPosPaymentMethodEnabled(payMethod)) {
@@ -156,6 +220,7 @@ export default function WorkOrderDetail() {
   const refresh = async () => {
     await Promise.all([
       utils.workOrders.get.invalidate({ workOrderId }),
+      utils.workOrders.controlPreflight.invalidate({ workOrderId }),
       utils.workOrders.list.invalidate(),
       utils.workOrders.pendingCancellationRefunds.invalidate(),
       utils.workOrders.cancellationRefundStatus.invalidate({ workOrderId }),
@@ -197,27 +262,38 @@ export default function WorkOrderDetail() {
   });
   const [cancelOpen, setCancelOpen] = useState(false);
   /**
-   * ٢٠/٨ — الاسترجاع بعد التسليم: كان **بلا زرّ ولا مسار** إطلاقاً؛ الأمرُ المُسلَّم يرفضه
-   * الإلغاء، وفاتورتُه يرفضها `sales.cancel` و`sales.correct`، والمرتجعُ يشترط بنداً
-   * والفاتورةُ الخدميّة بلا بنود. فكان الردّ العمليّ الوحيد «لا شيء يمكن فعله».
+   * **إسنادُ المندوب من شاشة الأمر** — الاستعلام يُفعَّل عند فتح الحوار فقط: قائمةُ الجهات
+   * ليست من شأن كلّ زائرٍ لصفحة أمرٍ ليس فيها توصيل.
    */
-  const [reverseOpen, setReverseOpen] = useState(false);
-  const [reverseReason, setReverseReason] = useState("");
-  const [reverseReopen, setReverseReopen] = useState(false);
-  const reverse = trpc.workOrders.reverseDelivery.useMutation({
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const dispatchRequestIdRef = useRef<string | null>(null);
+  const dispatchParties = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { enabled: dispatchOpen },
+  );
+  const dispatchMut = trpc.delivery.dispatch.useMutation({
     onSuccess: async (r) => {
-      setDone(
-        r.delegatedToReturn
-          ? "سُجِّل الاسترجاع كمرتجعٍ كامل للفاتورة."
-          : `عُكِس التسليم — أُرجع ${fmtAr(String(r.refundedTotal ?? "0"))} وسقطت الذمّة.`
-            + (r.status === "READY" ? " والطلب عاد للطابور جاهزاً لإعادة التسليم." : ""),
-      );
-      setReverseOpen(false);
+      setDispatchOpen(false);
+      dispatchRequestIdRef.current = null;
       setError("");
-      await refresh();
+      setDone(`أُسنِد الطلب للمندوب — إرسالية ${r.consignmentNumber} (تحصيل ${fmtAr(r.codAmount)} د.ع)`);
+      await Promise.all([
+        utils.workOrders.get.invalidate({ workOrderId }),
+        utils.workOrders.list.invalidate(),
+      ]);
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      // مفتاحُ الطلب يُستهلَك مع الحمولة الناجحة وحدها؛ الفشلُ يُبقيه ليكون التكرارُ آمناً.
+      setError(e.message);
+    },
   });
+  const cancelDeepLinkOpenedRef = useRef(false);
+  useEffect(() => {
+    if (cancelDeepLinkOpenedRef.current || !wo.data || !canRequestCancel) return;
+    if (new URLSearchParams(qs || "").get("cancel") !== "1") return;
+    cancelDeepLinkOpenedRef.current = true;
+    setCancelOpen(true);
+  }, [canRequestCancel, qs, wo.data]);
   // Slice C (٢٩/٨/٢٦) — الإسناد المتأخّر: زرّ «تغيير طريقة التسليم» يظهر قبل التسليم/الإرسال ⇒
   // موظّف الاستقبال يقلب استلاماً⇄توصيلاً من هذه الشاشة نفسها بلا العودة للطابور (بلاغ المالك:
   // «الإسناد يحتوي على مشكلة، يسند الطلب منذ البداية ولا نعلم هل الشركة أم المندوب»). المكوّن
@@ -241,8 +317,7 @@ export default function WorkOrderDetail() {
       setAwaitingOwnerRefund(notice.awaitingOwner);
       setCancelOutcomeUncertain(false);
       setError("");
-      cancelRequestIdRef.current = null;
-      if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      forgetCancelAttempt();
       await refresh();
     },
     onError: async (mutationError) => {
@@ -258,8 +333,7 @@ export default function WorkOrderDetail() {
         setAwaitingOwnerRefund(durable.awaitingOwner);
         setCancelOutcomeUncertain(false);
         setError("");
-        cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        forgetCancelAttempt();
         return;
       }
       if (orderCheck.data?.status === "CANCELLED") {
@@ -267,19 +341,119 @@ export default function WorkOrderDetail() {
         setAwaitingOwnerRefund(false);
         setCancelOutcomeUncertain(false);
         setError("");
-        cancelRequestIdRef.current = null;
-        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        forgetCancelAttempt();
         return;
       }
+      /**
+       * ⚠️ «مجهولٌ» ليست مرادفَ «فشل». الرفضُ بكودٍ صريح (`PRECONDITION_FAILED` مثلاً:
+       * «حدّد درج الاسترداد») يقع **قبل أيّ كتابة** داخل `withTx` ⇒ لم يحدث شيء يقيناً.
+       * وسمُه «لم يثبت الخادم التنفيذ؛ أعد المحاولة بالمعرّف نفسه» كان يدفع الموظّف لتكرار
+       * محاولةٍ تفشل بنفس الطريقة أبداً بدل معالجة السبب المذكور. نفسُ الإصلاح جرى في
+       * [`Reception.tsx`](./Reception.tsx) على بلاغٍ حيّ (١٩/٨) ولم يُكنَس إلى هنا.
+       */
+      const deterministic = serverAnsweredDeterministically(mutationError);
+      setCancelOutcomeUncertain(!deterministic);
+      setError(deterministic
+        ? mutationError.message
+        : `${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+    },
+  });
+  const requestControl = trpc.workOrders.requestControl.useMutation({
+    onSuccess: async (result) => {
+      setCancelOpen(false);
+      setCancelOutcomeUncertain(false);
+      setAwaitingOwnerRefund(false);
+      setError("");
+      setDone(result.replayed
+        ? "أُعيد تحميل طلب الإلغاء السابق؛ ما زال القرار بانتظار مراجعٍ مستقل."
+        : "أُرسل طلب الإلغاء بلا أي أثر مالي أو مخزني؛ ينتظر اعتماد مديرٍ مستقل.");
+      forgetCancelAttempt();
+      await Promise.all([
+        controlPreflight.refetch(),
+        utils.workOrders.pendingControlRequests.invalidate(),
+        utils.workOrders.eventTimeline.invalidate({ workOrderId }),
+      ]);
+    },
+    onError: (mutationError) => {
       setCancelOutcomeUncertain(true);
-      setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+      setError(`${mutationError.message} — أعد إرسال الطلب بالحمولة والمعرّف نفسيهما للتحقق الآمن.`);
     },
   });
 
-  if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (!wo.data) return <div className="p-10 text-center text-muted-foreground">طلب الخدمة غير موجود.</div>;
+  if (wo.isLoading) return <LoadingState message="جارٍ تحميل طلب الخدمة…" />;
+  if (wo.isError) {
+    const code = wo.error.data?.code;
+    return (
+      <ErrorState
+        message={code === "NOT_FOUND"
+          ? "طلب الخدمة غير موجود."
+          : code === "FORBIDDEN"
+            ? "لا تملك صلاحية قراءة طلب الخدمة أو أنه يتبع فرعاً آخر."
+            : "تعذّر تحميل طلب الخدمة؛ لم يُفترض أنه غير موجود."}
+        onRetry={() => void wo.refetch()}
+      />
+    );
+  }
+  if (!wo.data) return <ErrorState message="لم يُرجع الخادم بيانات طلب الخدمة." onRetry={() => void wo.refetch()} />;
   const data = wo.data;
-  const blockedByDesign = !!data.blockingTask;
+  /**
+   * **الحدُّ الفاصل صار المالَ لا الدور** (قرار المالك ١/٩/٢٦): يُشتقّ من تمهيد الخادم نفسه
+   * (`controlPreflight`) عبر القاموس المشترك، فما تراه الشاشةُ هو ما سينفّذه `cancelWorkOrderInTx`
+   * حرفياً. الدورُ وحده كان يكذب في الاتجاهين: يَعِد المديرَ بإلغاءٍ مباشر لأمرٍ فيه عربون،
+   * ويحجب عن الفنّي إلغاءً لا أثرَ له إطلاقاً.
+   */
+  const cancelDirectAllowed =
+    controlPreflight.data != null &&
+    mayCancelWorkOrderWithoutApproval({
+      role,
+      override: permissions,
+      status: controlPreflight.data.status,
+      moneyAtStake: controlPreflight.data.cancelMoneyAtStake,
+      managerControlRequired: controlPreflight.data.controlRequired.cancel,
+    });
+  const cancellationRequiresApproval = !cancelDirectAllowed;
+  /**
+   * مسارُ الاعتماد يُركّب تمهيدَه من `controlPreflight` (المتاح لفاعل الطلب)؛ والمسارُ المباشر
+   * يترك الحوارَ يسأل `workOrders.refundPreflight` — وهي البوّابةُ التي تتبع فعلَ الإلغاء
+   * نفسه، فتصل الفنّيَّ والكاشيرَ كما تصل المدير، بأرقامٍ حيّة لا لقطةِ عمود.
+   */
+  const approvalRefundPreflight = cancellationRequiresApproval
+    ? controlPreflight.data == null
+      ? null
+      : {
+          needsCashDrawer: controlPreflight.data.cashRefundRequired,
+          cardRefundAllowed: controlPreflight.data.cardRefundAllowed,
+          estimatedCashOut: controlPreflight.data.expectedCashRefund,
+          branchId: controlPreflight.data.branchId,
+          /**
+           * `controlPreflight` صار يحسب النقدَ حيّاً (`computeDrawerCashBalance`) لا من عمود
+           * `shifts.expectedCash` اللقطيّ، ويُبلّغ الكفايةَ لكلّ درجٍ والخزينة — فنُمرّرها كما
+           * هي (الرقمُ الحسّاس محجوبٌ خادمياً عمّن لا يملك الخزينة، فيصل `null`).
+           */
+          drawers: controlPreflight.data.openReceptionShifts.map((shift) => ({
+            shiftId: shift.id,
+            userId: shift.userId,
+            userName: shift.userName ?? `#${shift.userId}`,
+            shiftType: "RECEPTION",
+            ...(shift.expectedCash == null ? {} : { expectedCash: shift.expectedCash }),
+            sufficient: shift.sufficient,
+          })),
+          treasuryCash: controlPreflight.data.treasuryCash,
+          treasurySufficient: controlPreflight.data.treasurySufficient,
+        }
+    : undefined;
+  /**
+   * **المسارُ يُشتقّ مرّةً واحدة** من نفس المعطيات التي تحكم الأزرار — فما يقوله الشريطُ هو
+   * ما سيفعله الزرّ. اشتقاقان منفصلان كانا سيتباعدان في أوّل تعديل.
+   */
+  const flowSteps = deriveWorkOrderFlowSteps({
+    status: String(data.status),
+    hasDelivery: data.hasDelivery === true,
+    consignmentId: data.consignmentId == null ? null : Number(data.consignmentId),
+    courierDeliveredAt: (data as { courierDeliveredAt?: unknown }).courierDeliveredAt ?? null,
+    kanbanState: (data as { kanbanState?: string | null }).kanbanState ?? null,
+    blockedReason: (data as { blockedReason?: string | null }).blockedReason ?? null,
+  });
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
     : workOrderStatusLabel(data.status);
@@ -291,6 +465,48 @@ export default function WorkOrderDetail() {
   const durableRefundNotice = cancellationRefundStatus.data
     ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
     : null;
+
+  /* أعمدة جدول المواد — تُشتقّ من عقد `workOrders.get` نفسه (لا نوعٌ يدويّ ينجرف عن الخادم).
+     تُبنى هنا لا في `useMemo` لأنّ الشاشة ترجع مبكّراً قبل هذه النقطة (تحميل/خطأ)، وخطّافٌ
+     بعد رجوعٍ مشروط ممنوع. أعمدة الكلفة مشروطةٌ بـ`showCost` كما كانت في الجدول الخامّ. */
+  type MaterialRow = (typeof data)["materials"][number];
+  // مشروطٌ بـ`showCost` كما كان `<tfoot>` الأصليّ: لا حسابَ كلفةٍ لمن حُجبت عنه (قد تصل
+  // `unitCost` محجوبةً فيرمي `D()` على قيمةٍ غير رقمية).
+  const materialsCostTotal = showCost
+    ? data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2)
+    : "0";
+  const materialColumns: ColumnDef<MaterialRow, unknown>[] = [
+    {
+      id: "material",
+      header: "المادة",
+      accessorFn: (m) => `${m.productName}${m.variantName ? ` — ${m.variantName}` : ""}`,
+      meta: { width: "wide" },
+      cell: ({ row }) => <>{row.original.productName}{row.original.variantName ? ` — ${row.original.variantName}` : ""}</>,
+      // تسمية الذيل تظهر فقط مع أعمدة الكلفة — بلا كلفةٍ لا إجماليَّ يُذيَّل به الجدول.
+      footer: showCost ? () => "إجمالي كلفة المواد" : undefined,
+    },
+    { id: "sku", header: "SKU", accessorFn: (m) => m.sku ?? "", meta: { kind: "code" }, cell: ({ row }) => row.original.sku },
+    {
+      id: "baseQuantity",
+      header: "كمية (أساس)",
+      accessorFn: (m) => String(m.baseQuantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => row.original.baseQuantity,
+    },
+    ...(showCost
+      ? ([
+          { id: "unitCost", header: "كلفة الوحدة", accessorFn: (m) => fmt(m.unitCost), meta: { kind: "money" }, cell: ({ row }) => fmt(row.original.unitCost) },
+          {
+            id: "lineCost",
+            header: "كلفة السطر",
+            accessorFn: (m) => fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2)),
+            meta: { kind: "money" },
+            cell: ({ row }) => fmt(D(row.original.unitCost).times(row.original.baseQuantity).toFixed(2)),
+            footer: () => fmt(materialsCostTotal),
+          },
+        ] as ColumnDef<MaterialRow, unknown>[])
+      : []),
+  ];
 
   return (
     <div className="space-y-4 max-w-4xl">
@@ -412,6 +628,14 @@ export default function WorkOrderDetail() {
         </>}
       />
 
+      {/* م٢ ق١١ — «الخطوة التالية» لأمر الشغل. `assigneeName` يمرّ إلى الرقاقة كي تعرض
+          اسمَ الفنّيّ المُسنَد بدل «الموظّف المُسنَد» العامّ حين تكون الملكيّة USER. */}
+      <NextActionChip
+        nextAction={data.nextAction ?? null}
+        terminalReason={data.nextActionReason ?? null}
+        userName={data.assigneeName}
+      />
+
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center justify-between gap-2">
@@ -435,6 +659,8 @@ export default function WorkOrderDetail() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* مسارُ الطلب أوّلاً: أين نحن وما التالي ولِمَ توقّفنا — قبل أيّ تفصيل. */}
+          <WorkOrderFlowStepper steps={flowSteps} />
           <div className="grid gap-5 md:grid-cols-3">
             {/* سياق الأمر — كان فقيراً (رقم/عميل/كمية/استحقاق فقط) رغم أنّ الخادم يُعيد القناة
              *  والأولوية والمنفّذ وتاريخ الإنشاء والتوصيل بلا استهلاك في الشاشة. */}
@@ -484,8 +710,16 @@ export default function WorkOrderDetail() {
 
             <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
               <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              {/*
+                تنبيه: `SummaryRow` **يُنسّق بنفسه** (`fmtAr` ⇒ `D(value)`)، فتمريرُ نصٍّ منسَّقٍ سلفاً
+                يُسقط الشاشة كلَّها: القيمة كانت «ناقص + fmt(العربون)» = «−70,000» بإشارةِ ناقصٍ
+                يونيكوديّة (U+2212) وفاصلةِ آلاف ⇒ `DecimalError: Invalid argument` يبتلعه حدُّ
+                الخطأ فيُظهر «حدث خطأ غير متوقّع» مكانَ الصفحة بأكملها.
+                ⇒ أيُّ أمرِ شغلٍ بعربونٍ موجب كان **يتعذّر فتح تفاصيله إطلاقاً**.
+                وبقيّةُ النداءات تُمرّر القيمةَ خامّاً؛ فلتُمرَّر هذه خامّةً سالبةً كذلك.
+              */}
               {D(data.deposit ?? 0).gt(0) && (
-                <SummaryRow label="العربون المقبوض" value={`−${fmt(data.deposit ?? "0")}`} />
+                <SummaryRow label="العربون المقبوض" value={D(data.deposit ?? 0).neg().toFixed(2)} />
               )}
               {/* Slice D (٢٩/٨/٢٦): إظهار «إجمالي ما سيدفعه العميل» شاملاً التوصيل في بطاقة الأمر —
                   بلاغ المالك: «يجب أن يعلم الزبون بالمبلغ الكلي النهائي شاملاً التوصيل». يظهر عند
@@ -519,26 +753,17 @@ export default function WorkOrderDetail() {
             </div>
           )}
 
-          {/* ش٢ (١٩/٨): بطاقةُ الموافقة — الحالة مشتقّةٌ من مهمّةٍ حاجزة مفتوحة لا من عَلَم. */}
-          <DesignApprovalCard
-            workOrderId={Number(data.id)}
-            status={String(data.status)}
-            blockingTask={(data.blockingTask as never) ?? null}
-            canManage={canRequestDesignApproval}
-          />
-
           {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
               في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
               والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
-          {data.images && data.images.length > 0 && (
-            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
-          )}
+          <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
         </CardContent>
       </Card>
 
       {editingMaterials ? (
         <WorkOrderMaterialsEditor
           workOrderId={data.id}
+          version={Number(data.version)}
           branchId={Number(data.branchId)}
           orderNumber={data.orderNumber}
           status={data.status}
@@ -563,43 +788,17 @@ export default function WorkOrderDetail() {
           )}
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 font-medium text-start">المادة</th>
-                  <th className="px-3 py-2 font-medium text-start">SKU</th>
-                  <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>}
-                  {showCost && <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {data.materials.map((m) => (
-                  <tr key={m.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
-                    <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
-                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>}
-                    {showCost && <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(m.unitCost).times(m.baseQuantity).toFixed(2))}</td>}
-                  </tr>
-                ))}
-                {data.materials.length === 0 && (
-                  <tr><td colSpan={showCost ? 5 : 3} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
-                )}
-              </tbody>
-              {data.materials.length > 0 && showCost && (
-                <tfoot>
-                  <tr className="border-t-2 bg-muted/40 font-semibold">
-                    <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
-                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
-                      {fmt(data.materials.reduce((s, m) => s.plus(D(m.unitCost).times(m.baseQuantity)), D(0)).toFixed(2))}
-                    </td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
-          </div>
+          {/* مُضمَّن: العنوان في رأس البطاقة، وبنود المواد تُقرأ كاملةً بلا بحثٍ ولا ترقيم.
+              صفّ «إجمالي كلفة المواد» صار `footer` على العمودَين فيقع المبلغ تحت عموده. */}
+          <DataTable<MaterialRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={materialColumns}
+            data={data.materials}
+            emptyText="لا مواد مرفقة (أمر طباعة/خدمة صرفة)."
+          />
         </CardContent>
       </Card>
       )}
@@ -619,10 +818,11 @@ export default function WorkOrderDetail() {
                 <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="الرصيد المستحق" ariaLabel="مبلغ الدفعة" />
               </div>
               <div className="space-y-1">
-                <Label>طريقة الدفع</Label>
-                <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
+                <Label htmlFor="wo-pay-method">طريقة الدفع</Label>
+                {/* `disabled` على الخيار محفوظ — AppSelect يمرّره إلى SelectItem (سياسة القبض تبقى مُنفَّذة). */}
+                <AppSelect id="wo-pay-method" value={payMethod} onValueChange={(value) => setPayMethod(value as typeof payMethod)}>
                   {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
-                </select>
+                </AppSelect>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
@@ -671,6 +871,14 @@ export default function WorkOrderDetail() {
           سُحب/بُدئ/جُهِّز/سُلّم. يقرأ من workOrders.timeline بعد أن صار صادقاً كاملاً في PR #851. */}
       <WorkOrderTimelineCard workOrderId={workOrderId} statusHue={workOrderStatusHue(data.status)} />
 
+      {cancellationRefundStatus.isError && (
+        <ErrorState
+          className="rounded-md border p-4"
+          message="تعذّر التحقق من حالة ردّ مبالغ الإلغاء؛ لا يمكن افتراض عدم وجود مبلغ معلّق."
+          onRetry={() => void cancellationRefundStatus.refetch()}
+        />
+      )}
+
       {durableRefundNotice && (
         <div
           role="status"
@@ -709,25 +917,23 @@ export default function WorkOrderDetail() {
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
           <p>{error}</p>
-          {cancelOutcomeUncertain && canCancel && (
+          {cancelOutcomeUncertain && canRequestCancel && (
             <Button
               type="button"
               variant="outline"
               className="mt-2"
-              disabled={cancel.isPending}
+              disabled={cancel.isPending || requestControl.isPending}
               onClick={() => {
-                const key = `work-order-cancel-request:${workOrderId}`;
-                const clientRequestId = cancelRequestIdRef.current
-                  ?? (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null);
-                if (!clientRequestId) {
-                  setError("تعذّر العثور على معرّف المحاولة السابقة؛ حدّث الصفحة للتحقق من حالة الأمر قبل أي إجراء.");
+                const attempt = recoverCancelAttempt();
+                if (!attempt) {
+                  setError("تعذّر استعادة حمولة المحاولة السابقة كاملةً؛ حدّث الصفحة وتحقق من حالة الأمر قبل أي إجراء.");
                   return;
                 }
-                cancelRequestIdRef.current = clientRequestId;
-                cancel.mutate({ workOrderId, clientRequestId });
+                if (attempt.kind === "DIRECT") cancel.mutate(attempt.input);
+                else requestControl.mutate(attempt.input);
               }}
             >
-              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+              {cancel.isPending || requestControl.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
             </Button>
           )}
         </div>
@@ -750,7 +956,6 @@ export default function WorkOrderDetail() {
         {canExecuteWorkOrder && data.status === "RECEIVED" && (
           <Button
             onClick={async () => {
-              if (blockedByDesign) return;
               if (!(await confirm({
                 variant: "warning",
                 title: "بدء تنفيذ طلب الخدمة",
@@ -759,9 +964,9 @@ export default function WorkOrderDetail() {
               }))) return;
               start.mutate({ workOrderId });
             }}
-            disabled={start.isPending || blockedByDesign}
+            disabled={start.isPending}
           >
-            {start.isPending ? "جارٍ…" : blockedByDesign ? "بانتظار موافقة العميل" : "بدء التنفيذ (خصم المواد)"}
+            {start.isPending ? "جارٍ…" : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
         {canExecuteWorkOrder && data.status === "IN_PROGRESS" && (
@@ -780,10 +985,22 @@ export default function WorkOrderDetail() {
             {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
-        {canDeliverWorkOrder && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
-          <Button asChild>
-            <Link href="/delivery"><Truck aria-hidden className="me-1 size-4" /> إسناد للتوصيل</Link>
-          </Button>
+        {/*
+          **الإسنادُ في مكانه** (١/٩/٢٦): كان الزرُّ ينقل إلى `/delivery` ثمّ يبحث الموظّفُ عن
+          طلبه في طابور «جاهز للإرسال» ليفتح الحوارَ نفسه — شاشتان وبحثٌ لعملٍ يعرف صاحبَه.
+          الحوارُ هو `DispatchDialog` عينه (لا ازدواجَ منطق) ومسارُ الخادم `delivery.dispatch`
+          نفسه ببوّابته نفسها. ورابطُ لوحة التوصيل يبقى لمن يريد الطابور كلَّه.
+        */}
+        {canDispatchDelivery && data.status === "READY" && data.hasDelivery && !data.consignmentId && (
+          <>
+            <Button onClick={() => setDispatchOpen(true)} disabled={dispatchMut.isPending}>
+              <Truck aria-hidden className="me-1 size-4" />
+              {dispatchMut.isPending ? "جارٍ الإسناد…" : "إسناد لمندوب التوصيل"}
+            </Button>
+            <Button asChild variant="ghost">
+              <Link href="/delivery">لوحة التوصيل</Link>
+            </Button>
+          </>
         )}
         {canDeliverWorkOrder && data.status === "READY" && !data.hasDelivery && (
           <Button
@@ -827,91 +1044,34 @@ export default function WorkOrderDetail() {
             {data.hasDelivery ? "تحويل لاستلامٍ مباشر" : "تحويل إلى توصيل"}
           </Button>
         )}
-        {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {canRequestCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={() => setCancelOpen(true)}
-            disabled={cancel.isPending}
+            disabled={cancel.isPending || requestControl.isPending}
           >
-            {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
+            {/* الزرُّ يقول ما سيقع فعلاً: إلغاءٌ فوريّ أم طلبٌ ينتظر مديراً — لا ما يقوله الدور. */}
+            {cancel.isPending || requestControl.isPending
+              ? "جارٍ…"
+              : cancelDirectAllowed ? "إلغاء الأمر" : "طلب إلغاء الأمر"}
           </Button>
         )}
-        {canCancel && data.status === "DELIVERED" && data.invoiceId && (
-          <Button variant="destructive" onClick={() => setReverseOpen(true)} disabled={reverse.isPending}>
-            {reverse.isPending ? "جارٍ…" : "استرجاع الطلب المُسلَّم"}
-          </Button>
+        {canRequestCommercialControl && data.status === "DELIVERED" && data.invoiceId && (
+          <ReverseDeliveryRequestDialog
+            workOrderId={workOrderId}
+            orderNumber={data.orderNumber}
+            title={data.title}
+            onRequested={(message) => {
+              setDone(message);
+              setError("");
+            }}
+          />
         )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
         {data.status === "DELIVERED" && data.invoiceId && (
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
-
-      {reverseOpen && (
-        <div role="dialog" aria-label="استرجاع الطلب المُسلَّم"
-             className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
-             onClick={() => !reverse.isPending && setReverseOpen(false)}>
-          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg"
-               onClick={(e) => e.stopPropagation()}>
-            <h2 className="mb-1 text-base font-extrabold">استرجاع الطلب المُسلَّم</h2>
-            <p className="mb-3 text-2xs text-muted-foreground">
-              «{data.title}» — <span dir="ltr" className="font-mono">{data.orderNumber}</span>
-            </p>
-            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥).
-                تنبيه: المقبوضُ من **الفاتورة** لا من `deposit`: الدفعُ عند التسليم لا يمرّ بالعربون
-                إطلاقاً، فكان الحوار يَعِد بردّ صفرٍ بينما يخرج من الدرج كامل المبلغ. */}
-            <div className="mb-3 space-y-1 rounded-md border p-3 text-xs">
-              <div className="flex justify-between"><span>صافي الفاتورة</span>
-                <span dir="ltr" className="tabular-nums font-bold">
-                  {fmtAr(String(data.invoiceTotal ?? data.salePrice ?? "0"))}
-                </span></div>
-              <div className="flex justify-between"><span>المقبوض فعلاً — سيُردّ بطريقة قبضه</span>
-                <span dir="ltr" className="tabular-nums font-bold">
-                  {fmtAr(String(data.invoicePaidAmount ?? "0"))}
-                </span></div>
-              <div className="flex justify-between text-muted-foreground"><span>يسقط من ذمّة العميل</span>
-                <span dir="ltr" className="tabular-nums">
-                  {fmtAr(
-                    String(
-                      Math.max(
-                        0,
-                        Number(data.invoiceTotal ?? data.salePrice ?? 0)
-                          - Number(data.invoicePaidAmount ?? 0),
-                      ),
-                    ),
-                  )}
-                </span></div>
-            </div>
-            <label className="mb-1 block text-xs font-bold">سبب الاسترجاع</label>
-            <Input value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
-                   placeholder="رفض الزبون العمل المُسلَّم / أعاده المندوب…" maxLength={500} />
-            <label className="mt-3 flex items-start gap-2 text-2xs text-muted-foreground">
-              <input type="checkbox" className="mt-0.5" checked={reverseReopen}
-                     onChange={(e) => setReverseReopen(e.target.checked)} />
-              <span>
-                <b className="text-foreground">أعِده للطابور</b> جاهزاً لإعادة التسليم مصحَّحاً
-                (بدل إغلاقه ملغىً). تُفكّ الفاتورة المرتجعة عنه فيمكن تسليمه ثانيةً.
-              </span>
-            </label>
-            <p className="mt-3 rounded-md bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
-              يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
-              ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
-              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
-                onClick={() => reverse.mutate({
-                  workOrderId,
-                  reason: reverseReason.trim(),
-                  reopen: reverseReopen,
-                  clientRequestId: newClientRequestId(),
-                })}>
-                {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <ReclassifyDeliveryDialog
         order={reclassifyOpen ? {
@@ -929,9 +1089,74 @@ export default function WorkOrderDetail() {
         onConfirm={(payload) => setDeliveryMethodMut.mutate({ workOrderId, ...payload })}
       />
 
+      <DispatchDialog
+        order={dispatchOpen ? {
+          id: workOrderId,
+          orderNumber: data.orderNumber,
+          title: data.title,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+          salePrice: data.salePrice,
+          deposit: data.deposit,
+          deliveryAddress: data.deliveryAddress,
+          deliveryPhone: data.deliveryPhone,
+          deliveryCost: data.deliveryCost,
+          deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+        } : null}
+        parties={dispatchParties.data ?? []}
+        pending={dispatchMut.isPending}
+        onClose={() => setDispatchOpen(false)}
+        /**
+         * **الطردُ لا يخرج بلا أوراقه** (مراجعة Codex P2): `DeliveryHub` و`ReceptionOrderQueue`
+         * كلاهما يفتح نافذةَ الملصق **قبل** الطفرة (وإلّا حجبها مانعُ النوافذ لأنّها لم تعد
+         * ردّاً على نقرة) ثمّ يطبع ملصقَ الشحن وبوليصةَ التوصيل. مسارٌ ثالثٌ يُنشئ الإرسالية
+         * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
+         * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
+         */
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+          const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
+          const labelWin = preopenShippingLabelWindow();
+          try {
+            const r = await dispatchMut.mutateAsync({
+              workOrderId,
+              partyId,
+              deliveryFee: fee,
+              recipientName: recipientName || undefined,
+              recipientPhone: recipientPhone || undefined,
+              deliveryAddress: data.deliveryAddress ?? undefined,
+              clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
+              assignedUserId,
+            });
+            const printable = {
+              orderNumber: data.orderNumber,
+              title: data.title,
+              quantity: Number(data.quantity),
+              salePrice: data.salePrice,
+              deposit: data.deposit ?? null,
+              customerName: data.customerName ?? null,
+              customerPhone: data.customerPhone ?? null,
+              deliveryAddress: data.deliveryAddress ?? null,
+              deliveryCost: data.deliveryCost ?? null,
+              deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+            };
+            void printReadyOrderLabel(printable, {
+              partyName: party?.name ?? null,
+              trackingNumber: r.consignmentNumber,
+              cod: r.codAmount,
+              into: labelWin,
+            });
+            printDeliverySlip(printable, party, r);
+          } catch {
+            // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
+            labelWin?.close();
+          }
+        }}
+      />
+
       <CancelWorkOrderDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
+        workOrderId={workOrderId}
         orderNumber={data.orderNumber}
         title={data.title}
         // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
@@ -945,20 +1170,62 @@ export default function WorkOrderDetail() {
               }))
             : []
         }
-        pending={cancel.isPending}
+        requiresApproval={cancellationRequiresApproval}
+        refundPreflight={approvalRefundPreflight}
+        // حالةُ التمهيد تخصّ مسارَ الاعتماد وحده؛ المسارُ المباشر يحمل حالةَ استعلامه بنفسه.
+        refundPreflightPending={cancellationRequiresApproval && (controlPreflight.isLoading || controlPreflight.isFetching)}
+        refundPreflightError={cancellationRequiresApproval && controlPreflight.isError}
+        onRetryRefundPreflight={() => { void controlPreflight.refetch(); }}
+        pending={cancel.isPending || requestControl.isPending}
         onConfirm={(d) => {
-          const key = `work-order-cancel-request:${workOrderId}`;
-          cancelRequestIdRef.current ??=
-            (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
-            ?? newClientRequestId();
-          if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
-          setCancelOpen(false);
-          cancel.mutate({
+          const preflight = controlPreflight.data;
+          if (!preflight) {
+            setError("لا يمكن تنفيذ الإلغاء قبل اكتمال التحقق من نسخة الأمر والنقد والورديات.");
+            return;
+          }
+          const requiresApproval = !mayCancelWorkOrderWithoutApproval({
+            role,
+            override: permissions,
+            status: preflight.status,
+            moneyAtStake: preflight.cancelMoneyAtStake,
+            managerControlRequired: preflight.controlRequired.cancel,
+          });
+          if (requiresApproval) {
+            const input: CancelControlInput = {
+              requestType: "CANCEL",
+              requestKey: newClientRequestId(),
+              workOrderId,
+              baseVersion: preflight.version,
+              reason: d.reason,
+              payload: {
+                refundShiftId: d.refundShiftId,
+                // الرافدُ يعبر مسارَ الاعتماد كذلك — وإلّا كانت الميزةُ غائبةً عن كلّ إلغاءٍ
+                // يحتاج ردّاً (controlRequired.cancel صحيحٌ لأيّ أمرٍ بعربون).
+                refundRail: d.refundRail,
+                refundReference: d.refundReference,
+                materials: d.materials,
+              },
+            };
+            const attempt: PendingCancelAttempt = { kind: "CONTROL_REQUEST", input };
+            rememberCancelAttempt(attempt);
+            requestControl.mutate(input);
+            return;
+          }
+          const input: CancelInput = {
             workOrderId,
-            clientRequestId: cancelRequestIdRef.current,
+            expectedVersion: preflight.version,
+            clientRequestId: newClientRequestId(),
+            refundShiftId: d.refundShiftId,
+            // رافدُ الردّ ومرجعُه — الخادمُ يفرض المرجع للبطاقة ويضمّهما إلى بصمة الـidempotency.
+            refundRail: d.refundRail,
+            refundReference: d.refundReference,
             reason: d.reason,
             materials: d.materials,
-          });
+          };
+          const attempt: PendingCancelAttempt = { kind: "DIRECT", input };
+          rememberCancelAttempt(attempt);
+          setCancelOpen(false);
+          cancel.mutate(input);
         }}
       />
     </div>

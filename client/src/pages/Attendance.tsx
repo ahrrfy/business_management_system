@@ -1,14 +1,14 @@
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { FilterField, ListToolbar } from "@/components/list";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TablePager } from "@/components/table/TablePager";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
@@ -17,6 +17,7 @@ import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { WEEK_DAYS } from "@shared/hr";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { Clock, Fingerprint, Moon, PenLine, RefreshCw, TriangleAlert, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -245,6 +246,118 @@ export default function Attendance() {
     });
   }
 
+  /*
+   * أعمدة سجلّ الحضور — داخل المكوّن: خليّة الموظف تُبحر إلى ملفّه، والذيل يحمل مجاميع
+   * خادمية لكل المطابق للفلتر والبحث (لا لصفحة الجدول) موسومةً بـ«≥» حين تكون جزئية.
+   */
+  const attendanceColumns = useMemo<ColumnDef<AttendanceRow, unknown>[]>(() => [
+    {
+      id: "employee",
+      header: "الموظف",
+      accessorFn: (r) => r.employeeName ?? "",
+      meta: { width: "wide", wrap: true },
+      footer: "الإجمالي",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div>
+            <button onClick={() => navigate(`/hr/employees/${r.employeeId}`)} className="flex items-center gap-2 hover:text-primary">
+              <EmpAvatar name={r.employeeName} color={r.colorTag} photoUrl={r.photoUrl} sizePx={28} />
+              <span className="text-[13px] font-medium">{r.employeeName}</span>
+            </button>
+            {/* يومٌ ينقصه إغلاق: لا يُخمَّن أجره — يُصحَّح يدوياً قبل إغلاق الشهر. */}
+            {r.needsReview && (
+              <div
+                className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)]"
+                title={r.reviewReason ?? "ينقص تسجيل خروج"}
+              >
+                <TriangleAlert aria-hidden className="size-3" />
+                يحتاج تصحيح
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    { id: "dayName", header: "اليوم", accessorFn: (r) => r.dayName ?? "", cell: ({ row }) => <span className="text-[13px]">{row.original.dayName}</span> },
+    { id: "attendanceDate", header: "التاريخ", accessorFn: (r) => String(r.attendanceDate ?? ""), meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.attendanceDate}</span> },
+    {
+      id: "checkIn",
+      header: "دخول",
+      accessorFn: (r) => (r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => (row.original.checkIn ? new Date(row.original.checkIn).toISOString().slice(11, 16) : "—"),
+    },
+    {
+      id: "checkOut",
+      header: "خروج",
+      accessorFn: (r) => (r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => (row.original.checkOut ? new Date(row.original.checkOut).toISOString().slice(11, 16) : "—"),
+    },
+    {
+      id: "hours",
+      header: "ساعات",
+      accessorFn: (r) => Number(r.hours ?? 0),
+      meta: { kind: "number", align: "center" },
+      footer: approx(visHours.toNumber().toLocaleString("en-US")),
+      cell: ({ row }) => Number(row.original.hours ?? 0),
+    },
+    {
+      id: "hourlyRate",
+      header: "سعر الساعة",
+      accessorFn: (r) => iqd(r.hourlyRate),
+      meta: { kind: "money", wrap: true },
+      // السعر مُشتقٌّ من ملفّ الموظف الآن — والمخزَّن المخالف يُعرَض مشطوباً لا يُخفى.
+      cell: ({ row }) => {
+        const r = row.original;
+        const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
+        return (
+          <span className={weekend ? "text-[var(--stock-low)] font-medium" : undefined}>
+            {iqd(r.hourlyRate)}
+            {r.rateStale && (
+              <span className="block text-[10px] text-[var(--sem-warn)] line-through" title="السعر المخزَّن قديم — أعد الاحتساب">
+                {iqd(r.storedHourlyRate)}
+              </span>
+            )}
+            {r.rateBasis === "none" && (
+              <span className="block text-[10px] text-[var(--sem-warn)]" title="لا سعر ساعةٍ ولا راتب في ملفّ هذا الموظف">
+                بلا سعر في الملف
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      id: "amount",
+      header: "أجر اليوم",
+      accessorFn: (r) => iqd(r.amount),
+      meta: { kind: "money", wrap: true },
+      footer: approx(iqd(visAmount.toFixed(2))),
+      cell: ({ row }) => (
+        <span className="font-semibold">
+          {iqd(row.original.amount)}
+          {row.original.rateStale && (
+            <span className="block text-[10px] font-normal text-[var(--sem-warn)] line-through">{iqd(row.original.storedAmount)}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "source",
+      header: "المصدر",
+      accessorFn: (r) => (r.source === "fingerprint" ? "بصمة" : "يدوي"),
+      meta: { kind: "status" },
+      cell: ({ row }) =>
+        row.original.source === "fingerprint" ? (
+          <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>
+        ) : (
+          <span className="text-[11px] text-[var(--stock-low)] inline-flex items-center gap-1"><PenLine className="size-3.5" /> يدوي</span>
+        ),
+    },
+  ], [navigate, partialTotals, visHours, visAmount]);
+
   return (
     <div className="space-y-4">
       {/* الترويسة */}
@@ -326,22 +439,22 @@ export default function Attendance() {
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566). */}
                 <FilterField label="الموظف">
-                  <select className={selectClsSm} value={f.employeeId} onChange={(e) => setF({ employeeId: e.target.value })} aria-label="الموظف">
+                  <AppSelect className="h-9" value={f.employeeId} onValueChange={(next) => setF({ employeeId: next })} aria-label="الموظف">
                     <option value="">كل الموظفين</option>
                     {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {/* النطاق — يفتح على «اليوم» بقرار المالك، وبقيةُ التواريخ باستعلامٍ صريح. */}
                 <FilterField label="النطاق">
-                  <select className={selectClsSm} value={range} onChange={(e) => setF({ range: e.target.value })} aria-label="النطاق">
+                  <AppSelect className="h-9" value={range} onValueChange={(next) => setF({ range: next })} aria-label="النطاق">
                     {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {range === "month" && (
                   <FilterField label="الشهر">
-                    <select className={selectClsSm} value={f.period} onChange={(e) => setF({ period: e.target.value })} aria-label="الشهر">
+                    <AppSelect className="h-9" value={f.period} onValueChange={(next) => setF({ period: next })} aria-label="الشهر">
                       {recentMonths().map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-                    </select>
+                    </AppSelect>
                   </FilterField>
                 )}
                 {range === "custom" && (
@@ -362,11 +475,11 @@ export default function Attendance() {
                   </span>
                 )}
                 <FilterField label="المصدر">
-                  <select className={selectClsSm} value={f.source} onChange={(e) => setF({ source: e.target.value })} aria-label="المصدر">
+                  <AppSelect className="h-9" value={f.source} onValueChange={(next) => setF({ source: next })} aria-label="المصدر">
                     <option value="">كل المصادر</option>
                     <option value="fingerprint">بصمة</option>
                     <option value="manual">يدوي</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input type="checkbox" className="size-4" checked={f.reviewOnly === "1"} onChange={(e) => setF({ reviewOnly: e.target.checked ? "1" : "" })} />
@@ -401,107 +514,26 @@ export default function Attendance() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5">الموظف</th>
-                  <th className="p-2.5">اليوم</th>
-                  <th className="p-2.5 text-center">التاريخ</th>
-                  <th className="p-2.5 text-center">دخول</th>
-                  <th className="p-2.5 text-center">خروج</th>
-                  <th className="p-2.5 text-center">ساعات</th>
-                  <th className="p-2.5 text-right">سعر الساعة</th>
-                  <th className="p-2.5 text-right">أجر اليوم</th>
-                  <th className="p-2.5 text-center">المصدر</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
-                  return (
-                    <tr key={r.id} className={`border-t hover:bg-accent/40 ${r.needsReview ? "bg-[var(--sem-warn-bg)]/50" : ""}`}>
-                      <td className="p-2.5">
-                        <button onClick={() => navigate(`/hr/employees/${r.employeeId}`)} className="flex items-center gap-2 hover:text-primary">
-                          <EmpAvatar name={r.employeeName} color={r.colorTag} photoUrl={r.photoUrl} sizePx={28} />
-                          <span className="text-[13px] font-medium">{r.employeeName}</span>
-                        </button>
-                        {/* يومٌ ينقصه إغلاق: لا يُخمَّن أجره — يُصحَّح يدوياً قبل إغلاق الشهر. */}
-                        {r.needsReview && (
-                          <div
-                            className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-warn)]"
-                            title={r.reviewReason ?? "ينقص تسجيل خروج"}
-                          >
-                            <TriangleAlert aria-hidden className="size-3" />
-                            يحتاج تصحيح
-                          </div>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-[13px]">{r.dayName}</td>
-                      <td className="p-2.5 text-center text-xs tabular-nums" dir="ltr">{r.attendanceDate}</td>
-                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
-                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
-                      <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
-                      {/* السعر مُشتقٌّ من ملفّ الموظف الآن — والمخزَّن المخالف يُعرَض مشطوباً لا يُخفى. */}
-                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">
-                        {iqd(r.hourlyRate)}
-                        {r.rateStale && (
-                          <span className="block text-[10px] text-[var(--sem-warn)] line-through" title="السعر المخزَّن قديم — أعد الاحتساب">
-                            {iqd(r.storedHourlyRate)}
-                          </span>
-                        )}
-                        {r.rateBasis === "none" && (
-                          <span className="block text-[10px] text-[var(--sem-warn)]" title="لا سعر ساعةٍ ولا راتب في ملفّ هذا الموظف">
-                            بلا سعر في الملف
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">
-                        {iqd(r.amount)}
-                        {r.rateStale && (
-                          <span className="block text-[10px] font-normal text-[var(--sem-warn)] line-through">{iqd(r.storedAmount)}</span>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-center">
-                        {r.source === "fingerprint" ? (
-                          <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>
-                        ) : (
-                          <span className="text-[11px] text-[var(--stock-low)] inline-flex items-center gap-1"><PenLine className="size-3.5" /> يدوي</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {list.isLoading && (
-                  <tr><td colSpan={9}><LoadingState /></td></tr>
-                )}
-                {list.isError && (
-                  <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
-                )}
-                {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message={f.q ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
-                )}
-                {rows.length > 0 && (
-                  <tr className="border-t-2 border-border bg-muted/40 font-bold">
-                    <td className="p-2.5" colSpan={5}>الإجمالي</td>
-                    <td className="p-2.5 text-center tabular-nums">{approx(visHours.toNumber().toLocaleString("en-US"))}</td>
-                    <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{approx(iqd(visAmount.toFixed(2)))}</td>
-                    <td></td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/*
+            * البحث والفلاتر في `ListToolbar` أعلاه (خادميّة، تغذّي الاستعلام) ⇒ `searchable={false}`.
+            * والترقيم صار داخل الجدول — `TablePager` المنفصل حُذف كي لا يقفز شريطان بمقدارَين
+            * مختلفَين فتُتخطّى سجلّات بصمت.
+            * ذيل «الإجمالي» صار `footer` على أعمدة الساعات والأجر (خادميّ لكل المطابق، لا للصفحة).
+            */}
+          <DataTable<AttendanceRow>
+            columns={attendanceColumns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: "تعذّر تحميل سجلّات الحضور.", onRetry: () => list.refetch() }}
+            getRowClassName={(r) => (r.needsReview ? "bg-[var(--sem-warn-bg)]/50" : undefined)}
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total, isFetching: list.isFetching }}
+            emptyState="لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."
+            emptyFilteredState="لا سجلات مطابقة للبحث أو الفلاتر."
+            viewKey="hr-attendance"
+          />
         </CardContent>
-        <TablePager
-          page={page}
-          onPageChange={setPage}
-          pageSize={PAGE_SIZE}
-          rowsOnPage={rows.length}
-          total={total}
-          isLoading={list.isFetching}
-        />
       </Card>
 
       {/* نافذة الإدخال اليدوي */}
@@ -511,10 +543,10 @@ export default function Attendance() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="att-emp">الموظف</Label>
-              <select id="att-emp" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
+              <AppSelect id="att-emp" className="h-9 border-input px-2 text-sm" value={form.employeeId} onValueChange={(next) => setForm({ ...form, employeeId: next })}>
                 <option value="">— اختر موظفاً بالساعة —</option>
                 {(opts.data ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -546,7 +578,8 @@ export default function Attendance() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={record.isPending} onClick={submit}>{record.isPending ? "جارٍ…" : "حفظ الحضور"}</Button>
+            {/* نصّ الانتظار المجرّد هنا كان يخصّ فعلَ حفظ الحضور ⇒ مفتاح الحفظ الموحّد. */}
+            <Button disabled={record.isPending} onClick={submit}>{record.isPending ? ACTION_LABELS.saving : "حفظ الحضور"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -690,7 +723,7 @@ function AttendanceSettingsCard() {
               nightShiftEnabled: nightOn,
               nightShiftCutoffHour: nightCutoff,
             })}>
-              {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
+              {save.isPending ? ACTION_LABELS.saving : "حفظ"}
             </Button>
           </DialogFooter>
         </DialogContent>

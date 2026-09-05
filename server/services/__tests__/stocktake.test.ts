@@ -36,6 +36,7 @@ import {
   syncActiveFullStocktakeScopes,
   type CreateStocktakeInput,
 } from "../stocktakeService";
+import { getNegativeStock } from "../reportsInventoryOpsService";
 import { withTx } from "../tx";
 
 // userId 1 = admin (مُستثنى من فصل المهام)، userId 2 = manager (يخضع له). الدور يُمرَّر في
@@ -1333,6 +1334,25 @@ describe("فصل المهام على الجرد الدوري NORMAL (تدقيق 
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.ok).toBe(true);
   });
+
+  it("راجع الصنف عالي القيمة مرحلياً بنفسه لا يعتمد نهائياً ولو وقّع غيره أولاً (البوابة الثالثة)", async () => {
+    await setStockRow(4, 10); // تكلفة 100,000
+    const r = await mkSession({ variantIds: [4] }); // منشئ = actor (admin)
+    await insertCount(r.sessionId, 4, r.assignments[0].assignmentId, 8); // ‎−2 ⇒ ‎−200,000 > حد 150,000
+    await forceStocktakeReview(r.sessionId, actor);
+    await decideStocktakeItem(
+      { sessionId: r.sessionId, variantId: 4, action: "ADJUST", reason: "LOSS_THEFT" },
+      actor,
+    );
+    await approveAllReadyItems(r.sessionId, actor2); // actor2 — لا actor — يراجع الفرق عالي القيمة مرحلياً
+    await firstSignStocktake(r.sessionId, actor); // التوقيع الأول من actor: شخص مختلف عن المراجع (actor2)
+
+    await expectTrpc(
+      approveStocktake(r.sessionId, actor2),
+      "FORBIDDEN",
+      /فرقاً عالي القيمة/,
+    );
+  });
 });
 
 describe("الاعتماد الذرّي", () => {
@@ -1391,6 +1411,7 @@ describe("الاعتماد الذرّي", () => {
       adjustedCount: 2,
       shortExpense: "600.00",
       overGain: "400.00",
+      negativeSettlements: 0,
     });
 
     // المخزون: تسويتان فقط (1 و2)، KEEP وغير المعدود لا يُمسّان.
@@ -1509,6 +1530,94 @@ describe("الاعتماد الذرّي", () => {
     expect(await stocktakeMovements(r.sessionId)).toHaveLength(2);
     expect(await adjustEntries()).toHaveLength(2);
     expect(await stockOf(1)).toBe(104);
+  });
+
+  it("جلسة دوريّة: بيعٌ استمرّ بعد العدّ حتى صار المصحَّح سالباً ⇒ يُعتمد برصيده الحقيقي بدل حجب الجلسة كلّها (livelock سابق مُصلَح ٤/٩)", async () => {
+    await setStockRow(1, 5);
+    const r = await mkSession({ variantIds: [1] });
+    const aid = r.assignments[0].assignmentId;
+    const countAt = new Date(Date.now() - 60_000);
+    await insertCount(r.sessionId, 1, aid, 5, { at: countAt }); // العدّ 5 يطابق الدفتر لحظتها
+
+    // بيعٌ استمرّ بعد العدّ (١٣ قطعة) — أكبر من المعدود نفسه. الرصيد الفعليّ يُضبَط -3 (لا -8، أي
+    // الرقم الذي تُفسّره الحركة وحدها) كي يبقى diff≠0 فيدخل مسار ADJUST الحقيقي (بقرار صريح لأنه
+    // فوق الحدّ) لا KEEP التلقائي — تماماً مسار الإنتاج الذي رمى BAD_REQUEST قبل الإصلاح.
+    await db().insert(s.inventoryMovements).values({
+      variantId: 1,
+      branchId: 1,
+      movementType: "OUT",
+      quantity: 13,
+      referenceType: "INVOICE",
+      referenceId: 999,
+      createdAt: new Date(Date.now() - 10_000),
+    });
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: -3 })
+      .where(
+        and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
+      );
+
+    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    const row = rv.rows.find((x) => x.variantId === 1)!;
+    expect(row.rawCount).toBe(5);
+    expect(row.netAfter).toBe(-13);
+    expect(row.adjustedCount).toBe(-8); // 5 + (-13)
+    expect(row.bookNow).toBe(-3);
+    expect(row.diff).toBe(-5); // -8 - (-3)
+    expect(row.overThreshold).toBe(true); // |−5|/5 = 100% > 5%
+
+    await forceStocktakeReview(r.sessionId, actor);
+    await decideStocktakeItem(
+      {
+        sessionId: r.sessionId,
+        variantId: 1,
+        action: "ADJUST",
+        reason: "UNSPECIFIED",
+      },
+      actor,
+    );
+    await approveAllReadyItems(r.sessionId);
+
+    // قبل الإصلاح: كان هذا يرمي BAD_REQUEST («العدّ المصحَّح سالب») ويُسقط اعتماد الجلسة
+    // كلّها بالكامل (ROLLBACK) — ولو كانت مئات الأصناف الأخرى قراراتها جاهزة. الآن: ينجح.
+    const ok = await approveStocktake(r.sessionId, actor);
+    expect(ok.ok).toBe(true);
+    expect(ok.negativeSettlements).toBe(1);
+    expect(ok.shortExpense).toBe("500.00"); // |diff -5| × تكلفة 100
+
+    // الرصيد الحقيقي يُثبَّت سالباً — لا حجب ولا تصفير كاذب.
+    expect(await stockOf(1)).toBe(-8);
+
+    // «العدّ يفتتح الصنف» يسري على الدوريّ كما الافتتاحي — يتحوّل فوراً للصرامة.
+    const bsRow = (
+      await db()
+        .select()
+        .from(s.branchStock)
+        .where(
+          and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)),
+        )
+    )[0];
+    expect(bsRow.openedAt).not.toBeNull();
+
+    const mv = await stocktakeMovements(r.sessionId);
+    expect(mv).toHaveLength(1);
+    expect(mv[0].movementType).toBe("ADJUST");
+
+    const entries = await adjustEntries();
+    const short = entries.find(
+      (e) => e.dedupeKey === `STOCKTAKE:${r.sessionId}:SHORT`,
+    );
+    expect(short).toBeTruthy();
+    expect(short!.cost).toBe("500.00");
+
+    // نهاية-لنهاية: الرصيد السالب لا يختفي بلا أثر — يظهر في تقرير السوالب للمتابعة (§٥ مبدأ
+    // المالك: كل مبلغٍ/فرقٍ يلزمه تقريرٌ يُظهره).
+    const neg = await getNegativeStock({ branchId: 1 });
+    const negRow = neg.rows.find((x) => x.variantId === 1);
+    expect(negRow).toBeTruthy();
+    expect(negRow!.quantity).toBe("-8");
+    expect(negRow!.opened).toBe(true);
   });
 
   it("ROLLBACK كامل عند فشل وسط الاعتماد: لا مخزون ولا حركات ولا قرارات ولا lastCountedAt", async () => {

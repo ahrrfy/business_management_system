@@ -2,6 +2,7 @@
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { receptionChannelLabel } from "@shared/receptionChannel";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -42,6 +43,7 @@ import {
   reservationConversionErrorClosesDialog,
   type ReservationAvailabilitySnapshot,
 } from "@/lib/reservationConversionGuard";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -336,7 +338,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   function submitExtend() {
     if (!extendTarget) return;
     const hours = Number(extendHours);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (١–٧٢ ساعة)"); return; }
+    if (!Number.isInteger(hours) || hours < 1 || hours > 72) { notify.err("مدّة غير صالحة (1–72 ساعة)"); return; }
     extend.mutate({ id: Number(extendTarget.id), hours });
   }
 
@@ -432,19 +434,19 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
       <div className="flex flex-wrap items-center gap-2">
         {/* منتقي الفرع للمرتفعين فقط (Codex P2): غير المرتفع مُقيَّد بفرعه خادمياً، فإظهاره يضلّله. */}
         {fixedBranchId == null && (role === "admin" || role === "manager") && (branches.data?.length ?? 0) > 1 && (
-          <select
-            className={selectCls}
-            value={effectiveBranch ?? ""}
-            onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : null)}
+          <AppSelect
+            className="h-9"
+            value={String(effectiveBranch ?? "")}
+            onValueChange={(next) => setBranchId(next ? Number(next) : null)}
             aria-label="الفرع"
           >
             {branches.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          </AppSelect>
         )}
-        <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value as "" | ReservationStatus)} aria-label="الحالة">
+        <AppSelect className="h-9" value={status} onValueChange={(next) => setStatus(next as "" | ReservationStatus)} aria-label="الحالة">
           <option value="">كل الحالات</option>
           {(Object.keys(STATUS_LABEL) as ReservationStatus[]).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-        </select>
+        </AppSelect>
         <AppSelect
           value={sort}
           onValueChange={(v) => setSort(v as SortKey)}
@@ -465,7 +467,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث برقم الحجز أو اسم/هاتف العميل…" className="pe-9" />
         </div>
         <Button size="sm" variant="outline" onClick={clearFilters} disabled={!hasFilters}>
-          <FilterX aria-hidden className="size-4 me-1" /> مسح الفلاتر
+          <FilterX aria-hidden className="size-4 me-1" /> {FILTER_LABELS.reset}
         </Button>
         <Button size="sm" variant="outline" onClick={exportAll} disabled={effectiveBranch == null}>
           <Download aria-hidden className="size-4 me-1" /> تصدير Excel
@@ -836,7 +838,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             <Button variant="outline" onClick={() => { setCancelTarget(null); setCancelReason(""); }} disabled={cancel.isPending}>تراجع</Button>
             <Button variant="destructive" onClick={submitCancel} disabled={cancel.isPending}>
               <Trash2 className="size-4 me-1" aria-hidden />
-              {cancel.isPending ? "جارٍ الإلغاء…" : "تأكيد الإلغاء"}
+              {cancel.isPending ? ACTION_LABELS.cancelling : "تأكيد الإلغاء"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -855,7 +857,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (١–٧٢)</Label>
+            <Label htmlFor="res-extend-hours">مدّة التمديد بالساعات (<bdi dir="ltr">1–72</bdi>)</Label>
             <Input
               id="res-extend-hours"
               dir="ltr"
@@ -1017,12 +1019,12 @@ function NewReservationDialog({ branchId, onClose, onCreated }: { branchId: numb
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label htmlFor="res-channel">طريقة وصول الحجز</Label>
-              <select id="res-channel" className={`${selectCls} w-full`} value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
+              <AppSelect id="res-channel" className={`${selectCls} w-full`} value={channel} onValueChange={(next) => setChannel(next as Channel)}>
                 {CHANNELS.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤٧٢)</Label>
+              <Label htmlFor="res-hours">مدّة الحجز (ساعات، ≤72)</Label>
               <Input id="res-hours" dir="ltr" type="number" min={1} max={72} value={expiresInHours} onChange={(e) => setExpiresInHours(e.target.value)} />
             </div>
           </div>

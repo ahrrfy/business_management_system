@@ -2,6 +2,7 @@
  * الأثر الممتد لإعادة تقييم التكلفة: COGS التاريخي ثابت، والبيع اللاحق يلتقط التكلفة
  * الجديدة، ثم يبني استلام الشراء WAVG عليها لا على التكلفة التي سبقتها.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -12,6 +13,10 @@ import {
 } from "../inventory/costRevaluationRequest";
 import { money } from "../money";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 import { createSale } from "../saleService";
 import { truncateTables } from "./__testUtils__";
 
@@ -25,6 +30,11 @@ const TABLES = [
   "invoiceItems",
   "invoices",
   "idempotencyKeys",
+  "purchaseOrderEvents",
+  "purchaseOrderControlRequests",
+  "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems",
+  "purchaseOrderRevisions",
   "purchaseOrderItems",
   "purchaseOrders",
   "shifts",
@@ -144,7 +154,7 @@ async function preparePurchase(unitPrice = "120.00"): Promise<{
     {
       supplierId: 1,
       branchId: 1,
-      status: "CONFIRMED",
+      status: "DRAFT",
       items: [
         {
           variantId: 1,
@@ -155,6 +165,25 @@ async function preparePurchase(unitPrice = "120.00"): Promise<{
       ],
     },
     requester,
+  );
+  const submitted = await submitPurchaseOrderForApproval(
+    {
+      purchaseOrderId: purchase.purchaseOrderId,
+      expectedVersion: purchase.version,
+      reason: "إرسال أمر اختبار إعادة التقييم للمراجعة المستقلة",
+      requestKey: `cost-revaluation-po-submit:${randomUUID()}`,
+    },
+    requester,
+  );
+  await decidePurchaseOrderControl(
+    {
+      requestId: submitted.requestId,
+      decisionKey: `cost-revaluation-po-approve:${randomUUID()}`,
+      approve: true,
+      reason: "راجعت المورد والكميات والأسعار قبل اختبار أثر التكلفة",
+    },
+    approver,
+    { legacyConfirmOnly: true },
   );
   const line = (
     await db()

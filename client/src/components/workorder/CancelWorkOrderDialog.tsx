@@ -7,14 +7,23 @@
  *
  * فهنا سطرٌ لكلّ خامة: **راجع** و**تالف**، مجموعُهما = المستهلَك (يفرضه الخادم أيضاً)، وقيمةُ
  * الهدر تظهر **قبل** التأكيد — لا امتصاصَ خفيّ (§٥).
+ *
+ * م٢ ذيل (ق١٠): ردُّ المال عبر `<RefundRailPicker>` الموحَّد بدل رقائقَ ومنتقي درجٍ محلّيَّين —
+ * المسارُ المباشر يستفتي `refundRails.preflight`، ومسارُ الاعتماد يمرّر تمهيدَ `controlPreflight`
+ * للمنتقي نفسه (`RefundRailPickerView`) فيبقى السلوكُ واحداً.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, PackageX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmtAr } from "@/lib/money";
+import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import type { RefundPreflight } from "@shared/refundPreflight";
+import { refundRailNeedsReference, type RefundRail } from "@shared/refundRail";
+import { RefundRailPicker, RefundRailPickerView, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 
 export interface CancelMaterialRow {
   id: number;
@@ -23,9 +32,88 @@ export interface CancelMaterialRow {
   unitCost: string | null;
 }
 
+/**
+ * **غلافٌ يجلب التفاصيل بالمعرّف** — للشاشات التي تملك المعرّف وحده (لوحة الطلبات).
+ *
+ * كانت اللوحة تُلغي بـ`confirm()` نصّية: بلا سببٍ يُكتب (والعمود موجودٌ منذ 0237)، وبلا
+ * قرارِ هدرٍ للخامة (فتعود محروقةً أصلاً صالحة)، وبلا درجِ ردٍّ — **ثلاثةُ حوائطَ في نافذةٍ
+ * واحدة**. توحيدُها على الحوار نفسه يُغلقها معاً ويجعل سلوكَ الإلغاء واحداً في الشاشتين.
+ */
+export function CancelWorkOrderDialogById({
+  workOrderId,
+  onOpenChange,
+  pending,
+  onConfirm,
+}: {
+  /** `null` ⇒ مغلق. */
+  workOrderId: number | null;
+  onOpenChange: (v: boolean) => void;
+  pending?: boolean;
+  onConfirm: (d: CancelDecision) => void;
+}) {
+  const q = trpc.workOrders.get.useQuery(
+    { workOrderId: workOrderId ?? 0 },
+    { enabled: workOrderId != null },
+  );
+  const d = q.data;
+  if (workOrderId == null) return null;
+  /**
+   * **نقرةٌ لا تُنتج شيئاً ليست خياراً.** كان الغلافُ يُرجع `null` ريثما تصل التفاصيل، فالضغط
+   * على «إلغاء الأمر» في اللوحة يبدو بلا أثرٍ إطلاقاً على أوّل فتحٍ (قبل تخبئة الاستعلام) —
+   * فيُعيد الموظّف الضغطَ ظانّاً أنّ الزرّ معطوب. نُظهر قشرةَ الحوار بحالتها الصادقة بدلاً منها.
+   */
+  if (!d) {
+    return (
+      <Dialog open onOpenChange={onOpenChange}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PackageX aria-hidden className="size-4" /> إلغاء طلب الخدمة
+            </DialogTitle>
+            <DialogDescription>
+              {q.isError ? "تعذّر تحميل تفاصيل الطلب — أغلِق الحوار وأعد المحاولة." : ACTION_LABELS.loading}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>إغلاق</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+  return (
+    <CancelWorkOrderDialog
+      open
+      onOpenChange={onOpenChange}
+      workOrderId={workOrderId}
+      orderNumber={d.orderNumber}
+      title={d.title}
+      // نفسُ شرط شاشة التفاصيل: الخامة تُعرَض بعد البدء فقط — قبله لا استهلاك.
+      materials={
+        d.status === "IN_PROGRESS" || d.status === "READY"
+          ? (d.materials ?? []).map((m) => ({
+              id: Number(m.id),
+              name: [m.productName, m.variantName].filter(Boolean).join(" — ") || m.sku || `#${m.variantId}`,
+              baseQuantity: Number(m.baseQuantity),
+              unitCost: m.unitCost ?? null,
+            }))
+          : []
+      }
+      pending={pending}
+      onConfirm={onConfirm}
+    />
+  );
+}
+
 export interface CancelDecision {
   reason: string;
   materials: Array<{ workOrderMaterialId: number; returnBase: number; wasteBase: number }> | undefined;
+  /** درجُ الاسترداد النقديّ — يُرسَل فقط حين يخرج نقدٌ فعلاً من **درج**. */
+  refundShiftId: number | undefined;
+  /** رافدُ الردّ — `undefined` ⇒ لا نقدَ يخرج (فلا رافد). */
+  refundRail: RefundRail | undefined;
+  /** مرجعُ التنفيذ الخارجيّ — لرافد البطاقة وحده. */
+  refundReference: string | undefined;
 }
 
 /** أسبابٌ جاهزة — نقرةٌ بدل كتابة، والحقلُ الحرّ يبقى لما لا يُحصى. */
@@ -40,23 +128,65 @@ const REASONS = [
 export default function CancelWorkOrderDialog({
   open,
   onOpenChange,
+  workOrderId,
   orderNumber,
   title,
   /** أسطر الخامة المستهلَكة — فارغةٌ إن لم يبدأ التنفيذ (فلا جدولَ ولا هدر). */
   materials,
+  requiresApproval = false,
+  refundPreflight,
+  refundPreflightPending = false,
+  refundPreflightError = false,
+  onRetryRefundPreflight,
   pending,
   onConfirm,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  workOrderId: number;
   orderNumber: string;
   title: string;
   materials: CancelMaterialRow[];
+  requiresApproval?: boolean;
+  /**
+   * مسارُ الموافقة يملك تمهيداً من `controlPreflight` المتاح للكاشير. غيابُ الخاصية فقط
+   * يعني أنّ الإلغاء مباشر، وعندها يستفتي المنتقي الموحَّد `refundRails.preflight` بنفسه.
+   */
+  refundPreflight?: RefundPreflight | null;
+  refundPreflightPending?: boolean;
+  refundPreflightError?: boolean;
+  onRetryRefundPreflight?: () => void;
   pending?: boolean;
   onConfirm: (d: CancelDecision) => void;
 }) {
   const [reason, setReason] = useState("");
   const [waste, setWaste] = useState<Record<number, number>>({});
+  /** حالةُ المنتقي الموحَّد — الاختيارُ وسببُ الحجب والتحميل، كلُّها من الخادم لا من تخمين. */
+  const [rail, setRail] = useState<RefundRailPickerState | null>(null);
+
+  // فتحٌ جديد ⇒ حالةٌ نظيفة: سببٌ قديم أو قرارُ هدرٍ من محاولةٍ سابقة يُنتجان تأكيداً يكذب.
+  // (المنتقي يُعاد تركيبُه مع الحوار فتُصفَّر الرافدُ والدرجُ والمرجعُ معه — Codex: مرجعُ بطاقةٍ
+  //  بقي من محاولةٍ أُغلقت بلا تأكيد كان يُرسَل مع محاولةٍ جديدة ⇒ إثباتٌ ماليٌّ كاذب.)
+  useEffect(() => {
+    if (!open) return;
+    setReason("");
+    setWaste({});
+    setRail(null);
+  }, [open]);
+
+  const needsCashDrawer = rail?.needsCash === true;
+  const preflightPending = rail == null ? true : rail.loading;
+  const preflightFailed = rail?.error != null;
+  const railBlockReason = !needsCashDrawer ? null : rail?.blockReason ?? null;
+  const effectiveRail: RefundRail | undefined = needsCashDrawer ? rail?.selection?.rail : undefined;
+  /**
+   * الدرجُ المُرسَل — **لرافد الدرج وحده**. الخزينةُ والبطاقةُ لا وردية لهما، وإرسالُ درجٍ معهما
+   * يخلط مصدرَ المال في البصمة والتدقيق. (المنتقي لا يضع `refundShiftId` إلّا للدرج.)
+   */
+  const refundShiftId = needsCashDrawer ? rail?.selection?.refundShiftId : undefined;
+  const refundReference = needsCashDrawer && effectiveRail && refundRailNeedsReference(effectiveRail)
+    ? rail?.selection?.cardReference
+    : undefined;
 
   const hasMaterials = materials.length > 0;
   const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
@@ -182,33 +312,97 @@ export default function CancelWorkOrderDialog({
             </p>
           )}
 
+          {preflightFailed ? (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <p>تعذّر التحقق من وردية ردّ المبلغ؛ أُوقف الإلغاء حتى نجاح التحقق.</p>
+            </div>
+          ) : null}
+
           <p className="text-2xs text-muted-foreground">
-            العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك.
+            {requiresApproval
+              ? "الإرسال هنا ينشئ طلباً معلّقاً بلا أثر مالي أو مخزني؛ مدير مستقل يراجعه ويعتمده أو يرفضه."
+              : "العربون المقبوض (إن وُجد) يُردّ بطريقة قبضه، وأمانة أجرة التوصيل تُردّ كذلك."}
           </p>
+
+          {/*
+            درجُ الردّ — الحقلُ الذي كانت رسالةُ الخادم تطلبه ولا وجودَ له، فيصير أمرٌ بعربونٍ
+            نقديّ غيرَ قابلٍ للإلغاء كلّما فُتحت ورديتان. ويظهر خصوصاً في الإلغاء **بعد أيّام**:
+            وردية القبض مُغلقةٌ يقيناً، فالنقد يخرج من درج اليوم. ثلاثةُ روافد لأنّ الدرجَ وحده
+            بابٌ مسدودٌ واقعيّ: بلاغُ المالك (١/٩) كان عربوناً ٧٠٬٠٠٠ وأوسعُ درجٍ مفتوح ٥٦٬٠٠٠.
+            المنتقي الموحَّد يعرضها كما يفرضها الخادم — والبطاقةُ تُعلَن غيرَ متاحةٍ بسببها حين
+            يوجد جزءٌ نقديٌّ لا يقبلها (Codex P2 على #930).
+          */}
+          {open ? (
+            refundPreflight === undefined ? (
+              <RefundRailPicker
+                context={{ sourceDocType: "WORKORDER_CANCEL", sourceDocId: workOrderId }}
+                mode="embedded"
+                onStateChange={setRail}
+                drawerLabel="درج ردّ النقد"
+                drawerHint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
+                submitting={pending}
+              />
+            ) : (
+              <RefundRailPickerView
+                context={{ sourceDocType: "WORKORDER_CANCEL", sourceDocId: workOrderId }}
+                preflight={refundPreflight}
+                loading={refundPreflightPending}
+                error={refundPreflightError ? "تعذّر التحقق من وردية ردّ المبلغ" : null}
+                onRetry={onRetryRefundPreflight}
+                mode="embedded"
+                onStateChange={setRail}
+                drawerLabel="درج ردّ النقد"
+                drawerHint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
+                submitting={pending}
+              />
+            )
+          ) : null}
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
-          <Button
-            variant="destructive"
-            disabled={pending || reason.trim().length < 3}
-            onClick={() =>
-              onConfirm({
-                reason: reason.trim(),
-                // بلا هدرٍ ⇒ لا نُرسل الحقل إطلاقاً: العقد يقرأ غيابه «رجوعٌ كامل» — أقصرُ
-                // حمولةً وأصدقُ نيّةً من إرسال أصفارٍ صريحة.
-                materials: anyWaste
-                  ? materials.map((m) => ({
-                      workOrderMaterialId: m.id,
-                      wasteBase: waste[m.id] ?? 0,
-                      returnBase: m.baseQuantity - (waste[m.id] ?? 0),
-                    }))
-                  : undefined,
-              })
-            }
-          >
-            {pending ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>) : "أكّد الإلغاء"}
-          </Button>
+          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+            {/* سببُ التعطيل مقروءٌ دائماً — زرٌّ معطَّلٌ بلا سبب هو نصفُ البابِ المسدود. */}
+            {(preflightPending || preflightFailed || railBlockReason || reason.trim().length < 3) && (
+              <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">
+                {preflightPending
+                  ? "جارٍ التحقق من النقد والورديات المفتوحة…"
+                  : preflightFailed
+                    ? "تعذّر التحقق من وردية ردّ المبلغ."
+                    : reason.trim().length < 3
+                      ? "اكتب سبب الإلغاء (٣ أحرف على الأقل)."
+                      : railBlockReason}
+              </span>
+            )}
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>تراجع</Button>
+              <Button
+                variant="destructive"
+                disabled={pending || preflightPending || preflightFailed || reason.trim().length < 3 || railBlockReason != null}
+                onClick={() =>
+                  onConfirm({
+                    reason: reason.trim(),
+                    // بلا هدرٍ ⇒ لا نُرسل الحقل إطلاقاً: العقد يقرأ غيابه «رجوعٌ كامل» — أقصرُ
+                    // حمولةً وأصدقُ نيّةً من إرسال أصفارٍ صريحة.
+                    materials: anyWaste
+                      ? materials.map((m) => ({
+                          workOrderMaterialId: m.id,
+                          wasteBase: waste[m.id] ?? 0,
+                          returnBase: m.baseQuantity - (waste[m.id] ?? 0),
+                        }))
+                      : undefined,
+                    // الدرجُ يُرسَل لرافد الدرج وحده — الخزينةُ والبطاقةُ لا وردية لهما.
+                    refundShiftId: refundShiftId ?? undefined,
+                    refundRail: effectiveRail,
+                    refundReference: refundReference?.trim() || undefined,
+                  })
+                }
+              >
+                {pending
+                  ? (<><Loader2 aria-hidden className="size-3.5 me-1 animate-spin" /> جارٍ…</>)
+                  : requiresApproval ? "إرسال طلب الإلغاء" : "أكّد الإلغاء"}
+              </Button>
+            </div>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

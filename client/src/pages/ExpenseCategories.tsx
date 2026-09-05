@@ -8,15 +8,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import {
-  LoadingState,
-  ErrorState,
-  TableEmptyRow,
-} from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Edit3, Info, Plus, RotateCcw, Wrench } from "lucide-react";
@@ -192,6 +189,39 @@ export default function ExpenseCategories() {
 
   const pendingCount = unclassified.data ?? 0;
 
+  // طباعة A4 بهوية المستند بدل window.print() (كان يطبع الشاشة كما تُرى: بطاقة التنويه
+  // والنموذج المفتوح وشريط الأدوات). نفس صفوف الجدول المعروضة وأعمدته — بلا استعلامٍ جديد.
+  function printCategories() {
+    printReportDoc({
+      title: "فئات المصروفات",
+      headerExtra: [
+        { label: "عدد الفئات", value: visibleRows.length.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "البحث", value: query.trim() || "بلا بحث" },
+      ],
+      note: "الدلو المحاسبي هو ما يقرأه دفتر الأستاذ والتقارير؛ الفئة طبقة تشغيلية فوقه لا تغيّر الحساب الذي يهبط فيه المصروف.",
+      columns: [
+        { key: "id", label: "#", align: "center" },
+        { key: "name", label: "الاسم" },
+        { key: "bucket", label: "الدلو المحاسبي" },
+        { key: "description", label: "الوصف" },
+        { key: "usedExpenseCount", label: "مصروفات", align: "center" },
+        { key: "sortOrder", label: "ترتيب", align: "center" },
+        { key: "isActive", label: "نشطة", align: "center" },
+      ],
+      rows: visibleRows.map((r) => ({
+        id: String(r.id),
+        // شارة «احتياطية الدلو» تظهر على الشاشة بجانب الاسم — نُبقيها نصّاً كي لا تضيع على الورق.
+        name: `${r.name}${r.isBucketDefault ? " (احتياطية الدلو)" : ""}`,
+        bucket: expenseBucketLabel(r.bucket),
+        description: r.description ?? "—",
+        usedExpenseCount: r.usedExpenseCount.toLocaleString("ar-IQ-u-nu-latn"),
+        sortOrder: String(r.sortOrder),
+        isActive: r.isActive ? "نشطة" : "معطّلة",
+      })),
+      emptyText: "لا فئات مطابقة.",
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -355,7 +385,7 @@ export default function ExpenseCategories() {
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
-            onPrint={() => window.print()}
+            onPrint={printCategories}
             exportSpec={{
               filename: "فئات-المصروفات",
               rows: visibleRows,
@@ -381,100 +411,122 @@ export default function ExpenseCategories() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-center">#</th>
-                  <th className="p-2">الاسم</th>
-                  <th className="p-2">الدلو المحاسبي</th>
-                  <th className="p-2">الوصف</th>
-                  <th className="p-2 text-center">مصروفات</th>
-                  <th className="p-2 text-center">ترتيب</th>
-                  <th className="p-2 text-center">نشطة</th>
-                  {canManage && <th className="p-2 text-center">إجراء</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {list.isLoading && (
-                  <tr>
-                    <td colSpan={8}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-                {list.isError && (
-                  <tr>
-                    <td colSpan={8}>
-                      <ErrorState
-                        message={list.error?.message}
-                        onRetry={() => void list.refetch()}
-                      />
-                    </td>
-                  </tr>
-                )}
-                {visibleRows.map((r) => (
-                  <tr
-                    key={r.id}
-                    className={`border-t ${r.isActive ? "" : "opacity-60"}`}
-                  >
-                    <td className="p-2 text-center text-xs text-muted-foreground">
-                      {r.id}
-                    </td>
-                    <td className="p-2 font-medium">
-                      {r.name}
-                      {r.isBucketDefault && (
-                        // Codex P2 (٢٤/٨): `Popover` بدل `Tooltip` — يفتح باللمس (Tap) على الأجهزة
-                        // اللمسية، وبالنقر والمفتاح (Enter/Space) على الحاسوب. Radix Tooltip يفشل
-                        // على اللمس لأنّ pointer-down يُخفي التركيز فيتعذّر ظهوره بتاباً واحد.
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              aria-label="ما معنى «احتياطية الدلو»؟"
-                              className="ms-1 inline-block cursor-help rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)] outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80"
-                            >
-                              احتياطية الدلو
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent side="top" className="max-w-xs text-xs">
-                            الفئة الاحتياطية لهذا الدلو — يُصنَّف بها أيّ مصروفٍ لم يُختَر له فئةٌ صراحةً. لا يُنقل دلوها ولا تُعطَّل يدوياً (يُعالجها زرّ «استعادة الافتراضية» إن اختلّت).
-                          </PopoverContent>
-                        </Popover>
-                      )}
-                    </td>
-                    <td className="p-2 text-xs">
-                      {expenseBucketLabel(r.bucket)}
-                    </td>
-                    <td className="p-2 text-xs text-muted-foreground">
-                      {r.description ?? "—"}
-                    </td>
-                    <td className="p-2 text-center text-xs tabular-nums">
-                      {r.usedExpenseCount}
-                    </td>
-                    <td className="p-2 text-center text-xs tabular-nums">
-                      {r.sortOrder}
-                    </td>
-                    <td className="p-2 text-center text-xs">
+          <DataTable<Row>
+            data={visibleRows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث في ListToolbar أعلاه (يغذّي visibleRows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={query.trim() !== ""}
+            getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+            emptyState={canManage ? "لا فئات بعد — استعد الافتراضية أو أضِف أوّل فئة أعلاه." : "لا فئات حتى الآن."}
+            emptyFilteredState={
+              <div className="space-y-2">
+                <div>لا فئات مطابقة للبحث «{query}».</div>
+                <Button variant="outline" size="sm" onClick={() => setQuery("")}>
+                  مسح البحث
+                </Button>
+              </div>
+            }
+            columns={[
+              {
+                id: "id",
+                header: "#",
+                accessorFn: (r) => r.id,
+                meta: { kind: "number", align: "center", width: "id" },
+                cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.id}</span>,
+              },
+              {
+                id: "name",
+                header: "الاسم",
+                accessorFn: (r) => r.name,
+                meta: { width: "wide" },
+                cell: ({ row }) => (
+                  <span className="font-medium">
+                    {row.original.name}
+                    {row.original.isBucketDefault && (
+                      // Codex P2 (٢٤/٨): `Popover` بدل `Tooltip` — يفتح باللمس (Tap) على الأجهزة
+                      // اللمسية، وبالنقر والمفتاح (Enter/Space) على الحاسوب. Radix Tooltip يفشل
+                      // على اللمس لأنّ pointer-down يُخفي التركيز فيتعذّر ظهوره بتاباً واحد.
                       <Popover>
                         <PopoverTrigger asChild>
                           <button
                             type="button"
-                            aria-label={r.isActive ? "شرح: الفئة نشطة" : "شرح: الفئة معطّلة"}
-                            className={`inline-block cursor-help rounded-full px-2 py-0.5 outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}
+                            aria-label="ما معنى «احتياطية الدلو»؟"
+                            className="ms-1 inline-block cursor-help rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] text-[var(--sem-info)] outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80"
                           >
-                            {r.isActive ? "نشطة" : "معطّلة"}
+                            احتياطية الدلو
                           </button>
                         </PopoverTrigger>
                         <PopoverContent side="top" className="max-w-xs text-xs">
-                          {r.isActive
-                            ? "الفئة تظهر في منتقي المصروف الجديد."
-                            : "الفئة مخفيّة عن منتقي المصروف الجديد — المصروفات القديمة المُصنَّفة بها تحتفظ بتصنيفها بلا مسّ."}
+                          الفئة الاحتياطية لهذا الدلو — يُصنَّف بها أيّ مصروفٍ لم يُختَر له فئةٌ صراحةً. لا يُنقل دلوها ولا تُعطَّل يدوياً (يُعالجها زرّ «استعادة الافتراضية» إن اختلّت).
                         </PopoverContent>
                       </Popover>
-                    </td>
-                    {canManage && (
-                      <td className="p-2 text-center">
+                    )}
+                  </span>
+                ),
+              },
+              {
+                id: "bucket",
+                header: "الدلو المحاسبي",
+                // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (r) => expenseBucketLabel(r.bucket),
+                cell: ({ row }) => <span className="text-xs">{expenseBucketLabel(row.original.bucket)}</span>,
+              },
+              {
+                id: "description",
+                header: "الوصف",
+                accessorFn: (r) => r.description ?? "—",
+                meta: { width: "wide", wrap: true },
+                cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.description ?? "—"}</span>,
+              },
+              {
+                id: "usedExpenseCount",
+                header: "مصروفات",
+                accessorFn: (r) => r.usedExpenseCount,
+                meta: { kind: "number", align: "center" },
+                cell: ({ row }) => <span className="text-xs">{row.original.usedExpenseCount}</span>,
+              },
+              {
+                id: "sortOrder",
+                header: "ترتيب",
+                accessorFn: (r) => r.sortOrder,
+                meta: { kind: "number", align: "center" },
+                cell: ({ row }) => <span className="text-xs">{row.original.sortOrder}</span>,
+              },
+              {
+                id: "isActive",
+                header: "نشطة",
+                accessorFn: (r) => (r.isActive ? "نشطة" : "معطّلة"),
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={row.original.isActive ? "شرح: الفئة نشطة" : "شرح: الفئة معطّلة"}
+                        className={`inline-block cursor-help rounded-full px-2 py-0.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring hover:opacity-80 ${row.original.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}
+                      >
+                        {row.original.isActive ? "نشطة" : "معطّلة"}
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent side="top" className="max-w-xs text-xs">
+                      {row.original.isActive
+                        ? "الفئة تظهر في منتقي المصروف الجديد."
+                        : "الفئة مخفيّة عن منتقي المصروف الجديد — المصروفات القديمة المُصنَّفة بها تحتفظ بتصنيفها بلا مسّ."}
+                    </PopoverContent>
+                  </Popover>
+                ),
+              },
+              // عمود الإجراء يبقى محكوماً بالصلاحية كما كان — لا يُصيَّر أصلاً لغير المخوَّل.
+              ...(canManage
+                ? ([
+                    {
+                      id: "actions",
+                      header: "إجراء",
+                      enableSorting: false,
+                      meta: { kind: "actions" },
+                      cell: ({ row }) => (
                         <RowActions
                           mode="menu"
                           actions={[
@@ -483,7 +535,7 @@ export default function ExpenseCategories() {
                               kind: "edit",
                               label: "تعديل",
                               icon: Edit3,
-                              onSelect: () => startEdit(r),
+                              onSelect: () => startEdit(row.original),
                               gate: {
                                 roles: ["manager", "accountant"],
                                 module: "expenses",
@@ -493,10 +545,10 @@ export default function ExpenseCategories() {
                             {
                               key: "toggle",
                               kind: "approve",
-                              label: r.isActive ? "تعطيل" : "تفعيل",
-                              hidden: r.isBucketDefault,
-                              variant: r.isActive ? "destructive" : "default",
-                              onSelect: () => void toggleActive(r),
+                              label: row.original.isActive ? "تعطيل" : "تفعيل",
+                              hidden: row.original.isBucketDefault,
+                              variant: row.original.isActive ? "destructive" : "default",
+                              onSelect: () => void toggleActive(row.original),
                               gate: {
                                 roles: ["manager", "accountant"],
                                 module: "expenses",
@@ -505,32 +557,12 @@ export default function ExpenseCategories() {
                             },
                           ]}
                         />
-                      </td>
-                    )}
-                  </tr>
-                ))}
-                {!list.isLoading && visibleRows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={8}
-                    message={
-                      query ? (
-                        <div className="space-y-2">
-                          <div>لا فئات مطابقة للبحث «{query}».</div>
-                          <Button variant="outline" size="sm" onClick={() => setQuery("")}>
-                            مسح البحث
-                          </Button>
-                        </div>
-                      ) : canManage ? (
-                        "لا فئات بعد — استعد الافتراضية أو أضِف أوّل فئة أعلاه."
-                      ) : (
-                        "لا فئات حتى الآن."
-                      )
-                    }
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                      ),
+                    },
+                  ] as ColumnDef<Row, unknown>[])
+                : []),
+            ]}
+          />
         </CardContent>
       </Card>
     </div>

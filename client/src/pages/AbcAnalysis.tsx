@@ -169,10 +169,10 @@ export default function AbcAnalysis() {
           {canPickBranch && (
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-muted-foreground">الفرع</label>
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(next) => setBranchId(next ? Number(next) : "")}
               >
                 <option value="">الكل</option>
                 {(branches.data ?? []).map((b) => (
@@ -180,7 +180,7 @@ export default function AbcAnalysis() {
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
           )}
           <div className="flex flex-col gap-1">

@@ -1,4 +1,5 @@
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,14 +11,16 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { assetSettlementPresentation } from "@/lib/assetAccrualStatus";
 import { printAssetLabel } from "@/lib/assets/print";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
@@ -27,6 +30,52 @@ import { Link, useParams } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+/** صفوفُ التبويبات — مشتقّة من عقد `assets.get` فلا تنجرف عن الخادم. */
+type AssetDetailData = RouterOutputs["assets"]["get"];
+type ScheduleRow = AssetDetailData["schedule"][number];
+type MaintenanceRow = AssetDetailData["maintenance"][number];
+
+/** جدولان مُضمَّنان في بطاقتَي تبويبٍ تحملان عنوانَيهما — بلا بحثٍ ولا ترقيمٍ ولا شريطِ حالة. */
+const EMBEDDED_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
+const scheduleColumns: ColumnDef<ScheduleRow, unknown>[] = [
+  {
+    id: "year",
+    header: "السنة",
+    accessorFn: (r) => r.year,
+    // kind: "number" يعزل اتّجاه الرقم؛ align: "start" يحفظ محاذاة العمود كما كانت.
+    meta: { kind: "number", align: "start", width: "id" },
+    cell: ({ row }) => (
+      <span className="inline-flex items-center gap-1">
+        {row.original.year}
+        {row.original.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}
+      </span>
+    ),
+  },
+  { id: "opening", header: "القيمة أول المدة", accessorFn: (r) => iqd(r.opening), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.opening) },
+  { id: "dep", header: "إهلاك السنة", accessorFn: (r) => iqd(r.dep), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.dep) },
+  { id: "closing", header: "القيمة آخر المدة", accessorFn: (r) => iqd(r.closing), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.closing) },
+];
+
+const maintenanceColumns: ColumnDef<MaintenanceRow, unknown>[] = [
+  { id: "maintDate", header: "التاريخ", accessorFn: (m) => fmtDate(m.maintDate), meta: { kind: "date" }, cell: ({ row }) => fmtDate(row.original.maintDate) },
+  { id: "type", header: "النوع", accessorFn: (m) => m.type, cell: ({ row }) => row.original.type },
+  {
+    id: "vendor",
+    header: "المزوّد",
+    accessorFn: (m) => m.vendor ?? "—",
+    cell: ({ row }) => <span className="text-xs">{row.original.vendor ?? "—"}</span>,
+  },
+  {
+    id: "note",
+    header: "ملاحظات",
+    accessorFn: (m) => m.note ?? "—",
+    meta: { width: "wide", wrap: true },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.note ?? "—"}</span>,
+  },
+  { id: "cost", header: "التكلفة", accessorFn: (m) => iqd(m.cost), meta: { kind: "money" }, cell: ({ row }) => iqd(row.original.cost) },
+];
 
 function Field({ label, value, dir }: { label: string; value: React.ReactNode; dir?: "ltr" | "rtl" }) {
   return (
@@ -297,24 +346,14 @@ export default function AssetDetail() {
           <Card>
             <CardHeader><CardTitle className="text-base">جدول الإهلاك السنوي — {depreciationMethodLabel(a.depreciationMethod)}</CardTitle></CardHeader>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr>
-                  <th className="p-2">السنة</th>
-                  <th className="p-2 text-right">القيمة أول المدة</th>
-                  <th className="p-2 text-right">إهلاك السنة</th>
-                  <th className="p-2 text-right">القيمة آخر المدة</th>
-                </tr></thead>
-                <tbody>
-                  {a.schedule.map((r) => (
-                    <tr key={r.year} className={`border-t ${r.isCurrent ? "bg-primary/5 font-medium" : ""}`}>
-                      <td className="p-2" dir="ltr"><span className="inline-flex items-center gap-1">{r.year}{r.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}</span></td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.opening)}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.dep)}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.closing)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <DataTable<ScheduleRow>
+                {...EMBEDDED_TABLE}
+                columns={scheduleColumns}
+                data={a.schedule}
+                /* `!` مقصود: `odd:bg-background` على الصفّ أعلى خصوصيّةً من صنفٍ مجرّد. */
+                getRowClassName={(r) => (r.isCurrent ? "!bg-primary/5 font-medium" : undefined)}
+                emptyText="لا جدول إهلاك لهذا الأصل."
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -326,23 +365,12 @@ export default function AssetDetail() {
               {isLive && <Button size="sm" variant="outline" onClick={() => setOpenMaint(true)}>+ تسجيل صيانة</Button>}
             </CardHeader>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr>
-                  <th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المزوّد</th><th className="p-2">ملاحظات</th><th className="p-2 text-right">التكلفة</th>
-                </tr></thead>
-                <tbody>
-                  {a.maintenance.map((m) => (
-                    <tr key={m.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{fmtDate(m.maintDate)}</td>
-                      <td className="p-2">{m.type}</td>
-                      <td className="p-2 text-xs">{m.vendor ?? "—"}</td>
-                      <td className="p-2 text-xs text-muted-foreground">{m.note ?? "—"}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
-                    </tr>
-                  ))}
-                  {a.maintenance.length === 0 && <TableEmptyRow colSpan={5} message="لا عمليات صيانة مسجّلة." />}
-                </tbody>
-              </table>
+              <DataTable<MaintenanceRow>
+                {...EMBEDDED_TABLE}
+                columns={maintenanceColumns}
+                data={a.maintenance}
+                emptyText="لا عمليات صيانة مسجّلة."
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -463,19 +491,19 @@ export default function AssetDetail() {
                     <Label htmlFor="asset-refund-method">طريقة الاسترداد *</Label>
                     {/* الخيارات مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً بينما
                         `assertInboundPaymentMethodEnabled` يرفضه في سند الاسترداد ⇒ صفر مسار نجاح. */}
-                    <select id="asset-refund-method" className={selectClsFull} value={correctionRefundMethod} onChange={(event) => setCorrectionRefundMethod(event.target.value as typeof correctionRefundMethod)}>
+                    <AppSelect id="asset-refund-method" className="h-9" value={correctionRefundMethod} onValueChange={(next) => setCorrectionRefundMethod(next as typeof correctionRefundMethod)}>
                       {INBOUND_METHOD_OPTIONS.map((m) => (
                         <option key={m.v} value={m.v}>{m.label}</option>
                       ))}
-                    </select>
+                    </AppSelect>
                   </div>
                   {correctionRefundMethod === "CASH" ? (
                     <div className="space-y-1">
                       <Label htmlFor="asset-refund-bucket">وجهة النقد *</Label>
-                      <select id="asset-refund-bucket" className={selectClsFull} value={correctionRefundBucket} onChange={(event) => setCorrectionRefundBucket(event.target.value as typeof correctionRefundBucket)}>
+                      <AppSelect id="asset-refund-bucket" className="h-9" value={correctionRefundBucket} onValueChange={(next) => setCorrectionRefundBucket(next as typeof correctionRefundBucket)}>
                         <option value="TREASURY">الخزينة الإدارية</option>
                         <option value="DRAWER">درج الوردية</option>
-                      </select>
+                      </AppSelect>
                     </div>
                   ) : (
                     <div className="space-y-1">
@@ -532,10 +560,10 @@ export default function AssetDetail() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="handoverEmp">الموظف المستلِم</Label>
-              <select id="handoverEmp" className={selectClsFull} value={hEmp} onChange={(e) => setHEmp(e.target.value)}>
+              <AppSelect id="handoverEmp" className="h-9" value={hEmp} onValueChange={(next) => setHEmp(next)}>
                 <option value="">— اختر موظفاً —</option>
                 {(opts.data?.employees ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1"><Label>ملاحظة (اختياري)</Label><Textarea rows={2} value={hNote} onChange={(e) => setHNote(e.target.value)} /></div>
           </div>
@@ -554,7 +582,7 @@ export default function AssetDetail() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label htmlFor="maintType">النوع *</Label><Input id="maintType" value={mType} onChange={(e) => setMType(e.target.value)} placeholder="صيانة دورية / استبدال قطعة" /></div>
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={mDate} onChange={(e) => setMDate(e.target.value)} /></div>
-              <div className="space-y-1"><Label>جهة الصيانة المسجلة</Label><select className={selectClsFull} value={mVendorSupplierId} onChange={(e) => setMVendorSupplierId(e.target.value)}><option value="">— جهة خارجية غير مسجلة —</option>{(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}</select></div>
+              <div className="space-y-1"><Label>جهة الصيانة المسجلة</Label><AppSelect className="h-9" value={mVendorSupplierId} onValueChange={(next) => setMVendorSupplierId(next)}><option value="">— جهة خارجية غير مسجلة —</option>{(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}</AppSelect></div>
               {!mVendorSupplierId && <div className="space-y-1"><Label>اسم جهة الصيانة الحقيقي *</Label><Input value={mVendor} onChange={(e) => setMVendor(e.target.value)} /></div>}
               <div className="space-y-1"><Label htmlFor="maintCost">التكلفة (د.ع)</Label><MoneyInput id="maintCost" value={mCost} onChange={setMCost} decimals={0} /></div>
               <div className="space-y-1"><Label>مرجع فاتورة/وصل الصيانة *</Label><Input value={mEvidenceReference} onChange={(e) => setMEvidenceReference(e.target.value)} dir="ltr" /></div>
@@ -590,10 +618,10 @@ export default function AssetDetail() {
           <div className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="disposeKind">النوع</Label>
-              <select id="disposeKind" className={selectClsFull} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
+              <AppSelect id="disposeKind" className="h-9" value={dKind} onValueChange={(next) => setDKind(next as "retired" | "disposed")}>
                 <option value="retired">إخراج من الخدمة</option>
                 <option value="disposed">استبعاد ببيع/خردة</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={dDate} onChange={(e) => setDDate(e.target.value)} /></div>

@@ -14,9 +14,11 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
-import type { InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { estimatedPurchaseUnitPrice } from "./purchasePrice";
+import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -25,6 +27,14 @@ export interface ProductSearchBarProps {
   onAddProduct: (line: InvoiceLine) => void;
   /** Optional callback for "not found" / errors. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
+  /**
+   * Codex #980 (٤/٩/٢٦): عملةُ أمر الشراء وسعرُ تثبيته — يمرَّرا من `PurchaseNew`/`PurchaseEdit`
+   * عبر `ProductTable`. الحقلان يخصّان جانب الشراء فقط، والقيم الافتراضية (`IQD`/`""`) تجعل
+   * جانب البيع لا يتأثّر. `catalog.forPurchase.costPriceBase` يبقى بالدينار حتى للأمر الدولاريّ
+   * ⇒ الفرع الدولاريّ يحتاج القسمةَ على `agreedRate`، وإلّا انتفخت ذمّةُ المورّد بمقداره.
+   */
+  purchaseCurrency?: Currency;
+  purchaseAgreedRate?: string;
 }
 
 interface NormalizedRow {
@@ -42,6 +52,8 @@ interface NormalizedRow {
   availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
   isService: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم نافداً. */
+  allowBackorder: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
@@ -55,7 +67,7 @@ function stockBadgeColor(stock: number): string {
   return "text-muted-foreground";
 }
 
-export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify }: ProductSearchBarProps) {
+export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -109,7 +121,14 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         reservedBase: 0, // الشراء لا يعنيه المحجوز
         availableBase: r.stockBase ?? 0,
         isService: false,
-        price: r.costPriceBase, // purchase price defaults to last cost (base)
+        allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
+        // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل.
+        // كان الحقلان يُملآن معاً بـcostPriceBase (بوحدة الأساس)، فدرزنٌ (معامل ١٢) بتكلفة
+        // ١٥٠/قطعة يُضاف بسعرِ ١٥٠/درزن ⇒ يقسم الخادم على ١٢ فيصير `costPerBase = 12.50`
+        // ويسمّم WAVG. المساعد المشترك يفصل: `price` بوحدة الصفّ، `costBase` مرجعُ الأساس.
+        // Codex #980 (٤/٩/٢٦): الفرع الدولاريّ يقسم على سعر التثبيت، وبلا تثبيتٍ يترك الحقل
+        // فارغاً حتى يضبطه المستخدم يدوياً (لا يضع رقماً دينارياً في حقل دولار).
+        price: estimatedPurchaseUnitPrice(r.costPriceBase, r.conversionFactor, isPurchase ? purchaseCurrency : "IQD", isPurchase ? purchaseAgreedRate : null),
         costBase: r.costPriceBase,
       }));
     }
@@ -127,13 +146,14 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
+      allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
       // إلى null لغير المخوَّلين (كاشير) في `catalogRouter.redactPosCost` قبل الإرسال ⇒ لا تسرب.
       // شاشات المبيعات المتقدّمة (`SalesInvoiceNew`) تعرض عمود «التكلفة» و«الهامش٪» بهذه القيمة.
       costBase: r.costPriceBase ?? "0",
     }));
-  }, [isPurchase, posQ.data, purQ.data, query]);
+  }, [isPurchase, posQ.data, purQ.data, query, purchaseCurrency, purchaseAgreedRate]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -165,6 +185,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       reservedBase: r.reservedBase,
       availableBase: r.availableBase,
       isService: r.isService,
+      allowBackorder: r.allowBackorder,
       price: r.price || "0",
       costBase: r.costBase || "0",
       discount: "0",
@@ -177,16 +198,47 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     inputRef.current?.focus();
   };
 
-  async function resolveExactBarcode(code: string) {
-    // جانب الشراء لا يملك byBarcode؛ نملأ النص المصحّح ليعمل البحث الخادميّ المعتاد.
-    if (isPurchase) {
-      setQuery(code);
-      setShowDrop(true);
-      return;
-    }
+  async function resolveExactBarcode(
+    code: string,
+    options: { quietNotFound?: boolean } = {},
+  ): Promise<ExactProductResolution> {
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
       if (row) {
+        if (isPurchase) {
+          // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
+          // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
+          const purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
+          if (!purchaseRow) {
+            onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
+            return "BLOCKED";
+          }
+          addRow({
+            productId: purchaseRow.productId,
+            variantId: purchaseRow.variantId,
+            productUnitId: purchaseRow.productUnitId,
+            name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+            sku: purchaseRow.sku,
+            barcode: row.barcode ?? null,
+            unitName: purchaseRow.unitName,
+            conversionFactor: purchaseRow.conversionFactor,
+            stockBase: purchaseRow.stockBase ?? 0,
+            stockBranchId: branchId,
+            reservedBase: 0,
+            availableBase: purchaseRow.stockBase ?? 0,
+            isService: false,
+            allowBackorder: false,
+            price: estimatedPurchaseUnitPrice(
+              purchaseRow.costPriceBase,
+              purchaseRow.conversionFactor,
+              purchaseCurrency,
+              purchaseAgreedRate || null,
+            ),
+            costBase: purchaseRow.costPriceBase,
+          });
+          return "FOUND";
+        }
         addRow({
           productId: row.productId,
           variantId: row.variantId,
@@ -201,14 +253,17 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           reservedBase: row.reservedBase ?? 0,
           availableBase: row.availableBase ?? (row.stockBase ?? 0),
           isService: row.isService || row.isPrintService,
+          allowBackorder: row.allowBackorder === true,
           price: row.price ?? "0",
           costBase: "0",
         });
-        return;
+        return "FOUND";
       }
-      onNotify?.(`الباركود غير معروف: ${code}`, "error");
-    } catch {
-      onNotify?.("تعذّر الاتصال بالخادم", "error");
+      if (!options.quietNotFound) onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      return "NOT_FOUND";
+    } catch (error) {
+      onNotify?.(error instanceof Error ? error.message : "تعذّر الاتصال بالخادم", "error");
+      return "BLOCKED";
     }
   }
 
@@ -225,22 +280,15 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       setSelectedIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (selectedIdx >= 0 && results[selectedIdx]) {
-        addRow(results[selectedIdx]);
-        return;
-      }
-      // أثناء التأجيل/الجلب النتائج قد تعود لاستعلام أقدم ⇒ لا نضيف خطأً (انتظر ~٢٠٠ms واضغط من جديد)
-      if (settled && results.length >= 1) {
-        addRow(results[0]);
-        return;
-      }
-      // Try exact barcode resolution (sale side only — has byBarcode endpoint).
-      // فقط لما يشبه باركوداً (أرقام/لاتيني متصل ≥4) — نصّ بحث عربي عادي لا يُرمى عليه
-      // «باركود غير معروف»؛ رسالة «لا نتائج» تظهر في القائمة نفسها.
       const code = query.trim();
-      const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-      if (code && !isPurchase && looksLikeBarcode) {
-        await resolveExactBarcode(code);
+      if (code) {
+        const decision = await resolveExactBeforeFuzzy(
+          () => resolveExactBarcode(code, { quietNotFound: true }),
+          () => selectedIdx >= 0
+            ? results[selectedIdx]
+            : settled && results.length === 1 ? results[0] : undefined,
+        );
+        if (decision.status === "NOT_FOUND" && decision.fuzzy) addRow(decision.fuzzy);
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
@@ -360,7 +408,16 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                   <div dir="ltr" className="text-base font-extrabold text-primary">
                     {fmtNum(p.price)}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">د.ع / {p.unitName}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    د.ع / {p.unitName}
+                    {/* PUR-UNIT-01: على جانب الشراء السعر مشتقٌّ من آخر تكلفةٍ × معامل الوحدة —
+                        ليست ورقة المورّد. الوسم يُعلم المستعمل أنّه قابل للتعديل قبل الإرسال. */}
+                    {isPurchase && (
+                      <span className="ms-1 rounded bg-muted px-1 py-0.5 text-[9px] font-bold text-muted-foreground">
+                        تقديريّ
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

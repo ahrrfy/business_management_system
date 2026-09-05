@@ -54,6 +54,8 @@ async function reset() {
 
 const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
+const OWNER = { userId: 4, branchId: 1, role: "admin" };
+const WRITE_OFF_EVIDENCE = { evidenceNote: "محضر مطابقة عهدة موقع من طرفين" } as const;
 
 async function seed() {
   const d = db();
@@ -62,6 +64,7 @@ async function seed() {
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_cashier", name: "كاشير", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_courier", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "local_owner", name: "مالك", email: "o@t.test", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل التوصيل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب مطبوع" }]);
@@ -208,9 +211,9 @@ describe("delivery COD — money path", () => {
     // مجمّعاً كي لا تبقى زومبي تقبل توريداً لاحقاً يقلب الرصيد سالباً): يقفلها WRITTEN_OFF
     // ويقيّد فاتورتها مسدَّدةً ويُصفّر العهدة كخسارة.
     await expect(
-      writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل" }, MANAGER),
+      writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل", ...WRITE_OFF_EVIDENCE }, OWNER),
     ).rejects.toThrow(/السائبة/); // المجمّع محجوز للعهدة غير المرتبطة بإرساليات
-    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل", consignmentId: disp.consignmentId }, MANAGER);
+    await writeOffDeliveryShortfall({ branchId: 1, partyId, amount: "3000", reason: "نزاع غير قابل للتحصيل", consignmentId: disp.consignmentId, ...WRITE_OFF_EVIDENCE }, OWNER);
     expect(await partyBalance(partyId)).toBe("0.00");
     expect(await entryCount("DELIVERY_WRITEOFF", partyId)).toBe(1);
     const cnAfter = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)))[0];
@@ -267,6 +270,13 @@ describe("delivery COD — money path", () => {
     await db().update(s.deliveryParties)
       .set({ currentBalance: sql`${s.deliveryParties.currentBalance} + 3000` })
       .where(eq(s.deliveryParties.id, partyId));
+    // م١ (حارس reconcileDeliveryFloat/deliveryPartyLedger، PR-3): العهدةُ السائبة المُسجَّلة نقداً يلزمها
+    // قيدُ دفترٍ (COD_COLLECTED) كي يطابق `deriveCashInHandFromLedger` العمودَ المخزَّن — والتسويةُ الحرّة
+    // تكتب COD_REMITTED فيعود المجموعُ صفراً. بدونه ينحرف الدفترُ بمقدار السائبة.
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `SIM-LOOSE-COD_COLLECTED:${partyId}`,
+      partyId, branchId: 1, entryType: "COD_COLLECTED", amount: "3000.00", occurredAt: new Date(),
+    });
     const set = await settleDeliveryBalance({ branchId: 1, partyId, amount: "3000" }, CASHIER);
     expect(set.partyBalanceAfter).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("0.00");

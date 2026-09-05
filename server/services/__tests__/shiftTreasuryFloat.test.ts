@@ -3,20 +3,21 @@
  *
  * الثابت المُختبَر: **الخزينة + مجموع أدراج الورديات المفتوحة متّسقان دائماً** عبر تمويل→فتح→بيع→إغلاق→
  * إعادة فتح، بلا ازدواجٍ وهميّ (فشل Codex) ولا نقدٍ متبخّر. النموذج: عهدة الفتح تُسحَب من الخزينة
- * (TREASURY OUT + قيد SHIFT_FLOAT_OUT)، وكامل المعدود يعود للخزينة عند الإغلاق فوراً (TREASURY IN
- * مكتمل + قيد CASH_HANDOVER). التمويل (رأس المال) يضخّ نقداً خارجياً (TREASURY IN + قيد TREASURY_FUNDING).
+ * (TREASURY OUT + قيد SHIFT_FLOAT_OUT)، وكامل المعدود يعود إلى الخزينة فور إغلاق الوردية.
+ * التمويل يضخّ نقداً خارجياً (TREASURY IN + قيد TREASURY_FUNDING).
  * كل قيود الحركة revenue=cost=profit=0 (لا تمسّ P&L).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift, openShift } from "../shiftService";
+import { settlePendingShiftCloseHandovers } from "../cashHandoverService";
 import { fundTreasury } from "../treasuryFundingService";
 import { getDashboard } from "../treasury/dashboard";
 import { truncateTables } from "./__testUtils__";
 
-const TABLES = ["auditLogs", "accountingEntries", "idempotencyKeys", "expenses", "receipts", "shifts", "users", "branches"];
+const TABLES = ["auditLogs", "accountingEntries", "idempotencyKeys", "cashDailyReconciliations", "cashCustodyCounts", "expenses", "receipts", "shifts", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -210,8 +211,8 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
   });
 });
 
-describe("imprest — الإغلاق يعيد كامل المعدود فوراً", () => {
-  it("TREASURY IN مكتمل (=المعدود) + الدرج يُفرَّغ (closingDrawerCash=0)", async () => {
+describe("imprest — الإغلاق يرحّل كامل المعدود إلى الخزينة", () => {
+  it("الإغلاق يفرّغ الدرج ويرفع الخزينة فوراً بلا قبول لاحق", async () => {
     await fundTreasury({ branchId: 1, amount: "200000", description: "رأس مال", clientRequestId: "f" }, { userId: MANAGER1, branchId: 1, role: "manager" });
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     await sellCash(shiftId, 1, "30000.00"); // بيع نقديّ ⇒ الدرج 80000
@@ -228,18 +229,68 @@ describe("imprest — الإغلاق يعيد كامل المعدود فوراً
     const sh = (await db().select().from(s.shifts).where(eq(s.shifts.id, shiftId)))[0];
     expect(sh.closingDrawerCash).toBe("0.00");
 
-    // الخزينة = 200000 − 50000 (عهدة) + 80000 (إرجاع) = 230000 = 200000 مموَّل + 30000 مبيعات.
     const d = await dash(1);
     expect(d.treasury).toBe("230000.00");
     expect(d.drawer).toBe("0.00");
     expect(d.openShifts).toBe(0);
 
-    // إيصال الإرجاع IN مكتملٌ فوراً (لا PENDING) + قيد CASH_HANDOVER محايد.
     const inn = (await db().select().from(s.receipts).where(and(eq(s.receipts.referenceNumber, res.treasuryReturn!.handoverNumber), eq(s.receipts.direction, "IN"))))[0];
-    expect(inn).toMatchObject({ cashBucket: "TREASURY", status: "COMPLETED", amount: "80000.00" });
-    const ch = await entriesOfType("CASH_HANDOVER");
-    expect(ch).toHaveLength(1);
-    expect(ch[0]).toMatchObject({ amount: "80000.00", revenue: "0.00", cost: "0.00" });
+    expect(inn).toMatchObject({ cashBucket: "TREASURY", status: "COMPLETED", amount: "80000.00", createdBy: CASHIER1 });
+    const handover = await entriesOfType("CASH_HANDOVER");
+    expect(handover).toHaveLength(1);
+    expect(handover[0]).toMatchObject({ amount: "80000.00", revenue: "0.00", cost: "0.00" });
+    expect(await entriesOfType("CASH_TRANSFER_IN")).toHaveLength(0);
+  });
+
+  it("يطوي عقود CH القديمة المعلقة آلياً وبشكل idempotent", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "0" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const referenceNumber = "CH-1-20260831-0999";
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      direction: "OUT",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: CASHIER1,
+    });
+    const sourceReceiptId = Number((sourceResult as any)[0]?.insertId ?? (sourceResult as any).insertId);
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "50000.00",
+      entryDate: sql`CURDATE()` as unknown as string,
+      dedupeKey: `TEST:OLD_SHIFT_CLOSE:${sourceReceiptId}`,
+    });
+    const pendingResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "50000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      referenceNumber,
+      status: "PENDING",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: MANAGER1,
+    });
+    const pendingReceiptId = Number((pendingResult as any)[0]?.insertId ?? (pendingResult as any).insertId);
+
+    expect(await settlePendingShiftCloseHandovers()).toEqual({ updated: 1, skipped: 0 });
+    const [settled] = await db().select().from(s.receipts).where(eq(s.receipts.id, pendingReceiptId));
+    expect(settled).toMatchObject({ status: "COMPLETED", cashBucket: "TREASURY" });
+    expect(await entriesOfType("CASH_TRANSFER_IN")).toHaveLength(1);
+
+    expect(await settlePendingShiftCloseHandovers()).toEqual({ updated: 0, skipped: 0 });
+    expect(await entriesOfType("CASH_TRANSFER_IN")).toHaveLength(1);
   });
 
   it("إغلاق بمعدود صفر: لا إرجاع للخزينة", async () => {

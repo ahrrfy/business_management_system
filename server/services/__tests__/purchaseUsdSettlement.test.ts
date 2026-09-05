@@ -166,6 +166,33 @@ beforeEach(async () => {
 });
 
 describe("governed direct USD purchase settlement", () => {
+  it("rejects a cross-branch service caller before reserving or posting", async () => {
+    await expect(
+      settlePurchaseUsdDirect(
+        {
+          purchaseOrderId: 1,
+          settledUsd: "100.00",
+          chargedIqd: "147000.00",
+          feeIqd: "1000.00",
+          method: "CARD",
+          referenceNumber: "CARD-AUTH-CROSS-BRANCH",
+          cardLastFour: "4242",
+          clientRequestId: "usd-cross-branch",
+        },
+        { userId: 3, branchId: 2, role: "manager" },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+    expect(await purchaseState()).toMatchObject({
+      po: { paidAmount: "0.00", paidUsd: "0.00" },
+      supplier: {
+        currentBalance: "290000.00",
+        currentBalanceUsd: "200.00",
+      },
+    });
+  });
+
   it("stays financially inert until a different owner approves, then posts once", async () => {
     const request = await requestUsd("usd-happy");
     expect(request).toMatchObject({
@@ -205,12 +232,9 @@ describe("governed direct USD purchase settlement", () => {
     expect(state.supplier.currentBalance).toBe("290000.00");
     expect(state.supplier.currentBalanceUsd).toBe("200.00");
 
-    await expect(
-      approveVoucher(request.receiptId, maker),
-    ).rejects.toMatchObject({
-      code: "FORBIDDEN",
-    });
-    await approveVoucher(request.receiptId, checker);
+    // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الصانع مالكٌ فيعتمد سنده بنفسه.
+    const firstApproval = await approveVoucher(request.receiptId, maker);
+    expect(firstApproval.replayed).toBe(false);
     state = await purchaseState();
     expect(state.po.paidAmount).toBe("145000.00");
     expect(state.po.paidUsd).toBe("100.00");
@@ -225,6 +249,16 @@ describe("governed direct USD purchase settlement", () => {
       "EXCHANGE_FX_DIFF",
       "PAYMENT_OUT",
     ]);
+    // اعتمادٌ ثانٍ (بمالكٍ آخر) على سندٍ مُعتمَدٍ سلفاً ⇒ replay idempotent بلا أثرٍ ثانٍ.
+    const secondApproval = await approveVoucher(request.receiptId, checker);
+    expect(secondApproval.replayed).toBe(true);
+    expect(secondApproval.signatureHash).toBe(firstApproval.signatureHash);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, request.receiptId)),
+    ).toHaveLength(3);
 
     const replay = await requestUsd("usd-happy");
     expect(replay).toMatchObject({

@@ -4,8 +4,10 @@ import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.approvals.ApprovalCapabilities
 import online.alarabiya.superapp.model.approvals.ApprovalDecision
 import online.alarabiya.superapp.model.approvals.ApprovalDecisionReceipt
+import online.alarabiya.superapp.model.approvals.ApprovalFact
 import online.alarabiya.superapp.model.approvals.ApprovalKind
 import online.alarabiya.superapp.model.approvals.ApprovalRequest
+import online.alarabiya.superapp.model.approvals.CardReferenceInput
 import online.alarabiya.superapp.model.approvals.RejectionReasonPolicy
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,6 +28,8 @@ data class ApprovalInboxPayload(
     val amount: String? = null,
     val currentQuantity: Double? = null,
     val targetQuantity: Double? = null,
+    /** حقائقُ الحمولة المشتقّة خادمياً (مصدرٌ مشترك مع شاشة الويب). */
+    val facts: List<ApprovalFact> = emptyList(),
     val canReject: Boolean,
 )
 
@@ -34,7 +38,8 @@ object ApprovalMapper {
         val kind = ApprovalKind.fromApi(payload.kind) ?: return null
         if (payload.id <= 0) return null
         val rejectionPolicy = when (kind) {
-            ApprovalKind.INVENTORY, ApprovalKind.VOUCHER -> RejectionReasonPolicy.REQUIRED
+            ApprovalKind.INVENTORY, ApprovalKind.VOUCHER, ApprovalKind.SALES_CONTROL ->
+                RejectionReasonPolicy.REQUIRED
             ApprovalKind.LEAVE, ApprovalKind.GIFT -> RejectionReasonPolicy.NOT_SUPPORTED
         }
         return ApprovalRequest(
@@ -47,6 +52,7 @@ object ApprovalMapper {
             amount = payload.amount,
             currentQuantity = payload.currentQuantity,
             targetQuantity = payload.targetQuantity,
+            facts = payload.facts,
             capabilities = ApprovalCapabilities(
                 canApprove = true,
                 canReject = payload.canReject,
@@ -94,18 +100,18 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
     ): ApprovalDecisionReceipt {
         require(request.id > 0) { "معرّف الطلب غير صالح" }
         when (decision) {
-            ApprovalDecision.Approve -> {
+            is ApprovalDecision.Approve -> {
                 if (!request.capabilities.canApprove) {
                     throw UnsupportedApprovalDecision("اعتماد هذا النوع غير متاح في العقد الحالي")
                 }
-                approve(request)
+                approve(request, decision.cardReference)
             }
             is ApprovalDecision.Reject -> reject(request, decision.reason)
         }
         return ApprovalDecisionReceipt(request.id, request.kind, decision)
     }
 
-    private suspend fun approve(request: ApprovalRequest) {
+    private suspend fun approve(request: ApprovalRequest, cardReference: CardReferenceInput) {
         when (request.kind) {
             ApprovalKind.INVENTORY -> api.mutate(
                 "inventory.approveAdjustment",
@@ -122,6 +128,24 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
             ApprovalKind.GIFT -> api.mutate(
                 "gifts.approveGift",
                 JSONObject().put("giftId", request.id),
+            )
+            /**
+             * الاعتماد ينفّذ الأثر ذرّياً خادمياً (مرتجع/إلغاء/استبدال) بنفس مسار الويب.
+             *
+             * `clearShift` = «أعِد اشتقاق مصدر النقد الآن» (تصويب مراجعة Codex على PR #932):
+             * الدرجُ المُختار وقت **الطلب** قد يكون أُقفل، وبلا هذا يفشل الاعتماد على الجوّال
+             * أبداً بينما الويب يستطيع إنقاذه. ولا يختار درجاً بالنيابة عن المُعتمِد: الخادمُ
+             * يأخذ الدرجَ المفتوح الوحيد، ويطلب تحديداً صريحاً إن تعدّد، ويصرف من خزينة الفرع
+             * للإداريّ إن لم يوجد — أيْ نفس افتراض المسار الأونلاينيّ حين لا يُحدَّد درج.
+             *
+             * `reference` (تعميم PR #997 لإلغاء البيع ببطاقة): مرجع جهاز الدفع قرارُ لحظة
+             * الاعتماد لا لحظة الطلب — بلا هذا يضطرّ الطالبُ لتنفيذ الاسترداد الفعليّ على
+             * الجهاز قبل أن يبتّ أيّ مراجعٍ في الطلب أصلاً. [buildSalesControlApproveInput]
+             * يترجم [CardReferenceInput] الثلاثيّ إلى شكل الحمولة (مفتاحٌ غائب/`null`/قيمة).
+             */
+            ApprovalKind.SALES_CONTROL -> api.mutate(
+                "salesControl.approve",
+                buildSalesControlApproveInput(request.id, cardReference),
             )
         }
     }
@@ -154,12 +178,38 @@ class ApprovalsRepository(private val api: TrpcClient) : ApprovalsDataSource {
             ApprovalKind.GIFT -> throw UnsupportedApprovalDecision(
                 "واجهة الخادم لا توفر عملية رفض للهدايا",
             )
+            ApprovalKind.SALES_CONTROL -> {
+                require(reason.isNotEmpty()) { "سبب الرفض مطلوب" }
+                api.mutate(
+                    "salesControl.reject",
+                    JSONObject().put("requestId", request.id).put("reason", reason),
+                )
+            }
         }
     }
 }
 
 private fun JSONArray.objects(): List<JSONObject> = buildList {
     for (index in 0 until length()) optJSONObject(index)?.let(::add)
+}
+
+/**
+ * يبني حمولة `salesControl.approve`. `reference` حسب حالة [CardReferenceInput] الثلاث
+ * (تفصيلها في تعريف النوع): [CardReferenceInput.Untouched] يُغفَل المفتاح كليّاً (بلا مساسٍ
+ * بمرجع الطلب المخزَّن)، [CardReferenceInput.Cleared] يرسل `null` صراحةً، و[CardReferenceInput.Value]
+ * يرسل النصّ. إغفالُ المفتاح و`null` صريحة مختلفان جوهرياً خادمياً
+ * (`applyCancelCashRouting`، `server/services/sale/controlRequests.ts`) فلا يُطوَيان معاً —
+ * `org.json.JSONObject` يفرّق بينهما فعلياً: مفتاحٌ لم يُستدعَ له `put` لا يظهر أصلاً في
+ * `toString()`، بينما `put(key, JSONObject.NULL)` يظهر بقيمة `null` حرفية.
+ */
+internal fun buildSalesControlApproveInput(requestId: Long, cardReference: CardReferenceInput): JSONObject {
+    val cashRouting = JSONObject().put("clearShift", true)
+    when (cardReference) {
+        CardReferenceInput.Untouched -> Unit
+        CardReferenceInput.Cleared -> cashRouting.put("reference", JSONObject.NULL)
+        is CardReferenceInput.Value -> cashRouting.put("reference", cardReference.text)
+    }
+    return JSONObject().put("requestId", requestId).put("cashRouting", cashRouting)
 }
 
 private fun JSONObject.toApprovalPayload() = ApprovalInboxPayload(
@@ -172,6 +222,16 @@ private fun JSONObject.toApprovalPayload() = ApprovalInboxPayload(
     amount = nullableText("amount"),
     currentQuantity = nullableDouble("currentQuantity"),
     targetQuantity = nullableDouble("targetQuantity"),
+    facts = optJSONArray("facts")?.let { array ->
+        buildList {
+            for (index in 0 until array.length()) {
+                val row = array.optJSONObject(index) ?: continue
+                val label = row.optString("label")
+                val value = row.optString("value")
+                if (label.isNotBlank()) add(ApprovalFact(label, value))
+            }
+        }
+    } ?: emptyList(),
     canReject = optBoolean("canReject"),
 )
 

@@ -2,7 +2,7 @@
 // الرصيد مشتقّ من receipts (paymentMethod='CARD') — لا يمسّ الدرج/الخزينة. محصور بالمدير/المحاسب
 // (reportViewerProcedure خادمياً). بلا إيموجي — أيقونات lucide فقط.
 import { useEffect, useState } from "react";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -11,7 +11,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { notify } from "@/lib/notify";
 import { fmtAr, formatIqd, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -33,6 +35,7 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const SOURCE_AR: Record<string, string> = {
@@ -47,6 +50,10 @@ const SOURCE_AR: Record<string, string> = {
 
 const PAGE = 50;
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+/** صفوفٌ مشتقّة من عقد الخادم فلا تنجرف عنه. */
+type MovementRow = RouterOutputs["cardAccount"]["movements"]["rows"][number];
+type ReconRow = RouterOutputs["cardAccount"]["reconciliations"][number];
 
 export default function CardAccount() {
   const me = trpc.auth.me.useQuery();
@@ -165,7 +172,7 @@ export default function CardAccount() {
           { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "دخل" : "صرف") },
           { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
           { key: "runningBalance", header: "الرصيد بعد الحركة", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
-          { key: "cardLastFour", header: "آخر ٤", map: (r) => r.cardLastFour ?? "" },
+          { key: "cardLastFour", header: "آخر 4", map: (r) => r.cardLastFour ?? "" },
           { key: "voucherNumber", header: "المرجع", map: (r) => r.voucherNumber ?? r.referenceNumber ?? "" },
         ],
       });
@@ -241,12 +248,12 @@ export default function CardAccount() {
         icon={accountKind === "TELECOM" ? <Smartphone aria-hidden className="size-5" /> : <CreditCard aria-hidden className="size-5" />}
         actions={
           canPickBranch ? (
-            <select
+            <AppSelect
               aria-label="الفرع"
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => {
-                setBranchId(e.target.value ? Number(e.target.value) : "");
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => {
+                setBranchId(value ? Number(value) : "");
                 setPage(0);
               }}
             >
@@ -256,7 +263,7 @@ export default function CardAccount() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           ) : undefined
         }
       />
@@ -380,19 +387,19 @@ export default function CardAccount() {
                   setPage(0);
                 }}
               />
-              <select
+              <AppSelect
                 aria-label="الاتجاه"
-                className={selectCls}
+                className="h-9"
                 value={direction}
-                onChange={(e) => {
-                  setDirection(e.target.value as "" | "IN" | "OUT");
+                onValueChange={(value) => {
+                  setDirection(value as "" | "IN" | "OUT");
                   setPage(0);
                 }}
               >
                 <option value="">الكل</option>
                 <option value="IN">دخل</option>
                 <option value="OUT">صرف</option>
-              </select>
+              </AppSelect>
               <AppSelect
                 aria-label="نوع الحركة"
                 className="h-9 w-40"
@@ -413,7 +420,7 @@ export default function CardAccount() {
               </Button>
               <Button variant="outline" size="sm" onClick={onExport} disabled={exporting || !mv || mv.count === 0}>
                 <Download aria-hidden className="size-4" />
-                {exporting ? "جارٍ التصدير…" : "تصدير"}
+                {exporting ? ACTION_LABELS.exporting : "تصدير"}
               </Button>
             </div>
           </div>
@@ -427,78 +434,98 @@ export default function CardAccount() {
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-muted-foreground">
-                  <th className="p-2 text-start font-medium">التاريخ</th>
-                  <th className="p-2 text-start font-medium">النوع</th>
-                  <th className="p-2 text-start font-medium">الطرف</th>
-                  <th className="p-2 text-start font-medium">المرجع</th>
-                  <th className="p-2 text-center font-medium">الاتجاه</th>
-                  <th className="p-2 text-end font-medium">المبلغ</th>
-                  <th className="p-2 text-end font-medium">الرصيد بعد الحركة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {movements.isLoading ? (
-                  <tr>
-                    <td colSpan={7}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                ) : !mv || mv.rows.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message={isTelecom ? "لا حركات رصيد زين في النطاق المحدَّد" : "لا حركات بطاقة في النطاق المحدَّد"} />
-                ) : (
-                  mv.rows.map((r) => (
-                    <tr key={r.receiptId} className={`border-b ${r.reversed ? "opacity-50" : ""}`}>
-                      <td className="p-2 whitespace-nowrap">{r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "—"}</td>
-                      <td className="p-2">
-                        {SOURCE_AR[r.source] ?? r.source}
-                        {r.reversed && <span className="ms-1 text-xs text-muted-foreground">(ملغى)</span>}
-                      </td>
-                      <td className="p-2">{r.partyName ?? <span className="text-muted-foreground">—</span>}</td>
-                      <td className="p-2 whitespace-nowrap text-xs text-muted-foreground">
-                        {r.voucherNumber ?? r.referenceNumber ?? ""}
-                        {r.cardLastFour && <span className="ms-1">•{r.cardLastFour}</span>}
-                      </td>
-                      <td className="p-2 text-center">
-                        {r.direction === "IN" ? (
-                          <span className="inline-flex items-center gap-1 text-[var(--money-positive)]">
-                            <ArrowDownCircle aria-hidden className="size-3.5" />دخل
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[var(--money-negative)]">
-                            <ArrowUpCircle aria-hidden className="size-3.5" />صرف
-                          </span>
-                        )}
-                      </td>
-                      <td className={`p-2 text-end font-medium ${r.direction === "IN" ? "text-[var(--money-positive)]" : "text-[var(--money-negative)]"}`}>
-                        {r.direction === "IN" ? "" : "−"}
-                        {fmtAr(r.amount)}
-                      </td>
-                      <td className="p-2 text-end">{r.runningBalance != null ? fmtAr(r.runningBalance) : "—"}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {mv && (mv.hasMore || page > 0) && (
-            <div className="mt-3 flex items-center justify-between text-sm">
-              <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                السابق
-              </Button>
-              {/* إجمالي حقيقي (mv.count من استعلام المجاميع الكامل) لا مجرّد رقم صفحة. */}
-              <span className="text-muted-foreground tabular-nums" dir="ltr">
-                {page * PAGE + 1}–{page * PAGE + mv.rows.length} / {mv.count.toLocaleString("ar-IQ-u-nu-latn")}
-              </span>
-              <Button variant="outline" size="sm" disabled={!mv.hasMore} onClick={() => setPage((p) => p + 1)}>
-                التالي
-              </Button>
-            </div>
-          )}
+          <DataTable<MovementRow>
+            data={mv?.rows ?? []}
+            loading={movements.isLoading}
+            errorState={{ isError: movements.isError, message: movements.error?.message, onRetry: () => void movements.refetch() }}
+            /* البحث والفلاتر في شريط الأدوات أعلاه (يغذّيان الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={q.trim() !== "" || !!from || !!to || direction !== "" || sourceType !== ""}
+            bounded={false}
+            /* الترقيم خادميّ (limit/offset) والإجمالي حقيقيّ من استعلام المجاميع ⇒ شريطٌ واحد بدل شريطٍ يدويّ تحته. */
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE,
+              total: mv?.count,
+              isFetching: movements.isFetching,
+            }}
+            getRowClassName={(r) => (r.reversed ? "opacity-50" : undefined)}
+            emptyText={isTelecom ? "لا حركات رصيد زين في النطاق المحدَّد" : "لا حركات بطاقة في النطاق المحدَّد"}
+            columns={[
+              {
+                id: "createdAt",
+                header: "التاريخ",
+                accessorFn: (r) => (r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "—"),
+                meta: { kind: "date" },
+                cell: ({ row }) => (row.original.createdAt ? new Date(row.original.createdAt as string).toISOString().slice(0, 10) : "—"),
+              },
+              {
+                id: "source",
+                header: "النوع",
+                // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (r) => `${SOURCE_AR[r.source] ?? r.source}${r.reversed ? " (ملغى)" : ""}`,
+                cell: ({ row }) => (
+                  <>
+                    {SOURCE_AR[row.original.source] ?? row.original.source}
+                    {row.original.reversed && <span className="ms-1 text-xs text-muted-foreground">(ملغى)</span>}
+                  </>
+                ),
+              },
+              {
+                id: "party",
+                header: "الطرف",
+                accessorFn: (r) => r.partyName ?? "—",
+                cell: ({ row }) => row.original.partyName ?? <span className="text-muted-foreground">—</span>,
+              },
+              {
+                id: "reference",
+                header: "المرجع",
+                accessorFn: (r) => `${r.voucherNumber ?? r.referenceNumber ?? ""}${r.cardLastFour ? ` •${r.cardLastFour}` : ""}`,
+                cell: ({ row }) => (
+                  <span className="text-xs text-muted-foreground">
+                    {row.original.voucherNumber ?? row.original.referenceNumber ?? ""}
+                    {row.original.cardLastFour && <span className="ms-1">•{row.original.cardLastFour}</span>}
+                  </span>
+                ),
+              },
+              {
+                id: "direction",
+                header: "الاتجاه",
+                accessorFn: (r) => (r.direction === "IN" ? "دخل" : "صرف"),
+                meta: { align: "center" },
+                cell: ({ row }) =>
+                  row.original.direction === "IN" ? (
+                    <span className="inline-flex items-center gap-1 text-[var(--money-positive)]">
+                      <ArrowDownCircle aria-hidden className="size-3.5" />دخل
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[var(--money-negative)]">
+                      <ArrowUpCircle aria-hidden className="size-3.5" />صرف
+                    </span>
+                  ),
+              },
+              {
+                id: "amount",
+                header: "المبلغ",
+                accessorFn: (r) => `${r.direction === "IN" ? "" : "−"}${fmtAr(r.amount)}`,
+                meta: { kind: "money" },
+                cell: ({ row }) => (
+                  <span className={`font-medium ${row.original.direction === "IN" ? "text-[var(--money-positive)]" : "text-[var(--money-negative)]"}`}>
+                    {row.original.direction === "IN" ? "" : "−"}
+                    {fmtAr(row.original.amount)}
+                  </span>
+                ),
+              },
+              {
+                id: "runningBalance",
+                header: "الرصيد بعد الحركة",
+                accessorFn: (r) => (r.runningBalance != null ? fmtAr(r.runningBalance) : "—"),
+                meta: { kind: "money" },
+                cell: ({ row }) => (row.original.runningBalance != null ? fmtAr(row.original.runningBalance) : "—"),
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -532,7 +559,7 @@ export default function CardAccount() {
             </div>
             <div>
               <Label htmlFor="rec-label">وصف الكشف (اختياري)</Label>
-              <Input id="rec-label" value={statementLabel} onChange={(e) => setStatementLabel(e.target.value)} placeholder="كشف حزيران ٢٠٢٦" maxLength={120} />
+              <Input id="rec-label" value={statementLabel} onChange={(e) => setStatementLabel(e.target.value)} placeholder="كشف حزيران 2026" maxLength={120} />
             </div>
             <div className="flex items-end">
               <Button className="w-full" onClick={submitRecon} disabled={createRec.isPending || needsBranchForRecon}>
@@ -547,48 +574,82 @@ export default function CardAccount() {
           </div>
 
           {/* سجلّ المطابقات */}
-          <div className="mt-5 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-muted-foreground">
-                  <th className="p-2 text-start font-medium">حتى تاريخ</th>
-                  {s?.branchId == null && <th className="p-2 text-start font-medium">الفرع</th>}
-                  <th className="p-2 text-start font-medium">الوصف</th>
-                  <th className="p-2 text-end font-medium">رصيد النظام</th>
-                  <th className="p-2 text-end font-medium">كشف البنك</th>
-                  <th className="p-2 text-end font-medium">الفرق</th>
-                  <th className="p-2 text-start font-medium">بواسطة</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recons.isLoading ? (
-                  <tr>
-                    <td colSpan={7}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                ) : !recons.data || recons.data.length === 0 ? (
-                  <TableEmptyRow colSpan={7} message="لا سجلّات مطابقة بعد" />
-                ) : (
-                  recons.data.map((r) => (
-                    <tr key={r.id} className="border-b">
-                      <td className="p-2 whitespace-nowrap">{r.asOfDate}</td>
-                      {s?.branchId == null && <td className="p-2">{r.branchName ?? r.branchId}</td>}
-                      <td className="p-2">
-                        {r.statementLabel ?? <span className="text-muted-foreground">—</span>}
-                        {r.note && <div className="text-xs text-muted-foreground">{r.note}</div>}
-                      </td>
-                      <td className="p-2 text-end">{fmtAr(r.systemBalance)}</td>
-                      <td className="p-2 text-end">{fmtAr(r.statementBalance)}</td>
-                      <td className={`p-2 text-end font-semibold ${D(r.difference).abs().gt(0) ? "text-[var(--sem-warn)]" : "text-[var(--money-positive)]"}`}>
-                        {fmtAr(r.difference)}
-                      </td>
-                      <td className="p-2 text-xs text-muted-foreground">{r.createdByName ?? "—"}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+          <div className="mt-5">
+            {/* سجلٌّ مُضمَّن داخل بطاقة المطابقة ⇒ بلا شريط حالةٍ ولا منتقي أعمدة (ضجيجٌ هنا). */}
+            <DataTable<ReconRow>
+              embedded
+              searchable={false}
+              bounded={false}
+              pageSize={Infinity}
+              data={recons.data ?? []}
+              loading={recons.isLoading}
+              errorState={{ isError: recons.isError, message: recons.error?.message, onRetry: () => void recons.refetch() }}
+              emptyText="لا سجلّات مطابقة بعد"
+              columns={[
+                {
+                  id: "asOfDate",
+                  header: "حتى تاريخ",
+                  accessorFn: (r) => r.asOfDate,
+                  meta: { kind: "date" },
+                  cell: ({ row }) => row.original.asOfDate,
+                },
+                // عمود الفرع يظهر فقط في العرض العابر للفروع — كما كان بالضبط.
+                ...(s?.branchId == null
+                  ? ([
+                      {
+                        id: "branch",
+                        header: "الفرع",
+                        accessorFn: (r) => r.branchName ?? String(r.branchId),
+                        cell: ({ row }) => row.original.branchName ?? row.original.branchId,
+                      },
+                    ] as ColumnDef<ReconRow, unknown>[])
+                  : []),
+                {
+                  id: "statementLabel",
+                  header: "الوصف",
+                  accessorFn: (r) => r.statementLabel ?? "—",
+                  meta: { width: "wide", wrap: true },
+                  cell: ({ row }) => (
+                    <>
+                      {row.original.statementLabel ?? <span className="text-muted-foreground">—</span>}
+                      {row.original.note && <div className="text-xs text-muted-foreground">{row.original.note}</div>}
+                    </>
+                  ),
+                },
+                {
+                  id: "systemBalance",
+                  header: "رصيد النظام",
+                  accessorFn: (r) => fmtAr(r.systemBalance),
+                  meta: { kind: "money" },
+                  cell: ({ row }) => fmtAr(row.original.systemBalance),
+                },
+                {
+                  id: "statementBalance",
+                  header: "كشف البنك",
+                  accessorFn: (r) => fmtAr(r.statementBalance),
+                  meta: { kind: "money" },
+                  cell: ({ row }) => fmtAr(row.original.statementBalance),
+                },
+                {
+                  id: "difference",
+                  header: "الفرق",
+                  accessorFn: (r) => fmtAr(r.difference),
+                  meta: { kind: "money" },
+                  cell: ({ row }) => (
+                    <span className={`font-semibold ${D(row.original.difference).abs().gt(0) ? "text-[var(--sem-warn)]" : "text-[var(--money-positive)]"}`}>
+                      {fmtAr(row.original.difference)}
+                    </span>
+                  ),
+                },
+                {
+                  id: "createdBy",
+                  header: "بواسطة",
+                  accessorFn: (r) => r.createdByName ?? "—",
+                  meta: { width: "actor" },
+                  cell: ({ row }) => <span className="text-xs text-muted-foreground">{row.original.createdByName ?? "—"}</span>,
+                },
+              ]}
+            />
           </div>
         </CardContent>
       </Card>

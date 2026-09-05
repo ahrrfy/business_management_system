@@ -2,7 +2,9 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { couponRedemptions, coupons, customers, deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
+import { assertDeliveryFeeHeldConsistent, recordDeliveryFeeHeldInTx } from "../delivery/feeHeld";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -47,9 +49,11 @@ import { classifyGiftPosting } from "./giftPosting";
 import { paymentAssetRole } from "./paymentPosting";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { appErrorMessage } from "@shared/errors";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
 // البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
@@ -63,13 +67,59 @@ const OPENING_RECEPTION_CHANNELS = new Set(["POS", "ORDER", "WORKORDER"]);
 /** رمز غير قابل للإنشاء من حمولة tRPC؛ يفتح منتجات DIGITAL_CARD لمسار التثبيت الموثوق فقط. */
 export const DIGITAL_SALE_CAPABILITY = Symbol("DIGITAL_SALE_CAPABILITY");
 
+/**
+ * م١ (PR-1) — البيعُ بتوصيلٍ بيعٌ COD **خادمياً**: يُشتقّ العلمان من وجود `delivery` وحده، فلا
+ * يحتاج أيُّ مستدعٍ (الراوتر، تركيب البطاقات، الحجز…) أن يتذكّر ضبطَهما — نسيانُهما هو الجذر
+ * الذي كان يجعل الاستقبال يرفض توصيلَ عميلٍ جديد بحدّ «0» بينما المتجر يقبله.
+ *
+ * ⛔ الأوفلاين: `sales.create` هدفُ إعادة تشغيل الطابور (`offline/replaySale.ts`)، والإسناد
+ * يحتاج حرّاس الجهة الحيّة (سقف العهدة وعمر الطرود المفتوحة) ورقمَ إرسالية ووردية درجٍ للأمانة —
+ * لا شيء منها يصحّ لبيعٍ التُقط دون اتصال. يُرفض قبل أيّ قراءةٍ من القاعدة.
+ */
+function withDeliveryDefaults(input: CreateSaleInput): CreateSaleInput {
+  const hasDelivery = input.delivery != null;
+  const hasFeeHeld = money(input.deliveryFeeHeld ?? "0").gt(0);
+  if (!hasDelivery && !hasFeeHeld) return input;
+  if (input.offlineCapture) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إسناد البيع للتوصيل من طابور الأوفلاين",
+        why: "الإسناد يحتاج حرّاس الجهة الحيّة (سقف العهدة وعمر الطرود المفتوحة) ورقمَ إرسالية ووردية درجٍ لأمانة الأجرة، ولا يتوفّر شيءٌ منها لبيعٍ التُقط دون اتصال",
+        doThis: "أعِد تشغيل البيع من الطابور بلا توصيل، ثمّ أسنِد فاتورته لجهة التوصيل من شاشة الإرساليات بعد عودة الاتصال",
+      }),
+    });
+  }
+  // Codex #1006 P1 — أمانةُ أجرةٍ بلا توصيلٍ في نفس البيع = أمانةٌ يتيمة: لا إرساليّةَ تُبرّئها،
+  // فإلغاءُ الفاتورة قبل أيّ إسنادٍ لاحق يعاملها `cancelSaleInTx` إيصالَ بيعٍ عاديّاً فيردّها
+  // `PAYMENT_OUT` ويترك التزام `DELIVERY_FEE_HELD` غير معكوسٍ ويُفسِد `customers.currentBalance`.
+  // نُلزم الإسنادَ في نفس البيع فلا تبقى أمانةٌ محجوزةٌ بلا مسار تبرئة (نصّ المالك: لا دينار بلا مسار).
+  if (!hasDelivery) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبض أمانة أجرة التوصيل بلا إسناد توصيل",
+        why: "أرسلت مبلغ أمانة أجرة توصيل دون بيانات توصيلٍ في نفس البيع؛ الأمانة المحجوزة تبقى بلا إرساليّةٍ تُبرّئها، فيعلق مالُ الزبون بلا مسار ردٍّ عند أيّ إلغاء",
+        doThis: "أرسل بيانات التوصيل (الجهة والأجرة) مع الأمانة في نفس الطلب، أو احذف مبلغ الأمانة",
+      }),
+    });
+  }
+  return { ...input, codDispatchPending: true, paymentMode: "COD" };
+}
+
 export async function createSaleInTx(
   tx: Tx,
-  input: CreateSaleInput,
+  rawInput: CreateSaleInput,
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
-    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
+    const input = withDeliveryDefaults(rawInput);
+    // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود `delivery` (COD) لا معلومةٌ مستقلّة، فإدراجُه في
+    // بصمة idempotency يكسر تكرارَ بيعٍ التزم قبل نشر م١ (بصمتُه المخزَّنة بلا paymentMode) بـCONFLICT
+    // بدل replay عبر النشر ⇒ يعيد الموظّف البيعَ بمفتاحٍ جديد = فاتورةٌ مكرَّرة. نستبعده من البصمة
+    // وحدها؛ `delivery` نفسها فيها تحفظ التمييز، فحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى.
+    const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(fingerprintInput) : null;
     // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
     if (input.payment) {
       assertPosPaymentMethodEnabled(input.payment.method);
@@ -163,6 +213,17 @@ export async function createSaleInTx(
         if ((redemption?.codeHash ?? null) !== requestedCouponHash) {
           throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: الكوبون مختلف عن البيع الأصلي" });
         }
+        // م١ (PR-1): الإرسالية أُنشئت مع الفاتورة في المحاولة الفائزة — تعود مع الإعادة كي يحمل
+        // الإيصال المطبوع رقمَها (لا يُعاد الإسناد؛ الفاتورة الواحدة إرساليةٌ واحدة بقيدٍ فريد).
+        const replayConsignment = input.delivery
+          ? (
+              await tx
+                .select({ id: deliveryConsignments.id, consignmentNumber: deliveryConsignments.consignmentNumber })
+                .from(deliveryConsignments)
+                .where(eq(deliveryConsignments.invoiceId, Number(ex.id)))
+                .limit(1)
+            )[0]
+          : undefined;
         return {
           invoiceId: Number(ex.id),
           invoiceNumber: ex.invoiceNumber,
@@ -173,6 +234,9 @@ export async function createSaleInTx(
           total: ex.total,
           status: ex.status as CreateSaleResult["status"],
           idempotentReplay: true,
+          ...(replayConsignment
+            ? { consignmentId: Number(replayConsignment.id), consignmentNumber: replayConsignment.consignmentNumber }
+            : {}),
         };
       }
     }
@@ -189,6 +253,18 @@ export async function createSaleInTx(
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "يَلزم وردية مفتوحة للبيع النقدي",
+      });
+    }
+    // م١ (PR-1): أمانةُ أجرة التوصيل إيصالُ درجٍ نقديّ — تلزمها وردية كالبيع النقديّ تماماً.
+    const writesFeeHeldCash = money(input.deliveryFeeHeld ?? "0").gt(0);
+    if (writesFeeHeldCash && input.shiftId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر قبض أمانة أجرة التوصيل",
+          why: "الأمانة تدخل درج الوردية نقداً، ولا وردية مفتوحة مرفقة بهذا البيع",
+          doThis: "افتح وردية باسمك من شاشة الورديات ثمّ أعد البيع، أو اجعل أجرة التوصيل على المندوب (COURIER) بلا أمانة",
+        }),
       });
     }
     if (input.shiftId) {
@@ -216,6 +292,17 @@ export async function createSaleInTx(
       if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
+    }
+    // م١ (PR-1): إيصال أمانة الأجرة يكتب نقدَ الدرج أيضاً ⇒ نفس القفل (مرآة `checkoutReception`).
+    if (isCashPayment || writesFeeHeldCash) {
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: input.branchId,
+        shiftId: input.shiftId,
+        cashBucket: "DRAWER",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
     }
 
     // 3. Resolve the effective price tier.
@@ -277,10 +364,29 @@ export async function createSaleInTx(
         message: "البطاقات الرقمية تُباع من مسار الإصدار المخصّص فقط — لا تُضاف كصنف عادي",
       });
     }
-    if (capability === DIGITAL_SALE_CAPABILITY && Array.from(variantById.values()).some((v) => v.productType !== "DIGITAL_CARD")) {
+    // A prepared ordinary product may have been reclassified since preparation.
+    // Every actual digital row still needs a trusted intent cost and detail token.
+    if (capability === DIGITAL_SALE_CAPABILITY && input.lines.some((line) =>
+      variantById.get(line.variantId)?.productType === "DIGITAL_CARD" &&
+      (line.unitCostOverride == null || !line.internalLineToken?.trim()))) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "مسار تثبيت البطاقات الرقمية لا يقبل أصنافاً عادية",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت بند رقمي في السلة",
+          why: "البند لا يحمل لقطة تكلفة وربطاً موثقاً بنيّة إصدار الكروت؛ ربما تغيّر تصنيف الصنف بعد إعداد السلة",
+          doThis: "أوقف التثبيت وراجِع تصنيف الصنف والنيّة المحفوظة؛ لا تُعِد إصدار الكروت",
+        }),
+      });
+    }
+    if (input.lines.some((line) => line.unitCostOverride != null &&
+      (capability !== DIGITAL_SALE_CAPABILITY || variantById.get(line.variantId)?.productType !== "DIGITAL_CARD"))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر تثبيت تكلفة البيع",
+          why: "التكلفة المفروضة مخصصة للكرت الرقمي الموثق فقط؛ الأصناف العادية تتبع تكلفة المخزون",
+          doThis: "أعِد إتمام البيع من نقطة البيع؛ لا ترسل تكلفة يدوية مع البنود العادية",
+        }),
       });
     }
     // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
@@ -818,7 +924,10 @@ export async function createSaleInTx(
       paymentMethod: input.payment?.method ?? null,
       // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
       // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
-      paymentMode: input.paymentMode ?? "PREPAID",
+      // ⚠️ Codex #1006 P2 — COD يعني «تحصيلٌ عند التسليم»؛ فبيعٌ بتوصيلٍ **مدفوعٍ كاملاً** عند الإنشاء
+      // (لا متبقٍّ تحمله الإرساليّة، ومنه فاتورةُ المطبعة المدفوعة في السلّة المختلطة) هو PREPAID لا COD.
+      // نشتقّه من وجود متبقٍّ فعليّ لا من وجود التوصيل وحده (`withDeliveryDefaults` يختمه COD تفاؤلياً).
+      paymentMode: input.paymentMode === "COD" && unpaid.lte(0) ? "PREPAID" : (input.paymentMode ?? "PREPAID"),
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
@@ -1275,6 +1384,64 @@ export async function createSaleInTx(
       await recordIdempotencyKey(tx, "sale.create", input.clientRequestId, invoiceId, requestFingerprint);
     }
 
+    // ── م١ (PR-1): أمانةُ أجرة التوصيل ثمّ الإسناد — داخل معاملة البيع نفسها ─────────────────
+    // (قرار المالك ٦/٨): متبقّي فاتورة التوصيل عهدةٌ على المندوب تُرفع في اللحظة التي تُنشأ فيها
+    // الفاتورة — لا لحظةَ واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + إرسالية) معاً وإمّا لا شيء.
+    // الترتيب مقصود: إيصال الأمانة أوّلاً — `dispatchInvoiceInTx` يشترط وجوده لقبول COUNTER.
+    // Codex #1006/#1012 P2 — احلل أجرةَ الجهة الافتراضيّة مرّةً هنا لتقرأها بوّابةُ الأمانة والإسناد
+    // معاً: `delivery.fee = null` يعني `deliveryParties.defaultFee`؛ والمقارنةُ بصفرٍ قبل الحلّ كانت
+    // ترفض أمانةً = الأجرة الافتراضية (بوّابة الأمانة)، ثمّ ترفض الأمانة الغائبة (بوّابة COUNTER في الإسناد).
+    let resolvedDeliveryFee: string | null = null;
+    if (input.delivery) {
+      resolvedDeliveryFee = input.delivery.fee ?? null;
+      if (resolvedDeliveryFee == null) {
+        const dp = (
+          await tx
+            .select({ defaultFee: deliveryParties.defaultFee })
+            .from(deliveryParties)
+            .where(eq(deliveryParties.id, input.delivery.partyId))
+            .limit(1)
+        )[0];
+        resolvedDeliveryFee = dp?.defaultFee ?? "0";
+      }
+    }
+    const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
+    if (feeHeldD.gt(0)) {
+      assertDeliveryFeeHeldConsistent(
+        feeHeldD,
+        input.delivery ? { fee: resolvedDeliveryFee, feeCollection: input.delivery.feeCollection ?? null } : null,
+      );
+      await recordDeliveryFeeHeldInTx(tx, {
+        branchId: input.branchId,
+        shiftId: input.shiftId ?? null,
+        invoiceId,
+        amount: feeHeldD,
+        actorUserId: actor.userId,
+        description: "أجرة توصيل مقبوضة أمانةً للمندوب — بيع مباشر",
+      });
+    }
+    let dispatched: { consignmentId: number; consignmentNumber: string } | null = null;
+    if (input.delivery) {
+      const d = await dispatchInvoiceInTx(
+        tx,
+        {
+          invoiceId,
+          partyId: input.delivery.partyId,
+          // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
+          // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
+          deliveryFee: resolvedDeliveryFee,
+          feeCollection: input.delivery.feeCollection ?? "COURIER",
+          recipientName: input.delivery.recipientName ?? input.contactName ?? null,
+          recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
+          deliveryAddress: input.delivery.address ?? null,
+          governorate: input.delivery.governorate ?? null,
+          clientRequestId: input.clientRequestId ? `${input.clientRequestId}-dispatch` : null,
+        },
+        { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role },
+      );
+      dispatched = { consignmentId: d.consignmentId, consignmentNumber: d.consignmentNumber };
+    }
+
     return {
       invoiceId,
       invoiceNumber,
@@ -1287,6 +1454,7 @@ export async function createSaleInTx(
       ...(giftCostD.gt(0) ? { giftCost: giftCostD.toFixed(2) } : {}),
       ...(negativeDips.length ? { negativeDips } : {}),
       ...(createdLineItems.length ? { createdLineItems } : {}),
+      ...(dispatched ?? {}),
     };
 }
 

@@ -171,7 +171,11 @@ describe("sendMessage — إعادة توصيل عبر الصندوق الصاد
       const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId)))[0];
       expect(row).toBeDefined();
       expect(row.kind).toBe("SESSION_TEXT");
-      expect(row.status).toBe("QUEUED");
+      // ⚠️ سباقٌ مع المُرسِل الخلفيّ (أسقط `test-shard-2` على PR #932): الإرسالُ يُطلَق
+      // fire-and-forget بعد `sendMessage`، فقد يقلب الصفَّ QUEUED→SENDING قبل هذه القراءة.
+      // المُثبَت المقصود هنا هو **المرور بالصندوق الصادر** لا لحظةُ الحالة، وكلتاهما تُثبته؛
+      // وما يمنع الإرسالَ الفوريّ هو تأكيدُ `conversationMessages` الفارغ أدناه لا هذا السطر.
+      expect(["QUEUED", "SENDING"]).toContain(row.status);
       expect(row.dedupeKey).toBe(`CHAT:${convId}:click-2`);
       expect(row.conversationId).toBe(convId);
       expect(row.toPhoneE164).toBe("+9647701234567");
@@ -289,7 +293,11 @@ describe("retrySend", () => {
       expect(result).toMatchObject({ outboxId, ok: true });
 
       const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId)))[0];
-      expect(row.status).toBe("QUEUED");
+      // ⚠️ سباقٌ مع المُرسِل الخلفيّ (أسقط `test-shard-2` على PR #932): الإرسالُ يُطلَق
+      // fire-and-forget بعد `sendMessage`، فقد يقلب الصفَّ QUEUED→SENDING قبل هذه القراءة.
+      // المُثبَت المقصود هنا هو **المرور بالصندوق الصادر** لا لحظةُ الحالة، وكلتاهما تُثبته؛
+      // وما يمنع الإرسالَ الفوريّ هو تأكيدُ `conversationMessages` الفارغ أدناه لا هذا السطر.
+      expect(["QUEUED", "SENDING"]).toContain(row.status);
       expect(row.attempts).toBe(0);
       expect(row.lastError).toBeNull();
     } finally {

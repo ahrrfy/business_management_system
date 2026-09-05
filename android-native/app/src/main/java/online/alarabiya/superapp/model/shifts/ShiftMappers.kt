@@ -61,6 +61,7 @@ object ShiftMappers {
     fun closeResult(root: Map<String, Any?>): ShiftCloseResult? {
         val id = root.long("shiftId")
         if (id <= 0) return null
+        val treasuryReturn = root.map("treasuryReturn")
         return ShiftCloseResult(
             shiftId = id,
             openingBalance = ShiftMoney.fromServerOrNull(root.textOrNull("openingBalance")) ?: return null,
@@ -70,7 +71,7 @@ object ShiftMappers {
             reconciliationStatus = root.textOrNull("reconciliationStatus"),
             requiresManagerReview = root.boolean("requiresManagerReview"),
             alreadyClosed = root.boolean("alreadyClosed"),
-            treasuryHandoverNumber = root.map("treasuryReturn")?.textOrNull("handoverNumber"),
+            treasuryHandoverNumber = treasuryReturn?.textOrNull("handoverNumber"),
         )
     }
 

@@ -183,8 +183,10 @@ async function resolveEntryActor(
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
- *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen). */
-export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
+ *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen).
+ *  يُعيد **مُعرِّف القيد المُدرَج** كي يربطه العاكسُ بصفّ REVERSE بوصفه مرجعَ التعويض الحقيقيّ
+ *  (Codex P2: بلا هذا كان صفُّ REVERSE يعود إلى قيد APPLY الأصليّ فيبدو SALE قيدَه المعوِّض). */
+export async function postEntry(tx: Tx, e: EntryInput): Promise<number> {
   const entryDate = e.entryDate ?? new Date();
   // One company-wide lock order for branch and branchless postings:
   // close gate (shared writer) -> active period -> double-entry settings.
@@ -239,13 +241,15 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     createdBy: actorAttribution.createdBy,
     createdByNameSnapshot: actorAttribution.createdByNameSnapshot,
   });
+  const entryId = extractInsertId(res);
   // نقطة الحقن الوحيدة للدفتر المزدوج (P2). داخل **نفس المعاملة** ⇒ تراجعُ العملية يتراجع معه
   // القيد. في SHADOW يبقى النشر best-effort: الخلل يُوسَم فجوةً ولا يفشل عملية الأعمال؛
   // أمّا ACTIVE فيعمل fail-closed ويرمي كي لا تنجح عملية بلا يومية معتمدة.
-  await shadowPost(tx, extractInsertId(res), e, {
+  await shadowPost(tx, entryId, e, {
     runtime,
     postingValidationError,
   });
+  return entryId;
 }
 
 /** AR: positive = customer owes us. Applied atomically via SQL increment. */
@@ -293,7 +297,15 @@ export async function adjustSupplierBalanceUsd(
     .where(eq(suppliers.id, supplierId));
 }
 
-/** عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية. */
+/**
+ * عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية.
+ *
+ * م١ (PR-3، العيب أ): **الكاتبُ الوحيد** لـ`deliveryParties.version` — يرفعه ذرّياً مع كلّ حركة
+ * عهدة تحت قفل الصفّ (`FOR UPDATE`). كان العمود يُقرأ في طلبات شطب العهدة
+ * (`writeoffRequests.ts`: `basePartyVersion` مقابل `party.version` ⇒ `STALE`) **ولا يكتبه أحد**،
+ * فحارسُ التقادم كان خاملاً: طلبٌ فُتح على عهدة 2000 يُعتمَد بعد أن صارت 5000 بلا إنذار.
+ * الزيادةُ النسبيّة تبقى (لا قراءة-ثمّ-كتابة)، والقفلُ يُسلسِل الكتّاب المتزامنين على الجهة.
+ */
 export async function adjustDeliveryBalance(
   tx: Tx,
   partyId: number,
@@ -301,9 +313,16 @@ export async function adjustDeliveryBalance(
 ): Promise<void> {
   if (delta.isZero()) return;
   await tx
+    .select({ id: deliveryParties.id })
+    .from(deliveryParties)
+    .where(eq(deliveryParties.id, partyId))
+    .for("update")
+    .limit(1);
+  await tx
     .update(deliveryParties)
     .set({
       currentBalance: sql`${deliveryParties.currentBalance} + ${toDbMoney(delta)}`,
+      version: sql`${deliveryParties.version} + 1`,
     })
     .where(eq(deliveryParties.id, partyId));
 }

@@ -25,6 +25,17 @@ import {
   getProductForVariantEdit,
   updateProductWithVariants,
 } from "../services/productEditService";
+// م٦ (D5): حارسا حدّ العقد صارا مشتركَين في الخدمة كي يمرّ بهما مسارُ الاستعادة أيضاً.
+import {
+  assertCostChangeReasonOrThrow,
+  assertVariantSanityOrThrow,
+} from "../services/catalog/productUpdateGuards";
+// م٦ (ق٨): سجلّ النسخ و«ما الذي تغيّر» والاستعادة.
+import {
+  getProductVersionDiff,
+  listProductVersions,
+  restoreProductVersion,
+} from "../services/catalog/productVersioning";
 import {
   addUnitBarcodeAlias,
   listUnitBarcodes,
@@ -52,11 +63,8 @@ import {
   router,
 } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
-import {
-  checkVariantSanity,
-  classifySeverity,
-  type UnitPricing,
-} from "../../shared/priceSanity";
+import { barcodeString, optionalBarcodeString } from "../lib/schemas";
+import type { UnitPricing } from "../../shared/priceSanity";
 import {
   extractProductFactsFromImage,
   generateProductContentDraft,
@@ -162,14 +170,16 @@ const customizationTemplateSchema = z.object({
   isActive: z.boolean().optional(),
   fields: z.array(customizationFieldSchema).max(50),
 });
+// (٤/٩) الباركود يُطبَّع على حدّ الـAPI (`barcodeString`/`optionalBarcodeString`): كان `z.string()` عارياً
+// فيُحفَظ «10095 » بمسافته ثم لا يُمسَح أبداً — المطابقة مساواةٌ SQL خامّة.
 const barcodeAliasSchema = z.object({
-  barcode: z.string().min(1).max(64),
+  barcode: barcodeString,
   note: z.string().max(255).optional().nullable(),
 });
 const unitSchema = z.object({
   unitName: z.string().min(1),
   conversionFactor: z.string(),
-  barcode: z.string().optional(),
+  barcode: optionalBarcodeString,
   isBaseUnit: z.boolean().optional(),
   isStoreSaleUnit: z.boolean().optional(),
   prices: z.array(priceSchema).optional(),
@@ -262,53 +272,12 @@ const editImageSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
 });
 
-/**
- * حرّاس عقلانية على تكلفة/سعر/معامل — دفاعٌ في العمق ضدّ أيّ عميل يتجاوز حرّاس الواجهة
- * (حادثة SINARLINE ٣٠/٧: تكلفة 16162 vs بيع 2000 ⇒ توقّف كاشير ساعات). يُطبَّق قبل استدعاء
- * الخدمة في المسارات الثلاثة (createProduct/updateProduct/updateProductVariants) — يرمي
- * TRPCError بـBAD_REQUEST بلا تعديل الحالة. المصدر مشترك: shared/priceSanity.ts.
- *
- * الاستعمال:
- *   assertVariantSanityOrThrow(variantLabel, costPriceStr, unitsForCheck);
- *   حيث unitsForCheck: صفيف {unitName, conversionFactor:number, retail?, wholesale?, government?}
+/*
+ * حرّاس عقلانية التكلفة/السعر (`assertVariantSanityOrThrow`) وحارسُ سبب تغيير التكلفة
+ * (`assertCostChangeReasonOrThrow`, priceSanity L1.7) كانا هنا؛ نُقلا حرفياً إلى
+ * `services/catalog/productUpdateGuards.ts` (م٦ — D5) كي يمرّ بهما مسارُ الاستعادة كما يمرّ بهما
+ * التعديل من هذا الراوتر. الاستعمال هنا لم يتغيّر.
  */
-function assertVariantSanityOrThrow(
-  variantLabel: string,
-  costPrice: string,
-  units: UnitPricing[],
-): void {
-  const issues = checkVariantSanity(costPrice, units);
-  const blocker = issues.find((i) => i.level === "blocker");
-  if (blocker) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `[${variantLabel}] ${blocker.message}`,
-    });
-  }
-}
-
-/**
- * **priceSanity L1.7 (٣٠/٧):** حارس السبب الإلزاميّ. عند تغيير التكلفة بنسبة ≥ ٥× مقارنةً بالقيمة
- * السابقة (blocker حسب `classifySeverity`)، يجب أن يمرَّر `costChangeReason` بمحارف ≥ ١٠.
- * يمنع تغييرات صامتة كارثيّة (حالة SINARLINE) من الاستيراد أو استعادات المسودّات.
- */
-function assertCostChangeReasonOrThrow(
-  variantLabel: string,
-  oldCost: string | number | null | undefined,
-  newCost: string | number,
-  reason: string | null | undefined,
-): void {
-  const sev = classifySeverity(newCost, { oldCost: oldCost ?? null });
-  if (sev === "blocker" || sev === "catastrophic") {
-    const r = (reason ?? "").trim();
-    if (r.length < 10) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `[${variantLabel}] تغيير التكلفة كبير جداً (من ${oldCost ?? "؟"} إلى ${newCost}). يرجى إضافة سبب مكتوب (≥ ١٠ محارف) في حقل «سبب تغيير التكلفة».`,
-      });
-    }
-  }
-}
 
 /**
  * توفيق بدائل الباركود (productUnitBarcodes) بعد نجاح `updateProductWithVariants` — عمداً
@@ -550,7 +519,7 @@ export const catalogRouter = router({
   byBarcode: productsReadProcedure
     .input(
       z.object({
-        barcode: z.string().min(1),
+        barcode: barcodeString,
         branchId: z.number().int().positive(),
         tier,
         customerId: z.number().int().positive().nullish(),
@@ -729,6 +698,11 @@ export const catalogRouter = router({
         isService: z.boolean().optional(),
         printService: z.boolean().optional(),
         showInReception: z.boolean().optional(),
+        // م٦ (تناظر الإنشاء/التعديل): ثلاثةُ حقولٍ كانت في شاشة التعديل وحدها — الظهورُ في شبكة الطباعة
+        // مستقلّاً عن `printService`، والتوصيات الآلية، وحالة المنتج. غيابُها يُبقي افتراض المخطّط.
+        showInPrintPos: z.boolean().optional(),
+        allowAutoCartRecommendations: z.boolean().optional(),
+        isActive: z.boolean().optional(),
         recipe: z
           .array(
             z.object({
@@ -738,6 +712,9 @@ export const catalogRouter = router({
           )
           .max(50)
           .optional(),
+        // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — يُغذَّى بشراءٍ من مورّد
+        // أو إنتاجٍ داخليّ بوصفته. الحارس الدلاليّ (لا خدمة/بكج/أمانة) في `createProduct`.
+        allowBackorder: z.boolean().optional(),
         // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب variants.length=1 + وحدة أساس واحدة + bundleComponents ≥1.
         isBundle: z.boolean().optional(),
         bundleComponents: z
@@ -852,7 +829,7 @@ export const catalogRouter = router({
                     id: z.number().int().positive().optional(),
                     unitName: z.string().min(1),
                     conversionFactor: z.string(),
-                    barcode: z.string().nullish(),
+                    barcode: optionalBarcodeString,
                     isBaseUnit: z.boolean().optional(),
                     isStoreSaleUnit: z.boolean().optional(),
                     prices: z.array(priceSchema).optional(),
@@ -1036,12 +1013,23 @@ export const catalogRouter = router({
         // اختياريّان بلا افتراض ⇒ غيابُهما يُبقي القيمة الحالية بلا مسّ (نمط PATCH).
         showInReception: z.boolean().optional(),
         showInPrintPos: z.boolean().optional(),
+        // (٣١/٨) تصحيحُ التصنيف بعد الإنشاء. الحقل كان **غائباً عن هذا المدخل** بينما شاشة
+        // `ProductEdit` تعرض تبديل «خِدمة (بلا مَخزون)» وترسله فعلاً ⇒ يُسقطه zod بصمتٍ
+        // (الافتراض `strip`)، فالتبديل يبدو عاملاً ولا يفعل شيئاً — «الشاشة تكذب» بعينها.
+        // وكان أثرُه أنّ خطأ تصنيفٍ واحداً عند الإنشاء يقفل الصنف إلى الأبد بلا مخرج.
+        // الحارس (رصيدٌ صفريّ) في `updateProductWithVariants`.
+        isService: z.boolean().optional(),
+        // «يُباع بالطلب» (0318): صفةُ صنفٍ مخزنيّ يُسمح ببيعه قبل توريده. نمط PATCH كسابقيه —
+        // غيابُه يُبقي القيمة. الحارس الدلاليّ (لا خدمة/بكج/أمانة) في `updateProductWithVariants`.
+        allowBackorder: z.boolean().optional(),
         isConsignment: z.boolean().optional(),
         consignorId: z.number().int().positive().nullish(),
         unitTemplate: z.array(updateUnitTemplateSchema).min(1),
         variants: z.array(editVariantSchema).min(1),
         // product-image-edit: صور المنتج العامّة (variantId=NULL). غياب الحقل ⇒ لا تُمَسّ؛ مصفوفة ⇒ توفيق.
         images: z.array(editImageSchema).max(10).optional(),
+        // م٦ ق٨: سببُ التعديل — يُلحق بلقطة `recordVersions` ويظهر في سجلّ النسخ. اختياريّ.
+        updateReason: z.string().max(500).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1149,11 +1137,59 @@ export const catalogRouter = router({
       return { ...res, aliasWarnings };
     }),
 
+  // ═══ م٦ ق٨ — سجلّ النسخ والاستعادة (تكشف التكلفة ⇒ مدير فأعلى، كـgetForVariantEdit) ═══
+  /** النسخ الأحدث أوّلاً، مع «الحقول المتغيّرة» لكلٍّ. */
+  productVersions: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), limit: z.number().int().positive().max(200).optional() }))
+    .query(({ input }) => listProductVersions(input.productId, input.limit)),
+
+  /** «ما الذي تغيّر» حقلاً بحقل بين نسخةٍ والتي تليها (أو الحالة الحاليّة للأحدث). */
+  productVersionDiff: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), versionNumber: z.number().int().positive() }))
+    .query(({ input }) => getProductVersionDiff(input.productId, input.versionNumber)),
+
+  /**
+   * الاستعادة = تعديلٌ جديد بحمولةٍ قديمة يمرّ بكلّ حرّاس التعديل (التكلفة/ثبات الأساس/العقلانية/…)،
+   * ويكتب لقطةً للحالة قبل الاستعادة فتبقى هي أيضاً قابلةً للتراجع. الصورُ خارج نطاقها.
+   */
+  restoreProductVersion: productsManagerProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        versionNumber: z.number().int().positive(),
+        reason: z.string().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // الاستعادةُ تعديلٌ ⇒ تُنسب إلى الفرع كما يُنسب `updateProductVariants` أعلاه حرفياً (الأدمن/المالك
+      // يعبُر البوّابة بلا فرعٍ مُسنَد). الفرعُ هنا **إسنادٌ** فقط (`recordVersions.branchId`/`auditLogs.branchId`)
+      // — لا مخزونَ يتحرّك بالاستعادة، والدَّينُ الموروث (الافتراض ١ للأدمن بلا فرع) يُغلَق مع أخواته الإحدى عشرة معاً.
+      const res = await restoreProductVersion(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      });
+      // الاستعادة قد تُعيد تفعيل متغيّرٍ أو تُغيّر تصنيفاً ⇒ نفس مزامنة الجرد الشامل الحيّ بعد أيّ تعديل.
+      await syncActiveFullStocktakeScopes();
+      await logAudit(ctx, {
+        action: "product.restoreVersion",
+        entityType: "product",
+        entityId: input.productId,
+        newValue: {
+          restoredFromVersion: res.restoredFromVersion,
+          snapshotVersion: res.versionNumber,
+          reason: input.reason ?? null,
+        },
+      });
+      return res;
+    }),
+
   assignBarcode: productsManagerProcedure
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: z.string().min(1),
+        barcode: barcodeString,
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1299,7 +1335,7 @@ export const catalogRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: z.string().min(1).max(64),
+        barcode: barcodeString,
         note: z.string().max(255).nullish(),
       }),
     )

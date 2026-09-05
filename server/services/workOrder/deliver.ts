@@ -11,14 +11,15 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
-import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId } from "./helpers";
 import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -46,6 +47,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
+    // (حُذف حارسُ اعتماد التصميم — قرار المالك ١/٩/٢٦؛ التعليل في `lifecycle.startWorkOrder`.)
     // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
     // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
     await assertSiblingsReady(tx, {
@@ -201,6 +203,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         message: "افتح وردية RECEPTION قبل قبض دفعة أمر الشغل نقداً؛ لا يجوز DRAWER بلا وردية استقبال مقفلة",
       });
     }
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: Number(wo.branchId),
+      shiftId: deliveryShiftId,
+      cashBucket: input.payment?.method === "CASH" && paidNow.gt(0) ? "DRAWER" : null,
+      paymentMethod: input.payment?.method ?? "CASH",
+      status: paidNow.gt(0) ? "COMPLETED" : "PENDING",
+      approvalStatus: "APPROVED",
+    });
 
     if (wo.customerId && unpaidPortion.gt(0) && !(await readOpeningWindowState(tx)).active) {
       await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId), woPaymentMode);
@@ -224,7 +234,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const { nextInvoiceNumber } = await import("../numbering");
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
-    const sourceId = `WO-${wo.id}`;
+    const sourceId = workOrderInvoiceSourceId(wo);
     /**
      * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
      * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل

@@ -27,12 +27,33 @@ describe("سياسة القبض خارج نقاط البيع", () => {
     expect(source).not.toContain('if (isReceipt && method !== "CASH")');
   });
 
-  it("تحصيل القسط يجمع مرجع العملية وآخر ٤ من البطاقة ويُمرّرهما", () => {
+  it("تحصيل القسط يفصل المنشئ عن المؤكد ويعرض طابور الاعتماد بكل حالاته", () => {
     const source = readPage("InstallmentPlans.tsx");
-    expect(source).not.toContain('const method = "CASH" as const');
-    expect(source).toContain("isInboundPaymentMethodEnabled");
+    expect(source).toContain("POS_METHODS.map");
+    expect(source).toContain("trpc.installments.initiateExternalPayment.useMutation");
+    expect(source).toContain("trpc.installments.confirmExternalPayment.useMutation");
+    expect(source).toContain("trpc.installments.pendingExternalPayments.useQuery");
+    expect(source).toContain("PendingExternalPaymentsPanel");
+    expect(source).toContain("<LoadingState");
+    expect(source).toContain("<ErrorState");
+    expect(source).toContain("لا توجد محاولات غير نقدية بانتظار الاعتماد أو السداد");
+    expect(source).toContain("إرسال لاعتماد موظف مستقل");
+    expect(source).toContain("اعتماد الدفع كموظف مستقل");
+    expect(source).toContain("if (!approval?.canConfirm)");
+    expect(source).toContain("externalAttempt?.confirmed === true");
     expect(source).toContain("referenceNumber: method === \"CASH\" ? undefined : reference.trim()");
     expect(source).toContain("cardLastFour: method === \"CARD\" ? cardLastFour : undefined");
+    expect(source).toContain("externalPaymentAttemptId:");
+    expect(source).toContain("deviceId:");
+  });
+
+  it("إنشاء الخطة يفرض فاتورة معلقة ويشتق الإجمالي من متبقيها", () => {
+    const source = readPage("InstallmentPlans.tsx");
+    expect(source).toContain('balanceState: "OUTSTANDING"');
+    expect(source).toContain("invoiceId != null");
+    expect(source).toContain("invoiceOutstanding(selected)");
+    expect(source).toContain("clientRequestId: createClientRequestId");
+    expect(source).toContain("readOnly");
   });
 
   it("سحب المحفظة بالتحويل يجمع مرجع الحوالة ويُمرّره (لا UUID داخليّ)", () => {

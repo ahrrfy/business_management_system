@@ -3,18 +3,18 @@
 // كل مستندٍ مستحقّ منفرداً بعدد أيّام تأخّره وشريحته ومتبقّيه — مرتّباً من الأقدم تأخّراً.
 // عرض + KPIs بالشرائح + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { selectCls } from "@/lib/ui/formStyles";
 
 type Side = "AR" | "AP";
 type Row = RouterOutputs["reports"]["arApAgingDetail"]["rows"][number];
@@ -72,7 +72,74 @@ export default function ArApAgingDetail() {
     [branchId, branches.data],
   );
 
-  const refHref = (r: Row) => (isAR ? `/invoices/${r.id}` : `/purchases/${r.id}`);
+  // الفلترة عميليّة (شريحة + بحث) ⇒ الجدول بلا بحثٍ داخليّ، ونُعلمه بنشاط الفلاتر كي
+  // يفرّق بين «لا مستندات مستحقّة أصلاً» و«لا مطابق للفلتر» بدل رسالةٍ واحدة تُضلّل.
+  const clientFiltersActive = bucket !== "" || query.trim() !== "";
+
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      {
+        id: "number",
+        header: isAR ? "رقم الفاتورة" : "رقم أمر الشراء",
+        accessorFn: (r) => r.number,
+        meta: { kind: "code" },
+        cell: ({ row }) => (
+          <Link
+            href={isAR ? `/invoices/${row.original.id}` : `/purchases/${row.original.id}`}
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            {row.original.number}
+          </Link>
+        ),
+      },
+      {
+        id: "partyName",
+        header: isAR ? "العميل" : "المورد",
+        accessorFn: (r) => r.partyName,
+        meta: { width: "wide" },
+        cell: ({ row }) => row.original.partyName,
+      },
+      { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => row.original.date },
+      // الاستحقاق للذمم المدينة وحدها — كما كان العمود مشروطاً في الجدول الخامّ.
+      ...(isAR
+        ? ([
+            {
+              id: "dueDate",
+              header: "الاستحقاق",
+              accessorFn: (r) => r.dueDate ?? "—",
+              meta: { kind: "date" },
+              cell: ({ row }) => <span className="text-muted-foreground">{row.original.dueDate ?? "—"}</span>,
+            },
+          ] as ColumnDef<Row, unknown>[])
+        : []),
+      {
+        id: "daysOverdue",
+        header: "أيام التأخّر",
+        accessorFn: (r) => r.daysOverdue,
+        meta: { kind: "number" },
+        cell: ({ row }) => row.original.daysOverdue,
+      },
+      {
+        id: "bucket",
+        header: "الشريحة",
+        accessorFn: (r) => r.bucket,
+        meta: { kind: "status" },
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${BUCKET_CLS[row.original.bucket] ?? "bg-muted text-muted-foreground"}`}>
+            {row.original.bucket}
+          </span>
+        ),
+      },
+      {
+        id: "unpaid",
+        header: "المتبقّي",
+        accessorFn: (r) => fmtAr(r.unpaid),
+        meta: { kind: "money" },
+        cell: ({ row }) => <span className="font-semibold">{fmtAr(row.original.unpaid)}</span>,
+      },
+    ],
+    [isAR],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -137,21 +204,21 @@ export default function ArApAgingDetail() {
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">النوع</label>
-            <select
-              className={selectCls}
+            <AppSelect
+              className="h-9"
               value={side}
-              onChange={(e) => setSide(e.target.value as Side)}
+              onValueChange={(value) => setSide(value as Side)}
             >
               <option value="AR">مدينة — لنا على العملاء</option>
               <option value="AP">دائنة — لهم علينا</option>
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select
-              className={selectCls}
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+            <AppSelect
+              className="h-9"
+              value={String(branchId)}
+              onValueChange={(value) => setBranchId(value ? Number(value) : "")}
             >
               <option value="">الكل</option>
               {branches.data?.map((b) => (
@@ -159,14 +226,14 @@ export default function ArApAgingDetail() {
                   {b.name}
                 </option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الشريحة العمرية</label>
-            <select className={selectCls} value={bucket} onChange={(e) => setBucket(e.target.value)}>
+            <AppSelect className="h-9" value={bucket} onValueChange={(value) => setBucket(value)}>
               <option value="">الكل</option>
               {BUCKET_OPTIONS.map((b) => (<option key={b} value={b}>{b}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">بحث</label>
@@ -185,60 +252,17 @@ export default function ArApAgingDetail() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.error ? (
-            <ErrorState message={q.error.message} onRetry={() => q.refetch()} />
-          ) : !allRows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">
-              لا مستندات مستحقّة في هذا النطاق.
-            </p>
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">
-              لا مستندات مطابقة للفلتر/البحث.
-            </p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">{isAR ? "رقم الفاتورة" : "رقم أمر الشراء"}</th>
-                    <th className="p-2.5 text-right font-medium">{isAR ? "العميل" : "المورد"}</th>
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    {isAR && <th className="p-2.5 text-right font-medium">الاستحقاق</th>}
-                    <th className="p-2.5 text-right font-medium">أيام التأخّر</th>
-                    <th className="p-2.5 text-center font-medium">الشريحة</th>
-                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">
-                        <Link href={refHref(r)} className="text-primary underline-offset-2 hover:underline">
-                          {r.number}
-                        </Link>
-                      </td>
-                      <td className="p-2.5 text-right">{r.partyName}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      {isAR && (
-                        <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">
-                          {r.dueDate ?? "—"}
-                        </td>
-                      )}
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.daysOverdue}</td>
-                      <td className="p-2.5 text-center">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${BUCKET_CLS[r.bucket] ?? "bg-muted text-muted-foreground"}`}>
-                          {r.bucket}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">{fmtAr(r.unpaid)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
+          <DataTable<Row>
+            columns={columns}
+            data={rows}
+            /* البحث في شريط الفلاتر أعلاه (يغذّي rows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={clientFiltersActive}
+            loading={q.isLoading}
+            errorState={{ isError: q.isError, message: q.error?.message, onRetry: () => q.refetch() }}
+            emptyText="لا مستندات مستحقّة في هذا النطاق."
+            emptyFilteredState="لا مستندات مطابقة للفلتر/البحث."
+          />
         </CardContent>
       </Card>
     </ReportShell>

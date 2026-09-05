@@ -5,6 +5,7 @@
  * ⚠️ النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ (لافتة تحذير ظاهرة). مُركَّب على trpc.payroll.
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +17,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Coins, Plus, Receipt, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -102,7 +104,7 @@ export default function PayrollLegalSettings() {
         actions={
           canEdit ? (
             <Button onClick={save} disabled={updateM.isPending}>
-              <Save className="size-4" aria-hidden /> {updateM.isPending ? "جارٍ الحفظ…" : "حفظ الإعدادات"}
+              <Save className="size-4" aria-hidden /> {updateM.isPending ? ACTION_LABELS.saving : "حفظ الإعدادات"}
             </Button>
           ) : undefined
         }
@@ -148,10 +150,10 @@ export default function PayrollLegalSettings() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ss-base" className="text-sm">وعاء الاحتساب</Label>
-                <select id="ss-base" className={selectCls} value={ssBase} disabled={!canEdit} onChange={(e) => setSsBase(e.target.value as "basic" | "gross")}>
+                <AppSelect id="ss-base" className="h-9" value={ssBase} disabled={!canEdit} onValueChange={(next) => setSsBase(next as "basic" | "gross")}>
                   <option value="basic">الأساسيّ (الراتب الأساس)</option>
                   <option value="gross">الإجماليّ (أساسيّ + مخصّصات)</option>
-                </select>
+                </AppSelect>
               </div>
             </div>
           )}

@@ -141,11 +141,38 @@ class ShiftContractTest {
         )
         assertNull(
             ShiftStatePolicy.closeValidation(
-                base.copy(closeDraft = base.closeDraft?.copy(countedCash = "1000.1", countedCashConfirmation = "1000.10", acknowledged = true)),
+                base.copy(
+                    closeDraft = base.closeDraft?.copy(
+                        countedCash = "1000.1",
+                        countedCashConfirmation = "1000.10",
+                        acknowledged = true,
+                    ),
+                ),
             ),
         )
         assertTrue(ShiftStatePolicy.closeValidation(base.copy(loaded = false))!!.contains("تحميل"))
         assertFalse(ShiftStatePolicy.canRequestClose(base.copy(loaded = false), report.shift))
+    }
+
+    @Test
+    fun `empty drawer closes after exact recount and acknowledgement`() {
+        val report = report(expected = "0")
+        val state = ShiftUiState(
+            policy = policy(role = "manager", branchId = 7),
+            loading = false,
+            loaded = true,
+            rows = listOf(report.shift),
+            selectedShiftId = report.shift.id,
+            detail = ShiftDetailState.Content(report),
+            closeDraft = ShiftCloseDraft(
+                shiftId = report.shift.id,
+                countedCash = "0",
+                countedCashConfirmation = "0.00",
+                acknowledged = true,
+            ),
+        )
+
+        assertNull(ShiftStatePolicy.closeValidation(state))
     }
 
     @Test

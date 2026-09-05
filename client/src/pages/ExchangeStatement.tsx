@@ -1,5 +1,6 @@
 // تبويب «كشف الحساب» — حركات الصيرفة بعملتيها + رصيد جارٍ (لقطة بعد كل عملية) + ملخّص.
 import { useCallback, useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { type ColumnDef } from "@tanstack/react-table";
 import { FileText, Printer, Undo2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -8,7 +9,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { fmtDateTime } from "@/lib/date";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -49,6 +50,30 @@ type TxnRow = {
 };
 
 const fmtDT = (d: string) => fmtDateTime(d);
+
+/**
+ * صفُّ الحيازة الدولارية الفعلية لكل فرع — مُعلَنٌ صراحةً لا مُشتقّاً بالفهرسة.
+ *
+ * ⚠️ `RouterOutputs["exchange"]["statement"]["…"]` **لا يعمل**: مخرَجُ هذا الإجراء عميقٌ
+ * بما يكفي لتتحلّل عندَه استنتاجاتُ tsc، فتفشل الفهرسةُ على **كلّ** مفتاح (`transactions`
+ * و`summary` كذلك) بينما الطباعةُ في رسالة الخطأ تُظهر المفاتيح موجودة. حالةٌ قائمة في
+ * المستودع لا تخصّ هذا التحويل — والوصولُ بالنقطة (`st.data.physicalUsdByBranch`) يعمل.
+ * المصدر: `physicalUsdByBranch` في [statement.ts](server/services/exchange/statement.ts).
+ */
+type PhysicalUsdRow = {
+  branchId: number;
+  branchName: string;
+  quantityUsd: string;
+  carryingIqd: string;
+  wavgRate: string;
+};
+
+const physicalUsdColumns: ColumnDef<PhysicalUsdRow, unknown>[] = [
+  { id: "branch", header: "الفرع", accessorFn: (r) => r.branchName, meta: { width: "wide" }, cell: ({ row }) => row.original.branchName },
+  { id: "quantityUsd", header: "الكمية الفعلية ($)", accessorFn: (r) => fmtAr(r.quantityUsd), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.quantityUsd) },
+  { id: "carryingIqd", header: "القيمة الدفترية (د.ع)", accessorFn: (r) => fmtAr(r.carryingIqd), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.carryingIqd) },
+  { id: "wavgRate", header: "متوسط الكلفة للعرض", accessorFn: (r) => fmtAr(r.wavgRate), meta: { kind: "money" }, cell: ({ row }) => fmtAr(row.original.wavgRate) },
+];
 
 export default function ExchangeStatement() {
   const houses = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });
@@ -225,10 +250,10 @@ export default function ExchangeStatement() {
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={selectCls} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className="h-9" value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">من تاريخ</label>
@@ -269,30 +294,16 @@ export default function ExchangeStatement() {
               الكمية والقيمة الدفترية أدناه أصل نقدي فعلي في الفرع؛ وهي منفصلة عن رصيد التعامل مع الصيرفة أعلاه.
             </p>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
-              <thead>
-                <tr className="border-b bg-muted/40 text-right">
-                  <th className="px-3 py-2 font-medium">الفرع</th>
-                  <th className="px-3 py-2 font-medium">الكمية الفعلية ($)</th>
-                  <th className="px-3 py-2 font-medium">القيمة الدفترية (د.ع)</th>
-                  <th className="px-3 py-2 font-medium">متوسط الكلفة للعرض</th>
-                </tr>
-              </thead>
-              <tbody>
-                {st.data.physicalUsdByBranch.length === 0 ? (
-                  <tr><td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">لا توجد حيازة دولار فعلية.</td></tr>
-                ) : st.data.physicalUsdByBranch.map((row) => (
-                  <tr key={row.branchId} className="border-b last:border-0">
-                    <td className="px-3 py-2">{row.branchName}</td>
-                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.quantityUsd)}</td>
-                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.carryingIqd)}</td>
-                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.wavgRate)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* مُضمَّن: عنوان القسم وشرحه أعلاه، فلا شريطَ حالةٍ ولا منتقيَ أعمدة. */}
+          <DataTable<PhysicalUsdRow>
+            embedded
+            searchable={false}
+            bounded={false}
+            pageSize={Infinity}
+            columns={physicalUsdColumns}
+            data={st.data.physicalUsdByBranch}
+            emptyText="لا توجد حيازة دولار فعلية."
+          />
         </Card>
       )}
 

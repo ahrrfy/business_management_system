@@ -2,8 +2,6 @@ name: Expo Mobile Check
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 6 * * 1"
   pull_request:
     branches: [main]
     paths:
@@ -57,8 +55,8 @@ jobs:
       - name: Install dependencies (frozen)
         run: pnpm install --frozen-lockfile --ignore-workspace
 
-      - name: Verify image-size DoS mitigation and upstream status
-        run: pnpm check:image-size-security -- --check-upstream
+      - name: Verify image-size stays out of the Metro graph
+        run: pnpm check:image-size-security
 
       - name: TypeScript check
         run: pnpm check

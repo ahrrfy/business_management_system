@@ -4,6 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot, Printer, Download } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -309,16 +310,16 @@ export default function ARReminders() {
       {isAdmin && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">النطاق:</span>
-          <select
+          <AppSelect
             value={effectiveScope === "opening" ? "opening" : String(effectiveScope ?? "")}
-            onChange={(e) => setScope(e.target.value === "opening" ? "opening" : Number(e.target.value))}
-            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onValueChange={(value) => setScope(value === "opening" ? "opening" : Number(value))}
+            className="h-9 border-input px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             {(branches.data ?? []).map((b) => (
               <option key={b.id} value={b.id}>{b.name}</option>
             ))}
             <option value="opening">مدينو الرصيد الافتتاحي (كل الفروع)</option>
-          </select>
+          </AppSelect>
           {effectiveScope === "opening" && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Landmark className="size-3.5" aria-hidden />
@@ -536,10 +537,10 @@ function QueueTab({
             aria-label="شريحة التقادم"
             placeholder="كل شرائح التقادم"
           >
-            <option value="7-30">٧-٣٠ يوماً</option>
-            <option value="31-60">٣١-٦٠ يوماً</option>
-            <option value="61-90">٦١-٩٠ يوماً</option>
-            <option value="90+">أكثر من ٩٠ يوماً</option>
+            <option value="7-30">7-30 يوماً</option>
+            <option value="31-60">31-60 يوماً</option>
+            <option value="61-90">61-90 يوماً</option>
+            <option value="90+">أكثر من 90 يوماً</option>
           </AppSelect>
           <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
             <RotateCcw className="size-3.5" aria-hidden /> تحديث
@@ -721,7 +722,7 @@ function HistoryTab({
           <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-36" aria-label="من تاريخ" />
           <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-36" aria-label="إلى تاريخ" />
           {(search || status || from || to) && (
-            <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>مسح الفلاتر</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>{FILTER_LABELS.reset}</Button>
           )}
         </div>
         <ScrollTableShell bordered={false}>

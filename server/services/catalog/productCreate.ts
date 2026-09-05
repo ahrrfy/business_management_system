@@ -12,6 +12,8 @@ import {
   productionRecipes,
   suppliers,
 } from "../../../drizzle/schema";
+import { appErrorMessage } from "@shared/errors";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -44,11 +46,22 @@ export interface CreateProductInput {
   // بند بلا مخزون: البيع لا يُحرّك branchStock، ورصيد افتتاحي يُتجاهَل.
   // false صريحة تعني ناتجاً مخزنياً يمكن شراؤه أو إنتاجه حتى لو عُرض في نقطة الطباعة.
   isService?: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده (شراءً من مورّد أو إنتاجاً داخلياً). */
+  allowBackorder?: boolean;
   // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE).
   // هذه راية عرض ومسار بيع، ولا تفرض كونه بلا مخزون عند تمرير isService=false صراحةً.
   printService?: boolean;
   // توجيه الخدمة لكاشير خدمة العملاء (الاستقبال) أيضاً — يَظهر هناك ويُباع عبر createPrintSale.
   showInReception?: boolean;
+  /**
+   * م٦ (تناظر الإنشاء/التعديل — قرار المالك «شاشةُ التعديل تُظهر شاشة الإنشاء مطابقة»): الظهورُ في شبكة
+   * الطباعة قرارٌ مستقلّ عن `printService` كما في مسار التعديل — يُزامن `productType='PRINT_SERVICE'`
+   * (Codex P1 على #757) ولا يجعل البند خدمةً بلا مخزون. و«التوصيات الآلية» و«حالة المنتج» كانتا في
+   * شاشة التعديل وحدها فيُولَد المنتج بقيمٍ لا يستطيع إعلانها عند ولادته.
+   */
+  showInPrintPos?: boolean;
+  allowAutoCartRecommendations?: boolean;
+  isActive?: boolean;
   // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب: متغيّر واحد، وحدة أساس واحدة، ومكوّنات في `bundleComponents`.
   // التكلفة لن تُقرأ من costPrice (تُحسب لحظة البيع من مجموع مكوّناته)، والمخزون الافتتاحي يُتجاهَل (لا branchStock للبكج).
   isBundle?: boolean;
@@ -107,19 +120,22 @@ function composeProductName(input: { name?: string | null; productType?: string 
  */
 async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
   // الباركودات: الأساسيّ + البديل معاً — نفس فضاء التفرّد.
+  // التطبيع هنا هو **نفسه** الذي يُكتب به أدناه — كان الفحص يقلّم بينما الإدراج يكتب المُدخل خاماً،
+  // فيمرّ «10095 » بمسافةٍ من فحص التفرّد ثم يُحفَظ بها ولا يُمسَح أبداً (الجذر، ٤/٩).
   const codes: string[] = [];
   for (const v of input.variants) for (const u of v.units) {
-    const b = (u.barcode ?? "").trim();
+    const b = canonicalizeBarcodeInput(u.barcode ?? "");
     if (b) codes.push(b);
     for (const a of u.barcodeAliases ?? []) {
-      const ab = (a.barcode ?? "").trim();
+      const ab = canonicalizeBarcodeInput(a.barcode ?? "");
       if (ab) codes.push(ab);
     }
   }
   const seenCode = new Set<string>();
   for (const c of codes) {
-    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
-    seenCode.add(c);
+    const identities = barcodeIdentityCandidates(c).map(barcodeComparisonKey);
+    if (identities.some((identity) => seenCode.has(identity))) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
+    identities.forEach((identity) => seenCode.add(identity));
   }
   if (seenCode.size) {
     // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).
@@ -202,6 +218,20 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     if (input.isService || input.printService) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن أن يكون المنتج بكجاً وخدمةً في آنٍ معاً" });
     }
+    // Codex #1008 P2: البكج المُوجَّه لشبكة الطباعة (`showInPrintPos`) يُسمَّى `productType='PRINT_SERVICE'`
+    // (السطر أدناه) فيظهر في `listPrintServices`، ثمّ يسقط `createPrintSale` على `applyMovement` — البكج
+    // بلا مخزونٍ ذاتيّ (رصيدُه رصيدُ مكوّناته) فلا يقبل حركةً مباشرة. نرفض التركيبة عند الإنشاء كـ`printService`
+    // (المرفوض أعلاه) بدل ولادة بندٍ يَعِد بمخرَجٍ عاجزٍ عنه. الإصلاح النظير في مسار التعديل عبر حارس شكل البكج.
+    if (input.showInPrintPos) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "البكج لا يُعرَض في شبكة الطباعة",
+          why: "شبكةُ الطباعة تبيع خدماتٍ تُركَّب من وصفة، والبكج بلا مخزونٍ ذاتيّ يفشل بيعُه هناك عند تسجيل الحركة",
+          doThis: "أزل «العرض في شبكة الطباعة» عن البكج، أو أنشئه خدمةً بدل بكجٍ إن كان يُباع بالطباعة",
+        }),
+      });
+    }
     if (input.variants.length !== 1) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحوي متغيّراً واحداً — احذف المتغيّرات الإضافية" });
     }
@@ -229,9 +259,23 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     // نحترم false الصريحة حتى يكون البند نفسه ناتجاً مخزنياً قابلاً للشراء أو الإنتاج.
     // عند غياب isService نحافظ على التوافق السابق: بند الطباعة يكون بلا مخزون افتراضياً.
     const isService = input.isService ?? !!input.printService;
+    // «يُباع بالطلب» (0318): يُرفض على الخدمة/البكج/الأمانة برسالةٍ تشرح السبب، بدل ارتداد
+    // CHECK القاعدة بنصٍّ خامّ. الثلاثة بلا رصيدٍ ذاتيّ (أو رصيدُها ليس ملكاً لنا).
+    const allowBackorder = input.allowBackorder === true;
+    if (allowBackorder) {
+      if (isService)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على الخدمة — الخدمة بلا رصيد أصلاً فهي تُباع دائماً بلا فحص مخزون" });
+      if (isBundle)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» لا ينطبق على البكج — رصيده رصيد مكوّناته، فعِّله على المكوّن الناقص" });
+      if (input.isConsignment)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
+    }
+    // م٦: الظهورُ في شبكة الطباعة من `printService` (الإرث) أو من `showInPrintPos` الصريح (تناظر التعديل)؛
+    // كلاهما يُزامن `productType='PRINT_SERVICE'` كي لا يظهر بندٌ في الشبكة ثمّ يرفضه `createPrintSale`.
+    const showInPrintPos = !!input.printService || !!input.showInPrintPos;
     const pRes = await tx.insert(products).values({
       name: composedName,
-      productType: input.printService ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
+      productType: showInPrintPos ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
       brand: input.brand?.trim() || null,
       modelName: input.modelName?.trim() || null,
       description: input.description?.trim() || null,
@@ -245,11 +289,15 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
       isService,
+      allowBackorder,
       showInReception: !!input.showInReception,
       // 0262 (٢٤/٨): الرؤية في شبكة الطباعة صارت قراراً مستقلاً — يظلّ `printService` يوسم
       // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي
       // الوقتِ نفسه يُشعل `showInPrintPos=TRUE` كي تظهر الخدمةُ فوراً في الشبكة.
-      showInPrintPos: !!input.printService,
+      showInPrintPos,
+      // م٦: غيابُهما يُبقي افتراض المخطّط (التوصيات مفعَّلة، المنتج فعّال) — نمط PATCH كمسار التعديل.
+      ...(input.allowAutoCartRecommendations !== undefined ? { allowAutoCartRecommendations: input.allowAutoCartRecommendations } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       isBundle,
       isConsignment: !!input.isConsignment,
       consignorId: input.isConsignment ? (input.consignorId ?? null) : null,
@@ -290,7 +338,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           variantId,
           unitName: u.unitName,
           conversionFactor: u.conversionFactor,
-          barcode: u.barcode ?? null,
+          barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
           isBaseUnit: u.isBaseUnit ?? false,
           isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
         });
@@ -304,7 +352,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
         // باركودات بديلة تُدرَج ذرّياً في نفس المعاملة — تفرّدها تم التحقّق منه في assertCatalogUniqueness.
         for (const a of u.barcodeAliases ?? []) {
-          const code = (a.barcode ?? "").trim();
+          const code = canonicalizeBarcodeInput(a.barcode ?? "");
           if (!code) continue;
           await tx.insert(productUnitBarcodes).values({
             productUnitId,

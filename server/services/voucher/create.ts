@@ -1,6 +1,6 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
-import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { eq } from "drizzle-orm";
 import {
@@ -21,7 +21,10 @@ import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
-import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import {
+  assertNonPhysicalOutReceipt,
+  lockMaterializedCashReceiptSourceForWrite,
+} from "../cash/cashAvailability";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import type { Tx } from "../../db";
 import { type Actor, enqueuePostCommit, withTx } from "../tx";
@@ -767,7 +770,7 @@ export async function createVoucherTx(
       // حالة الفاتورة لاحقاً، وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج.
       if (
         options?.systemRequest?.kind !== "VOUCHER_CANCELLATION" &&
-        isDeadInvoiceStatus(inv.status)
+        isDeadInvoice(inv)
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -878,6 +881,14 @@ export async function createVoucherTx(
       operation: "إنشاء طلب سند صرف",
     });
   }
+  await lockMaterializedCashReceiptSourceForWrite(tx, {
+    branchId: input.branchId,
+    shiftId,
+    cashBucket,
+    paymentMethod: input.paymentMethod,
+    status: needsApproval ? "PENDING" : "COMPLETED",
+    approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
+  });
   const rRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     invoiceId:

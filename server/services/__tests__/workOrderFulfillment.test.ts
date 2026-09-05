@@ -46,6 +46,7 @@ async function seed() {
     { id: 1, openId: "local_mgr", name: "مدير", email: "mgr@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_c1", name: "كاشير ١", email: "c1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_c2", name: "كاشير ٢", email: "c2@t.test", role: "cashier", loginMethod: "local", branchId: 2 },
+    { id: 4, openId: "local_mgr2", name: "مدير اعتماد ثانٍ", email: "mgr2@t.test", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
 }
 
@@ -262,18 +263,32 @@ describe("updateWorkOrderDeliveryMethod — ردّ أمانة أجرة COUNTER �
     expect(await feeHeldNet(962)).toBe(5000); // لم تُردّ
 
     const res = await updateWorkOrderDeliveryMethod(
-      { workOrderId: 962, hasDelivery: false, deliveryAddress: null, confirmFeeRefund: true, refundShiftId: collShift.shiftId, authorizedByManager: true },
+      {
+        workOrderId: 962,
+        hasDelivery: false,
+        deliveryAddress: null,
+        confirmFeeRefund: true,
+        refundShiftId: collShift.shiftId,
+        approvedByManagerId: 1,
+      },
       CASHIER_B1,
     );
     expect((res as { refundedFee: string }).refundedFee).toBe("5000.00");
     expect(await feeHeldNet(962)).toBe(0);
   });
 
-  it("المدير يتجاوز الحوكمة (elevated) — يردّ حتى عبر ورديةٍ ليست له، مع تأكيد الصرف", async () => {
+  it("المدير المنفذ لا يعتمد نفسه — يردّ عبر وردية أخرى بعد اعتماد مدير ثانٍ", async () => {
     const collShift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, CASHIER_B1);
     await woWithCounterFee(963, collShift.shiftId, "5000.00", 2);
     const res = await updateWorkOrderDeliveryMethod(
-      { workOrderId: 963, hasDelivery: false, deliveryAddress: null, confirmFeeRefund: true, refundShiftId: collShift.shiftId },
+      {
+        workOrderId: 963,
+        hasDelivery: false,
+        deliveryAddress: null,
+        confirmFeeRefund: true,
+        refundShiftId: collShift.shiftId,
+        approvedByManagerId: 4,
+      },
       MANAGER_B1,
     );
     expect((res as { refundedFee: string }).refundedFee).toBe("5000.00");

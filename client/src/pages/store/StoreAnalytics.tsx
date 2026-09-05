@@ -26,8 +26,8 @@ function firstOfMonthBaghdad(): string {
 
 type Preset = "7" | "30" | "month";
 const PRESETS: { key: Preset; label: string; range: () => { fromYmd: string; toYmd: string } }[] = [
-  { key: "7", label: "آخر ٧ أيام", range: () => ({ fromYmd: ymdBaghdad(-6), toYmd: ymdBaghdad() }) },
-  { key: "30", label: "آخر ٣٠ يوماً", range: () => ({ fromYmd: ymdBaghdad(-29), toYmd: ymdBaghdad() }) },
+  { key: "7", label: "آخر 7 أيام", range: () => ({ fromYmd: ymdBaghdad(-6), toYmd: ymdBaghdad() }) },
+  { key: "30", label: "آخر 30 يوماً", range: () => ({ fromYmd: ymdBaghdad(-29), toYmd: ymdBaghdad() }) },
   { key: "month", label: "هذا الشهر", range: () => ({ fromYmd: firstOfMonthBaghdad(), toYmd: ymdBaghdad() }) },
 ];
 
@@ -185,7 +185,8 @@ function ConversionFunnel({ funnel, pct }: { funnel: { productViews: number; car
 }
 
 function Kpi({ icon: Icon, label, value, unit, hint, tone = "muted" }: { icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>; label: string; value: string; unit?: string; hint?: string; tone?: "primary" | "positive" | "danger" | "muted" }) {
-  const toneCls = tone === "primary" ? "text-primary" : tone === "positive" ? "text-emerald-600" : tone === "danger" ? "text-rose-600" : "text-foreground";
+  // ألوان الحالة من التوكنز الدلالية (تتنفّس مع الوضع الداكن) بدل emerald/rose الخام.
+  const toneCls = tone === "primary" ? "text-primary" : tone === "positive" ? "text-[var(--sem-pos)]" : tone === "danger" ? "text-[var(--sem-neg)]" : "text-foreground";
   return (
     <div className="rounded-2xl border border-border bg-card p-3">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">

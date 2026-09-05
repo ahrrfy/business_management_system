@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createPurchaseOrder, receivePurchase } from "../purchaseService";
+import { confirmPurchaseOrder, createPurchaseOrder, receivePurchase } from "../purchaseService";
+import { decidePurchaseOrderControl } from "../purchase/controls";
 import { createSale } from "../saleService";
 import { closeShift } from "../shiftService";
 
@@ -11,6 +13,7 @@ const actor = { userId: 1, branchId: 1, role: "admin" };
 const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "purchaseOrderEvents", "purchaseOrderControlRequests",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -33,7 +36,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "independent-manager", name: "مدير مستقل", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -47,6 +53,21 @@ async function setStock(variantId: number, branchId: number, qty: number) {
 async function openShift(branchId = 1, userId = 1): Promise<number> {
   const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
   return insertId(r);
+}
+
+async function approvePurchaseOrder(purchaseOrderId: number, expectedVersion: number) {
+  const request = await confirmPurchaseOrder({
+    purchaseOrderId,
+    expectedVersion,
+    clientRequestId: `financial-final-submit:${randomUUID()}`,
+    reason: "مراجعة أمر اختبار متوسط التكلفة قبل الاستلام",
+  }, actor);
+  await decidePurchaseOrderControl({
+    requestId: request.requestId,
+    decisionKey: `financial-final-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت الاستلام",
+  }, { userId: 2, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 }
 
 beforeEach(async () => {
@@ -88,9 +109,15 @@ describe("purchaseService — قفل branchStock قبل قراءة SUM (WAVG ل�
     await setStock(1, 1, 10); // ١٠ قطع برصيد قائم
     await db().update(s.productVariants).set({ costPrice: "4.00" }).where(eq(s.productVariants.id, 1));
     const po = await createPurchaseOrder(
-      { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" }] },
+      {
+        supplierId: 1,
+        branchId: 1,
+        clientRequestId: `financial-final-create:${randomUUID()}`,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" }],
+      },
       actor,
     );
+    await approvePurchaseOrder(po.purchaseOrderId, po.version);
     const it = (await db().select().from(s.purchaseOrderItems))[0];
     await receivePurchase(
       { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(it.id), receivedBaseQuantity: 10 }] },

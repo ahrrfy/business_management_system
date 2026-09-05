@@ -1,4 +1,6 @@
 import { CopyInline } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { FilterField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -29,6 +31,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
 import { Link } from "wouter";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
 const PREVIEW_ZOOM = 2.4; // تكبير المعاينة بصرياً للوضوح (المقاس الفعليّ صغير)
@@ -67,6 +70,7 @@ type QueueItem = {
 /** يبني عنصر قائمة الطباعة من صفّ الكتالوج — نقطة واحدة تلتقط كل حقوله ذات الأثر على الملصق.
  *  `rowTier` = الفئة التي جُلب بها هذا الصفّ فعلاً (يُثبَّت في `pricedTier`). */
 function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueItem {
+  const primaryBarcode = row.barcode ? canonicalizeBarcodeInput(row.barcode) || null : null;
   return {
     key,
     productId: row.productId,
@@ -78,14 +82,14 @@ function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueIt
     unitName: row.unitName,
     conversionFactor: row.conversionFactor,
     sku: row.sku,
-    barcode: row.barcode ?? internalBarcode(row.productUnitId),
-    primaryBarcode: row.barcode,
+    barcode: primaryBarcode ?? internalBarcode(row.productUnitId),
+    primaryBarcode,
     price: row.price,
     pricedTier: rowTier,
     promoPrice: row.promotionEffectivePrice,
     promotionName: row.promotionName,
     stockBase: row.stockBase,
-    saved: !!row.barcode,
+    saved: primaryBarcode != null,
     count: 1,
   };
 }
@@ -120,7 +124,8 @@ function renderItemFor(q: QueueItem, tier: LabelTier): LabelRenderItem {
       price: q.price,
       promotionEffectivePrice: q.promoPrice,
     },
-    q.barcode,
+    // لا نطبع أرقاماً عربية أو framing إرثياً، مع إبقاء المسافات الداخلية في Code39 حرفياً.
+    canonicalizeBarcodeInput(q.barcode),
     tier,
   );
 }
@@ -138,7 +143,13 @@ function loadQueueDraft(): QueueItem[] {
     const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as QueueItem[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed as QueueItem[]).map((item) => ({
+          ...item,
+          barcode: canonicalizeBarcodeInput(item.barcode),
+          primaryBarcode: item.primaryBarcode ? canonicalizeBarcodeInput(item.primaryBarcode) || null : null,
+        }))
+      : [];
   } catch {
     return [];
   }
@@ -481,13 +492,15 @@ export default function BarcodeLabels() {
 
   // Enter في حقل البحث: نتيجة وحيدة ⇒ تُضاف، وإلا نحاول حلّ الباركود حرفياً.
   async function tryResolveBarcode(code: string) {
-    const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-    if (!looksLikeBarcode) return false;
+    // Enter/المسح فعلٌ صريح؛ لا نحصر هوية المورد في regex أضيق من عقد barcodeString
+    // (Code39/128 يسمحان بـ`.` و`$` و`/` و`+` و`%` والمسافة الداخلية).
+    const clean = canonicalizeBarcodeInput(code);
+    if (!clean || clean.length > 64) return false;
     if (branchId == null) { setError("اختر الفرع أولاً."); return false; }
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      const row = await utils.catalog.byBarcode.fetch({ barcode: clean, branchId, tier });
       if (row) { addRow(row); return true; }
-      setError(`الباركود غير معروف: ${code}`);
+      setError(`الباركود غير معروف: ${clean}`);
     } catch {
       setError("تعذّر الاتصال بالخادم");
     }
@@ -527,10 +540,17 @@ export default function BarcodeLabels() {
   function barcodeOptions(q: QueueItem): Array<{ code: string; label: string }> {
     const alts = aliasMap[q.productUnitId] ?? [];
     const opts: Array<{ code: string; label: string }> = [];
-    if (q.primaryBarcode) opts.push({ code: q.primaryBarcode, label: "أساسيّ" });
-    for (const a of alts) opts.push({ code: a.barcode, label: a.note?.trim() || "بديل" });
-    if (!opts.some((o) => o.code === q.barcode)) {
-      opts.unshift({ code: q.barcode, label: q.saved ? "محفوظ" : "داخليّ غير محفوظ" });
+    const primary = canonicalizeBarcodeInput(q.primaryBarcode ?? "");
+    if (primary) opts.push({ code: primary, label: "أساسيّ" });
+    for (const a of alts) {
+      const code = canonicalizeBarcodeInput(a.barcode);
+      if (code && !opts.some((option) => option.code === code)) {
+        opts.push({ code, label: a.note?.trim() || "بديل" });
+      }
+    }
+    const selected = canonicalizeBarcodeInput(q.barcode);
+    if (selected && !opts.some((o) => o.code === selected)) {
+      opts.unshift({ code: selected, label: q.saved ? "محفوظ" : "داخليّ غير محفوظ" });
     }
     return opts;
   }
@@ -538,8 +558,10 @@ export default function BarcodeLabels() {
   /** اختيار الباركود المطبوع. `saved` يتبع الواقع: البديل محفوظٌ في القاعدة ⇒ يمسحه الكاشير. */
   function pickBarcode(q: QueueItem, code: string) {
     const alts = aliasMap[q.productUnitId] ?? [];
-    const inDb = code === q.primaryBarcode || alts.some((a) => a.barcode === code);
-    patch(q.key, { barcode: code, saved: inDb });
+    const clean = canonicalizeBarcodeInput(code);
+    const inDb = clean === canonicalizeBarcodeInput(q.primaryBarcode ?? "")
+      || alts.some((a) => canonicalizeBarcodeInput(a.barcode) === clean);
+    patch(q.key, { barcode: clean, saved: inDb });
   }
   const remove = (key: number) => setQueue((prev) => prev.filter((q) => q.key !== key));
   function commitCount(key: number) {
@@ -642,12 +664,11 @@ export default function BarcodeLabels() {
         actions={
           <div className="flex items-center gap-3">
             {canPickBranch && (
-              <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                الفرع (يصحّح المخزون المعروض):
-                <select
+              <FilterField label="الفرع" hint="يصحّح المخزون المعروض" className="w-44">
+                <AppSelect
+                  className="h-8"
                   value={pickedBranch === "" ? "" : String(pickedBranch)}
-                  onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
-                  className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground"
+                  onValueChange={(v) => setPickedBranch(v === "" ? "" : Number(v))}
                 >
                   <option value="">
                     {me.data?.branchId != null ? "— فرعي —" : "— اختر —"}
@@ -655,8 +676,8 @@ export default function BarcodeLabels() {
                   {(branchesQ.data ?? []).map((b) => (
                     <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                   ))}
-                </select>
-              </label>
+                </AppSelect>
+              </FilterField>
             )}
             <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
           </div>
@@ -898,6 +919,8 @@ export default function BarcodeLabels() {
             )}
           </div>
 
+          {/* شبكةُ تحرير لا عرض: كل صفٍّ يحمل عدّاد ملصقاتٍ ومنتقي باركودٍ وزرَّ حذف —
+              `DataTable` أداةُ عرضٍ فيبقى طابور الطباعة خامّاً عن قصد. */}
           <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
@@ -914,7 +937,7 @@ export default function BarcodeLabels() {
                 {queue.map((q) => {
                   let preview = "";
                   try {
-                    preview = productBarcodeSvg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
+                    preview = productBarcodeSvg(canonicalizeBarcodeInput(q.barcode), { moduleWidth: 1.4, height: 34, showText: false }).svg;
                   } catch {
                     preview = "";
                   }
@@ -937,18 +960,18 @@ export default function BarcodeLabels() {
                           {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
                           {/* وحدةٌ بعدّة باركودات (مصنّعيّ + داخليّ) ⇒ اختر أيّها يُطبع. يظهر فقط حين يوجد خيار. */}
                           {barcodeOptions(q).length > 1 && (
-                            <select
+                            <AppSelect
                               dir="ltr"
-                              className="h-8 rounded-md border bg-background px-1 text-xs font-mono"
+                              className="h-8 px-1 text-xs font-mono"
                               value={q.barcode}
-                              onChange={(e) => pickBarcode(q, e.target.value)}
+                              onValueChange={(v) => pickBarcode(q, v)}
                               aria-label={`الباركود المطبوع لـ${q.productName}`}
                               title="اختر أيّ باركود يُطبع على الملصق"
                             >
                               {barcodeOptions(q).map((o) => (
                                 <option key={o.code} value={o.code}>{o.code} — {o.label}</option>
                               ))}
-                            </select>
+                            </AppSelect>
                           )}
                         </div>
                       </td>

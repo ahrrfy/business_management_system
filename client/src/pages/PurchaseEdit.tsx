@@ -14,15 +14,27 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { Landmark, Truck } from "lucide-react";
-import { isWithinPriceDecimals, priceDecimalsMessage } from "@shared/moneyPrecision";
+import {
+  isWithinPriceDecimals,
+  priceDecimalsFor,
+  priceDecimalsMessage,
+} from "@shared/moneyPrecision";
 import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import {
+  copyInvoiceItems,
+  hasInvoiceTransfer,
+  takeInvoiceItems,
+} from "@/lib/invoiceTransfer";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import {
   ActionButtons,
   BulkPicker,
@@ -33,6 +45,7 @@ import {
   SupplierInvoiceMatch,
   TermsAndNotes,
   TotalsPanel,
+  calcLineTotal,
   calcTotals,
   createInitialState,
   deriveDocumentTotal,
@@ -84,7 +97,10 @@ type PurchaseOrderData = NonNullable<RouterOutputs["purchases"]["get"]>;
  * بسعر التثبيت، فإعادةُ عرض السعر الدينارّي في محرّرٍ عملتُه USD كانت ستُضاعف التحويل عند
  * الحفظ (السعر × السعر). لذلك نعيد `usdUnitPrice` للأمر الدولاريّ و`unitPrice` للدينارّي.
  */
-function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceState {
+function stateFromOrder(
+  order: PurchaseOrderData,
+  branchId: number,
+): InvoiceState {
   const base = createInitialState(INVOICE_TYPE, branchId);
   const isUsd = order.agreedCurrency === "USD";
   const items: InvoiceLine[] = order.items.map((it) => {
@@ -98,7 +114,8 @@ function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceStat
       productId: Number(it.productId ?? 0),
       variantId: Number(it.variantId),
       productUnitId: Number(it.productUnitId),
-      name: [it.productName, it.variantName].filter(Boolean).join(" — ") || "صنف",
+      name:
+        [it.productName, it.variantName].filter(Boolean).join(" — ") || "صنف",
       sku: it.sku ?? "",
       barcode: it.barcode ?? null,
       unit: it.unitName ?? "",
@@ -142,7 +159,12 @@ function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceStat
 }
 
 /** بصمة ما يُرسَل فعلاً في الحفظ — لا كامل الحالة (حقولٌ عرضية كالفئة لا تُحفَظ في أمر الشراء). */
-function editorFingerprint(state: InvoiceState, shippingCost: string, customsCost: string): string {
+function editorFingerprint(
+  state: InvoiceState,
+  shippingCost: string,
+  customsCost: string,
+  revisionReason: string,
+): string {
   return JSON.stringify({
     entityId: state.entityId,
     currency: state.currency,
@@ -155,7 +177,13 @@ function editorFingerprint(state: InvoiceState, shippingCost: string, customsCos
     taxRatePercent: state.taxRatePercent,
     shippingCost,
     customsCost,
-    items: state.items.map((l) => [l.variantId, l.productUnitId, l.qty, l.price]),
+    revisionReason,
+    items: state.items.map((l) => [
+      l.variantId,
+      l.productUnitId,
+      l.qty,
+      l.price,
+    ]),
   });
 }
 
@@ -172,9 +200,12 @@ export default function PurchaseEdit() {
   );
   trpc.suppliers.list.useQuery(); // تدفئة كاش EntityPicker (نفس PurchaseNew)
 
-  const [state, dispatch] = useReducer(invoiceReducer, undefined, () => createInitialState(INVOICE_TYPE, 1));
+  const [state, dispatch] = useReducer(invoiceReducer, undefined, () =>
+    createInitialState(INVOICE_TYPE, 1),
+  );
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
+  const [revisionReason, setRevisionReason] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
   const [baseline, setBaseline] = useState<string | null>(null);
@@ -186,18 +217,22 @@ export default function PurchaseEdit() {
     if (hydratedRef.current || !po.data) return;
     hydratedRef.current = true;
     const next = stateFromOrder(po.data, Number(po.data.branchId));
-    const ship = D(po.data.shippingCost ?? 0).gt(0) ? String(po.data.shippingCost) : "";
-    const customs = D(po.data.customsCost ?? 0).gt(0) ? String(po.data.customsCost) : "";
+    const ship = D(po.data.shippingCost ?? 0).gt(0)
+      ? String(po.data.shippingCost)
+      : "";
+    const customs = D(po.data.customsCost ?? 0).gt(0)
+      ? String(po.data.customsCost)
+      : "";
     dispatch({ type: "REPLACE_STATE", state: next });
     setShippingCost(ship);
     setCustomsCost(customs);
-    setBaseline(editorFingerprint(next, ship, customs));
+    setBaseline(editorFingerprint(next, ship, customs, ""));
   }, [po.data]);
 
   // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
   const fingerprint = useMemo(
-    () => editorFingerprint(state, shippingCost, customsCost),
-    [state, shippingCost, customsCost],
+    () => editorFingerprint(state, shippingCost, customsCost, revisionReason),
+    [state, shippingCost, customsCost, revisionReason],
   );
   useUnsavedGuard(baseline != null && baseline !== fingerprint);
   // البصمة لحظة نجاح الحفظ تُقرأ من ref لا من إغلاق الطفرة (قد يكون من رسمٍ أقدم).
@@ -214,23 +249,44 @@ export default function PurchaseEdit() {
     const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
     const next = round2(gross.minus(D(neededNet)));
     if (next.isNegative()) {
-      notify.warn("فاتورة المورّد أعلى من مجموع البنود — الخصم لا يُصلحها؛ راجع البنود الناقصة.");
+      notify.warn(
+        "فاتورة المورّد أعلى من مجموع البنود — الخصم لا يُصلحها؛ راجع البنود الناقصة.",
+      );
       return;
     }
-    dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
-    dispatch({ type: "SET_FIELD", field: "globalDiscount", value: next.toFixed(2) });
-    notify.ok(`سُجّل الفرق خصمَ فاتورةٍ بمقدار ${next.toFixed(2)} — يُوزَّع على البنود بنسبة قيمتها.`);
+    dispatch({
+      type: "SET_FIELD",
+      field: "globalDiscountType",
+      value: "amount",
+    });
+    dispatch({
+      type: "SET_FIELD",
+      field: "globalDiscount",
+      value: next.toFixed(2),
+    });
+    notify.ok(
+      `سُجّل الفرق خصمَ فاتورةٍ بمقدار ${next.toFixed(2)} — يُوزَّع على البنود بنسبة قيمتها.`,
+    );
   }
 
   const insightItems = useMemo(
-    () => Array.from(new Map(state.items.map((item) => [
-      `${item.variantId}:${item.productUnitId}`,
-      { variantId: item.variantId, productUnitId: item.productUnitId },
-    ])).values()),
+    () =>
+      Array.from(
+        new Map(
+          state.items.map((item) => [
+            `${item.variantId}:${item.productUnitId}`,
+            { variantId: item.variantId, productUnitId: item.productUnitId },
+          ]),
+        ).values(),
+      ),
     [state.items],
   );
   const priceInsights = trpc.purchases.priceInsights.useQuery(
-    { branchId: state.branchId, supplierId: state.entityId ?? undefined, items: insightItems },
+    {
+      branchId: state.branchId,
+      supplierId: state.entityId ?? undefined,
+      items: insightItems,
+    },
     { enabled: state.branchId > 0 && insightItems.length > 0 },
   );
 
@@ -259,7 +315,9 @@ export default function PurchaseEdit() {
     const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
     const raw = safeMoney(state.globalDiscount || "0");
     const amount =
-      state.globalDiscountType === "percent" ? round2(gross.times(raw).dividedBy(100)) : round2(raw);
+      state.globalDiscountType === "percent"
+        ? round2(gross.times(raw).dividedBy(100))
+        : round2(raw);
     if (amount.isNegative()) return D(0);
     return amount.gt(gross) ? gross : amount;
   }, [state.items, state.globalDiscount, state.globalDiscountType]);
@@ -271,7 +329,12 @@ export default function PurchaseEdit() {
         state.taxEnabled ? state.taxRatePercent || "0" : "0",
         invoiceDiscountAmount.toFixed(2),
       ),
-    [state.items, state.taxEnabled, state.taxRatePercent, invoiceDiscountAmount],
+    [
+      state.items,
+      state.taxEnabled,
+      state.taxRatePercent,
+      invoiceDiscountAmount,
+    ],
   );
 
   // نفس معاينة PurchaseNew: الشحن/الكمرك **خارج** الإجمالي (مصروف نقلٍ لا ذمّة مورّد).
@@ -284,24 +347,42 @@ export default function PurchaseEdit() {
     // التعليق المفصَّل في PurchaseNew: «المعروض = المحفوظ» شرطُ ألّا يدفع المالك ما لم يُحفَظ.
     // الخصم فاتوريّ: نطبّق نسبته على كلّ سطرٍ قبل الترجمة تماماً كما يفعل `allocateByValue`.
     const grossDoc = D(docTotals.grossSubtotal);
-    const netRatio = grossDoc.gt(0) ? D(docTotals.subtotal).dividedBy(grossDoc) : D(1);
+    const netRatio = grossDoc.gt(0)
+      ? D(docTotals.subtotal).dividedBy(grossDoc)
+      : D(1);
     const goodsIqd =
       state.currency === "USD"
         ? round2(
             state.items.reduce(
               (acc, l) =>
                 acc.plus(
-                  round2(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(netRatio)).times(rate)),
+                  round2(
+                    round2(
+                      round2(safeMoney(l.price).times(D(l.qty || 0))).times(
+                        netRatio,
+                      ),
+                    ).times(rate),
+                  ),
                 ),
               D(0),
             ),
           )
         : round2(sourceSubtotal.times(rate));
     const taxIqd = state.taxEnabled
-      ? round2(goodsIqd.times(safeMoney(state.taxRatePercent || "0")).dividedBy(100))
+      ? round2(
+          goodsIqd.times(safeMoney(state.taxRatePercent || "0")).dividedBy(100),
+        )
       : D(0);
     const grand = round2(goodsIqd.plus(taxIqd));
-    return { sum, goodsIqd, taxIqd, grand, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
+    return {
+      sum,
+      goodsIqd,
+      taxIqd,
+      grand,
+      rate,
+      hasLanded: sum.gt(0),
+      hasBase: goodsIqd.gt(0),
+    };
   }, [
     shippingCost,
     customsCost,
@@ -353,6 +434,9 @@ export default function PurchaseEdit() {
   }
 
   function validate(): string | null {
+    if (revisionReason.trim().length < 3) {
+      return "اكتب سبب المراجعة (3 محارف على الأقل) كي يظهر التغيير في سجل أمر الشراء.";
+    }
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     for (const l of state.items) {
@@ -389,21 +473,34 @@ export default function PurchaseEdit() {
     }
     update.mutate({
       purchaseOrderId,
+      expectedVersion: Number(po.data?.version),
+      revisionReason: revisionReason.trim(),
       supplierId: state.entityId!,
-      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
+      taxRatePercent: state.taxEnabled
+        ? round2(D(state.taxRatePercent || "0")).toFixed(2)
+        : "0",
       notes: state.notes.trim() || undefined,
       agreedCurrency: state.currency,
       // نظير createOrder: لا نُرسل usdTotal — الخادم يشتقّه من البنود بترتيب تقريبٍ محدَّد،
       // وإرسالُ إجماليٍّ مشتقٍّ من أسعارٍ كاملة الدقّة يُفشل حارسَ المطابقة بفرق تقريبٍ بحت.
-      agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      agreedRate:
+        state.currency === "USD"
+          ? safeMoney(state.agreedRate).toFixed(4)
+          : undefined,
       // خصم فاتورة المورّد (0204): يُرسَل بعملة الأمر ويُوزّعه الخادم بنسبة القيمة.
-      invoiceDiscount: invoiceDiscountAmount.gt(0) ? invoiceDiscountAmount.toFixed(2) : undefined,
+      invoiceDiscount: invoiceDiscountAmount.gt(0)
+        ? invoiceDiscountAmount.toFixed(2)
+        : undefined,
       // مطابقة فاتورة المورّد (نظير الإنشاء): الخادم يرفض حفظ تعديلٍ يخالف قيمة المستند.
       supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
         ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
         : undefined,
-      shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
-      customsCost: safeMoney(customsCost).gt(0) ? round2(safeMoney(customsCost)).toFixed(2) : undefined,
+      shippingCost: safeMoney(shippingCost).gt(0)
+        ? round2(safeMoney(shippingCost)).toFixed(2)
+        : undefined,
+      customsCost: safeMoney(customsCost).gt(0)
+        ? round2(safeMoney(customsCost)).toFixed(2)
+        : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -416,13 +513,180 @@ export default function PurchaseEdit() {
     });
   }
 
+  /**
+   * طباعة أمر الشراء بمستند A4 بهوية النظام بدل `window.print()` الخام.
+   *
+   * الخام كان يطبع الصفحة كما هي: أزرار الأدوات وحقول الإدخال وشريط الاختصارات مع البنود،
+   * وبلا رسالةٍ حين يحجب المتصفّح النافذة المنبثقة. `printReportDoc` يوحّد الثلاثة.
+   *
+   * المحتوى **هو المعروض نفسه** لا أكثر: أعمدة `ProductTable` في وضع الشراء (باركود · منتج ·
+   * وحدة · سعر الشراء · الكمية · الإجمالي · المعادل د.ع للأمر الدولاريّ)، ثمّ لوحة المبالغ،
+   * ثمّ بطاقة الشحن/الكمرك وتنويهها بنفس شرط ظهورها على الشاشة.
+   *
+   * عمود «المخزون» وحده مُقصىً عمداً: `stateFromOrder` يضع `stockBase: 0` لكلّ سطر لأنّ لقطة
+   * الأمر لا تحمل الرصيد (تعليقُه في مكانه) ⇒ طباعتُه تُثبِّت صفراً كاذباً في ورقةٍ تُسلَّم.
+   */
+  function printOrder() {
+    const data = po.data;
+    if (!data) return;
+    if (state.items.length === 0) {
+      notify.warn("لا توجد بنود لطباعتها.");
+      return;
+    }
+    const usd = state.currency === "USD";
+    const priceSym = usd ? "$" : "د.ع";
+    const rate = safeMoney(state.agreedRate);
+    // نفس شرط عمود «المعادل د.ع» في ProductTable — لا يظهر إلا حيث يظهر على الشاشة.
+    const showIqdEquivalent = usd && rate.gt(0);
+
+    // ⚠️ `fmtAr` يقصّ إلى منزلتين، وسعر الوحدة الدولاريّ أربع (§دقّة سعر الوحدة = دقّة العملة)
+    // ⇒ تنسيقٌ يجمع الآلاف بأرقامٍ لاتينية مع الاحتفاظ بدقّة العملة. القيمة مقرَّبةٌ سلفاً
+    // بـ`toUnitPriceStr` فالتحويل هنا عرضٌ محض لا حساب.
+    // و`safeMoney` **إلزاميّ** لا احتياط: `InlineNumberInput` يمرّر «» و«.» أثناء الكتابة
+    // (سطر 97 في ProductTable) ⇒ `D()` الخام يرمي، وطباعةٌ ترمي أثناء تحرير سعرٍ تُسقط
+    // المحرّر وتُضيّع تعديلاً غير محفوظ — و`window.print()` التي نستبدلها لم تكن تفعل ذلك.
+    const priceDp = priceDecimalsFor(state.currency);
+    const fmtPrice = (v: string) =>
+      Number(
+        toUnitPriceStr(safeMoney(v).toString(), state.currency),
+      ).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: priceDp });
+
+    const rows = state.items.map((l) => {
+      const lineTotal = calcLineTotal(l);
+      return {
+        barcode: l.barcode ?? "—",
+        name: l.name,
+        unit: l.unit || "—",
+        // Codex #980 (٤/٩/٢٦) — Finding 3: `l.price` وحده لا `costBase || price`. الأخيرُ كان
+        // يُخالف ما يعرضه محرّرُ الشاشة نفسه (خليّة السعر تعرض `item.price` وتكتب فيه، و
+        // `costBase` مرجعُ الأساس لا يُمَسّ من التحرير). بعد تعديلٍ يدويٍّ للسعر: الشاشةُ والحمولةُ
+        // تحملان القيمةَ الجديدة بينما الطباعة تُخرج الأصلَ ⇒ ورقةُ المورّد لا تطابق ما وقّعه
+        // المستخدم. الآن تُطبع القيمةُ نفسها التي رآها وحفظها.
+        price: fmtPrice(l.price),
+        qty: fmtAr(safeMoney(String(l.qty)).toString()),
+        total: fmtAr(lineTotal),
+        iqd: showIqdEquivalent
+          ? fmtAr(round2(D(lineTotal).times(rate)).toFixed(2))
+          : "",
+      };
+    });
+
+    // ملخّص المبالغ = لوحة `TotalsPanel` المعروضة سطراً بسطر (بعملة الأمر)، يليها بطاقة
+    // الدولار حين تظهر. شريط الإجمالي الأخضر في `docSummary` يكتب «د.ع» ثابتاً ⇒ آخر عنصرٍ
+    // يجب أن يكون ديناريّاً دائماً: للأمر الدولاريّ هو «التكلفة بالدينار» من بطاقة الدولار.
+    const summary = [
+      { label: `المجموع الفرعي (${priceSym})`, value: fmtAr(totals.subtotal) },
+      ...(invoiceDiscountAmount.gt(0)
+        ? [
+            {
+              label: `خصم فاتورة المورّد (${priceSym})`,
+              value: `− ${fmtAr(invoiceDiscountAmount.toFixed(2))}`,
+            },
+          ]
+        : []),
+      ...(D(totals.totalTax).gt(0)
+        ? [
+            {
+              label: `الضريبة (${fmtAr(state.taxRatePercent || "0")}%) (${priceSym})`,
+              value: fmtAr(totals.totalTax),
+            },
+          ]
+        : []),
+      ...(usd
+        ? [
+            { label: "الإجمالي النهائي ($)", value: `${fmtAr(docTotals.total)} $` },
+            ...(rate.gt(0)
+              ? [{ label: "سعر التثبيت", value: `${fmtAr(state.agreedRate)} د.ع/$` }]
+              : []),
+          ]
+        : []),
+      {
+        label: usd ? "التكلفة بالدينار" : "الإجمالي النهائي",
+        value: fmtAr(landed.grand.toFixed(2)),
+        bold: true,
+        large: true,
+      },
+    ];
+
+    const orderFields = [
+      { label: "رقم الأمر", value: state.invoiceNumber || "—" },
+      { label: "الحالة", value: PO_STATUS[data.status] ?? data.status },
+      { label: "العملة", value: usd ? "دولار أمريكي" : "دينار عراقي" },
+      ...(usd && rate.gt(0)
+        ? [{ label: "سعر التثبيت", value: `${fmtAr(state.agreedRate)} د.ع/$` }]
+        : []),
+      ...(safeMoney(shippingCost).gt(0)
+        ? [{ label: "الشحن (خارج الإجمالي)", value: `${fmtAr(shippingCost)} د.ع` }]
+        : []),
+      ...(safeMoney(customsCost).gt(0)
+        ? [{ label: "الكمرك (خارج الإجمالي)", value: `${fmtAr(customsCost)} د.ع` }]
+        : []),
+      ...(state.notes.trim()
+        ? [{ label: "ملاحظات", value: state.notes.trim() }]
+        : []),
+      ...((state.terms ?? "").trim()
+        ? [{ label: "الشروط والأحكام", value: (state.terms ?? "").trim() }]
+        : []),
+    ];
+
+    printReportDoc({
+      title: "أمر شراء",
+      docNum: state.invoiceNumber || null,
+      docDate: fmtDate(data.orderDate),
+      // نفس تنويه بطاقة الشحن/الكمرك وبنفس شرط ظهوره على الشاشة بالضبط.
+      note:
+        landed.hasLanded && landed.hasBase
+          ? "الشحن والكمرك لا يُضافان إلى ذمّة المورّد ولا إلى تكلفة الصنف — يُسجَّلان مصروف نقلٍ على الشركة لحظة الاستلام."
+          : undefined,
+      meta: [
+        {
+          title: "معلومات المورد",
+          fields: [{ label: "الاسم", value: data.supplierName ?? "—" }],
+        },
+        { title: "تفاصيل الأمر", fields: orderFields },
+      ],
+      columns: [
+        { key: "barcode", label: "الباركود", width: "24mm", align: "center" },
+        { key: "name", label: "المنتج" },
+        { key: "unit", label: "الوحدة", width: "16mm", align: "center" },
+        {
+          key: "price",
+          label: `سعر الشراء ${priceSym}`,
+          width: "24mm",
+          align: "left",
+        },
+        { key: "qty", label: "الكمية", width: "16mm", align: "center" },
+        {
+          key: "total",
+          label: `الإجمالي ${priceSym}`,
+          width: "26mm",
+          align: "left",
+          bold: true,
+        },
+        ...(showIqdEquivalent
+          ? [
+              {
+                key: "iqd",
+                label: "المعادل د.ع",
+                width: "26mm",
+                align: "left" as const,
+              },
+            ]
+          : []),
+      ],
+      rows,
+      summary,
+      orientation: showIqdEquivalent ? "landscape" : "portrait",
+    });
+  }
+
   function handleAction(kind: InvoiceActionKind) {
     switch (kind) {
       case "save":
         handleSubmit();
         return;
       case "print":
-        window.print();
+        printOrder();
         return;
       case "duplicate":
         if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
@@ -454,7 +718,9 @@ export default function PurchaseEdit() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "F2") {
         e.preventDefault();
-        containerRef.current?.querySelector<HTMLInputElement>('input[aria-label="بحث المنتجات"]')?.focus();
+        containerRef.current
+          ?.querySelector<HTMLInputElement>('input[aria-label="بحث المنتجات"]')
+          ?.focus();
         return;
       }
       if (e.key === "F4") {
@@ -464,7 +730,7 @@ export default function PurchaseEdit() {
       }
       if (e.key === "F9") {
         e.preventDefault();
-        window.print();
+        printOrder();
         return;
       }
       if (e.key === "Escape" && bulkOpen) setBulkOpen(false);
@@ -501,24 +767,39 @@ export default function PurchaseEdit() {
   const order = po.data;
   const received = order.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0);
   const terminal = order.status === "RECEIVED" || order.status === "CANCELLED";
+  const confirmed = order.status === "CONFIRMED";
+  const submitted = order.status === "SENT";
   const paid = D(order.paidAmount ?? 0).gt(0) || D(order.paidUsd ?? 0).gt(0);
   // مرآةُ حرّاس الخادم: نُبيّن السبب قبل الإدخال بدل رفضٍ حتميّ بعد ملء النموذج.
-  const blockedReason = terminal
-    ? `أمر الشراء ${PO_STATUS[order.status] ?? order.status} — لا يُعدَّل بعد ذلك. استعمل مرتجع شراء أو أنشئ أمراً جديداً.`
-    : received
-      ? "استُلمت بضاعة من هذا الأمر — التعديل بعد الاستلام يُغيّر مخزوناً وذمّةً مُرحَّلَين. استعمل مرتجع شراء."
-      : paid
-        ? "على هذا الأمر دفعة مسجَّلة للمورّد — لا يُعدَّل قبل تسوية الدفعة."
-        : null;
+  const blockedReason = submitted
+    ? "أمر الشراء مُرسل للاعتماد. انتظر قرار المراجع؛ عند الرفض يعود مسودة قابلة للتعديل."
+    : confirmed
+      ? "أمر الشراء معتمد وغير قابل للتعديل — أنشئ أمراً جديداً، أو استعمل مرتجع شراء بعد الاستلام."
+      : terminal
+        ? `أمر الشراء ${PO_STATUS[order.status] ?? order.status} — لا يُعدَّل بعد ذلك. استعمل مرتجع شراء أو أنشئ أمراً جديداً.`
+        : received
+          ? "استُلمت بضاعة من هذا الأمر — التعديل بعد الاستلام يُغيّر مخزوناً وذمّةً مُرحَّلَين. استعمل مرتجع شراء."
+          : paid
+            ? "على هذا الأمر دفعة مسجَّلة للمورّد — لا يُعدَّل قبل تسوية الدفعة."
+            : null;
   if (blockedReason) {
     return (
       <div className="space-y-4">
-        <EmptyState title={`تعذّر تعديل أمر الشراء ${order.poNumber}`} description={blockedReason} />
+        <EmptyState
+          title={`تعذّر تعديل أمر الشراء ${order.poNumber}`}
+          description={blockedReason}
+        />
         <div className="flex justify-center gap-2">
-          <Link href={`/purchases/${purchaseOrderId}`} className="text-sm font-semibold text-primary hover:underline">
+          <Link
+            href={`/purchases/${purchaseOrderId}`}
+            className="text-sm font-semibold text-primary hover:underline"
+          >
             عرض تفاصيل الأمر
           </Link>
-          <Link href="/purchases" className="text-sm font-semibold text-muted-foreground hover:text-foreground">
+          <Link
+            href="/purchases"
+            className="text-sm font-semibold text-muted-foreground hover:text-foreground"
+          >
             رجوع للمشتريات
           </Link>
         </div>
@@ -534,16 +815,26 @@ export default function PurchaseEdit() {
         title={
           <span className="flex items-center gap-2">
             <span>تعديل {meta.label}</span>
-            <span className="font-mono text-sm font-semibold text-muted-foreground" dir="ltr">{order.poNumber}</span>
+            <span
+              className="font-mono text-sm font-semibold text-muted-foreground"
+              dir="ltr"
+            >
+              {order.poNumber}
+            </span>
           </span>
         }
-        icon={(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-5 text-primary" />; })()}
+        icon={(() => {
+          const MIcon = meta.icon;
+          return <MIcon aria-hidden className="size-5 text-primary" />;
+        })()}
         backHref={`/purchases/${purchaseOrderId}`}
         backLabel="رجوع للأمر"
         actions={
           <span className="hidden text-xs font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
-            <span className="font-extrabold text-foreground" dir="ltr">{landed.grand.toFixed(2)}</span>{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">
+              {fmtAr(landed.grand.toFixed(2))}
+            </span>{" "}
             د.ع
           </span>
         }
@@ -570,7 +861,9 @@ export default function PurchaseEdit() {
             purchaseRate={state.agreedRate}
             purchasePriceInsights={priceInsights.data}
             onOpenBulkPicker={() => setBulkOpen(true)}
-            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+            onNotify={(msg, kind) =>
+              kind === "error" ? notify.err(msg) : notify.info(msg)
+            }
           />
           <BulkPicker
             open={bulkOpen}
@@ -579,6 +872,9 @@ export default function PurchaseEdit() {
             invoiceType={INVOICE_TYPE}
             branchId={state.branchId}
             tier={state.tier}
+            // Codex #980: عملة الأمر وسعرُ تثبيته لتقدير سعر وحدة الصفّ بالدولار عند الإضافة الجماعية.
+            purchaseCurrency={state.currency}
+            purchaseAgreedRate={state.agreedRate}
           />
         </div>
 
@@ -586,8 +882,12 @@ export default function PurchaseEdit() {
           <section className="overflow-hidden rounded-xl border bg-card">
             <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
               <Truck aria-hidden className="size-5" />
-              <span className="text-sm font-extrabold">تكلفة الشحن والكمرك</span>
-              <span className="ms-auto text-[11px] font-semibold text-muted-foreground">اختياري</span>
+              <span className="text-sm font-extrabold">
+                تكلفة الشحن والكمرك
+              </span>
+              <span className="ms-auto text-[11px] font-semibold text-muted-foreground">
+                اختياري
+              </span>
             </header>
             <div className="space-y-2 px-4 py-3">
               <label className="flex items-center justify-between gap-2">
@@ -614,8 +914,11 @@ export default function PurchaseEdit() {
               </label>
               {landed.hasLanded && landed.hasBase && (
                 <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
-                  <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
-                  على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
+                  <strong>
+                    لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.
+                  </strong>{" "}
+                  تُسجَّل مصروف نقلٍ على الشركة لحظة الاستلام (يظهر في المصروفات
+                  والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
                 </div>
               )}
               {landed.hasLanded && !landed.hasBase && (
@@ -636,26 +939,59 @@ export default function PurchaseEdit() {
             overrideDiscountAmount={invoiceDiscountAmount.toFixed(2)}
             showPayment={false}
             showTaxToggle
-            overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
+            overrideGrandTotal={
+              state.currency === "USD"
+                ? docTotals.total
+                : landed.grand.toFixed(2)
+            }
           />
           <SupplierInvoiceMatch
-            derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
+            derivedTotal={
+              state.currency === "USD"
+                ? docTotals.total
+                : landed.grand.toFixed(2)
+            }
             value={state.supplierInvoiceTotal}
-            onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
+            onChange={(v) =>
+              dispatch({
+                type: "SET_FIELD",
+                field: "supplierInvoiceTotal",
+                value: v,
+              })
+            }
             currency={state.currency}
             onDistribute={distributeInvoiceDifference}
             onApplyAsDiscount={applyDifferenceAsDiscount}
             canDistribute={D(totals.subtotal).gt(0)}
           />
+          <section className="space-y-2 rounded-xl border bg-card px-4 py-3">
+            <Label htmlFor="purchase-revision-reason">سبب المراجعة</Label>
+            <Textarea
+              id="purchase-revision-reason"
+              value={revisionReason}
+              maxLength={500}
+              rows={3}
+              placeholder="مثال: تعديل كمية البند الثاني وفق عرض المورد المحدّث"
+              onChange={(event) => setRevisionReason(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              مطلوب ويُحفظ مع المراجعة الجديدة؛ الاعتماد اللاحق يطابق هذه النسخة
+              تحديداً.
+            </p>
+          </section>
           {state.currency === "USD" && landed.rate.gt(0) && (
             <section className="rounded-xl border bg-card px-4 py-3 text-sm">
               <div className="flex justify-between text-muted-foreground">
                 <span>إجمالي فاتورة المورد (دولار)</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.grandTotal)} $</span>
+                <span dir="ltr" className="font-bold text-foreground">
+                  {fmtAr(totals.grandTotal)} $
+                </span>
               </div>
               <div className="mt-1 flex justify-between text-muted-foreground">
                 <span>سعر التثبيت</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(state.agreedRate)} د.ع/$</span>
+                <span dir="ltr" className="font-bold text-foreground">
+                  {fmtAr(state.agreedRate)} د.ع/$
+                </span>
               </div>
               <div className="mt-1 flex justify-between border-t pt-2 font-bold">
                 <span>التكلفة بالدينار</span>
@@ -672,7 +1008,7 @@ export default function PurchaseEdit() {
             saving={update.isPending}
             pasteAvailable={pasteAvailable}
             availableActions={EDIT_ACTIONS}
-            primaryLabel="حفظ التعديلات"
+            primaryLabel="حفظ التعديلات قبل الاعتماد"
             printLabel="طباعة"
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

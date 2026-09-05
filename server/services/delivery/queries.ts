@@ -6,8 +6,13 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { money } from "../money";
+import { money, round2 } from "../money";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { computePartyExposure } from "@shared/partyExposure";
+import { deliveryCashSource } from "./cashSource";
+import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { getDeliveryFinancialSummary } from "./lifecycle";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 
 /**
  * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
@@ -171,6 +176,12 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      // Codex #1012 P1 — عجزُ التسليم المُقيَّد على الطرد (Slice DFP1): نقدٌ لم تقبضه الجهة قطّ،
+      // فالمتبقّي الحيّ للتوريد = codAmount − collectedAmount − counterSettledAmount − shortfallAssigned.
+      // بدونه تحسب شاشة التسوية اليدويّة المتبقّي أعلى من الحدّ الخادميّ فيُرفَض كلُّ توريد.
+      shortfallAssigned: consignmentShortfallAssignedSql,
+      /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
+      invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeDue,
       feeCollection: deliveryConsignments.feeCollection,
@@ -260,6 +271,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
       invoiceTotal: invoices.total,
       invoiceReturnedTotal: invoices.returnedTotal,
+      /**
+       * **المقبوضُ على المستند** — هو ما يقيس به `returnConsignment` خروجَ النقد
+       * (`previewNeedsCash = paidAmount > 0 || feeNet > 0`، [`returns.ts`](./returns.ts)).
+       * تعرضه الشاشةُ لتقدير ما سيخرج من الدرج عند الإرجاع؛ و`collectedAmount` **لا يصلح
+       * بديلاً**: لا يشمل ما سُدِّد بالكاونتر (`counterSettledAmount`) فيُنقِص التقدير.
+       * الجدولُ مضمومٌ أصلاً (`leftJoin(invoices)`) ⇒ عمودٌ بلا كلفةِ ضمٍّ جديدة.
+       */
+      invoicePaidAmount: invoices.paidAmount,
       /**
        * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة، بالصيغة
        * الحاكمة للمتبقّي الحيّ: codAmount − collectedAmount − counterSettledAmount (ما غطّاه
@@ -386,7 +405,12 @@ export async function getPartyStoreInTransit(partyId: number) {
     await db
       .select({
         count: sql<number>`COUNT(*)`,
-        value: sql<string>`COALESCE(SUM(GREATEST(CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)), 0)), 0)`,
+        // «ما بيد المندوب» سؤالُ تعرّضٍ ماليّ ⇒ `COLLECTIBLE` (مقصوص): طردٌ دُفِع فيه زائداً
+        // لا يجوز أن يُنقص تعرّضَ طردٍ آخر في نفس المجموع. القصُّ كان قائماً أصلاً.
+        // ⚠️ ترتيبُ الطرح تبدّل (`total − ret − paid` ⇐ `total − paid − ret`) وهو تجميعيّ على
+        // `DECIMAL` فالنتيجة واحدة رقماً برقم. وانتشارُ `NULL` محفوظ: الانضمامُ يساريّ وقد لا
+        // تكون فاتورة، و`GREATEST(NULL,0) = NULL` يتجاهله `SUM` — كما كان تماماً.
+        value: sql<string>`COALESCE(SUM(${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")}), 0)`,
       })
       .from(onlineOrders)
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
@@ -718,19 +742,8 @@ export async function listPartyObligations(branchId: number | null) {
        * DELIVERED بحالة إغلاق PARTIAL يقع في «سُلِّم لم يُحصَّل»، وطردٌ ASSIGNED بحالة إغلاق DISPATCHED
        * في «بالطريق». نبقي codDueTotal كما هو (لا كسر واجهةٍ عبر ٢٠+ مستهلك).
        */
-      parcelsInTransitAmount: sql<string>`(SELECT COALESCE(SUM(CAST(dc.codAmount AS DECIMAL(15,2))), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus IN ('ASSIGNED', 'OUT_FOR_DELIVERY'))`,
-      deliveredUncollectedAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
-          CAST(dc.codAmount AS DECIMAL(15,2))
-          - CAST(dc.collectedAmount AS DECIMAL(15,2))
-          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus = 'DELIVERED'
-          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
-          AND dc.returnDeclaredAt IS NULL)`,
+      // م١ (PR-3): عمودا التعرّض (٢ و٣) لم يعودا SQL هنا — يُحسبان بعد الجلب بالدالّة النقيّة
+      // `computePartyExposure` من `loadPartyExposureInputsTx` (نفس الفرع `cnBranch`) — انظر أسفل الدالّة.
       lastRemittanceAt: sql<Date | null>`(SELECT MAX(dr.receivedAt) FROM deliveryRemittances dr
         WHERE dr.partyId = ${deliveryParties.id}${rmBranch})`,
       hasPortal: sql<number>`(
@@ -760,14 +773,30 @@ export async function listPartyObligations(branchId: number | null) {
     ));
   // «عليها التزام» = إرسالية مفتوحة أو أجرة مستحقّة أو عهدة قائمة. الفلترة والفرز في الذاكرة
   // عمداً: جهات التوصيل بالعشرات، وHAVING كان سيكرّر الاستعلامات المترابطة الثلاثة حرفياً.
-  return rows
+  const kept = rows
     .filter((r) =>
       Number(r.openCount) > 0
       || money(r.feeDueTotal ?? "0").gt(0)
       || money(r.currentBalance ?? "0").gt(0),
     )
-    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1))
-    .map((r) => ({
+    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1));
+  // م١ (PR-3): أعمدة التعرّض من **الدالّة النقيّة** (كانت SQL موازيةً لـ`parties.ts` انحرفت عنها).
+  const exposureInputs = await loadPartyExposureInputsTx(
+    db as unknown as Parameters<typeof loadPartyExposureInputsTx>[0],
+    kept.map((r) => Number(r.partyId)),
+    branchId,
+  );
+  const cashSource = deliveryCashSource();
+  return kept.map((r) => {
+    const inputs = exposureInputs.get(Number(r.partyId));
+    const cashInHandStored = round2(money(r.currentBalance ?? "0")).toFixed(2);
+    const cashInHandLedger = inputs?.cashInHandLedger ?? "0.00";
+    const exposure = computePartyExposure({
+      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
+      parcels: inputs?.parcels ?? [],
+      ledger: inputs?.ledger ?? [],
+    });
+    return {
       partyId: Number(r.partyId),
       name: r.name,
       partyType: r.partyType,
@@ -779,10 +808,15 @@ export async function listPartyObligations(branchId: number | null) {
       feeDueTotal: String(r.feeDueTotal ?? "0.00"),
       lastRemittanceAt: r.lastRemittanceAt ?? null,
       hasPortal: Number(r.hasPortal ?? 0) > 0,
-      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة الأربعة الجديدة (٢ و٣ من partyExposure).
-      parcelsInTransitAmount: String(r.parcelsInTransitAmount ?? "0.00"),
-      deliveredUncollectedAmount: String(r.deliveredUncollectedAmount ?? "0.00"),
-    }));
+      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة (٢ و٣ من partyExposure) — م١: من الدالّة النقيّة.
+      parcelsInTransitAmount: exposure.parcelsInTransit,
+      deliveredUncollectedAmount: exposure.deliveredUncollected,
+      // م١ (PR-3) — الطرح الظلّيّ: المصدران معاً وفرقهما.
+      cashInHandLedger,
+      cashInHandStored,
+      cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),
+    };
+  });
 }
 
 /**

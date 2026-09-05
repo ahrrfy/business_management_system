@@ -5,6 +5,7 @@
  *  3) processPayment — تعارض طريقة سداد ⇒ CONFLICT.
  *  4) deleteVacancy — الحذف والفصل داخل withTx (انتهاك FK لا يُبقي وظيفة بمتقدّمين معلّقين).
  */
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -13,6 +14,10 @@ import { withTx } from "../tx";
 import { lockPeriod } from "../periodLockService";
 import { deleteVacancy } from "../recruitmentService";
 import { openShift } from "../shiftService";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
   "idempotencyKeys",
@@ -22,6 +27,9 @@ const TABLES = [
   "inventoryMovements",
   "invoiceItems",
   "invoices",
+  "workOrderEvents",
+  "workOrderDesignApprovals",
+  "workOrderDesignRevisions",
   "workOrderImages",
   "workOrderMaterials",
   "workOrders",
@@ -31,6 +39,7 @@ const TABLES = [
   "productUnits",
   "productVariants",
   "products",
+  "serviceTypes",
   "shifts",
   "customers",
   "suppliers",
@@ -61,7 +70,16 @@ async function seed() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "local_admin", name: "المدير", email: "admin@t.test", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "design_reviewer", name: "مراجع التصميم", email: "reviewer@t.test", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
 }
 
 beforeEach(async () => { await reset(); await seed(); });
@@ -136,6 +154,18 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
 
     const { deliverWorkOrder } = await import("../workOrderService");
     const actor = { userId: 1, branchId: 1, role: "cashier" as const };
+    const approval = await requestWorkOrderDesignApproval({
+      workOrderId: 1,
+      requestKey: `secondary-atomicity-design-request:${randomUUID()}`,
+      note: "اعتماد النسخة الحالية قبل اختبار التسليم المتكرر",
+    }, actor);
+    await decideWorkOrderDesignApproval({
+      approvalId: Number(approval.approval.id),
+      decisionKey: `secondary-atomicity-design-decision:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "ثبتت موافقة العميل على النسخة الحالية",
+      evidence: { type: "WHATSAPP_MESSAGE", reference: `wamid.secondary-atomicity.${randomUUID()}` },
+    }, { userId: 2, branchId: 1, role: "manager" });
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     // الدفع نقديّ كامل، لذلك نفتح وردية الاستقبال ونختبر idempotency في المسار الحي الفعلي.
     const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "CASH" as const } };

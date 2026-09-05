@@ -15,6 +15,7 @@ const {
   installWebCandidate,
   isWebCandidateActive,
   normalizeWebHealthEnvironment,
+  normalizeSentryBuildEnvironment,
   normalizeViteBuildEnvironment,
   prepareWebCandidate,
   pruneWebArtifactSnapshots,
@@ -48,6 +49,32 @@ const {
 }
 
 {
+  assert.deepEqual(
+    normalizeSentryBuildEnvironment({
+      SENTRY_AUTH_TOKEN: "secret-build-token",
+      SENTRY_ORG: "alroya",
+      SENTRY_PROJECT: "storefront-web",
+      SENTRY_RELEASE: "release-sha",
+      DATABASE_URL: "mysql://must-not-reach-build",
+      NODE_OPTIONS: "--require=/tmp/must-not-load.cjs",
+      RANDOM_SECRET: "must-not-reach-build",
+    }),
+    {
+      SENTRY_AUTH_TOKEN: "secret-build-token",
+      SENTRY_ORG: "alroya",
+      SENTRY_PROJECT: "storefront-web",
+      SENTRY_RELEASE: "release-sha",
+    },
+    "the source-map uploader receives only the explicit Sentry build allowlist",
+  );
+  assert.deepEqual(
+    normalizeSentryBuildEnvironment({}),
+    {},
+    "missing Sentry configuration must not break ordinary builds",
+  );
+}
+
+{
   const previousDisableDotEnv = process.env[VITE_DISABLE_DOTENV_ENV_KEY];
   process.env[VITE_DISABLE_DOTENV_ENV_KEY] = VITE_DISABLE_DOTENV_ENV_VALUE;
   try {
@@ -63,6 +90,42 @@ const {
       false,
       "the real Vite config must consume the production dotenv-disable flag",
     );
+
+    const sentryKeys = [
+      "VITE_SENTRY_DSN_CLIENT",
+      "SENTRY_AUTH_TOKEN",
+      "SENTRY_ORG",
+      "SENTRY_PROJECT",
+      "SENTRY_RELEASE",
+    ];
+    const previousSentry = Object.fromEntries(
+      sentryKeys.map((key) => [key, process.env[key]]),
+    );
+    Object.assign(process.env, {
+      VITE_SENTRY_DSN_CLIENT: "https://public@example.invalid/1",
+      SENTRY_AUTH_TOKEN: "unit-test-build-token",
+      SENTRY_ORG: "unit-test-org",
+      SENTRY_PROJECT: "unit-test-project",
+      SENTRY_RELEASE: "unit-test-release",
+    });
+    try {
+      const sentryLoaded = await loadConfigFromFile(
+        { command: "build", mode: "production" },
+        path.join(root, "vite.config.ts"),
+        root,
+        "silent",
+      );
+      assert.equal(sentryLoaded?.config.build?.sourcemap, "hidden");
+      assert.equal(
+        sentryLoaded?.config.define?.["import.meta.env.VITE_SENTRY_RELEASE"],
+        JSON.stringify("unit-test-release"),
+      );
+    } finally {
+      for (const key of sentryKeys) {
+        if (previousSentry[key] === undefined) delete process.env[key];
+        else process.env[key] = previousSentry[key];
+      }
+    }
   } finally {
     if (previousDisableDotEnv === undefined) {
       delete process.env[VITE_DISABLE_DOTENV_ENV_KEY];
@@ -105,6 +168,10 @@ const {
         PATH: "/usr/local/bin:/usr/bin",
         DATABASE_URL: "mysql://must-not-reach-build",
         NODE_OPTIONS: "--require=/tmp/must-not-load.cjs",
+        SENTRY_AUTH_TOKEN: "secret-build-token",
+        SENTRY_ORG: "alroya",
+        SENTRY_PROJECT: "storefront-web",
+        SENTRY_RELEASE: "release-sha",
       },
       execFileSync: (...args) => calls.push(args),
     },
@@ -123,6 +190,10 @@ const {
     "https://alarabiya.online",
   );
   assert.equal(options.env.PATH, "/usr/local/bin:/usr/bin");
+  assert.equal(options.env.SENTRY_AUTH_TOKEN, "secret-build-token");
+  assert.equal(options.env.SENTRY_ORG, "alroya");
+  assert.equal(options.env.SENTRY_PROJECT, "storefront-web");
+  assert.equal(options.env.SENTRY_RELEASE, "release-sha");
   assert.equal(Object.hasOwn(options.env, "DATABASE_URL"), false);
   assert.equal(Object.hasOwn(options.env, "NODE_OPTIONS"), false);
 }

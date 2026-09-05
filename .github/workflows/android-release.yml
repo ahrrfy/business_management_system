@@ -136,7 +136,7 @@ jobs:
           # positive verification marker instead of treating the expected trust warning as damage.
           jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
           grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
-          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='14' versionName='1.0.2'"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='17' versionName='1.0.3'"
           "$aapt_path" dump badging "$apk" | grep -Fq "uses-feature-not-required: name='android.hardware.screen.portrait'"
           unzip -tqq "$aab"
           unzip -tqq "$apk"

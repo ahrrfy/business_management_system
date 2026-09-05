@@ -1,16 +1,21 @@
 import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { receipts, users } from "../../drizzle/schema";
+import { voucherApprovalRetainsLegacy } from "@shared/approvalTriggers";
 import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
+import { parseSystemPaymentRequest } from "./voucher/create";
 
 /**
  * ن-٢-هـ (٢٨/٨) — إشعارات دورة اعتماد السندات (Maker-Checker).
  *
  * القاعدة الحاكمة (نفس ن-٢-د في `sessionEventNotifier.ts`):
  *   1) عند إنشاء سندٍ `PENDING_APPROVAL`: يُخطَر كلُّ مالكٍ (`isOwner=true`) نشطٍ يستطيع
- *      اعتمادَه (approveVoucher يشترط `isOwner`)، مستثنى منه المُنشئُ نفسه — لا يعتمد
- *      شخصٌ سنداً أنشأه (SOD يرفضه في اللحظة، فلا معنى لإشعارٍ ينتهي بـFORBIDDEN).
+ *      اعتمادَه (approveVoucher يشترط `isOwner`). المُنشئ يُستثنى **إلّا** إذا كان يستطيع
+ *      اعتماد سنده بنفسه (قرار المالك ٣/٩/٢٦ — `voucherApprovalTrigger`/`RetainsLegacy` في
+ *      `@shared/approvalTriggers.ts`، نفس التصنيف الذي يحرسه `approveVoucher`)؛ استثناؤه
+ *      دائماً كان يترك مالكاً وحيداً بلا إشعارٍ عن سنده هو (SOD يرفضه فقط في الحالة
+ *      المُستبقاة — سند قبضٍ عاديّ بلا رابط إلغاء).
  *   2) عند القرار (اعتماد أو رفض): يُخطَر المُنشئُ فقط بنتيجة سنده.
  *   3) idempotency: `eventKey` يعتمد على (receiptId + decision + recipientId) — إعادةُ
  *      اعتمادٍ replayed تولّد نفس المفتاح، فالإشعار لا يُنشَر ثانية (تفصيل: `createAppNotification`
@@ -78,6 +83,7 @@ interface ReceiptProjection {
   amount: string;
   voucherNumber: string | null;
   approvalStatus: string;
+  internalNote: string | null;
 }
 
 async function loadReceiptProjection(
@@ -91,6 +97,7 @@ async function loadReceiptProjection(
       amount: receipts.amount,
       voucherNumber: receipts.voucherNumber,
       approvalStatus: receipts.approvalStatus,
+      internalNote: receipts.internalNote,
     })
     .from(receipts)
     .where(eq(receipts.id, receiptId))
@@ -99,6 +106,7 @@ async function loadReceiptProjection(
   return {
     createdBy: row.createdBy != null ? Number(row.createdBy) : null,
     direction: (row.direction as "IN" | "OUT") ?? "IN",
+    internalNote: row.internalNote ?? null,
     amount: String(row.amount ?? "0"),
     voucherNumber: row.voucherNumber ?? null,
     approvalStatus: String(row.approvalStatus ?? ""),
@@ -123,7 +131,16 @@ export async function notifyApprovalPendingByReceipt(
     // لا نُخطر إلّا سندَ الاعتماد الفعليّ — إن كان APPROVED مباشرة (تحت العتبة) فلا حاجة.
     if (projection.approvalStatus !== "PENDING_APPROVAL") return;
     if (!projection.voucherNumber) return;
-    const recipients = await listApprovers(projection.createdBy);
+    // قرار المالك (٣/٩/٢٦): استثناء المُنشئ من قائمة المُخطَرين يبقى فقط للحالة التي لا يزال
+    // فيها ممنوعاً من اعتماد سنده بنفسه — نفس تصنيف approveVoucher حرفياً، وإلّا بقي مالكٌ
+    // وحيدٌ بلا إشعارٍ عن سندٍ يستطيع اعتماده فعلاً.
+    const systemRequest = parseSystemPaymentRequest(projection.internalNote);
+    const stillBlockedFromOwnApproval = voucherApprovalRetainsLegacy(
+      projection.direction,
+      systemRequest?.kind ?? null,
+    );
+    const excludeCreator = stillBlockedFromOwnApproval ? projection.createdBy : null;
+    const recipients = await listApprovers(excludeCreator);
     if (recipients.length === 0) return;
     const kindLabel = humanDirection(projection.direction);
     const title = `اعتماد ${kindLabel} #${projection.voucherNumber} بانتظارك`;
@@ -136,6 +153,7 @@ export async function notifyApprovalPendingByReceipt(
         createAppNotification({
           userId: recipientId,
           kind: "APPROVAL_REQUIRED",
+          family: "APPROVAL",
           title,
           body,
           route: WEB_APPROVAL_ROUTE,
@@ -190,6 +208,7 @@ export async function notifyApprovalDecisionByReceipt(
     await createAppNotification({
       userId: projection.createdBy,
       kind: "APPROVAL_REQUIRED",
+      family: "EMPLOYEE",
       title,
       body,
       route: WEB_APPROVAL_ROUTE,

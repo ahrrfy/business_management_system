@@ -1,6 +1,7 @@
 // المبيعات حسب بُعد — تجميع الفواتير على محور مختار (عميل/فرع/طريقة دفع/كاشير) + إجماليات.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -266,16 +267,16 @@ export default function SalesByDimension() {
           <PeriodFilter value={period} onChange={setPeriod} />
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">المحور</label>
-            <select className={selectCls} value={dimension} onChange={(e) => setDimension(e.target.value as Dimension)}>
+            <AppSelect className="h-9" value={dimension} onValueChange={(value) => setDimension(value as Dimension)}>
               {DIM_OPTIONS.map((d) => (<option key={d} value={d}>{DIM_LABEL[d]}</option>))}
-            </select>
+            </AppSelect>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(value) => setBranchId(value ? Number(value) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

@@ -149,6 +149,7 @@ data class InventoryActions(
     val selectCount: (String) -> Unit,
     val closeCount: () -> Unit,
     val setCountQuery: (String) -> Unit,
+    val scanCount: (String) -> Unit,
     val submitCount: (Long, String) -> Unit,
     val finishCount: () -> Unit,
 )
@@ -178,7 +179,7 @@ fun InventoryRoute(viewModel: InventoryViewModel, modifier: Modifier = Modifier)
             viewModel::closeRecount, viewModel::confirmRecount, viewModel::forceReview,
             viewModel::firstSign, viewModel::approveStocktake, viewModel::setCancelStocktakeReason,
             viewModel::cancelStocktake, viewModel::refreshCountAssignments, viewModel::selectCount,
-            viewModel::closeCount, viewModel::setCountQuery, viewModel::submitCount, viewModel::finishCount,
+            viewModel::closeCount, viewModel::setCountQuery, viewModel::scanCount, viewModel::submitCount, viewModel::finishCount,
         ),
         modifier = modifier,
     )
@@ -663,14 +664,14 @@ private fun CountAssignments(items: List<CountAssignment>, actions: InventoryAct
 private fun CountSessionPane(session: CountSession, state: InventoryUiState, actions: InventoryActions) {
     val filtered = remember(session.items, state.countQuery) { session.items.filter { state.countQuery.isBlank() || it.label.contains(state.countQuery, true) } }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { PaneTitle(session.name, actions.closeCount); Text("${session.branchName} · ${session.assignmentName}", color = MaterialTheme.colorScheme.onSurfaceVariant); ProgressLine(session.counted, session.total); Spacer(Modifier.height(8.dp)); SearchField(state.countQuery, actions.setCountQuery, {}, "اسم الصنف أو SKU", NativeScanField.SKU_OR_BARCODE) }
+        item { PaneTitle(session.name, actions.closeCount); Text("${session.branchName} · ${session.assignmentName}", color = MaterialTheme.colorScheme.onSurfaceVariant); ProgressLine(session.counted, session.total); if (session.countMethod == "SCAN_REQUIRED") Text("هذه الجلسة تتطلب مسح باركود الصنف بالكاميرا قبل الحفظ", color = Warning); Spacer(Modifier.height(8.dp)); SearchField(state.countQuery, actions.setCountQuery, {}, "اسم الصنف أو SKU", NativeScanField.BARCODE, actions.scanCount) }
         items(filtered, key = { it.variantId }) { item ->
             var quantity by remember(item.variantId, item.myQuantity) { mutableStateOf(item.myQuantity?.toString().orEmpty()) }
             OperationalCard(if (item.recountReason != null) Warning else if (item.counted) Positive else MaterialTheme.colorScheme.outline) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.label, Modifier.weight(1f), fontWeight = FontWeight.Bold); if (item.counted) Icon(Icons.Rounded.CheckCircle, "معدود", tint = Positive) }
                 item.recountReason?.let { Text("إعادة عد: $it", color = Warning) }
                 FormField("الكمية الفعلية", quantity, change = { quantity = it }, keyboardType = KeyboardType.Decimal)
-                Button(onClick = { actions.submitCount(item.variantId, quantity) }, modifier = Modifier.align(Alignment.End)) { Text(if (item.counted) "تحديث العد" else "حفظ العد") }
+                Button(onClick = { actions.submitCount(item.variantId, quantity) }, modifier = Modifier.align(Alignment.End), enabled = session.countMethod != "SCAN_REQUIRED" || state.countScannedVariantId == item.variantId) { Text(if (item.counted) "تحديث العد" else "حفظ العد") }
             }
         }
         item { Button(actions.finishCount, Modifier.fillMaxWidth(), enabled = session.counted >= session.total && session.total > 0) { Icon(Icons.Rounded.TaskAlt, null); Spacer(Modifier.width(6.dp)); Text("تسليم العد") } }
@@ -678,13 +679,13 @@ private fun CountSessionPane(session: CountSession, state: InventoryUiState, act
 }
 
 @Composable
-private fun SearchField(value: String, change: (String) -> Unit, search: () -> Unit, label: String, scanField: NativeScanField? = null) {
+private fun SearchField(value: String, change: (String) -> Unit, search: () -> Unit, label: String, scanField: NativeScanField? = null, onScanned: ((String) -> Unit)? = null) {
     OutlinedTextField(
         value = value, onValueChange = change, modifier = Modifier.fillMaxWidth(), singleLine = true,
         label = { Text(label) },
         trailingIcon = {
             Row {
-                scanField?.let { field -> NativeScannerAction(field, { scanned -> change(scanned); search() }) }
+                scanField?.let { field -> NativeScannerAction(field, { scanned -> if (onScanned != null) onScanned(scanned) else { change(scanned); search() } }) }
                 IconButton(search) { Icon(Icons.Rounded.Search, "بحث") }
             }
         },

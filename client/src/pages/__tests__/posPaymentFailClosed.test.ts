@@ -7,6 +7,14 @@ import {
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
+const readComponent = (relative: string) =>
+  readFileSync(new URL(`../../components/${relative}`, import.meta.url), "utf8");
+/**
+ * الكاشير (م١ PR-A): لوحة الدفع استُخرجت من `POS.tsx` إلى `components/pos/PaymentPanel.tsx` بلا
+ * تغيير سلوكيّ — العقد المحروس يمتدّ على الشاشة **ومكوّنها** معاً (أزرار الطريقة وحقل المرجع
+ * في المكوّن، والمحاولة الخارجية المؤكَّدة في الشاشة).
+ */
+const readRetailPos = () => readPage("POS.tsx") + "\n" + readComponent("pos/PaymentPanel.tsx");
 
 /**
  * العقد الحاكم للدفع غير النقدي في نقاط البيع:
@@ -32,7 +40,7 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   });
 
   it("الكاشير يُتيح البطاقة/التحويل/المحفظة ولا يفتح الإتمام قبل التأكيد الخادميّ", () => {
-    const source = readPage("POS.tsx");
+    const source = readRetailPos();
 
     expect(source).toContain('onClick={() => setMethod("CARD")}');
     expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
@@ -58,9 +66,8 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   it("تحصيل دفعة لاحقة على فاتورة يشتقّ طرقه من السياسة لا من نصٍّ ثابت", () => {
     const source = readPage("InvoiceDetail.tsx");
 
-    expect(source).toContain(
-      "const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v))",
-    );
+    expect(source).toContain("const ENABLED_COLLECTION_METHODS = METHODS.filter");
+    expect(source).toContain("isPosPaymentMethodEnabled(method.v)");
     expect(source).toContain("ENABLED_COLLECTION_METHODS.map");
     expect(source).toContain("if (!isPosPaymentMethodEnabled(payMethod))");
     expect(source).not.toContain('if (payMethod !== "CASH") return setError(');

@@ -10,8 +10,8 @@
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PayrollAccrualOperations, PayrollRemittanceRequestPanel } from "@/components/hr/PayrollAccrualOperations";
 import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
@@ -23,14 +23,16 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
 import { printPayslip } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
-import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
+import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, ShieldCheck, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { Link } from "wouter";
 
 
 const STATUS_CLS: Record<string, string> = {
@@ -86,6 +88,49 @@ type RunItem = NonNullable<ReturnType<typeof useRunQuery>["data"]>["items"][numb
 
 function useRunQuery(id: number | null, enabled: boolean) {
   return trpc.payroll.get.useQuery({ id: id ?? 0 }, { enabled: enabled && id != null && Number.isFinite(id) });
+}
+
+type CommissionReadiness = RouterOutputs["payroll"]["commissionReadiness"];
+
+/**
+ * يحوّل جاهزية العمولة الخام إلى نصٍّ يخبر المستخدم بالخطوة التالية فعلاً — بدل رسالة
+ * الخادم الكثيفة التي كانت تظهر توستاً عابراً (٦ث) عند فشل «اعتماد الاستحقاق» فقط، بلا
+ * زرّ ولا توضيح أنّ الاعتماد يلزمه حسابٌ آخر غير من احتسب الكشف أو طلب اعتماده (فصل مهام).
+ */
+function describeCommissionBlock(
+  r: CommissionReadiness,
+  period: string,
+  myUserId: number,
+): { title: string; body: string; selfBlocked: boolean } {
+  if (r.status === "approved") {
+    return {
+      title: `عمولات ${period} معتمدة لكن غير مُلتقطة في هذا المسيّر`,
+      body: "احذف هذه المسوّدة وأعد توليدها من زر «توليد مسيّر» كي يُدرَج بند «عمولة» تلقائياً لكل موظف.",
+      selfBlocked: false,
+    };
+  }
+  if (r.status === "draft") {
+    if (!r.pendingCompanyRequest) {
+      return {
+        title: `كشف عمولات ${period} مسوّدة — لم يُطلب اعتمادها بعد`,
+        body: `${r.eligibleEmployeeCount} موظف على خطة عمولة فعالة هذا الشهر. من تبويب «عمولات الشهر» اطلب اعتماد الشركة، ثم عُد هنا وأعد توليد المسيّر بعد اعتماده.`,
+        selfBlocked: false,
+      };
+    }
+    const self = r.pendingCompanyRequest.requestedBy === myUserId || r.runCreatedBy === myUserId;
+    return {
+      title: `طلب اعتماد عمولات ${period} بانتظار المراجعة`,
+      body: self
+        ? "أنت من احتسب الكشف أو طلبت اعتماده — لا يمكنك اعتماد طلبك بنفسك (فصل مهام مقصود). يلزم اعتماده من حساب آخر بصلاحية الشركة (مالك آخر أو مدير عام) من «عمولات الشهر ← طلبات اعتماد العمولات»، ثم أعد توليد هذا المسيّر."
+        : `بانتظار مراجعة ${r.pendingCompanyRequest.requesterName}. بعد اعتماده أعد توليد هذا المسيّر ليلتقط العمولة.`,
+      selfBlocked: self,
+    };
+  }
+  return {
+    title: `لم يُحتسب كشف عمولات ${period} بعد`,
+    body: `${r.eligibleEmployeeCount} موظف على خطة عمولة فعالة هذا الشهر بلا كشف عمولات. احتسبه من تبويب «عمولات الشهر» أولاً.`,
+    selfBlocked: false,
+  };
 }
 
 export default function Payroll() {
@@ -155,8 +200,19 @@ export default function Payroll() {
   const isApproved = run?.status === "approved";
   const isPaid = run?.status === "paid";
   const busy = generate.isPending || approve.isPending || cancel.isPending;
+  // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ نشط يعتمد استحقاقه بنفسه.
   const isOwner = me.data?.isOwner === true;
-  const independentOwner = isOwner && Number(me.data?.id ?? 0) !== Number(run?.createdBy ?? 0);
+  // جاهزية العمولة — استباقية بدل انتظار فشل «اعتماد الاستحقاق». راجع describeCommissionBlock أعلاه.
+  const commissionReadinessQ = trpc.payroll.commissionReadiness.useQuery(
+    { period: run?.period ?? "" },
+    { enabled: ownerAccess && !!run?.period },
+  );
+  const commissionReadiness = commissionReadinessQ.data ?? null;
+  const commissionUncaptured = commissionReadiness?.status === "approved" && commissionReadiness.capturedPayrollRunId == null;
+  const commissionBlocking = !!run && isDraft && !!commissionReadiness && (!commissionReadiness.ready || commissionUncaptured);
+  const commissionBlock = commissionBlocking && run
+    ? describeCommissionBlock(commissionReadiness!, run.period, Number(me.data?.id ?? 0))
+    : null;
   const openSalaryObligations = (run?.obligations ?? []).filter((obligation) =>
     obligation.kind === "SALARY_NET" &&
     Number(obligation.revisionNo) === Number(run?.revisionNo ?? -1) &&
@@ -213,6 +269,23 @@ export default function Payroll() {
     });
   }, [items, itemQ, payTypeF]);
   const itemsFiltered = Boolean(itemQ.trim() || payTypeF);
+
+  /*
+   * رسالةُ الفراغ — تسلسلٌ ثلاثيّ **بأولويةٍ لغياب المسيّرات نفسها**، ومصدرُه واحدٌ يُغذّي
+   * كلا فرعَي DataTable (المفلتَر وغير المفلتَر) كي لا ينجرف أحدهما عن الآخر.
+   * ما كان: بعد التحويل صار فحصُ `runs.length === 0` في فرع `emptyState` وحدَه، وحقلا
+   * البحث ونوع الأجر معروضان دائماً في ترويسة البطاقة حتى بلا أيّ مسيّر. فمن يكتب حرفاً
+   * في البحث وهو لا يملك مسيّراً واحداً كان يُنقَل إلى فرع `emptyFilteredState` فيقرأ
+   * «لا بنود في هذا المسيّر» — جملةٌ تُثبت وجودَ مسيّرٍ لا وجودَ له، وتُسقط دعوةَ
+   * «ولّد مسيّراً شهرياً للبدء» التي هي خطوتُه التالية الوحيدة. الجدولُ الخامّ كان يفحص
+   * `runs.length` أوّلاً قبل أيّ اعتبارٍ للفلتر، وهذا يعيد ذلك السلوك حرفياً.
+   */
+  const itemsEmptyMessage =
+    runs.length === 0
+      ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء."
+      : items.length === 0
+        ? "لا بنود في هذا المسيّر."
+        : "لا بنود مطابقة للبحث/الفلتر.";
 
   /*
    * بنودٌ تحتاج انتباهاً قبل الاعتماد (اليوم المفتوح: دخولٌ بلا انصراف ⇒ ساعاتٌ غير محتسَبة).
@@ -272,6 +345,177 @@ export default function Payroll() {
     [run],
   );
 
+  /*
+   * أعمدة بنود المسيّر. صفُّ الإجماليات في `<tfoot>` عبر `footer` على الأعمدة — ويُخفى أثناء
+   * الفلترة (كما كان) كي لا يوحي بأنه مجموعُ الصفوف المعروضة وحدها: المجاميعُ من رأس المسيّر
+   * (الخادم هو المرجع) لا من الصفحة. وبلا فرزٍ: ترتيبُ البنود من الخادم وصفُّ الإجماليات
+   * يقابل كامل المسيّر لا الصفوفَ المفروزة.
+   */
+  const showItemTotals = !itemsFiltered;
+  const itemColumns: ColumnDef<RunItem, unknown>[] = [
+    {
+      id: "employee",
+      header: "الموظف",
+      accessorFn: (p) => p.employeeName,
+      enableSorting: false,
+      meta: { width: "wide", wrap: true },
+      footer: showItemTotals ? () => "الإجمالي" : undefined,
+      cell: ({ row }) => {
+        const p = row.original;
+        // بندٌ ناقص الساعات (يوم بلا انصراف): يُوسَم في صفّه أيضاً لا في اللوحة وحدها،
+        // كي لا يمرّ في تصفّحٍ سريع للجدول أو بعد فلترةٍ باسم الموظف.
+        const needsAttention = payrollItemNeedsAttention(p.note);
+        return (
+          <div className="flex items-center gap-2.5">
+            <EmpAvatar name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} sizePx={32} />
+            <div>
+              <div className="font-medium text-[13px]">{p.employeeName}</div>
+              {p.position && <div className="text-[11px] text-muted-foreground">{p.position}</div>}
+              {needsAttention && (
+                <div className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--sem-warn)]" title={p.note ?? undefined}>
+                  <TriangleAlert aria-hidden className="size-3 shrink-0" />
+                  <span>ساعات غير محتسَبة</span>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "branchSnapshot",
+      header: "لقطة الفرع",
+      accessorFn: (p) =>
+        p.branchIdSnapshot ? (branchName.get(Number(p.branchIdSnapshot)) ?? `فرع #${p.branchIdSnapshot}`) : "عام للشركة",
+      enableSorting: false,
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.branchIdSnapshot
+            ? (branchName.get(Number(row.original.branchIdSnapshot)) ?? `فرع #${row.original.branchIdSnapshot}`)
+            : "عام للشركة"}
+          <span className="block text-[10px] text-muted-foreground" dir="ltr">R{row.original.revisionNo}</span>
+        </span>
+      ),
+    },
+    {
+      id: "payType",
+      header: "نوع الأجر",
+      accessorFn: (p) => payTypeLabel(p.payType),
+      enableSorting: false,
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span
+          className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${row.original.payType === "monthly" ? "bg-primary/10 text-primary" : "badge-stock-low"}`}
+        >
+          {payTypeLabel(row.original.payType)}
+        </span>
+      ),
+    },
+    {
+      id: "base",
+      header: "الأساسي / الساعات",
+      // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات).
+      accessorFn: (p) =>
+        p.payType === "monthly"
+          ? iqd(round2(D(p.gross).minus(D(p.allowances))).toFixed(2))
+          : `${iqd(p.gross)} (${p.hours ?? "0"} س)`,
+      enableSorting: false,
+      meta: { kind: "money" },
+      footer: showItemTotals ? () => iqd(totals.gross) : undefined,
+      cell: ({ row }) => {
+        const p = row.original;
+        return p.payType === "monthly"
+          ? iqd(round2(D(p.gross).minus(D(p.allowances))).toFixed(2))
+          : `${iqd(p.gross)} (${p.hours ?? "0"} س)`;
+      },
+    },
+    {
+      id: "allowances",
+      header: "البدلات",
+      accessorFn: (p) => (p.payType === "monthly" ? iqd(p.allowances) : "—"),
+      enableSorting: false,
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="text-muted-foreground">{row.original.payType === "monthly" ? iqd(row.original.allowances) : "—"}</span>
+      ),
+    },
+    {
+      id: "overtime",
+      header: "إضافي",
+      accessorFn: (p) => (D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"),
+      enableSorting: false,
+      meta: { kind: "money" },
+      footer: showItemTotals ? () => <span className="text-money-positive">+{iqd(totals.overtime)}</span> : undefined,
+      cell: ({ row }) => (
+        <span className="text-money-positive">{D(row.original.overtime).gt(0) ? `+${iqd(row.original.overtime)}` : "—"}</span>
+      ),
+    },
+    {
+      id: "commission",
+      header: "عمولة",
+      // عمولة المبيعات الملتقطة من تشغيلة العمولات المعتمدة — قراءة فقط (تُعدَّل بإعادة الاحتساب هناك).
+      accessorFn: (p) => (D(p.commission).gt(0) ? `+${iqd(p.commission)}` : "—"),
+      enableSorting: false,
+      meta: { kind: "money" },
+      footer: showItemTotals ? () => <span className="text-money-positive">+{iqd(totals.commission)}</span> : undefined,
+      cell: ({ row }) => (
+        <span className="text-money-positive">{D(row.original.commission).gt(0) ? `+${iqd(row.original.commission)}` : "—"}</span>
+      ),
+    },
+    {
+      id: "deductions",
+      header: "استقطاع",
+      accessorFn: (p) => (D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"),
+      enableSorting: false,
+      meta: { kind: "money" },
+      footer: showItemTotals ? () => <span className="text-money-negative">−{iqd(totals.deductions)}</span> : undefined,
+      cell: ({ row }) => (
+        <span className="text-money-negative">
+          {D(row.original.deductions).gt(0) ? `−${iqd(row.original.deductions)}` : "—"}
+          {/* advances (بند 12ج): جزء السلفة المخصوم تلقائياً ضمن الاستقطاع. */}
+          {D(row.original.advanceDeduction || 0).gt(0) && (
+            <span className="block text-[11px] text-muted-foreground">منه سلفة: {iqd(row.original.advanceDeduction)}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "net",
+      header: "الصافي",
+      accessorFn: (p) => iqd(p.net),
+      enableSorting: false,
+      meta: { kind: "money" },
+      footer: showItemTotals ? () => iqd(totals.net) : undefined,
+      cell: ({ row }) => <span className="font-bold">{iqd(row.original.net)}</span>,
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: () => (run ? run.status : ""),
+      enableSorting: false,
+      meta: { kind: "status" },
+      cell: () => <StatusBadge status={run!.status} />,
+    },
+    {
+      id: "actions",
+      header: "",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap">
+          <button onClick={() => setSlip(row.original)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
+            <FileText className="size-3.5" /> القسيمة
+          </button>
+          {isDraft && (
+            <button onClick={() => setEditItem(row.original)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
+              تعديل
+            </button>
+          )}
+        </span>
+      ),
+    },
+  ];
+
   if (!me.isLoading && !ownerAccess) {
     return <div className="space-y-4">
       <PageHeader title="طلبات تحويل استقطاعات الرواتب" description="إنشاء طلب تحويل مقيد بفرعك دون الاطلاع على مسيرات الرواتب السرية." />
@@ -287,10 +531,10 @@ export default function Payroll() {
         description="مسيّر استحقاقي شهري: الاعتماد يثبت تكلفة العمل والتزاماتها، ثم تُسوّى الرواتب والضريبة والضمان بمسارات دفع مستقلة."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              className={selectClsSm}
+            <AppSelect
+              className="h-9"
               value={effectiveId != null ? String(effectiveId) : ""}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              onValueChange={(next) => setSelectedId(next ? Number(next) : null)}
               aria-label="المسيّر"
             >
               {runs.length === 0 && <option value="">لا مسيّرات</option>}
@@ -299,7 +543,7 @@ export default function Payroll() {
                   مسيّر {r.period} — {accrualStatusLabel(r.status)}
                 </option>
               ))}
-            </select>
+            </AppSelect>
             <Button onClick={() => setGenOpen(true)} disabled={busy}>
               <Plus className="size-4" /> توليد مسيّر
             </Button>
@@ -323,7 +567,19 @@ export default function Payroll() {
           <div className="flex-1" />
           {isDraft && (
             <>
-              <Button variant="outline" size="sm" title={!independentOwner ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر" : undefined} onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy || !independentOwner}>
+              <Button
+                variant="outline"
+                size="sm"
+                title={
+                  !isOwner
+                    ? "الاعتماد محصور بحساب مالك نشط"
+                    : commissionBlock
+                      ? `${commissionBlock.title} — ${commissionBlock.body}`
+                      : undefined
+                }
+                onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }}
+                disabled={busy || !isOwner || commissionBlocking}
+              >
                 <Check className="size-4" /> اعتماد الاستحقاق
               </Button>
               <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirmDelete({ description: `حذف مسوّدة رواتب ${run.period} وكل بنودها (${run.employeeCount} موظف) نهائياً؟` }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
@@ -343,6 +599,36 @@ export default function Payroll() {
           )}
           {isPaid && <span className="text-xs text-muted-foreground">{D(openSalaryAmount).gt(0) ? `أُعيد جزء من الصرف: متبقٍ لإعادة الدفع ${iqd(openSalaryAmount)} د.ع على ${openSalaryObligations.length} موظف.` : "لإعادة المسيّر: أثبت أولاً إعادة كل دفعة راتب فعلياً من سجل الدفعات أدناه، ثم أعده إلى المسوّدة."}</span>}
         </div>
+      )}
+
+      {/*
+       * لوحة جاهزية العمولة — دائمة بدل توست ٦ث. تحلّ محلّ فكّ رسالة الخادم الكثيفة يدوياً:
+       * تقول للمستخدم أين هو بالضبط في التسلسل (لم يُحتسب/مسوّدة بلا طلب/بانتظار مراجعة/معتمد
+       * غير ملتقط)، وإن كان هو نفسه من احتسب أو طلب — فلا يملك اعتماد طلبه بنفسه (فصل مهام).
+       */}
+      {commissionBlock && (
+        <Card className={commissionBlock.selfBlocked ? "border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)]" : "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]"}>
+          <CardContent className="p-3">
+            <div className="flex items-start gap-2">
+              <ShieldCheck
+                aria-hidden
+                className={`size-4 mt-0.5 shrink-0 ${commissionBlock.selfBlocked ? "text-[var(--sem-neg)]" : "text-[var(--sem-warn)]"}`}
+              />
+              <div className="flex-1 text-xs leading-relaxed">
+                <span className={`font-medium ${commissionBlock.selfBlocked ? "text-[var(--sem-neg)]" : "text-[var(--sem-warn)]"}`}>
+                  {commissionBlock.title}
+                </span>{" "}
+                — {commissionBlock.body}
+              </div>
+              <Link
+                href="/hr?tab=commission-runs"
+                className="shrink-0 whitespace-nowrap text-xs font-medium text-primary hover:underline"
+              >
+                فتح تشغيلات العمولة
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* لوحة الانتباه — أيامٌ بلا انصراف: ساعاتٌ غير محتسَبة في بنودٍ قائمة (لا استبعاد) */}
@@ -411,115 +697,21 @@ export default function Payroll() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2.5">الموظف</th>
-                  <th className="p-2.5 text-right">لقطة الفرع</th>
-                  <th className="p-2.5 text-center">نوع الأجر</th>
-                  <th className="p-2.5 text-right">الأساسي / الساعات</th>
-                  <th className="p-2.5 text-right">البدلات</th>
-                  <th className="p-2.5 text-right">إضافي</th>
-                  <th className="p-2.5 text-right">عمولة</th>
-                  <th className="p-2.5 text-right">استقطاع</th>
-                  <th className="p-2.5 text-right">الصافي</th>
-                  <th className="p-2.5 text-center">الحالة</th>
-                  <th className="p-2.5 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleItems.map((p) => {
-                  const monthly = p.payType === "monthly";
-                  // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات).
-                  const baseDisplay = monthly ? round2(D(p.gross).minus(D(p.allowances))).toFixed(2) : p.gross;
-                  // بندٌ ناقص الساعات (يوم بلا انصراف): يُوسَم في صفّه أيضاً لا في اللوحة وحدها،
-                  // كي لا يمرّ في تصفّحٍ سريع للجدول أو بعد فلترةٍ باسم الموظف.
-                  const needsAttention = payrollItemNeedsAttention(p.note);
-                  return (
-                    <tr key={p.id} className={`border-t hover:bg-accent/40 ${needsAttention ? "bg-[var(--sem-warn-bg)]/60" : ""}`}>
-                      <td className="p-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <EmpAvatar name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} sizePx={32} />
-                          <div>
-                            <div className="font-medium text-[13px]">{p.employeeName}</div>
-                            {p.position && <div className="text-[11px] text-muted-foreground">{p.position}</div>}
-                            {needsAttention && (
-                              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--sem-warn)]" title={p.note ?? undefined}>
-                                <TriangleAlert aria-hidden className="size-3 shrink-0" />
-                                <span>ساعات غير محتسَبة</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="p-2.5 text-xs">
-                        {p.branchIdSnapshot ? (branchName.get(Number(p.branchIdSnapshot)) ?? `فرع #${p.branchIdSnapshot}`) : "عام للشركة"}
-                        <div className="text-[10px] text-muted-foreground" dir="ltr">R{p.revisionNo}</div>
-                      </td>
-                      <td className="p-2.5 text-center">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${monthly ? "bg-primary/10 text-primary" : "badge-stock-low"}`}>
-                          {payTypeLabel(p.payType)}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
-                        {monthly ? iqd(baseDisplay) : `${iqd(p.gross)} (${p.hours ?? "0"} س)`}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{monthly ? iqd(p.allowances) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
-                      {/* عمولة المبيعات الملتقطة من تشغيلة العمولات المعتمدة — قراءة فقط (تُعدَّل بإعادة الاحتساب هناك). */}
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.commission).gt(0) ? `+${iqd(p.commission)}` : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
-                        {D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}
-                        {/* advances (بند 12ج): جزء السلفة المخصوم تلقائياً ضمن الاستقطاع. */}
-                        {D(p.advanceDeduction || 0).gt(0) && (
-                          <div className="text-[11px] text-muted-foreground">منه سلفة: {iqd(p.advanceDeduction)}</div>
-                        )}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
-                      <td className="p-2.5 text-center"><StatusBadge status={run!.status} /></td>
-                      <td className="p-2.5 text-center whitespace-nowrap">
-                        <button onClick={() => setSlip(p)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
-                          <FileText className="size-3.5" /> القسيمة
-                        </button>
-                        {isDraft && (
-                          <button onClick={() => setEditItem(p)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
-                            تعديل
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {/* صفّ المجاميع من رأس المسيّر (الخادم هو المرجع) — يُخفى أثناء الفلترة كي لا يوحي
-                    بأنه مجموع الصفوف المعروضة وحدها. */}
-                {visibleItems.length > 0 && !itemsFiltered && (
-                  <tr className="border-t-2 bg-muted/40 font-bold">
-                    <td className="p-2.5" colSpan={3}>الإجمالي</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
-                    <td></td>
-                    <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.commission)}</td>
-                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">−{iqd(totals.deductions)}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.net)}</td>
-                    <td colSpan={2}></td>
-                  </tr>
-                )}
-                {!runQ.isLoading && visibleItems.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={11}
-                    message={
-                      runs.length === 0
-                        ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء."
-                        : items.length === 0
-                          ? "لا بنود في هذا المسيّر."
-                          : "لا بنود مطابقة للبحث/الفلتر."
-                    }
-                  />
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+          {/* البحث وفلتر نوع الأجر في ترويسة البطاقة أعلاه (يغذّيان `visibleItems`) ⇒
+              `searchable={false}` وإلّا ظهر حقلا بحثٍ متجاوران. و`externalFiltersActive`
+              يحمل نفس معنى `itemsFiltered`. والبنود كلّها بلا ترقيم كما كان الجدول الخامّ. */}
+          <DataTable<RunItem>
+            columns={itemColumns}
+            data={visibleItems}
+            searchable={false}
+            externalFiltersActive={itemsFiltered}
+            pageSize={Infinity}
+            loading={runQ.isLoading}
+            errorState={{ isError: runQ.isError, message: runQ.error?.message, onRetry: () => void runQ.refetch() }}
+            getRowClassName={(p) => (payrollItemNeedsAttention(p.note) ? "bg-[var(--sem-warn-bg)]/60" : undefined)}
+            emptyState={itemsEmptyMessage}
+            emptyFilteredState={itemsEmptyMessage}
+          />
         </CardContent>
       </Card>
 
@@ -739,7 +931,7 @@ function EditItemDialog({
             onClick={() => onSave(round2(D(overtime || 0)).toFixed(2), round2(D(deductions || 0)).toFixed(2), note)}
             disabled={saving}
           >
-            {saving ? "جارٍ الحفظ…" : "حفظ"}
+            {saving ? ACTION_LABELS.saving : "حفظ"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -15,6 +15,33 @@ function fail(message) {
 
 if (!entries.length) fail("the journal has no entries");
 
+// Drizzle splits each migration on this marker and sends every resulting chunk
+// to MySQL. A trailing/consecutive marker therefore becomes an empty query
+// (ER_EMPTY_QUERY) after earlier DDL may already have auto-committed. CI used to
+// miss this because its schema bootstrap does not reproduce a production
+// journal resume. Two already-applied historical migrations contain a
+// comment-only chunk; freeze those exact exceptions and reject every new
+// queryless chunk before it can reach deployment.
+const LEGACY_QUERYLESS_CHUNKS = new Set([
+  "0041_reconcile_schema_drift.sql:0",
+  "0257_product_content_governance.sql:2",
+]);
+for (const name of migrationFiles) {
+  const sql = readFileSync(`${migrationsDir}/${name}`, "utf8");
+  const chunks = sql.split("--> statement-breakpoint");
+  for (const [index, chunk] of chunks.entries()) {
+    const executableSql = chunk
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n")
+      .trim();
+    if (!executableSql && !LEGACY_QUERYLESS_CHUNKS.has(`${name}:${index}`)) {
+      fail(`${name} contains an empty SQL chunk after breakpoint ${index}`);
+    }
+  }
+}
+
 const tags = entries.map((entry) => String(entry.tag));
 const indexes = entries.map((entry) => Number(entry.idx));
 if (new Set(tags).size !== tags.length) fail("duplicate journal tag");

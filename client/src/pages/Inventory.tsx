@@ -1,10 +1,10 @@
 import { RowActions } from "@/components/list";
+import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
-import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { TablePager } from "@/components/table/TablePager";
+import { CameraScanner } from "@/components/scan/CameraScanner";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,10 +29,11 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
+import { FILTER_LABELS } from "@shared/uiContracts";
+import { ACTION_LABELS } from "@shared/actionLabels";
+import { Camera, CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 
@@ -55,6 +56,9 @@ function variantLabel(r: { variantName: string | null; color: string | null; siz
   return parts.length ? parts.join(" / ") : r.sku;
 }
 
+/** جداولُ هذه الشاشة كلٌّ داخل بطاقةٍ تحمل عنوانَه وعدَّه — بلا شريطِ حالةٍ لكلّ جدول. */
+const PANEL_TABLE = { embedded: true, searchable: false, bounded: false, pageSize: Infinity } as const;
+
 export default function Inventory() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -73,6 +77,7 @@ export default function Inventory() {
   const [f, setF, resetF] = useUrlFilters({ q: "", cat: "all", low: "", neg: "", branch: "" });
   const [page, setPage] = useState(0);
   const [lastScannedBarcode, setLastScannedBarcode] = useState<string | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const patchF = (patch: Partial<typeof f>) => {
     setLastScannedBarcode(null);
     setF(patch);
@@ -353,16 +358,14 @@ export default function Inventory() {
     setF({ q: code, cat: "all", low: "", neg: "" });
     setPage(0);
   }, [setF]);
-  const barcodeInput = useBarcodeInput(handleInventoryBarcode, {
-    enabled: editing == null,
-  });
   useBarcodeScanner(handleInventoryBarcode, {
     enabled:
       editing == null &&
       rejectTarget == null &&
       revalFor == null &&
       revalRejectTarget == null &&
-      attachmentPreviewId == null,
+      attachmentPreviewId == null &&
+      !cameraOpen,
   });
 
   const rows = onHand.data ?? [];
@@ -372,7 +375,9 @@ export default function Inventory() {
     scannedSearchActive &&
     (dq.trim() !== lastScannedBarcode || onHand.isLoading || onHand.isFetching);
   const scannedRow =
-    scannedSearchActive && !scannedLookupLoading ? rows[0] ?? null : null;
+    scannedSearchActive && !scannedLookupLoading
+      ? rows.find((row) => row.scanMatch != null) ?? null
+      : null;
   useEffect(() => {
     if (!scannedSearchActive) return;
     const frame = window.requestAnimationFrame(() => {
@@ -387,7 +392,12 @@ export default function Inventory() {
   // مصفوفة صرفة بلا COUNT — صفحة مكتملة تعني غالباً وجود المزيد (تقريب paginateKeyset في وضع offset).
   const hasMore = rows.length === PAGE_SIZE;
   const lowCount = rows.filter((r) => r.isLow).length;
-  const anyFilter = f.q || f.cat !== "all" || f.low || f.neg || f.branch;
+  /**
+   * عدّاد الفلاتر المفعّلة — **بلا حقل البحث** (اصطلاح ListToolbar القائم) كي لا يقفز
+   * العدّاد مع كل حرف يكتبه الموظّف. زرّ التصفير في FilterShell يظهر تبعاً له.
+   */
+  const activeFilterCount =
+    (f.cat !== "all" ? 1 : 0) + (f.low ? 1 : 0) + (f.neg ? 1 : 0) + (f.branch ? 1 : 0) + (f.q ? 1 : 0);
 
   const exportColumns = [
     { key: "productName" as const, header: "المنتج" },
@@ -395,6 +405,181 @@ export default function Inventory() {
     { key: "quantity" as const, header: "الرصيد", map: (r: OnHandRow) => r.quantity },
     { key: "minStock" as const, header: "الحد الأدنى", map: (r: OnHandRow) => r.minStock ?? 0 },
     { key: "isLow" as const, header: "الحالة", map: (r: OnHandRow) => (r.isLow ? "منخفض" : "متوفّر") },
+  ];
+
+  /*
+   * أعمدة «الأرصدة الحالية» — تُبنى في العَرض لأنّها تُغلِق على حالة التسوية المضمّنة
+   * (`editing`/`target`/`reason`/`notes`/المرفق) وعلى الصلاحيات. التحرير سطرٌ واحدٌ في
+   * كل مرّة، فالجدولُ يبقى جدولَ عرضٍ لا شبكةَ تحرير.
+   */
+  const stockColumns: ColumnDef<OnHandRow, unknown>[] = [
+    {
+      id: "productName",
+      header: "المنتج",
+      accessorFn: (r) => r.productName,
+      meta: { width: "wide" },
+      cell: ({ row }) => <span className="font-medium">{row.original.productName}</span>,
+    },
+    {
+      id: "variant",
+      header: "المتغيّر / SKU",
+      accessorFn: (r) => `${variantLabel(r)} (${r.sku})`,
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {variantLabel(row.original)} <span className="text-muted-foreground font-mono" dir="ltr">({row.original.sku})</span>
+        </span>
+      ),
+    },
+    {
+      id: "quantity",
+      header: "الرصيد",
+      accessorFn: (r) => fmtInt(r.quantity),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) =>
+        editing === row.original.variantId ? (
+          <Input
+            dir="ltr"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            className="h-8 w-24 mx-auto text-center"
+            autoFocus
+          />
+        ) : (
+          <span className="font-semibold">{fmtInt(row.original.quantity)}</span>
+        ),
+    },
+    {
+      id: "minStock",
+      header: "الحد الأدنى",
+      accessorFn: (r) => fmtInt(r.minStock ?? 0),
+      meta: { kind: "number", align: "center" },
+      cell: ({ row }) => <span className="text-muted-foreground">{fmtInt(row.original.minStock ?? 0)}</span>,
+    },
+    {
+      id: "isLow",
+      header: "الحالة",
+      accessorFn: (r) => (r.isLow ? "منخفض" : "متوفّر"),
+      meta: { kind: "status" },
+      cell: ({ row }) => (
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${row.original.isLow ? "badge-stock-low" : "badge-status-active"}`}>
+          {row.original.isLow ? "منخفض" : "متوفّر"}
+        </span>
+      ),
+    },
+    {
+      id: "lastCountedAt",
+      header: "آخر جرد",
+      accessorFn: (r) => (r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرَد"),
+      meta: { kind: "date" },
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
+          {row.original.lastCountedAt ? fmtDate(row.original.lastCountedAt) : "لم يُجرَد"}
+        </span>
+      ),
+    },
+    {
+      // العمود لكل الأدوار (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها.
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions", width: "wide" },
+      cell: ({ row }) => {
+        const r = row.original;
+        if (canInlineAdjust && editing === r.variantId) {
+          return (
+            <div className="flex flex-col gap-1 items-stretch min-w-[220px]">
+              <AppSelect
+                value={reason}
+                onValueChange={(v) => setReason(v as AdjReason | "")}
+                placeholder="السبب (إلزاميّ)"
+                size="sm"
+              >
+                {ADJUSTMENT_REASONS.map((rr) => (
+                  <option key={rr.key} value={rr.key}>
+                    {"requiresProof" in rr && rr.requiresProof ? `${rr.label} · يستلزم مرفقاً` : rr.label}
+                  </option>
+                ))}
+              </AppSelect>
+              <Input
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="ملاحظة اختيارية"
+                className="h-8 text-xs"
+              />
+              <label className="text-[11px] flex items-center gap-1 justify-center cursor-pointer text-muted-foreground hover:text-primary">
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => handleAttachmentChange(e.target.files?.[0] ?? null)}
+                />
+                {attachmentUrl
+                  ? "صورة مرفقة — اضغط للتغيير"
+                  : attachmentRequired
+                    ? "التقط/ارفع صورة إثبات (إلزاميّ)"
+                    : "إرفاق صورة (اختياريّ)"}
+              </label>
+              <div className="flex gap-1 justify-center">
+                <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
+                  {adjust.isPending ? "…" : "حفظ"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
+                  إلغاء
+                </Button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          // menu صريح: عدد الإجراءات الظاهرة يتفاوت بالدور — نثبّت ⋯ لاتساق الصفوف
+          <RowActions
+            mode="menu"
+            actions={[
+              {
+                key: "stocktake",
+                kind: "create",
+                label: "جلسة جرد للمنتج",
+                hidden: !canAdjust,
+                href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
+                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "adjust",
+                kind: "edit",
+                label: "تسوية مباشرة (مدير)",
+                hidden: !canInlineAdjust,
+                onSelect: () => startAdjust(r),
+                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "revalue",
+                kind: "edit",
+                label: "إعادة تقييم التكلفة",
+                hidden: !canInlineAdjust,
+                onSelect: () => startReval(r),
+                gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "transfer",
+                kind: "create",
+                label: "تحويل بين الفروع",
+                href: "/transfers",
+                gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
+              },
+              {
+                key: "moves",
+                kind: "view",
+                label: "حركات المنتج",
+                // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
+                href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
+                gate: { module: "inventory", level: "READ" },
+              },
+            ]}
+          />
+        );
+      },
+    },
   ];
 
   return (
@@ -411,84 +596,91 @@ export default function Inventory() {
         }
       />
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-          {canPickBranch && (
-            <div className="space-y-1">
-              <Label htmlFor="inv-branch">الفرع</Label>
-              <AppSelect
-                id="inv-branch"
-                value={String(branchId)}
-                onValueChange={(v) => patchF({ branch: v })}
-              >
-                {(branches.data ?? []).map((b) => (
-                  <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
-                ))}
-              </AppSelect>
-            </div>
-          )}
-          <div className="space-y-1">
-            <Label>بحث (اسم/SKU/متغيّر/باركود)</Label>
-            <div className="relative">
-              <Input
-                value={f.q}
-                onChange={(e) => {
-                  setLastScannedBarcode(null);
-                  patchF({ q: e.target.value });
-                }}
-                onKeyDown={(event) =>
-                  barcodeInput.handleKeyDown(event, (value) => {
-                    setLastScannedBarcode(null);
-                    patchF({ q: value });
-                  })
-                }
-                className={barcodeSearchInputClass}
-                placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
-              />
-              <BarcodeSearchCue />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="inv-category">الفئة</Label>
-            <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
-              <option value="all">كل الفئات</option>
-              <option value="0">— بلا فئة —</option>
-              {groupCategoriesTree(categoriesQ.data ?? []).map(({ top, children }) =>
-                children.length ? (
-                  <optgroup key={top.id} label={top.name}>
-                    <option value={String(top.id)}>{top.name} (عام)</option>
-                    {children.map((c) => (
-                      <option key={c.id} value={String(c.id)}>{c.name}</option>
-                    ))}
-                  </optgroup>
-                ) : (
-                  <option key={top.id} value={String(top.id)}>{top.name}</option>
-                ),
-              )}
+      {/*
+        الموجة ١ من حملة توحيد الواجهات (docs/ui-unification-campaign.md):
+        كان هذا الغلاف يدوياً بتوقيع شبكةٍ خاصّ (`grid-cols-1 md:grid-cols-3 items-end`)
+        ومفاتيحَ ثنائية محشورةً في خلايا الشبكة بارتفاعٍ مزيَّف (`h-9`)، وتسميةِ بحثٍ
+        غير مربوطة بحقلها، و`ml-1` فيزيائيّ (يقلب اتّجاهه في RTL).
+      */}
+      <FilterShell
+        columns={3}
+        activeCount={activeFilterCount}
+        onReset={() => {
+          setLastScannedBarcode(null);
+          resetF();
+          setPage(0);
+        }}
+        toggles={
+          <>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
+              <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
+              <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
+            </label>
+          </>
+        }
+      >
+        {canPickBranch && (
+          <FilterField label="الفرع">
+            <AppSelect
+              id="inv-branch"
+              value={String(branchId)}
+              onValueChange={(v) => patchF({ branch: v })}
+            >
+              {(branches.data ?? []).map((b) => (
+                <option key={Number(b.id)} value={String(Number(b.id))}>{b.name}</option>
+              ))}
             </AppSelect>
-          </div>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => patchF({ low: e.target.checked ? "1" : "" })} />
-            <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
-          </label>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => patchF({ neg: e.target.checked ? "1" : "" })} />
-            <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
-          </label>
-          {anyFilter && (
-            <div className="flex items-center h-9">
-              <Button variant="ghost" size="sm" onClick={() => {
+          </FilterField>
+        )}
+        <FilterField label="بحث (اسم/SKU/متغيّر/باركود)" wide>
+          <div className="flex items-center gap-2">
+            <SearchField
+              className="min-w-0 flex-1"
+              value={f.q}
+              barcode
+              placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
+              onChange={(value) => {
                 setLastScannedBarcode(null);
-                resetF();
-                setPage(0);
-              }}>
-                <XCircle aria-hidden className="size-4 ml-1" /> مسح الفلاتر
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                patchF({ q: value });
+              }}
+              onScan={handleInventoryBarcode}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-10 shrink-0"
+              onClick={() => setCameraOpen(true)}
+              aria-label="مسح باركود المخزون بالكاميرا"
+              title="مسح بالكاميرا"
+            >
+              <Camera aria-hidden className="size-4" />
+            </Button>
+          </div>
+        </FilterField>
+        <FilterField label="الفئة">
+          <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
+            <option value="all">كل الفئات</option>
+            <option value="0">— بلا فئة —</option>
+            {groupCategoriesTree(categoriesQ.data ?? []).map(({ top, children }) =>
+              children.length ? (
+                <optgroup key={top.id} label={top.name}>
+                  <option value={String(top.id)}>{top.name} (عام)</option>
+                  {children.map((c) => (
+                    <option key={c.id} value={String(c.id)}>{c.name}</option>
+                  ))}
+                </optgroup>
+              ) : (
+                <option key={top.id} value={String(top.id)}>{top.name}</option>
+              ),
+            )}
+          </AppSelect>
+        </FilterField>
+      </FilterShell>
 
       {scannedSearchActive && scannedLookupLoading && (
         <div ref={scanIdentityRef}>
@@ -549,62 +741,83 @@ export default function Inventory() {
         <Card>
           <CardHeader><CardTitle className="text-base">طلبات تسوية معلَّقة ({fmtInt(pendingRows.length)})</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-center">التغيير</th>
-                    <th className="p-2 text-start">السبب</th>
-                    <th className="p-2 text-start">ملاحظات + إثبات</th>
-                    <th className="p-2 text-start">طلبها</th>
-                    <th className="p-2 text-center">إجراء</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingRows.map((r) => {
+            <DataTable
+              {...PANEL_TABLE}
+              data={pendingRows}
+              columns={[
+                {
+                  id: "product",
+                  header: "المنتج",
+                  meta: { width: "wide" },
+                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantName ?? row.original.sku}`,
+                },
+                {
+                  id: "change",
+                  header: "التغيير",
+                  meta: { align: "center" },
+                  cell: ({ row }) =>
+                    `من ${fmtInt(Number(row.original.currentQuantity ?? 0))} إلى ${fmtInt(row.original.targetQuantity)}`,
+                },
+                {
+                  id: "reason",
+                  header: "السبب",
+                  cell: ({ row }) => {
+                    const label = ADJUSTMENT_REASONS.find((x) => x.key === row.original.reason)?.label;
+                    return label ? <span className="text-xs">{label}</span> : <span className="text-muted-foreground">—</span>;
+                  },
+                },
+                {
+                  id: "notes",
+                  header: "ملاحظات + إثبات",
+                  meta: { wrap: true },
+                  cell: ({ row }) => (
+                    <span className="text-muted-foreground text-xs">
+                      {row.original.notes || <span>—</span>}
+                      {row.original.hasAttachment && (
+                        <button
+                          type="button"
+                          className="ms-2 text-primary underline underline-offset-2"
+                          onClick={() => setAttachmentPreviewId(row.original.id)}
+                        >
+                          عرض الإثبات
+                        </button>
+                      )}
+                    </span>
+                  ),
+                },
+                { id: "requestedBy", header: "طلبها", meta: { width: "actor" }, cell: ({ row }) => row.original.createdByName ?? "—" },
+                {
+                  id: "action",
+                  header: "إجراء",
+                  meta: { kind: "actions", width: "wide" },
+                  cell: ({ row }) => {
+                    const r = row.original;
                     const mine = r.createdBy != null && Number(r.createdBy) === Number(me.data?.id);
-                    const reasonLabel = ADJUSTMENT_REASONS.find((x) => x.key === r.reason)?.label;
+                    if (r.status !== "PENDING_APPROVAL") {
+                      return (
+                        <span className="text-xs text-muted-foreground">
+                          {r.status === "APPROVED" ? "اعتُمد" : "رُفض"}
+                          {r.approvedAt ? ` — ${fmtDate(r.approvedAt)}` : ""}
+                          {r.rejectionReason ? ` (${r.rejectionReason})` : ""}
+                        </span>
+                      );
+                    }
+                    // فصلُ المهام: المُنشئ لا يعتمد طلبَه — نصٌّ لا زرٌّ معطَّل.
+                    if (mine) return <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>;
                     return (
-                      <tr key={r.id} className="border-t">
-                        <td className="p-2">{r.productName} — {r.variantName ?? r.sku}</td>
-                        <td className="p-2 text-center">من {fmtInt(Number(r.currentQuantity ?? 0))} إلى {fmtInt(r.targetQuantity)}</td>
-                        <td className="p-2 text-xs">{reasonLabel ?? <span className="text-muted-foreground">—</span>}</td>
-                        <td className="p-2 text-muted-foreground text-xs">
-                          {r.notes || <span>—</span>}
-                          {r.hasAttachment && (
-                            <button
-                              type="button"
-                              className="ms-2 text-primary underline underline-offset-2"
-                              onClick={() => setAttachmentPreviewId(r.id)}
-                            >
-                              عرض الإثبات
-                            </button>
-                          )}
-                        </td>
-                        <td className="p-2">{r.createdByName ?? "—"}</td>
-                        <td className="p-2 text-center">
-                          {r.status !== "PENDING_APPROVAL" ? (
-                            <span className="text-xs text-muted-foreground">
-                              {r.status === "APPROVED" ? "اعتُمد" : "رُفض"}
-                              {r.approvedAt ? ` — ${fmtDate(r.approvedAt)}` : ""}
-                              {r.rejectionReason ? ` (${r.rejectionReason})` : ""}
-                            </span>
-                          ) : mine ? (
-                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
-                          ) : (
-                            <div className="flex items-center justify-center gap-2">
-                              <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}><CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد</Button>
-                              <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}><XCircle aria-hidden className="size-4 ml-1" /> رفض</Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
+                      <div className="flex items-center justify-center gap-2">
+                        <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}>
+                          <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}>
+                          <XCircle aria-hidden className="size-4 ml-1" /> رفض
+                        </Button>
+                      </div>
                     );
-                  })}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+                  },
+                },
+              ]}
+            />
           </CardContent>
         </Card>
       )}
@@ -622,7 +835,6 @@ export default function Inventory() {
             {attachmentPreview.isLoading ? (
               <span className="text-sm text-muted-foreground">جارٍ تحميل الصورة…</span>
             ) : attachmentPreview.data?.attachmentUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={attachmentPreview.data.attachmentUrl}
                 alt="مرفق إثبات التسوية"
@@ -656,63 +868,74 @@ export default function Inventory() {
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2 text-start">المنتج</th>
-                    <th className="p-2 text-center">التكلفة</th>
-                    <th className="p-2 text-center">الكمية</th>
-                    <th className="p-2 text-center">أثر القيمة</th>
-                    <th className="p-2 text-start">الغرض والسبب</th>
-                    <th className="p-2 text-start">طلبها</th>
-                    <th className="p-2 text-center">{revalTab === "PENDING_APPROVAL" ? "إجراء" : "الحسم"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {revalRows.length === 0 && (
-                    <TableEmptyRow colSpan={7} message="لا طلبات في هذه الحالة." />
-                  )}
-                  {revalRows.map((r) => {
-                    const mine = Number(r.createdBy) === Number(me.data?.id);
-                    const negative = D(r.expectedValueDelta).isNegative();
+            <DataTable
+              {...PANEL_TABLE}
+              data={revalRows}
+              emptyText="لا طلبات في هذه الحالة."
+              columns={[
+                {
+                  id: "product",
+                  header: "المنتج",
+                  meta: { width: "wide" },
+                  cell: ({ row }) => `${row.original.productName} — ${row.original.variantLabel}`,
+                },
+                {
+                  id: "cost",
+                  header: "التكلفة",
+                  meta: { kind: "number", align: "center" },
+                  cell: ({ row }) => `${fmt(row.original.oldCost)} ← ${fmt(row.original.newCost)}`,
+                },
+                { id: "qty", header: "الكمية", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.expectedQuantity) },
+                {
+                  id: "delta",
+                  header: "أثر القيمة",
+                  meta: { kind: "number", align: "center" },
+                  cell: ({ row }) => (
+                    <span className={D(row.original.expectedValueDelta).isNegative() ? "text-money-negative" : "text-money-positive"}>
+                      {fmt(row.original.expectedValueDelta)}
+                    </span>
+                  ),
+                },
+                {
+                  id: "purpose",
+                  header: "الغرض والسبب",
+                  meta: { wrap: true },
+                  cell: ({ row }) => (
+                    <span className="text-muted-foreground">
+                      {row.original.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"} — {row.original.reason}
+                    </span>
+                  ),
+                },
+                { id: "requestedBy", header: "طلبها", meta: { width: "actor" }, cell: ({ row }) => row.original.createdByName ?? "—" },
+                {
+                  id: "action",
+                  header: revalTab === "PENDING_APPROVAL" ? "إجراء" : "الحسم",
+                  meta: { kind: "actions", width: "wide" },
+                  cell: ({ row }) => {
+                    const r = row.original;
+                    // فصلُ المهام كما في طلبات التسوية أعلاه.
+                    if (Number(r.createdBy) === Number(me.data?.id)) {
+                      return <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>;
+                    }
                     return (
-                      <tr key={r.id} className="border-t">
-                        <td className="p-2">{r.productName} — {r.variantLabel}</td>
-                        <td className="p-2 text-center tabular-nums">{fmt(r.oldCost)} ← {fmt(r.newCost)}</td>
-                        <td className="p-2 text-center tabular-nums">{fmtInt(r.expectedQuantity)}</td>
-                        <td className={`p-2 text-center tabular-nums ${negative ? "text-money-negative" : "text-money-positive"}`}>
-                          {fmt(r.expectedValueDelta)}
-                        </td>
-                        <td className="p-2 text-muted-foreground">
-                          {r.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"} — {r.reason}
-                        </td>
-                        <td className="p-2">{r.createdByName ?? "—"}</td>
-                        <td className="p-2 text-center">
-                          {mine ? (
-                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
-                          ) : (
-                            <div className="flex items-center justify-center gap-2">
-                              <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
-                                <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
-                                disabled={rejectReval.isPending}
-                              >
-                                <XCircle aria-hidden className="size-4 ml-1" /> رفض
-                              </Button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
+                      <div className="flex items-center justify-center gap-2">
+                        <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
+                          <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
+                          disabled={rejectReval.isPending}
+                        >
+                          <XCircle aria-hidden className="size-4 ml-1" /> رفض
+                        </Button>
+                      </div>
                     );
-                  })}
-                </tbody>
-              </table>
-            </ScrollTableShell>
+                  },
+                },
+              ]}
+            />
           </CardContent>
         </Card>
       )}
@@ -722,7 +945,7 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} في الصفحة`}
+              {onHand.isLoading ? ACTION_LABELS.loading : `${fmtInt(rows.length)} في الصفحة`}
             </span>
             <Button
               variant="outline"
@@ -753,159 +976,32 @@ export default function Inventory() {
               القائمة مقسّمة صفحات — تنقّل بالترقيم أسفل الجدول، و«تصدير Excel» ينزّل كامل النتائج المطابقة للفلاتر.
             </p>
           )}
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">المنتج</th>
-                <th className="p-2 text-start">المتغيّر / SKU</th>
-                <th className="p-2 text-center">الرصيد</th>
-                <th className="p-2 text-center">الحد الأدنى</th>
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">آخر جرد</th>
-                {/* العمود لكل الأدوار الآن (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها */}
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const isEditing = editing === r.variantId;
-                return (
-                  <tr key={r.variantId} className={`border-t ${r.isLow ? "bg-[var(--sem-warn-bg)]" : ""}`}>
-                    <td className="p-2 font-medium">{r.productName}</td>
-                    <td className="p-2 text-xs">
-                      {variantLabel(r)} <span className="text-muted-foreground font-mono" dir="ltr">({r.sku})</span>
-                    </td>
-                    <td className="p-2 text-center tabular-nums font-semibold">
-                      {isEditing ? (
-                        <Input
-                          dir="ltr"
-                          value={target}
-                          onChange={(e) => setTarget(e.target.value)}
-                          className="h-8 w-24 mx-auto text-center"
-                          autoFocus
-                        />
-                      ) : (
-                        fmtInt(r.quantity)
-                      )}
-                    </td>
-                    <td className="p-2 text-center tabular-nums text-muted-foreground">{fmtInt(r.minStock ?? 0)}</td>
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.isLow ? "badge-stock-low" : "badge-status-active"}`}>
-                        {r.isLow ? "منخفض" : "متوفّر"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
-                      {r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرَد"}
-                    </td>
-                    <td className="p-2 text-center">
-                      {canInlineAdjust && isEditing ? (
-                        <div className="flex flex-col gap-1 items-stretch min-w-[220px]">
-                          <AppSelect
-                            value={reason}
-                            onValueChange={(v) => setReason(v as AdjReason | "")}
-                            placeholder="السبب (إلزاميّ)"
-                            size="sm"
-                          >
-                            {ADJUSTMENT_REASONS.map((rr) => (
-                              <option key={rr.key} value={rr.key}>
-                                {"requiresProof" in rr && rr.requiresProof ? `${rr.label} · يستلزم مرفقاً` : rr.label}
-                              </option>
-                            ))}
-                          </AppSelect>
-                          <Input
-                            value={notes}
-                            onChange={(e) => setNotes(e.target.value)}
-                            placeholder="ملاحظة اختيارية"
-                            className="h-8 text-xs"
-                          />
-                          <label className="text-[11px] flex items-center gap-1 justify-center cursor-pointer text-muted-foreground hover:text-primary">
-                            <input
-                              type="file"
-                              accept="image/*"
-                              capture="environment"
-                              className="hidden"
-                              onChange={(e) => handleAttachmentChange(e.target.files?.[0] ?? null)}
-                            />
-                            {attachmentUrl
-                              ? "صورة مرفقة — اضغط للتغيير"
-                              : attachmentRequired
-                              ? "التقط/ارفع صورة إثبات (إلزاميّ)"
-                              : "إرفاق صورة (اختياريّ)"}
-                          </label>
-                          <div className="flex gap-1 justify-center">
-                            <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
-                              {adjust.isPending ? "…" : "حفظ"}
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
-                              إلغاء
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        // menu صريح: عدد الإجراءات الظاهرة يتفاوت بالدور — نثبّت ⋯ لاتساق الصفوف
-                        <RowActions
-                          mode="menu"
-                          actions={[
-                            {
-                              key: "stocktake",
-                              kind: "create",
-                              label: "جلسة جرد للمنتج",
-                              hidden: !canAdjust,
-                              href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
-                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "adjust",
-                              kind: "edit",
-                              label: "تسوية مباشرة (مدير)",
-                              hidden: !canInlineAdjust,
-                              onSelect: () => startAdjust(r),
-                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "revalue",
-                              kind: "edit",
-                              label: "إعادة تقييم التكلفة",
-                              hidden: !canInlineAdjust,
-                              onSelect: () => startReval(r),
-                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "transfer",
-                              kind: "create",
-                              label: "تحويل بين الفروع",
-                              href: "/transfers",
-                              gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" },
-                            },
-                            {
-                              key: "moves",
-                              kind: "view",
-                              label: "حركات المنتج",
-                              // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
-                              href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
-                              gate: { module: "inventory", level: "READ" },
-                            },
-                          ]}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {!onHand.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={7} message={page > 0 ? "لا صفوف في هذه الصفحة — ارجع للصفحة السابقة." : "لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء."} />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
-          <TablePager
-            page={page}
-            onPageChange={setPage}
-            pageSize={PAGE_SIZE}
-            rowsOnPage={rows.length}
-            hasMore={hasMore}
-            isLoading={onHand.isLoading}
+          {/* الترقيم خادميّ (limit/offset بلا COUNT ⇒ hasMore) ⇒ شريطٌ واحدٌ داخل الجدول؛
+              الشريط المنفصل الذي كان تحته حُذف كي لا يقفز ترقيمان بمقدارَين فتُتخطّى صفوفٌ صامتاً.
+              والبحث والفلاتر في شريط الأدوات أعلى الصفحة (تغذّي الاستعلام) ⇒ لا بحثَ داخليّ. */}
+          <DataTable<OnHandRow>
+            columns={stockColumns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={activeFilterCount > 0}
+            loading={onHand.isLoading}
+            errorState={{ isError: onHand.isError, message: onHand.error?.message, onRetry: () => void onHand.refetch() }}
+            /* `!` إلزاميّ: صفُّ DataTable يحمل `odd:bg-background even:bg-muted/20` وحاويتُه
+               تحمل `[&_tbody_tr:nth-child(even)]:bg-muted/20` — وكلاهما أعلى تخصيصاً من صنفِ
+               خلفيةٍ عاديّ، فتُبتلَع نبرةُ الصفّ المنخفض صامتةً (كانت تعمل في الجدول الخامّ). */
+            getRowClassName={(r) => (r.isLow ? "!bg-[var(--sem-warn-bg)]" : undefined)}
+            emptyText={page > 0 ? "لا صفوف في هذه الصفحة — ارجع للصفحة السابقة." : "لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء."}
+            /* بلا هذه يُقال «أضف رصيداً افتتاحياً» بينما الصفوف موجودةٌ ومحجوبةٌ ببحثٍ أو فلتر. */
+            emptyFilteredState={(
+              <div className="space-y-2">
+                <div>لا منتجات مطابقة للبحث أو الفلاتر الحالية.</div>
+                {/* زرٌّ فعليّ بتسمية العقد بدل إعادة كتابة نصّ الزرّ في الجملة. */}
+                <Button variant="outline" size="sm" onClick={resetF}>
+                  {FILTER_LABELS.reset}
+                </Button>
+              </div>
+            )}
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, hasMore, isFetching: onHand.isFetching }}
           />
         </CardContent>
       </Card>
@@ -918,36 +1014,37 @@ export default function Inventory() {
           </Link>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 text-start">التاريخ</th>
-                <th className="p-2 text-start">المنتج</th>
-                <th className="p-2 text-start">النوع</th>
-                <th className="p-2 text-center">الكمية (أساس)</th>
-                <th className="p-2 text-start">المرجع</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(movements.data?.rows ?? []).map((m) => (
-                <tr key={m.id} className="border-t">
-                  <td className="p-2 text-xs">{fmtDateTime(m.createdAt)}</td>
-                  <td className="p-2 text-xs">
-                    {m.productName}
-                    <span className="text-muted-foreground"> — {variantLabel(m)}</span>
-                  </td>
-                  <td className="p-2 text-xs">{MTYPE[m.movementType] ?? m.movementType}</td>
-                  <td className="p-2 text-center tabular-nums">{fmtInt(m.quantity)}</td>
-                  <td className="p-2 text-muted-foreground text-xs">{m.referenceType ?? "—"}{m.referenceId ? ` #${m.referenceId}` : ""}</td>
-                </tr>
-              ))}
-              {movements.data && movements.data.rows.length === 0 && (
-                <TableEmptyRow colSpan={5} message="لا حركات مخزون بعد." />
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          <DataTable
+            {...PANEL_TABLE}
+            data={movements.data?.rows ?? []}
+            loading={movements.isLoading}
+            emptyText="لا حركات مخزون بعد."
+            columns={[
+              { id: "date", header: "التاريخ", meta: { kind: "datetime" }, cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.createdAt)}</span> },
+              {
+                id: "product",
+                header: "المنتج",
+                meta: { width: "wide" },
+                cell: ({ row }) => (
+                  <span className="text-xs">
+                    {row.original.productName}
+                    <span className="text-muted-foreground"> — {variantLabel(row.original)}</span>
+                  </span>
+                ),
+              },
+              { id: "type", header: "النوع", cell: ({ row }) => <span className="text-xs">{MTYPE[row.original.movementType] ?? row.original.movementType}</span> },
+              { id: "qty", header: "الكمية (أساس)", meta: { kind: "number", align: "center" }, cell: ({ row }) => fmtInt(row.original.quantity) },
+              {
+                id: "ref",
+                header: "المرجع",
+                cell: ({ row }) => (
+                  <span className="text-muted-foreground text-xs">
+                    {row.original.referenceType ?? "—"}{row.original.referenceId ? ` #${row.original.referenceId}` : ""}
+                  </span>
+                ),
+              },
+            ]}
+          />
         </CardContent>
       </Card>
 
@@ -1050,7 +1147,7 @@ export default function Inventory() {
                 )}
 
                 <div className="space-y-1">
-                  <Label htmlFor="reval-reason">سبب إعادة التقييم (١٠ محارف على الأقلّ)</Label>
+                  <Label htmlFor="reval-reason">سبب إعادة التقييم (10 محارف على الأقلّ)</Label>
                   <Textarea
                     id="reval-reason"
                     value={revalReason}
@@ -1116,6 +1213,15 @@ export default function Inventory() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CameraScanner
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onDetect={(barcode) => {
+          setCameraOpen(false);
+          handleInventoryBarcode(barcode);
+        }}
+      />
     </div>
   );
 }

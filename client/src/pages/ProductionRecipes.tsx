@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,11 +9,13 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { coefficientBatchMultiple, requiredBatchMultiple } from "@shared/batchDivisibility";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 let _k = 1;
@@ -123,6 +126,18 @@ export default function ProductionRecipes() {
     return { materials: round2(materials), labor: round2(lab), direct, waste, stdUnit, absorb, stored, delta };
   }, [comps, labor, wastePct, out]);
 
+  /*
+   * **قيدُ الدفعة يُعلَن وقتَ تأليف الوصفة، لا وقتَ فشل التشغيل.** استهلاك المكوّن =
+   * `qtyPerOutputBase × الدفعة`، والمخزون عددٌ صحيح بالوحدة الأساس ⇒ المعامِل الكسريّ
+   * يجعل دفعاتٍ بعينها صالحةً وغيرَها لا. وهو قيدٌ **غير تصاعديّ**: معامِل 0.01 يقبل 100
+   * و200 ويرفض 50 — فيبدو للمستعمل أنّ النظام «لا يقبل إلا 100» والمواد وافرة.
+   * الحسبة هنا هي نفسها في الخادم (`shared/batchDivisibility`) ⇒ ما يُحذَّر منه هو
+   * ما سيُرفض بالضبط. تحذيرٌ لا حجب: المعامِل الكسريّ مشروع، وإنّما يلزم أن يُعرَف.
+   */
+  const compCoefficients = comps.map((c) => compBaseQty(c).toFixed(4));
+  const recipeBatchMultiple = requiredBatchMultiple(compCoefficients);
+  const fractionalComps = comps.filter((c) => coefficientBatchMultiple(compBaseQty(c).toFixed(4)) > 1);
+
   function validate(): string | null {
     if (!name.trim()) return "اسم الوصفة مطلوب.";
     if (!out) return "اختر المنتج الناتج.";
@@ -192,9 +207,9 @@ export default function ProductionRecipes() {
                         <div className="truncate"><span className="font-medium">{out.productName}</span> <span className="text-xs text-muted-foreground font-mono" dir="ltr">{out.sku}</span></div>
                         <div className="flex items-center gap-2 shrink-0">
                           {out.units.length > 0 && (
-                            <select className={selectClsFull + " w-auto"} value={out.unitId} onChange={(e) => setOut({ ...out, unitId: Number(e.target.value) })}>
+                            <AppSelect className={selectClsFull + " w-auto"} value={String(out.unitId)} onValueChange={(next) => setOut({ ...out, unitId: Number(next) })}>
                               {out.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ""}</option>)}
-                            </select>
+                            </AppSelect>
                           )}
                           <button type="button" className="text-[var(--sem-neg)] text-sm" onClick={() => setOut(null)}>تغيير</button>
                         </div>
@@ -240,12 +255,12 @@ export default function ProductionRecipes() {
                       <Input dir="ltr" value={c.qty} onChange={(e) => setComps((p) => p.map((x) => x.key === c.key ? { ...x, qty: e.target.value } : x))} placeholder="كمية" />
                     </div>
                     <div className="col-span-5 md:col-span-3">
-                      <select className={selectClsFull} value={c.productUnitId ?? ""} onChange={(e) => {
-                        const u = c.units.find((x) => x.productUnitId === Number(e.target.value));
-                        setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(e.target.value), conversionFactor: u?.conversionFactor ?? "1" } : x));
+                      <AppSelect className="h-9" value={String(c.productUnitId ?? "")} onValueChange={(next) => {
+                        const u = c.units.find((x) => x.productUnitId === Number(next));
+                        setComps((p) => p.map((x) => x.key === c.key ? { ...x, productUnitId: Number(next), conversionFactor: u?.conversionFactor ?? "1" } : x));
                       }}>
                         {c.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{Number(u.conversionFactor) !== 1 ? ` ×${u.conversionFactor}` : ""}</option>)}
-                      </select>
+                      </AppSelect>
                     </div>
                     <div className="col-span-2 md:col-span-2 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
                     <div className="col-span-1 text-start">
@@ -257,9 +272,28 @@ export default function ProductionRecipes() {
               </CardContent>
             </Card>
 
+            {recipeBatchMultiple > 1 && (
+              <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-sm space-y-1">
+                <div className="font-medium text-[var(--sem-warn)]">
+                  تنبيه: هذه الوصفة ستقبل دفعاتٍ مضاعفةً لـ{recipeBatchMultiple} فقط
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  ({recipeBatchMultiple} · {recipeBatchMultiple * 2} · {recipeBatchMultiple * 3} …) — وأيّ دفعةٍ أخرى تُرفَض عند التشغيل
+                  ولو كانت المواد وافرة، لأنّ المخزون يُخصَم بوحداتٍ صحيحة ولا يُخصَم جزءُ وحدة.
+                </div>
+                <ul className="list-disc ps-4 text-xs text-muted-foreground space-y-0.5">
+                  {fractionalComps.map((c) => (
+                    <li key={c.key}>
+                      «{c.productName}» = <span dir="ltr" className="tabular-nums">{compBaseQty(c).toFixed(4)}</span> بالوحدة الأساس
+                      {" — "}اجعلها عدداً صحيحاً لتعمل كل الدفعات.
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <div className="flex gap-2">
-              <Button onClick={save} disabled={busy}>{busy ? "جارٍ الحفظ…" : "حفظ الوصفة"}</Button>
+              <Button onClick={save} disabled={busy}>{busy ? ACTION_LABELS.saving : "حفظ الوصفة"}</Button>
               <Button variant="outline" onClick={resetForm}>إلغاء</Button>
             </div>
           </div>

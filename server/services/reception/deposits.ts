@@ -7,15 +7,22 @@
 //
 // ترتيب الأقفال الموحَّد (§٧.٤): مسوّدة ← وردية ← أمر شغل. كلّ كتابة مالٍ هنا تبدأ بقفل
 // صفّ المسوّدة FOR UPDATE ⇒ I2 (سقف المقبوض) مُحكمٌ تحت التزامن الحقيقيّ بلا قفل جدول.
+//
+// م٣ من برنامج v2 (نواة العرابين): بقي هنا **كتّابُ الإيصالات** وحدهم — collectDeposit ·
+// refundDeposit · refundAppliedCollectionsForWorkOrder — وهم محوِّلُ الاستقبال فوق النواة
+// `server/services/deposits` (دفترُ المال المحتجَز: heldNetOfDraft · allocateAtCommit ·
+// appliedCollectionsForWorkOrder · …) التي **يستوردونها ولا تستوردهم**. سببُ بقائهم هنا لا هناك:
+// جردُ كتّاب إدراج `receipts` في cashDayClosedWriteGate.test.ts يثبّت هذا الملفّ بعدده (٣)،
+// ومعيارُ خروج م٣ «صفر تعديلٍ في أيّ اختبار».
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import { and, eq, sql } from "drizzle-orm";
 import {
   orderPayments,
   receptionDraftLines,
   receptionDrafts,
   receipts,
   shifts,
-  workOrders,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -29,13 +36,32 @@ import {
   openShiftIdTx,
   resolveBranchCashShiftTx,
 } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import {
+  assertCashOutAvailable,
+  lockMaterializedCashReceiptSourceForWrite,
+} from "../cash/cashAvailability";
 import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 import { paymentAssetRole } from "../sale/paymentPosting";
+import { appliedCollectionsForWorkOrder, heldNetOfDraft, type DepositMethod } from "../deposits";
 
-/** طرق العربون — TELECOM (رصيد زين، ش٥) خلف ضوابط §٩.٤ في telecom.ts. */
-export type DepositMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
+/**
+ * @deprecated مسارٌ انتقاليّ: دفترُ المال المحتجَز (القراءة والتخصيص والربط) انتقل إلى نواة
+ * العرابين `server/services/deposits` (م٣) — استورد منها مباشرةً. تبقى إعادةُ التصدير هذه كي لا
+ * ينكسر مستوردٌ لم يُقلَب بعد (فروعٌ حيّة تستورد `../reception/deposits`)، ويحرس
+ * `deposits/__tests__/isolation.test.ts` ألّا يستعملها ملفٌّ خارج `reception/`. تُحذف في م٩.
+ */
+export {
+  allocateAtCommit,
+  appliedCollectionsForWorkOrder,
+  draftHasWorkOrderApplications,
+  heldDepositsOfShift,
+  heldNetOfDraft,
+  linkSoleTargetCollectionsToInvoice,
+  listDraftPayments,
+  type AllocationTarget,
+  type DepositMethod,
+} from "../deposits";
 
 export interface CollectDepositInput {
   draftId: number;
@@ -55,24 +81,6 @@ export interface RefundDepositInput {
 }
 
 type Decimal = ReturnType<typeof money>;
-
-/** صافي المحتجز على مسوّدة: Σ COLLECTION (غير المردودة كلياً تُحمل بصافيها) − Σ REFUND.
- *  ⚠️ قراءةٌ **قافلة** (FOR UPDATE) عمداً — فخّ MVCC أمسكه اختبار التزامن I2: القراءة العادية
- *  داخل معاملةٍ سبق فيها SELECT عاديّ (فحص idempotency) تقرأ من لقطةٍ أقدم من قفل الصفّ،
- *  فيمرّ قبضان متزامنان يتجاوزان الإجمالي معاً. القراءة القافلة ترى آخر الملتزم دائماً.
- *  تُستدعى حصراً بعد قفل صفّ المسوّدة (ترتيب الأقفال: مسوّدة ← صفوف المال). */
-export async function heldNetOfDraft(tx: Tx, draftId: number): Promise<Decimal> {
-  const rows = await tx
-    .select({ kind: orderPayments.kind, amount: orderPayments.amount })
-    .from(orderPayments)
-    .where(and(eq(orderPayments.draftId, draftId), inArray(orderPayments.kind, ["COLLECTION", "REFUND"])))
-    .for("update");
-  let net = money(0);
-  for (const r of rows) {
-    net = r.kind === "COLLECTION" ? net.plus(money(r.amount)) : net.minus(money(r.amount));
-  }
-  return round2(net);
-}
 
 /** إجمالي المسوّدة مُعاداً حسابه من الأسطر (لا من أعمدة الرأس — ذاكرة عرضٍ فقط).
  *  قراءةٌ قافلة لنفس علّة MVCC أعلاه (زميلٌ زامن أسطراً أرخص قبيل قفلنا ⇒ لقطةٌ قديمة تُريها أغلى). */
@@ -121,22 +129,59 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     }
 
     const amountD = round2(money(input.amount));
-    if (amountD.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ العربون يجب أن يكون أكبر من صفر" });
+    if (amountD.lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مبلغ العربون غير صالح",
+          why: "المبلغ يجب أن يكون أكبر من صفر — عربون بقيمة 0 لا يحجز ولا يُقبض",
+          doThis: "أدخل مبلغاً موجباً في حقل «مبلغ العربون» ثم أعد القبض",
+        }),
+      });
     if (input.method !== "CASH" && !input.reference?.trim()) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المرجع إلزاميّ لغير النقد (رقم القسيمة/التحويل)" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "لا يمكن قبض العربون بلا مرجع",
+          why: `طريقة الدفع «${input.method}» ليست نقداً، وحقل «المرجع» فارغ — يلزم رقم القسيمة/التحويل للتدقيق`,
+          doThis: "أدخل رقم القسيمة/التحويل/الجهاز في حقل «المرجع»، أو غيّر الطريقة إلى نقد",
+        }),
+      });
     }
 
     // ١) قفل المسوّدة — رأس ترتيب الأقفال، وبوّابة I2.
     const draft = (
       await tx.select().from(receptionDrafts).where(eq(receptionDrafts.id, input.draftId)).for("update").limit(1)
     )[0];
-    if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
+    if (!draft)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على الطلب المحفوظ",
+          why: "الرقم المرسل يشير إلى مسوّدة استقبال محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
+        }),
+      });
     if (draft.status !== "OPEN") {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطلب لم يعد مفتوحاً — لا يُقبض عربون على طلبٍ مُثبَّت/ملغى" });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "لا يمكن قبض عربون على هذا الطلب",
+          why: `الطلب لم يعد مفتوحاً (الحالة حالياً «${draft.status}») — لا يُقبض عربون على طلبٍ مُثبَّت أو ملغى`,
+          doThis: "أعد تحميل الطلب — إن كان مُثبَّتاً فالقبض يتم من فاتورة البيع، وإن كان ملغى فأنشئ طلباً جديداً",
+        }),
+      });
     }
     const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تستطيع العمل على هذا الطلب",
+          why: "الطلب يخص فرعاً غير فرعك، وصلاحية عبور الفروع محصورة بالإدارة (admin)",
+          doThis: "افتح الطلب من الفرع الذي يخصّه، أو اطلب من الإدارة تنفيذ العملية",
+        }),
+      });
     }
 
     // ٢) وردية استقبال مفتوحة للقابض **بنوعها الدقيق** (لا تسامح openShiftIdTx — V12).
@@ -146,8 +191,16 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: anyShift
-          ? `ورديتك المفتوحة ليست وردية استقبال (${anyShift.shiftType}) — العربون يُقبض على وردية استقبالٍ يدخل درجَها ويُحاسَب عليها`
-          : "افتح وردية استقبال أولاً — العربون يدخل درجك أنت وتُحاسَب عليه عند الإغلاق",
+          ? appErrorMessage({
+              what: "لا يمكن قبض العربون على هذه الوردية",
+              why: `ورديتك المفتوحة ليست وردية استقبال (نوعها «${anyShift.shiftType}» لا RECEPTION) — العربون يُقبض على وردية استقبال يدخل درجها ويُحاسَب عليها`,
+              doThis: "أغلق ورديتك الحالية من شاشة الورديات وافتح وردية استقبال (RECEPTION)، ثم أعد قبض العربون",
+            })
+          : appErrorMessage({
+              what: "لا توجد وردية استقبال مفتوحة",
+              why: "العربون يدخل درج القابض ويُحاسَب عليه عند إغلاق الوردية — لا وردية استقبال باسمك على هذا الفرع",
+              doThis: "افتح وردية استقبال من شاشة الورديات، ثم أعد قبض العربون",
+            }),
       });
     }
     // مراجعة ش٤: getOpenShift قراءةٌ عاديّة خارج المعاملة — closeShift المتزامن كان يُهبط إيصال
@@ -164,9 +217,21 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (!lockedShift || lockedShift.status !== "OPEN" || lockedShift.shiftType !== "RECEPTION") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "ورديتك أُغلقت للتوّ — افتح وردية استقبال ثم أعد قبض العربون",
+        message: appErrorMessage({
+          what: "لا يمكن إتمام قبض العربون",
+          why: "ورديتك أُغلقت أو تغيّر نوعها بين فتح النموذج والحفظ (سباق إغلاق) — لا درج مفتوحاً باسمك الآن",
+          doThis: "افتح وردية استقبال جديدة من شاشة الورديات، ثم أعد قبض العربون",
+        }),
       });
     }
+    await lockMaterializedCashReceiptSourceForWrite(tx, {
+      branchId: Number(draft.branchId),
+      shiftId: Number(myShift.id),
+      cashBucket: input.method === "CASH" ? "DRAWER" : null,
+      paymentMethod: input.method,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+    });
 
     // ٣) I2 تحت القفل: المقبوض الجديد + الصافي المحتجز <= إجمالي الأسطر المُعاد حسابه.
     const held = await heldNetOfDraft(tx, input.draftId);
@@ -175,7 +240,11 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
     if (nextHeld.gt(total)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `المقبوض يتجاوز إجمالي الطلب: محتجزٌ ${held.toFixed(2)} + الجديد ${amountD.toFixed(2)} > الإجمالي ${total.toFixed(2)}`,
+        message: appErrorMessage({
+          what: "المبلغ يتجاوز إجمالي الطلب",
+          why: `المحتجز الحالي ${held.toFixed(2)} + العربون الجديد ${amountD.toFixed(2)} = ${nextHeld.toFixed(2)}، وهو أكبر من إجمالي الطلب ${total.toFixed(2)}`,
+          doThis: `أنقص مبلغ العربون إلى ${round2(total.minus(held)).toFixed(2)} فأقلّ، أو أضف بنوداً للطلب أوّلاً`,
+        }),
       });
     }
 
@@ -283,33 +352,71 @@ export async function refundDeposit(
     }
 
     const amountD = round2(money(input.amount));
-    if (amountD.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الردّ يجب أن يكون أكبر من صفر" });
+    if (amountD.lte(0))
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "مبلغ الردّ غير صالح",
+          why: "المبلغ يجب أن يكون أكبر من صفر — ردٌّ بقيمة 0 لا يعني عملية",
+          doThis: "أدخل مبلغاً موجباً في حقل «مبلغ الردّ» ثم أعد المحاولة",
+        }),
+      });
 
     // قراءة استرشادية لمعرفة المسوّدة، ثم قفلٌ بالترتيب الموحَّد: مسوّدة ← الصفّ الماليّ.
     const probe = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).limit(1)
     )[0];
     if (!probe || probe.kind !== "COLLECTION") {
-      throw new TRPCError({ code: "NOT_FOUND", message: "سجلّ قبض العربون غير موجود" });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر ردّ العربون",
+          why: "سجل قبض العربون المُشار إليه غير موجود، أو نوعه ليس COLLECTION (قد يكون سجل ردٍّ أو تطبيقٍ)",
+          doThis: "أعد تحميل سجل عرابين الطلب واختر سجل القبض الأصلي، ثم أعد الردّ",
+        }),
+      });
     }
     const draft = (
       await tx.select().from(receptionDrafts).where(eq(receptionDrafts.id, Number(probe.draftId))).for("update").limit(1)
     )[0];
-    if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
+    if (!draft)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر العثور على الطلب المحفوظ",
+          why: "الرقم المرسل يشير إلى مسوّدة استقبال محذوفة أو غير موجودة",
+          doThis: "أعد تحميل قائمة الطلبات المحفوظة — الطلب قد يكون ثُبِّت أو أُلغي أو حُذف",
+        }),
+      });
     const payment = (
       await tx.select().from(orderPayments).where(eq(orderPayments.id, input.paymentId)).for("update").limit(1)
     )[0]!;
 
     const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
     if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا تستطيع العمل على هذا الطلب",
+          why: "الطلب يخص فرعاً غير فرعك، وصلاحية عبور الفروع محصورة بالإدارة (admin)",
+          doThis: "افتح الطلب من الفرع الذي يخصّه، أو اطلب من الإدارة تنفيذ العملية",
+        }),
+      });
     }
     if (payment.status !== "HELD") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: payment.status === "APPLIED"
-          ? "هذا المبلغ طُبِّق على فاتورةٍ عند التثبيت — استرداده بمرتجع الفاتورة (مدير)"
-          : "هذا القبض مردودٌ بكامله سلفاً",
+          ? appErrorMessage({
+              what: "لا يمكن ردّ هذا المبلغ من هنا",
+              why: "المبلغ طُبِّق على فاتورةٍ عند تثبيت الطلب — لم يعد محتجزاً، بل جزءٌ من قبض الفاتورة",
+              doThis: "افتح الفاتورة المرتبطة واعمل مرتجعاً باعتماد مدير — لا ردّ عربون على مالٍ طُبِّق",
+            })
+          : appErrorMessage({
+              what: "لا يمكن ردّ هذا القبض ثانيةً",
+              why: "القبض مردودٌ بكامله سلفاً (الحالة REFUNDED) — لا يوجد رصيد محتجز يُردّ",
+              doThis: "أعد تحميل سجل عرابين الطلب لعرض الحالة الصحيحة",
+            }),
       });
     }
 
@@ -323,7 +430,11 @@ export async function refundDeposit(
     if (amountD.gt(refundable)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `مبلغ الردّ (${amountD.toFixed(2)}) يتجاوز المتبقّي من هذا القبض (${refundable.toFixed(2)})`,
+        message: appErrorMessage({
+          what: "مبلغ الردّ يتجاوز المتبقّي",
+          why: `مبلغ الردّ المطلوب ${amountD.toFixed(2)} أكبر من الرصيد المتبقّي من هذا القبض (${refundable.toFixed(2)}) بعد ردوده السابقة`,
+          doThis: `أنقص مبلغ الردّ إلى ${refundable.toFixed(2)} فأقلّ، أو اقسم على أكثر من قبض`,
+        }),
       });
     }
 
@@ -348,7 +459,11 @@ export async function refundDeposit(
       if (!sameOpenShift) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: `ردّ عربونٍ نقديّ عبر ورديةٍ أخرى أو بعد إغلاق وردية القبض (#${collShiftId ?? "?"}) يتطلّب اعتماد مدير — المال عاد إلى الخزينة عند الإغلاق. (ردّ عربون البطاقة ذاتيٌّ في أيّ وقت.)`,
+          message: appErrorMessage({
+            what: "لا يمكنك ردّ هذا العربون النقدي بنفسك",
+            why: `العربون قُبض على وردية #${collShiftId ?? "?"} وهي مغلقة الآن أو ليست ورديتك — المال عاد إلى الخزينة، وسطح الاحتيال النقديّ العابر للورديات أعلى`,
+            doThis: "اطلب من مدير اعتماد الردّ من قائمة اعتمادات المدير، أو ردّه من نفس وردية القبض قبل إغلاقها (ردّ البطاقة ذاتيٌّ في أيّ وقت)",
+          }),
         });
       }
     }
@@ -425,182 +540,6 @@ export async function refundDeposit(
       shiftId,
       refundableBefore: toDbMoney(refundable),
       idempotentReplay: false as const,
-    };
-  });
-}
-
-/** سجلّ عرابين مسوّدة (للشاشة): الصفوف + الصافي المحتجز.
- *  مراجعة ش٤ (IDOR): عزل الفرع إلزاميّ — كانت النقطة الوحيدة في الشريحة بلا حارس فرع،
- *  فتُقرأ مبالغ ومراجع بطاقات أيّ فرعٍ بمعرّفٍ متسلسل. */
-export async function listDraftPayments(draftId: number, actor?: (Actor & { role?: string }) | null, tx?: Tx) {
-  const run = async (t: Tx) => {
-    if (actor) {
-      const draft = (
-        await t
-          .select({ branchId: receptionDrafts.branchId })
-          .from(receptionDrafts)
-          .where(eq(receptionDrafts.id, draftId))
-          .limit(1)
-      )[0];
-      if (!draft) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب المحفوظ غير موجود" });
-      const elevated = actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
-      if (!elevated && Number(draft.branchId) !== Number(actor.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
-      }
-    }
-    const rows = await t
-      .select()
-      .from(orderPayments)
-      .where(eq(orderPayments.draftId, draftId))
-      .orderBy(asc(orderPayments.id));
-    let net = money(0);
-    for (const r of rows) {
-      if (r.kind === "COLLECTION") net = net.plus(money(r.amount));
-      else if (r.kind === "REFUND") net = net.minus(money(r.amount));
-    }
-    return { rows, heldNet: toDbMoney(round2(net)) };
-  };
-  if (tx) return run(tx);
-  return withTx(run);
-}
-
-export interface AllocationTarget {
-  kind: "INVOICE" | "WORKORDER";
-  id: number;
-  /** حصّة هذا الهدف من المال المقبوض سلفاً (P) — من التوزيع الجشع في checkoutReceptionInTx. */
-  preAmount: string;
-}
-
-/**
- * تخصيص المحتجز على المستندات لحظة التثبيت (تُستدعى داخل معاملة commitDraft بعد إنشاء
- * المستندات): صفوف APPLICATION لكل (قبضٍ × هدف) بالجشع نفسه (أقدم قبضٍ أولاً × ترتيب
- * الأهداف كما وزّعها checkout)، ثم COLLECTION ⇒ APPLIED. الإيصال الذي ذهب مالُه كلُّه
- * لفاتورةٍ واحدة يُختم عليها invoiceId (نمط deliver.ts — append-only، لا مسّ للقيود)؛
- * المُشظّى بين أهدافٍ يبقى بلا ختم — حقيقتُه في orderPayments (I4).
- */
-export async function allocateAtCommit(
-  tx: Tx,
-  args: { draftId: number; targets: AllocationTarget[]; actor: Actor },
-) {
-  const collections = await tx
-    .select()
-    .from(orderPayments)
-    .where(
-      and(
-        eq(orderPayments.draftId, args.draftId),
-        eq(orderPayments.kind, "COLLECTION"),
-        eq(orderPayments.status, "HELD"),
-      ),
-    )
-    .orderBy(asc(orderPayments.id));
-  if (!collections.length) return { appliedPayments: [] as Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number; amount: string }> };
-
-  // صافي كل قبضٍ بعد ردوده الجزئية.
-  const refundRows = await tx
-    .select({ parentPaymentId: orderPayments.parentPaymentId, v: sql<string>`COALESCE(SUM(${orderPayments.amount}), 0)` })
-    .from(orderPayments)
-    .where(and(eq(orderPayments.draftId, args.draftId), eq(orderPayments.kind, "REFUND")))
-    .groupBy(orderPayments.parentPaymentId);
-  const refundedOf = new Map<number, string>(refundRows.map((r) => [Number(r.parentPaymentId), String(r.v)]));
-
-  const targetLeft = args.targets.map((t) => ({ ...t, left: round2(money(t.preAmount)) }));
-  const appliedPayments: Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number; amount: string }> = [];
-
-  for (const c of collections) {
-    let left = round2(money(c.amount).minus(money(refundedOf.get(Number(c.id)) ?? "0")));
-    const touched: AllocationTarget[] = [];
-    for (const t of targetLeft) {
-      if (left.lte(0)) break;
-      if (t.left.lte(0)) continue;
-      const share = left.gte(t.left) ? t.left : left;
-      t.left = round2(t.left.minus(share));
-      left = round2(left.minus(share));
-      await tx.insert(orderPayments).values({
-        draftId: args.draftId,
-        branchId: Number(c.branchId),
-        customerId: c.customerId != null ? Number(c.customerId) : null,
-        kind: "APPLICATION",
-        amount: toDbMoney(share),
-        parentPaymentId: Number(c.id),
-        appliedKind: t.kind,
-        appliedId: t.id,
-        createdBy: args.actor.userId,
-      });
-      touched.push(t);
-      appliedPayments.push({ paymentId: Number(c.id), appliedKind: t.kind, appliedId: t.id, amount: toDbMoney(share) });
-    }
-    await tx.update(orderPayments).set({ status: "APPLIED" }).where(eq(orderPayments.id, Number(c.id)));
-    // ختم الفاتورة على الإيصال **الصادق كاملاً** فقط: هدفٌ واحد **وبلا أيّ ردٍّ جزئيّ** — الإيصال
-    // المختوم يدخل سقف استرداد المرتجع بمبلغه الكامل (returnService)، فختمُ إيصال ٥٠٠ رُدّ منه
-    // ٢٠٠ كان يسمح باسترداد ٥٠٠ لفاتورةٍ دفعت ٣٠٠ صافياً (مراجعة ش٤ — نزيف درجٍ حقيقيّ).
-    // المشوب بردٍّ يبقى بلا ختمٍ وحقيقتُه في orderPayments (نفس عقيدة المُشظّى I4).
-    const hadRefund = money(refundedOf.get(Number(c.id)) ?? "0").gt(0);
-    if (touched.length === 1 && touched[0].kind === "INVOICE" && c.receiptId != null && !hadRefund) {
-      await tx
-        .update(receipts)
-        .set({ invoiceId: touched[0].id })
-        .where(and(eq(receipts.id, Number(c.receiptId)), sql`${receipts.invoiceId} IS NULL`));
-    }
-  }
-  return { appliedPayments };
-}
-
-/**
- * حقيقة عربون أمر شغلٍ وُلد من مسوّدة: حصص القبضات المطبَّقة عليه (P) — يقرؤها deliver
- * (لختم أحاديّ الهدف) وcancel (لردّ P بطريقة قبض كلّ حصّة) بدل الاعتماد على إيصال
- * depositReceiptId وحده (يحمل N الجديد فقط، وقد يكون صفراً). V3 بصيغتها البنيوية النهائية.
- */
-export async function appliedCollectionsForWorkOrder(tx: Tx, workOrderId: number) {
-  const apps = await tx
-    .select({
-      applicationId: orderPayments.id,
-      amount: orderPayments.amount,
-      parentPaymentId: orderPayments.parentPaymentId,
-    })
-    .from(orderPayments)
-    .where(
-      and(
-        eq(orderPayments.kind, "APPLICATION"),
-        eq(orderPayments.appliedKind, "WORKORDER"),
-        eq(orderPayments.appliedId, workOrderId),
-      ),
-    )
-    .orderBy(asc(orderPayments.id));
-  if (!apps.length) return [];
-  const parentIds = Array.from(new Set(apps.map((a) => Number(a.parentPaymentId))));
-  const parents = await tx
-    .select()
-    .from(orderPayments)
-    .where(inArray(orderPayments.id, parentIds));
-  const parentOf = new Map(parents.map((p) => [Number(p.id), p]));
-  // أحاديّ الهدف = لقبضه الأمّ تطبيقٌ واحدٌ فقط (على هذا الأمر).
-  const appCounts = await tx
-    .select({ parentPaymentId: orderPayments.parentPaymentId, n: sql<number>`COUNT(*)` })
-    .from(orderPayments)
-    .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "APPLICATION")))
-    .groupBy(orderPayments.parentPaymentId);
-  const countOf = new Map(appCounts.map((r) => [Number(r.parentPaymentId), Number(r.n)]));
-  // ردود الأمّهات — القبض المردود جزئياً لا يُختم إيصالُه أبداً (مبلغه الكامل يكذب على سقف المرتجع).
-  const refundSums = await tx
-    .select({ parentPaymentId: orderPayments.parentPaymentId, v: sql<string>`COALESCE(SUM(${orderPayments.amount}), 0)` })
-    .from(orderPayments)
-    .where(and(inArray(orderPayments.parentPaymentId, parentIds), eq(orderPayments.kind, "REFUND")))
-    .groupBy(orderPayments.parentPaymentId);
-  const refundOf = new Map(refundSums.map((r) => [Number(r.parentPaymentId), String(r.v)]));
-  return apps.map((a) => {
-    const parent = parentOf.get(Number(a.parentPaymentId));
-    return {
-      applicationId: Number(a.applicationId),
-      collectionId: Number(a.parentPaymentId),
-      amount: String(a.amount),
-      method: (parent?.method ?? "CASH") as DepositMethod,
-      receiptId: parent?.receiptId != null ? Number(parent.receiptId) : null,
-      draftId: parent != null ? Number(parent.draftId) : null,
-      /** عميل القبض لحظته — ساقا الردّ تُكتبان به لا بعميل المسوّدة الحاليّ (قابلٍ للتغيّر). */
-      customerId: parent?.customerId != null ? Number(parent.customerId) : null,
-      soleTarget:
-        (countOf.get(Number(a.parentPaymentId)) ?? 0) === 1 &&
-        !money(refundOf.get(Number(a.parentPaymentId)) ?? "0").gt(0),
     };
   });
 }
@@ -689,57 +628,4 @@ export async function refundAppliedCollectionsForWorkOrder(
     total = total.plus(amountD);
   }
   return { refunded: toDbMoney(round2(total)) };
-}
-
-/** ربط إيصالات P أحاديّة الهدف بفاتورة تسليم أمر الشغل (نمط deliver.ts:161-185 حرفياً). */
-export async function linkSoleTargetCollectionsToInvoice(tx: Tx, workOrderId: number, invoiceId: number) {
-  const parts = await appliedCollectionsForWorkOrder(tx, workOrderId);
-  for (const part of parts) {
-    if (!part.soleTarget || part.receiptId == null) continue;
-    await tx
-      .update(receipts)
-      .set({ invoiceId })
-      .where(and(eq(receipts.id, part.receiptId), sql`${receipts.invoiceId} IS NULL`));
-  }
-}
-
-/** إجمالي المحتجز غير المُثبَّت المقبوض على وردية (سطر إفصاح Z — I14). */
-export async function heldDepositsOfShift(tx: Tx, shiftId: number) {
-  // دلالة **الدرج** لا دلالة المسوّدة (مراجعة ش٤): تُطرح ردودُ **هذه الوردية نفسها** فقط —
-  // ردٌّ لاحقٌ من درجِ ورديةٍ أخرى يخصّ درجَها هي، وطرحُه هنا كان يحوّر Z المؤرشف رجعياً
-  // فيفقد تفسير فائض الدرج التاريخيّ. ولنفس السبب يُضمّ REFUNDED (قُبض على هذا الدرج فعلاً؛
-  // ردودُه على هذا الدرج تُطرح بالقيد فيبقى الصافي صادقاً). APPLIED خارجٌ — تفسيرُه سطر
-  // فواتير التثبيت على وردية التثبيت.
-  const res = await tx.execute(sql`
-    SELECT COUNT(DISTINCT op.draftId) AS c,
-           CAST(COALESCE(SUM(op.amount - COALESCE(rf.s, 0)), 0) AS CHAR) AS t
-    FROM ${orderPayments} op
-    LEFT JOIN (
-      SELECT parentPaymentId, SUM(amount) AS s
-      FROM ${orderPayments}
-      WHERE orderPayKind = 'REFUND' AND shiftId = ${shiftId}
-      GROUP BY parentPaymentId
-    ) rf ON rf.parentPaymentId = op.id
-    WHERE op.shiftId = ${shiftId} AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus IN ('HELD','REFUNDED')
-  `);
-  const data = (res as unknown as [Array<{ c: number | string; t: string }>])[0] ?? res;
-  const row = Array.isArray(data) ? data[0] : undefined;
-  return { count: Number(row?.c ?? 0), total: String(row?.t ?? "0.00") };
-}
-
-/** أوامر الشغل المرتبطة بمسوّدة عبر تطبيقاتها — لرسالة الإلغاء المديريّ التي تسمّي البنود. */
-export async function draftHasWorkOrderApplications(tx: Tx, draftId: number) {
-  const rows = await tx
-    .select({ appliedId: orderPayments.appliedId })
-    .from(orderPayments)
-    .where(
-      and(eq(orderPayments.draftId, draftId), eq(orderPayments.kind, "APPLICATION"), eq(orderPayments.appliedKind, "WORKORDER")),
-    );
-  if (!rows.length) return [];
-  const ids = rows.map((r) => Number(r.appliedId));
-  const wos = await tx
-    .select({ id: workOrders.id, orderNumber: workOrders.orderNumber })
-    .from(workOrders)
-    .where(inArray(workOrders.id, ids));
-  return wos.map((w) => ({ id: Number(w.id), orderNumber: String(w.orderNumber) }));
 }

@@ -17,7 +17,7 @@ import {
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryReturnSaleIntent, type DeliveryReturnSaleKind } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
@@ -200,7 +200,15 @@ export async function returnConsignment(
       .where(and(
         eq(inventoryMovements.branchId, Number(cn.branchId)),
         eq(inventoryMovements.movementType, "OUT"),
-        eq(inventoryMovements.referenceType, "INVOICE"),
+        /**
+         * ⭐ رافدا خصمِ المخزون كلاهما (تدقيق ١/٩/٢٦): `sale/create.ts` يَسِم حركاته
+         * `INVOICE`، بينما `printSaleService.ts` يَسِمها **`PRINT_SALE`** (:606 و:624).
+         * الشرط على `INVOICE` وحده كان يُرجع **صفرَ حركات** لفاتورة كاشير الطباعة، فيُعكَس
+         * البيع في الدفتر والذمّة ولا تعود قطعةٌ واحدة إلى الرفّ: انفصالٌ تامّ بين الدفتر
+         * والمخزون على القناة التي تعمل — «يبتلع المخزن ولا يعكس المخزنية» حرفياً.
+         * `referenceId` هو `invoiceId` في كلتا الحالتين، والاختلاف في الوسم وحده.
+         */
+        inArray(inventoryMovements.referenceType, ["INVOICE", "PRINT_SALE"]),
         eq(inventoryMovements.referenceId, Number(cn.invoiceId)),
       ));
     const stockOps = new Map<number, number>();
@@ -602,6 +610,7 @@ export async function returnConsignment(
       });
     }
 
+    assertConsignmentStatusTransition(cn.status, "RETURNED");
     const returnedAt = new Date();
     await tx.update(deliveryConsignments).set({
       status: "RETURNED",

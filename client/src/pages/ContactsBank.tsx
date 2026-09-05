@@ -7,6 +7,7 @@ import { useLocation } from "wouter";
 import { Eye, Link2, Search } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
@@ -82,7 +83,7 @@ export default function ContactsBank() {
     <div className="space-y-4">
       <PageHeader
         title="بنك جهات الاتصال"
-        description="بحث موحّد عبر العملاء والموردين وأطراف التوصيل ومرسلي واتساب غير المربوطين بعميل — بطاقة ٣٦٠° لكل عميل/مورّد."
+        description="بحث موحّد عبر العملاء والموردين وأطراف التوصيل ومرسلي واتساب غير المربوطين بعميل — بطاقة 360° لكل عميل/مورّد."
       />
 
       <Card>
@@ -195,7 +196,7 @@ export default function ContactsBank() {
                                     actions={[{
                                       key: "view-360",
                                       kind: "view",
-                                      label: "عرض ٣٦٠",
+                                      label: "عرض 360",
                                       icon: Eye,
                                       onSelect: () => setSelected({ kind, id: r.id }),
                                       gate: kind === "supplier"
@@ -257,7 +258,7 @@ export default function ContactsBank() {
           {search.hasNextPage && (
             <div className="flex justify-center">
               <Button variant="outline" size="sm" onClick={() => search.fetchNextPage()} disabled={search.isFetchingNextPage}>
-                {search.isFetchingNextPage ? "جارٍ التحميل…" : "تحميل المزيد"}
+                {search.isFetchingNextPage ? ACTION_LABELS.loading : "تحميل المزيد"}
               </Button>
             </div>
           )}

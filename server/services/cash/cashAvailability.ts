@@ -1,10 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { branches, receipts, shifts, users } from "../../../drizzle/schema";
+import { branches, cashDailyReconciliations, receipts, shifts, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, toDbMoney, type DecimalInput } from "../money";
 import type { Actor } from "../tx";
+import { todayUtcDate } from "../businessDay";
 
 export type CashBucket = "DRAWER" | "TREASURY";
 
@@ -31,6 +32,76 @@ export interface CashAccountRef {
   branchId: number;
   cashBucket: CashBucket;
   shiftId?: number | null;
+  /** لمسار إقفال المطابقة نفسه وإعادة طلبه فقط؛ كتّاب النقد العاديون لا يمررونه. */
+  allowClosedCashDay?: boolean;
+}
+
+export interface MaterializedCashReceiptWrite {
+  branchId: number | null | undefined;
+  shiftId?: number | null;
+  cashBucket: CashBucket | null | undefined;
+  paymentMethod: string;
+  status: string;
+  /** receiptApprovalStatus defaults to APPROVED in the schema. */
+  approvalStatus?: string | null;
+}
+
+async function assertCurrentCashDayWritable(tx: Tx, branchId: number, allowClosed: boolean): Promise<void> {
+  if (allowClosed) return;
+  const closed = (
+    await tx
+      .select({ id: cashDailyReconciliations.id, status: cashDailyReconciliations.status })
+      .from(cashDailyReconciliations)
+      .where(
+        and(
+          eq(cashDailyReconciliations.branchId, branchId),
+          eq(cashDailyReconciliations.businessDate, todayUtcDate()),
+        ),
+      )
+      .for("update")
+      .limit(1)
+  )[0];
+  if (closed?.status === "CLOSED") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مطابقة نقد اليوم مغلقة؛ أعد فتحها قبل تسجيل أي حركة نقدية جديدة",
+    });
+  }
+}
+
+/**
+ * بوابة كتابة الإيصال النقدي المادي. تُستدعى قبل INSERT أو قبل تحويل إيصال معلّق إلى
+ * COMPLETED/APPROVED. غير النقدي والمعلّق لا يلمسان عهدةً، لذلك لا يكتسبان قفلاً.
+ *
+ * ترتيب القفل ثابت داخلها: source row ثم cashDailyReconciliations؛ وعلى المستدعي أن
+ * يستدعيها قبل قفل/كتابة receipt كي يبقى الترتيب source → day → receipt في كل المسارات.
+ */
+export async function lockMaterializedCashReceiptSourceForWrite(
+  tx: Tx,
+  input: MaterializedCashReceiptWrite,
+): Promise<LockedCashSource | null> {
+  const approvalStatus = input.approvalStatus ?? "APPROVED";
+  const materialized = (MATERIALIZED_RECEIPT_STATUSES as readonly string[]).includes(input.status);
+  if (
+    input.paymentMethod !== "CASH" ||
+    input.cashBucket == null ||
+    !materialized ||
+    approvalStatus !== "APPROVED"
+  ) {
+    return null;
+  }
+  const branchId = Number(input.branchId);
+  if (!Number.isInteger(branchId) || branchId <= 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "الإيصال النقدي المادي يتطلب فرعاً صالحاً قبل تسجيل الحركة",
+    });
+  }
+  return lockCashSourceForUpdate(tx, {
+    branchId,
+    cashBucket: input.cashBucket,
+    shiftId: input.shiftId ?? null,
+  });
 }
 
 export interface CashTransferAvailabilityInput {
@@ -45,7 +116,13 @@ export interface CashTransferAvailabilityInput {
 /**
  * إثبات سلطوي غير قابل للإنشاء خارج هذه الوحدة. وجود الرصيد وحده لا يجيز صرفاً
  * خارجياً من الخزينة؛ يجب أن يثبت المسار، داخل المعاملة نفسها، مالكاً نشطاً
- * مختلفاً عن كل صانعي الطلب ثم يمرر هذا الإثبات إلى الحارس المالي.
+ * ثم يمرر هذا الإثبات إلى الحارس المالي.
+ *
+ * ⭐ **قرار المالك (٣/٩/٢٦):** لا اعتماد ثانٍ فوق المالك — كل حسابات `isOwner` تشكّل سلطةً
+ * واحدة، فلا يُشترط أن يكون المعتمِد مالكاً **غير** صانع الطلب. الشرط الوحيد الباقي: أن يكون
+ * المُنفِّذ مالكاً نشطاً بالفعل (`isActive && isOwner`) — هذا وحده يمنع صرفاً بلا رقيبٍ من
+ * أيّ حسابٍ آخر. `makerUserIds` يبقى في المدخل توثيقاً لهوية الطالب في السجلّ التدقيقي
+ * (`receipts.createdBy`/`approvedBy` يكفيان لإظهار الاعتماد الذاتي في أيّ تقرير) لا لإنفاذٍ.
  */
 export interface ExternalTreasuryDisbursementApproval {
   readonly kind: "EXTERNAL_DISBURSEMENT";
@@ -92,17 +169,6 @@ export async function authorizeExternalTreasuryDisbursement(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `${input.operation}: التنفيذ النقدي من الخزينة محصور بحساب مالك نشط`,
-    });
-  }
-  const makers = new Set(
-    input.makerUserIds
-      .filter((id): id is number => id != null)
-      .map(Number),
-  );
-  if (makers.has(Number(owner.id))) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `${input.operation}: لا يجوز لصانع الطلب تنفيذ صرفه — يلزم مالك آخر`,
     });
   }
 
@@ -157,6 +223,14 @@ export const TREASURY_OUT_EXCEPTION_POLICY = Object.freeze({
   SALE_RETURN_COMPENSATION: "REVERSAL_COMPENSATION",
   DIGITAL_CARD_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
   EXCHANGE_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
+  // ردُّ عربون/حصص/أمانة أمرِ شغلٍ مُلغى: عكسٌ مقيَّدٌ بمصدره (إيصالُ القبض بهويّته، ومبلغٌ لا
+  // يتجاوزه) — نظيرُ SALE_CANCELLATION_COMPENSATION تماماً، فيُعفى من طابور مالك الصرف الخارجي.
+  WORK_ORDER_CANCELLATION_COMPENSATION: "REVERSAL_COMPENSATION",
+  // ردُّ مقبوضات **عكس تسليم** أمر شغلٍ معتمَد (م٢ ق١٠ — «المفتاح الناقص»): حين لا وردية استقبال
+  // مفتوحة يخرج الردّ من الخزينة بصفة المعتمِد (مدير/أدمن)، مقيَّداً بإيصال القبض بهويّته ومبلغه
+  // — نظيرُ WORK_ORDER_CANCELLATION_COMPENSATION. بلا هذا المفتاح كان الاعتمادُ يسقط على
+  // «لا توجد وردية RECEPTION مفتوحة» فيبقى مالُ الزبون محتجَزاً بلا مسار خروج.
+  WORK_ORDER_REVERSE_DELIVERY_COMPENSATION: "REVERSAL_COMPENSATION",
 } as const);
 
 export type TreasuryOutExceptionOperation = keyof typeof TREASURY_OUT_EXCEPTION_POLICY;
@@ -355,6 +429,7 @@ export async function lockCashSourceForUpdate(
     if (Number(shift.branchId) !== input.branchId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وردية مصدر النقد لا تطابق الفرع" });
     }
+    await assertCurrentCashDayWritable(tx, input.branchId, input.allowClosedCashDay === true);
     return {
       cashBucket: "DRAWER",
       branchId: input.branchId,
@@ -372,6 +447,7 @@ export async function lockCashSourceForUpdate(
       .limit(1)
   )[0];
   if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+  await assertCurrentCashDayWritable(tx, input.branchId, input.allowClosedCashDay === true);
   return {
     cashBucket: "TREASURY",
     branchId: input.branchId,

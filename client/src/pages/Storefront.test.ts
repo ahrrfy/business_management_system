@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 import {
   BundleMedia,
   addStorefrontCartLine,
@@ -9,6 +10,8 @@ import {
   formatStorefrontReservationDeadline,
   getStorefrontCustomizationConfig,
   loadCheckoutAttempt,
+  loadGuestTrackingOrders,
+  rememberGuestTrackingOrder,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
   reconcileStorefrontCartPricing,
@@ -24,6 +27,9 @@ import {
   recommendationActionLabel,
   shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
+  storefrontProductCanBeOrdered,
+  STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE,
+  validateStorefrontCheckout,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
@@ -33,8 +39,10 @@ describe("storefront related product actions", () => {
   it("يفصل الإضافة المباشرة عن المنتجات التي تحتاج اختياراً", () => {
     const base = { productId: 1, productName: "دفتر", imageUrl: null, price: "5000", productUnitId: 11, unitName: "قطعة", inStock: true };
     expect(recommendationActionLabel(base)).toBe("أضف إلى السلة");
-    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe("اختر الخيارات");
+    expect(recommendationActionLabel({ ...base, isCustomizable: true })).toBe(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
+    expect(storefrontProductCanBeOrdered({ ...base, isCustomizable: true })).toBe(false);
     expect(recommendationActionLabel({ ...base, variants: [{ label: "لون", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }, { label: "قياس", units: [{ productUnitId: 12, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }] }] })).toBe("اختر الخيارات");
+    expect(recommendationActionLabel({ ...base, variants: [{ label: "قياس", units: [{ productUnitId: 11, price: "5000", salePrice: null, unitName: "قطعة", inStock: true }, { productUnitId: 12, price: "9000", salePrice: null, unitName: "علبة", inStock: true }] }] })).toBe("اختر الخيارات");
     expect(recommendationActionLabel({ ...base, inStock: false })).toBe("غير متوفر");
   });
 });
@@ -49,7 +57,7 @@ describe("storefront Turnstile submission gate", () => {
 });
 
 describe("storefront customization", () => {
-  it("requires an active server template for printing products and keeps different customizations as separate cart lines", () => {
+  it("keeps customizable products visible but fails closed before cart or checkout", () => {
     expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
     expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
     expect(getStorefrontCustomizationConfig(true, "PRINT")).toBeNull();
@@ -76,9 +84,15 @@ describe("storefront customization", () => {
     expect(config?.fields[0]?.fieldKey).toBe("service");
     expect(config?.fields[0]?.isRequired).toBe(true);
     const base = new Map<string, CartLine>();
-    const first = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
-    const second = addStorefrontCartLine(first, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "ليان" } }, "2500");
-    expect(second.size).toBe(2);
+    const blocked = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", isCustomizable: true, customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
+    expect(blocked.size).toBe(0);
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain("detailQ.data.isCustomizable ? (");
+    expect(source).toContain(") : customizationConfig ? (");
+    expect(source).toContain("disabled={detailQ.data.isCustomizable ||");
+    expect(source).toContain("disabled={!storefrontProductCanBeOrdered(p)}");
+    expect(source).toContain("cartHasUnsupportedCustomization");
+    expect(source).toContain(STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE);
   });
 });
 
@@ -156,7 +170,7 @@ describe("storefront bundle media", () => {
 
     expect(html.match(/<img/g)).toHaveLength(1);
     expect(html).toContain('role="img"');
-    expect(html).toContain('aria-label="معاينة 1 من 4"');
+    expect(html).toContain('aria-label="بكج العودة إلى المدرسة — صورة 1 من 4"');
     expect(html).toContain("/a.webp");
     expect(html).not.toContain("/ignored.webp");
   });
@@ -300,6 +314,21 @@ describe("storefront persistence safety", () => {
     expect(markChanged).toHaveBeenCalledTimes(3);
   });
 
+  it("never lets a known low-stock cart line exceed the available quantity", () => {
+    const limited = { ...line, stockLimit: 2 };
+    const cart = new Map([[limited.cartKey, limited]]);
+
+    expect(setStorefrontCartQuantity(cart, limited.cartKey, 99).get(limited.cartKey)?.qty).toBe(2);
+    expect(addStorefrontCartLine(cart, {
+      productUnitId: limited.productUnitId,
+      productId: limited.productId,
+      productName: limited.name,
+      imageUrl: limited.imageUrl,
+      unitName: limited.unitName,
+      stockLimit: 2,
+    }, limited.price).get(limited.cartKey)?.qty).toBe(2);
+  });
+
   it("adds several colours in one operation while preserving each variant as its own order line", () => {
     const existing: CartLine = { ...line, cartKey: "11:", qty: 2 };
     const result = addStorefrontCartLines(new Map([[existing.cartKey, existing]]), [
@@ -441,5 +470,79 @@ describe("getStorefrontSearchSuggestions", () => {
     // undefined brand يجب ألّا يرمي؛ يُعامَل كأنّه سلسلة فارغة
     expect(() => getStorefrontSearchSuggestions(items as never, "قلم")).not.toThrow();
     expect(getStorefrontSearchSuggestions(items as never, "قلم")).toHaveLength(1);
+  });
+});
+
+describe("storefront checkout validation", () => {
+  it("returns Arabic field errors in focus order", () => {
+    expect(validateStorefrontCheckout({
+      name: " ",
+      phone: "+964",
+      governorate: "",
+      address: "بغ",
+      notes: "",
+    })).toEqual({
+      name: "اكتب الاسم الكامل لاستلام الطلب.",
+      phone: "اكتب رقم هاتف صالحاً للتواصل معك.",
+      governorate: "اختر المحافظة.",
+      address: "اكتب عنواناً واضحاً من 3 أحرف على الأقل.",
+    });
+  });
+
+  it("accepts complete Iraqi checkout details", () => {
+    expect(validateStorefrontCheckout({
+      name: "سارة أحمد",
+      phone: "+9647701234567",
+      governorate: "baghdad",
+      address: "بغداد، المنصور",
+      notes: "",
+    })).toEqual({});
+  });
+});
+
+describe("storefront action contrast", () => {
+  it("keeps the storefront action tokens above 4.5:1 against white text", () => {
+    const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
+    const colors = ["store-accent", "store-accent-strong"].map((token) => {
+      const match = css.match(new RegExp(`--${token}:\\s*(#[0-9a-f]{6})`, "i"));
+      expect(match, `missing --${token}`).not.toBeNull();
+      return match![1];
+    });
+    const luminance = (hex: string) => {
+      const channels = hex.slice(1).match(/../g)!.map((part) => Number.parseInt(part, 16) / 255).map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    for (const color of colors) expect(1.05 / (luminance(color) + 0.05)).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe("storefront guest tracking ownership", () => {
+  it("stores at most five opaque order tokens without phone or customer PII", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: vi.fn((key: string) => values.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+      removeItem: vi.fn((key: string) => { values.delete(key); }),
+    };
+    for (let index = 1; index <= 6; index += 1) {
+      rememberGuestTrackingOrder({
+        orderNumber: `ORD-${index}`,
+        trackingToken: `${String(index).repeat(60)}.opaque`,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        phone: "+9647700000000",
+      } as never, storage, 1_700_000_000_000 + index);
+    }
+    const stored = loadGuestTrackingOrders(storage, 1_700_000_100_000);
+    expect(stored).toHaveLength(5);
+    expect(stored[0].orderNumber).toBe("ORD-6");
+    expect(values.values().next().value).not.toContain("phone");
+    expect(values.values().next().value).not.toContain("9647700000000");
+  });
+
+  it("does not call the deprecated order-number plus phone endpoint", () => {
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain("trackOrderByToken.useMutation");
+    expect(source).not.toContain("trackOrder.fetch");
+    expect(source).toContain("quoteOrderPrivate.useMutation");
   });
 });

@@ -50,7 +50,7 @@ describe("سياسة القبض العامّة", () => {
   it.each(ACTORS)("تحصيل القسط بطريقةٍ غير مدعومة يُرفض قبل قراءة القاعدة — %s", async (role) => {
     for (const paymentMethod of REJECTED) {
       await expect(payLine(
-        { lineId: 999, paymentMethod: paymentMethod as never },
+        { lineId: 999, paymentMethod: paymentMethod as never, clientRequestId: crypto.randomUUID() },
         { userId: 1, branchId: 1, role },
       )).rejects.toThrow();
     }

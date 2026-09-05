@@ -12,7 +12,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelAdvance, grantAdvance } from "../advancesService";
+import { cancelAdvance, grantAdvance } from "../advances";
 import { setEmploymentStatus } from "../employeeService";
 import { approveVoucher } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";

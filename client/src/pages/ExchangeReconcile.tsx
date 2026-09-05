@@ -1,6 +1,7 @@
 // تبويب «مطابقة الأرصدة» — مقارنة رصيدنا الدفتري (حتى تاريخ قطع) برصيد كشف الصيرفة + البنود المعلّقة.
 // قراءة فقط: أي فرق حقيقي يُسوّى لاحقاً بقيد تصحيح يدوي صريح (لا تسوية صامتة).
 import { useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Scale as ScaleIcon, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -19,6 +22,27 @@ const TYPE_AR: Record<string, string> = {
 };
 
 type Params = { exchangeHouseId: number; statedBalanceIqd: string; statedBalanceUsd: string; asOfDate?: string };
+
+/** صفُّ بندٍ معلّق كما يصله من العقد (قيمٌ نصّية) — نفس الشكل الذي كان يُصيَّر خامّاً. */
+type PendingRow = Record<string, string>;
+
+/** الصفر يُعرض شرطةً لا «0»: البند إمّا بالدينار أو بالدولار، وصفرُ العملة الأخرى ليس مبلغاً. */
+const dash = (v: string) => (D(v).isZero() ? "—" : fmtAr(v));
+
+const pendingColumns: ColumnDef<PendingRow, unknown>[] = [
+  { id: "txnNumber", header: "الرقم", accessorFn: (p) => p.txnNumber, meta: { kind: "code" }, cell: ({ row }) => row.original.txnNumber },
+  // التسمية العربية لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+  { id: "type", header: "النوع", accessorFn: (p) => TYPE_AR[p.type] ?? p.type, cell: ({ row }) => TYPE_AR[row.original.type] ?? row.original.type },
+  { id: "iqdAmount", header: "دينار", accessorFn: (p) => dash(p.iqdAmount), meta: { kind: "money" }, cell: ({ row }) => dash(row.original.iqdAmount) },
+  { id: "usdAmount", header: "دولار", accessorFn: (p) => dash(p.usdAmount), meta: { kind: "money" }, cell: ({ row }) => dash(row.original.usdAmount) },
+  {
+    id: "createdAt",
+    header: "التاريخ",
+    accessorFn: (p) => fmtDateTime(p.createdAt),
+    meta: { kind: "datetime" },
+    cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDateTime(row.original.createdAt)}</span>,
+  },
+];
 
 export default function ExchangeReconcile() {
   const houses = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });
@@ -56,10 +80,10 @@ export default function ExchangeReconcile() {
         <div className="grid gap-4 sm:grid-cols-4">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
-            <select className={`${selectCls} w-full`} value={houseId} onChange={(e) => setHouseId(Number(e.target.value))}>
+            <AppSelect className={`${selectCls} w-full`} value={String(houseId)} onValueChange={(value) => setHouseId(Number(value))}>
               <option value={0}>— اختر —</option>
               {houseRows.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
-            </select>
+            </AppSelect>
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دينار)</label>
@@ -102,30 +126,16 @@ export default function ExchangeReconcile() {
           {r.pending.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-semibold mb-2">بنود معلّقة بعد تاريخ القطع ({r.pending.length}) — تفسّر فروق التوقيت</div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-right text-muted-foreground border-b">
-                      <th className="py-2 font-medium">الرقم</th>
-                      <th className="py-2 font-medium">النوع</th>
-                      <th className="py-2 font-medium">دينار</th>
-                      <th className="py-2 font-medium">دولار</th>
-                      <th className="py-2 font-medium">التاريخ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(r.pending as Array<Record<string, string>>).map((p, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className="py-2" dir="ltr">{p.txnNumber}</td>
-                        <td className="py-2">{TYPE_AR[p.type] ?? p.type}</td>
-                        <td className="py-2 tabular-nums" dir="ltr">{D(p.iqdAmount).isZero() ? "—" : fmtAr(p.iqdAmount)}</td>
-                        <td className="py-2 tabular-nums" dir="ltr">{D(p.usdAmount).isZero() ? "—" : fmtAr(p.usdAmount)}</td>
-                        <td className="py-2 text-xs text-muted-foreground whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(p.createdAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {/* مُضمَّن: البطاقة تحمل العنوان والعدّ أصلاً، فشريطُ الحالة ومنتقي الأعمدة ضجيجٌ هنا. */}
+              <DataTable<PendingRow>
+                embedded
+                searchable={false}
+                bounded={false}
+                pageSize={Infinity}
+                data={r.pending as PendingRow[]}
+                columns={pendingColumns}
+                emptyText="لا بنود معلّقة."
+              />
             </Card>
           )}
         </>

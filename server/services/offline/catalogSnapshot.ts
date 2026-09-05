@@ -30,6 +30,7 @@ import type {
   OfflineVersions,
 } from "@shared/offlineCatalog";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../../db";
 
@@ -47,7 +48,7 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
   const [prod] = await db
     .select({
       cnt: sql<number>`count(*)`,
-      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}))), 0)`,
+      crc: sql<string>`coalesce(sum(crc32(concat_ws('|', ${products.id}, ${products.name}, ${products.isActive}, ${products.isService}, ${products.isCustomizable}, ${products.isBundle}, coalesce(${products.productType}, ''), ${products.showInPrintPos}, ${products.allowBackorder}))), 0)`,
     })
     .from(products);
   const [vars] = await db
@@ -81,7 +82,15 @@ async function catalogVersionParts(db: NonNullable<ReturnType<typeof getDb>>): P
     // v3 (٢٤/٨، Codex P2 على PR #755): إضافة `showInPrintPos` إلى CRC — تحوّطاً لأيّ تغييرٍ يدويٍّ
     // لاحق لهذا الحقل (لا واجهة تحرير له اليوم — قد تُضاف لاحقاً). يضمن أن أجهزة الأوفلاين تُحدّث
     // لقطتها فوراً بدل الاعتماد على تغيّر productType الملازم في المهاجرة القائمة.
-    "v3",
+    // v4 (٣١/٨، هجرة 0318): حقلٌ جديد في صيغة اللقطة (`allowBackorder`) + إدخالُه في الـCRC أعلاه.
+    // الاثنان لازمان معاً: البادئة تُجبر كل جهازٍ على سحب الصيغة الجديدة (لقطةٌ قديمة تُرجع
+    // `undefined` ⇒ تُقرأ «ليس بالطلب» فيعود «نافذ» بلا اتصال)، والـCRC يجعل **قلبَ الوسم**
+    // على منتجٍ قائمٍ يُحدّث الأجهزة فوراً — وبدونه يبقى الجهاز على الحقيقة القديمة بلا نهاية،
+    // لأنّ لا عموداً آخر في البصمة يتغيّر مع هذا التبديل وحده.
+    // v5 (٤/٩، مراجعة Codex P2): اللقطة صارت تُصدّر الباركود **مُطبَّعاً** (`canonicalizeBarcodeInput`)
+    // كي يطابقه مُدخلُ المسح المُطبَّع أوفلاين كما أونلاين. البادئة لازمةٌ لأنّ الـCRC محسوبٌ على العمود
+    // الخامّ فلا يتغيّر بتطبيع القيمة المُصدَّرة وحده — بلا رفعها يبقى الجهاز على باركوداتٍ خام لا تُطابَق.
+    "v5",
     prod.cnt, prod.crc,
     vars.cnt, vars.crc,
     prices.cnt, prices.crc,
@@ -134,6 +143,7 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
         barcode: productUnits.barcode,
         isBaseUnit: productUnits.isBaseUnit,
         isService: products.isService,
+        allowBackorder: products.allowBackorder,
         isCustomizable: products.isCustomizable,
         isBundle: products.isBundle,
         productType: products.productType,
@@ -183,7 +193,12 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
     const unitId = Number(r.productUnitId);
     const prices = pricesByUnit.get(unitId) ?? {};
     const aliases = aliasesByUnit.get(unitId) ?? [];
-    const allBarcodes = [r.barcode, ...aliases].filter((b): b is string => !!b);
+    // (٤/٩، مراجعة Codex P2) نُصدّر الباركودات **مُطبَّعةً** (تقليم + طيّ الأرقام) ونُزيل التكرار: مطابقةُ
+    // المسح أوفلاين تُطبّع مُدخلها (`offlineFindByBarcode`)، فلو بقيت اللقطة خاماً لتعذّر إيجادُ صفٍّ
+    // إرثيّ مخزَّنٍ بأرقامٍ عربية-هندية أو فراغٍ طرفيّ — نظيرُ ما تشفيه القراءةُ أونلاين.
+    const allBarcodes = Array.from(
+      new Set([r.barcode, ...aliases].map((b) => canonicalizeBarcodeInput(b ?? "")).filter(Boolean)),
+    );
     return {
       productUnitId: unitId,
       productId: Number(r.productId),
@@ -196,10 +211,11 @@ export async function buildCatalogSnapshot(): Promise<OfflineCatalogSnapshot> {
       sku: r.sku,
       unitName: r.unitName,
       conversionFactor: String(r.conversionFactor),
-      barcode: r.barcode,
+      barcode: canonicalizeBarcodeInput(r.barcode ?? "") || null,
       allBarcodes,
       isBaseUnit: !!r.isBaseUnit,
       isService: !!r.isService,
+      allowBackorder: !!r.allowBackorder,
       isBundle: !!r.isBundle,
       isCustomizable: !!r.isCustomizable,
       // Codex P2 (٢٤/٨ على PR #755): هذا الحقل هويّةٌ تشغيليّة لا مؤشّرَ رؤية —

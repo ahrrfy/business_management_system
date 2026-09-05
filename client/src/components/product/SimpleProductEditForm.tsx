@@ -16,7 +16,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
+import { ProductVersionHistory } from "@/components/product/ProductVersionHistory";
 import { trpc } from "@/lib/trpc";
+import { confirm } from "@/lib/confirm";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
@@ -25,6 +27,11 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import {
+  findForeignBarcodeUsages,
+  findTakenEditableBarcodeCodes,
+  type EditableBarcodeField,
+} from "@/lib/productBarcodeOwnership";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { normalizeConversionFactor } from "@shared/productContentAi";
 
@@ -123,12 +130,17 @@ export default function SimpleProductEditForm({
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isActive, setIsActive] = useState(true);
+  // «يُباع بالطلب» (0318): يجب أن يكون هنا لا في المحرّر المتقدّم وحده — الصنف أحاديّ المتغيّر
+  // (وهو حالة البند المُجهَّز خارجياً بالضبط) يفتح **هذا** المحرّر افتراضياً، فوجودُ التبديل
+  // في المتقدّم فقط يعني ميزةً مبنيّةً لا يجدها من يحتاجها.
+  const [allowBackorder, setAllowBackorder] = useState(false);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   const unitSeq = useRef(1);
   const [units, setUnits] = useState<EditUnit[]>([]);
+  const originalBarcodeCodes = useRef(new Map<string, string | null>());
   // معرّف المتغيّر الوحيد + رصيده الحالي (قراءة فقط). صورة اللون (variant.image) تُترَك دون مساس؛
   // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
@@ -154,6 +166,7 @@ export default function SimpleProductEditForm({
     setIsCustomizable(d.isCustomizable);
     setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsActive(d.isActive);
+    setAllowBackorder(d.allowBackorder);
     if (v) {
       variantId.current = v.id;
       setSku(v.sku);
@@ -173,6 +186,9 @@ export default function SimpleProductEditForm({
       wholesale: u.wholesale,
       government: u.government,
     }));
+    originalBarcodeCodes.current = new Map(
+      tmpl.map((unit) => [String(unit.id), unit.barcode || null] as const),
+    );
     unitSeq.current = tmpl.length + 1;
     setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
     setImages(hydrateProductImages(d.images));
@@ -211,35 +227,48 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
   }, [hydrated, formSig]);
   const dirty = hydrated && baseline.current !== null && formSig !== baseline.current;
   // الانتقال للتحرير المتقدّم يعيد التحميل من الخادم ⇒ نؤكّد قبل تجاهل تعديلات غير محفوظة.
-  const goAdvanced = () => {
-    if (dirty && !window.confirm("لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟")) return;
+  const goAdvanced = async () => {
+    if (
+      dirty &&
+      !(await confirm({
+        variant: "warning",
+        title: "الانتقال للتحرير المتقدّم؟",
+        description:
+          "لديك تعديلات غير محفوظة ستُتجاهَل عند الانتقال للتحرير المتقدّم. هل تريد المتابعة؟",
+        confirmText: "متابعة بلا حفظ",
+      }))
+    )
+      return;
     onAdvanced();
   };
 
   // ── فحص تكرار الباركود ضدّ القاعدة (live) — نستثني باركودات هذا المنتج نفسه ──
-  const allCodes = useMemo(() => {
-    const set = new Set<string>();
-    for (const u of units) { const c = u.barcode.trim(); if (c) set.add(c); }
-    return Array.from(set);
+  const barcodeFields = useMemo<EditableBarcodeField[]>(() => {
+    return units.flatMap((unit) => {
+      const code = unit.barcode.trim();
+      if (!code) return [];
+      const fieldKey = String(unit.id);
+      return [{ fieldKey, code }];
+    });
   }, [units]);
+  const allCodes = useMemo(() => Array.from(new Set(barcodeFields.map((field) => field.code))), [barcodeFields]);
   const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
     { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
   );
-  const ownCodes = useMemo(() => new Set(allCodes), [allCodes]);
   const takenInDb = useMemo(
-    () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
-    [checkQ.data, ownCodes]
+    () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
+    [checkQ.data, barcodeFields]
   );
 
   const update = trpc.catalog.updateProductVariants.useMutation({
@@ -312,7 +341,11 @@ export default function SimpleProductEditForm({
     const codes = Array.from(new Set(units.map((u) => u.barcode.trim()).filter(Boolean)));
     if (codes.length) {
       try {
-        const taken = (await utils.catalog.checkBarcodes.fetch({ codes })).filter((t) => !ownCodes.has(t.code));
+        const taken = findForeignBarcodeUsages(
+          await utils.catalog.checkBarcodes.fetch({ codes }),
+          barcodeFields,
+          originalBarcodeCodes.current,
+        );
         if (taken.length) {
           setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
           return;
@@ -349,6 +382,7 @@ export default function SimpleProductEditForm({
       isCustomizable,
       allowAutoCartRecommendations,
       isActive,
+      allowBackorder,
       unitTemplate,
       variants: [
         {
@@ -616,6 +650,25 @@ export default function SimpleProductEditForm({
               <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span>
             </div>
           </Field>
+          <Field
+            label="يُباع بالطلب (قبل التوريد)"
+            hint={
+              consignment.isConsignment
+                ? "غير متاح لبضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع."
+                : allowBackorder
+                  ? "يُباع ولو كان الرصيد صفراً أو سالباً؛ السالب = عدد الأعمال المُباعة ولم تُورَّد، ويعود صفراً بفاتورة شراء من مورّد أو بإنتاجٍ داخليّ."
+                  : "البيع يتوقّف عند نفاد الرصيد (السلوك المعتاد)."
+            }
+          >
+            <div className="flex items-center gap-2 h-9">
+              <Switch
+                checked={allowBackorder}
+                onCheckedChange={setAllowBackorder}
+                disabled={consignment.isConsignment}
+              />
+              <span className="text-xs text-muted-foreground">{allowBackorder ? "مسموح" : "متوقف"}</span>
+            </div>
+          </Field>
           <Field label="الرصيد الحالي (قراءة فقط)" hint="يُدار عبر الجرد/الحركات.">
             <div className="h-9 flex items-center text-sm tabular-nums">
               <b dir="ltr">{toArabicDigits(totalStock)}</b>
@@ -638,6 +691,17 @@ export default function SimpleProductEditForm({
         images={images}
         onImagesChange={setImages}
         productExists
+      />
+
+      {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
+      <ProductVersionHistory
+        productId={productId}
+        onRestored={() => {
+          setError("");
+          setDone("");
+          baseline.current = null;
+          setHydrated(false);
+        }}
       />
 
       {error && (

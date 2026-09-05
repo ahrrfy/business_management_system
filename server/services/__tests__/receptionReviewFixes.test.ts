@@ -12,6 +12,7 @@
  *  F4 — تسليم أمر شغلٍ والمنفّذ بلا وردية استقبال (RETAIL فقط) ⇒ فاتورة التسليم بلا shiftId
  *       (لا تتسلّل لطابور/Z وردية غير استقبالية) بينما إيصال الدفعة يهبط على درجه الفعليّ.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -23,13 +24,19 @@ import { createDeliveryParty } from "../deliveryService";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 import { collectOnReceptionInvoice, commitDraft, listReceptionInvoices, promoteDraft } from "../reception";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
 
 const TABLES = [
   "receptionDraftLines", "receptionDrafts",
   "idempotencyKeys", "accountingEntries", "receipts",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
+  "workOrderEvents", "workOrderDesignApprovals", "workOrderDesignRevisions", "taskEvents", "tasks",
   "workOrderMaterials", "workOrderImages", "workOrders",
+  "serviceTypes",
   "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -56,8 +63,17 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "rc1", name: "موظف خدمة", email: "r1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "reviewer", name: "مراجع تصميم", email: "review@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "rc2", name: "موظف ثانٍ", email: "r2@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([{ id: 1, name: "عميل", phone: "+9647700000001", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
@@ -68,6 +84,30 @@ async function seed() {
 
 async function openReception(userId = 2) {
   return openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId, branchId: 1 });
+}
+
+async function approveCurrentDesign(workOrderId: number) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId,
+      requestKey: `reception-review-design-request:${randomUUID()}`,
+      note: "اعتماد التصميم قبل جاهزية أمر التسليم",
+    },
+    MANAGER,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `reception-review-design-approve:${randomUUID()}`,
+      decision: "APPROVED",
+      reason: "راجع العميل التصميم ووافق عليه للتسليم",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.reception-review.${randomUUID()}`,
+      },
+    },
+    { userId: 3, branchId: 1, role: "manager" },
+  );
 }
 
 /** فاتورة آجلة على وردية استقبال — في نطاق الطابور وقابلة للإسناد/التسديد. */
@@ -193,6 +233,7 @@ describe("F4 — ختم فاتورة التسليم: وردية استقبال �
       branchId: 1, customerId: 1, baseVariantId: null, title: "لوحة",
       salePrice: "10000", quantity: 1, deposit: "0",
     }, CASHIER) as { workOrderId: number };
+    await approveCurrentDesign(wo.workOrderId);
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, wo.workOrderId));
 
     // المنفّذ الثاني يفتح وردية **تجزئة** فقط — لا استقبال.
@@ -212,6 +253,7 @@ describe("F4 — ختم فاتورة التسليم: وردية استقبال �
       branchId: 1, customerId: 1, baseVariantId: null, title: "لوحة",
       salePrice: "10000", quantity: 1, deposit: "0",
     }, CASHIER) as { workOrderId: number };
+    await approveCurrentDesign(wo.workOrderId);
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, wo.workOrderId));
     const rec = await openReception(5);
 

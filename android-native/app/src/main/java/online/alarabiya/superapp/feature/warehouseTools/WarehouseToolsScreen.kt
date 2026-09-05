@@ -1,5 +1,6 @@
 package online.alarabiya.superapp.feature.warehouseTools
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import online.alarabiya.superapp.core.scanner.HidWedgeClassifier
 import online.alarabiya.superapp.core.scanner.NativeScanField
 import online.alarabiya.superapp.model.warehouseTools.*
 import online.alarabiya.superapp.ui.scanner.NativeScannerAction
@@ -92,7 +95,12 @@ private fun ScannerPane(state: WarehouseToolsUiState, actions: WarehouseToolsVie
     val input: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             SectionTitle("قارئ الإدخال", "USB · Bluetooth · لوحة النظام", Icons.Rounded.Scanner)
-            WedgeInput(state.scanInput, actions::setScanInput, actions::scan)
+            WedgeInput(
+                state.scanInput,
+                actions::setScanInput,
+                { capturedByHid -> actions.scan(capturedByHid = capturedByHid) },
+                { scanned -> actions.scan(capturedByCamera = true, scannedValue = scanned) },
+            )
             state.selectedCount?.let { session -> Info("المسح يبحث أولاً داخل جرد ${session.code} ثم اللقطة المحلية.") }
             state.snapshot?.let { snapshot -> Text("لقطة الفرع: ${snapshot.items.size} وحدة · ${compact(snapshot.syncedAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
@@ -109,9 +117,22 @@ private fun ScannerPane(state: WarehouseToolsUiState, actions: WarehouseToolsVie
 }
 
 @Composable
-private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Unit) {
+private fun WedgeInput(
+    value: String,
+    change: (String) -> Unit,
+    submit: (Boolean) -> Unit,
+    cameraSubmit: (String) -> Unit,
+) {
     val focus = remember { FocusRequester() }
+    val hidClassifier = remember { HidWedgeClassifier() }
+    var observedInput by remember { mutableStateOf(value) }
     val keyboard = LocalSoftwareKeyboardController.current
+    SideEffect {
+        if (value != observedInput) {
+            observedInput = value
+            hidClassifier.reset()
+        }
+    }
     LaunchedEffect(Unit) {
         focus.requestFocus()
         delay(120)
@@ -119,9 +140,24 @@ private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Un
     }
     OutlinedTextField(
         value = value,
-        onValueChange = change,
+        onValueChange = { next ->
+            if (next.length == observedInput.length + 1 && next.startsWith(observedInput)) {
+                hidClassifier.recordDataKey(SystemClock.uptimeMillis())
+            } else {
+                hidClassifier.reset()
+            }
+            observedInput = next
+            change(next)
+        },
         modifier = Modifier.fillMaxWidth().focusRequester(focus).onPreviewKeyEvent { event ->
-            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) { submit(); true } else false
+            if (event.key == Key.Enter) {
+                if (event.type == KeyEventType.KeyUp) {
+                    submit(hidClassifier.consumeTerminator(SystemClock.uptimeMillis()))
+                }
+                true
+            } else {
+                false
+            }
         },
         label = { Text("امسح أو أدخل الرمز") },
         leadingIcon = { Icon(Icons.Rounded.QrCodeScanner, null) },
@@ -131,10 +167,10 @@ private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Un
                     field = NativeScanField.SKU_OR_BARCODE,
                     onScanned = { scanned ->
                         change(scanned)
-                        submit()
+                        cameraSubmit(scanned)
                     },
                 )
-                FilledIconButton({ keyboard?.hide(); submit() }) {
+                FilledIconButton({ keyboard?.hide(); submit(false) }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowForward, "تنفيذ")
                 }
             }
@@ -142,7 +178,7 @@ private fun WedgeInput(value: String, change: (String) -> Unit, submit: () -> Un
         singleLine = true,
         shape = RoundedCornerShape(20.dp),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { keyboard?.hide(); submit() }),
+        keyboardActions = KeyboardActions(onDone = { keyboard?.hide(); submit(false) }),
     )
 }
 

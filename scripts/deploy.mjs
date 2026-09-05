@@ -449,6 +449,9 @@ export function defaultWebCandidateOperations(
   const publicViteBuildEnvironment = normalizeViteBuildEnvironment(
     viteBuildEnvironment,
   );
+  const sentryBuildEnvironment = normalizeSentryBuildEnvironment(
+    options.sentryBuildEnvironment ?? parentEnvironment,
+  );
   return Object.freeze({
     createWorktree: (sourceRoot, expectedSha) =>
       executeFile(
@@ -480,6 +483,9 @@ export function defaultWebCandidateOperations(
         env: {
           ...controlSubprocessEnvironment(parentEnvironment),
           ...publicViteBuildEnvironment,
+          // build-only allowlist: auth token reaches the Sentry uploader child only. It is
+          // neither VITE-prefixed nor inherited by PM2/runtime.
+          ...sentryBuildEnvironment,
           [VITE_DISABLE_DOTENV_ENV_KEY]: VITE_DISABLE_DOTENV_ENV_VALUE,
         },
       }),
@@ -1773,6 +1779,21 @@ export function normalizeViteBuildEnvironment(parsed) {
   return environment;
 }
 
+const SENTRY_BUILD_ENV_KEYS = [
+  "SENTRY_AUTH_TOKEN",
+  "SENTRY_ORG",
+  "SENTRY_PROJECT",
+  "SENTRY_RELEASE",
+];
+
+export function normalizeSentryBuildEnvironment(environment) {
+  return Object.fromEntries(
+    SENTRY_BUILD_ENV_KEYS
+      .filter((key) => typeof environment?.[key] === "string" && environment[key].trim())
+      .map((key) => [key, environment[key].trim()]),
+  );
+}
+
 function reloadWebProcess() {
   run(
     "pm2",
@@ -2219,6 +2240,22 @@ async function deploy(expectedHead) {
         }
       }
     }
+
+    // ٣/٩/٢٦ — إعادةُ ختم بصمات طلبات التحكّم المعلَّقة بعد إصلاح `idempotencyHash`
+    // (الصفوفُ المختومة قبل الإصلاح لا يمكن اعتمادُها أبداً). تُنفَّذ **بعد** تبديل العمال
+    // (مراجعة Codex على #956، P2): لو سبقت التبديل لكتب عاملٌ قديم صفّاً بالبصمة القديمة بعد
+    // المسح فبقي عالقاً. تعمل مرّةً واحدة لكلّ قاعدة (علامة إتمام في idempotencyKeys — P1)
+    // فلا تُعيد توقيع أيّ تعارضٍ مستقبليّ، وخارج كتلة التراجع عمداً: فشلُها لا يُرجع الويب
+    // القديم (وهو الذي كان يعطّل الاعتمادات) بل يُسقط النشر برسالةٍ صريحة، والإعادة يدوياً:
+    //   pnpm repair:control-request-hashes -- --apply
+    step("10b/12 إعادة ختم طلبات التحكّم المعلَّقة (مرّة واحدة)", () =>
+      run("node", [
+        "--import",
+        "tsx",
+        "scripts/repair-control-request-payload-hashes.ts",
+        "--apply",
+      ]),
+    );
 
     step("11/12 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
       const operations = makeActivationOperations(

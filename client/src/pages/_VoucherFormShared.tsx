@@ -35,6 +35,8 @@ import {
   barcodeSearchInputClass,
 } from "@/components/scan/BarcodeSearchCue";
 import { cn } from "@/lib/utils";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import type { PrintOpenResult } from "@shared/printAudit";
 import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
@@ -59,6 +61,15 @@ import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategor
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** صفُّ معاينة قَيد الدفتر (مَدين/دائن + الحساب + المبلغ) — معاينةٌ ساكنة، بلا فرز. */
+type LedgerPreviewRow = { side: string; account: string; amount: string };
+
+const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
+  { id: "side", header: "المُحَدِّد", accessorFn: (r) => r.side, enableSorting: false, meta: { width: "status" }, cell: ({ row }) => <span className="font-bold">{row.original.side}</span> },
+  { id: "account", header: "الحساب", accessorFn: (r) => r.account, enableSorting: false, meta: { width: "wide", wrap: true }, cell: ({ row }) => row.original.account },
+  { id: "amount", header: "المبلغ", accessorFn: (r) => r.amount, enableSorting: false, meta: { kind: "money" }, cell: ({ row }) => row.original.amount },
+];
 
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء (يبقى بالمخطط للسجلات التاريخية).
 const METHODS = [
@@ -444,7 +455,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       return "الرقم المرجعي إلزامي لطريقة الدفع «تحويل».";
     }
     if (method === "CARD" && !/^\d{4}$/.test(cardLastFour.trim())) {
-      return "آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام).";
+      return "آخر 4 من البطاقة إلزامي لطريقة الدفع «بطاقة» (4 أرقام).";
     }
     return "";
   }
@@ -665,17 +676,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>الفرع *</Label>
-              <select
-                className={selectCls}
-                value={branchId}
-                onChange={(e) => setBranchId(Number(e.target.value))}
+              <AppSelect
+                className="h-9"
+                value={String(branchId)}
+                onValueChange={(value) => setBranchId(Number(value))}
               >
                 {(branches.data ?? []).map((b) => (
                   <option key={Number(b.id)} value={Number(b.id)}>
                     {b.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1">
               <Label>المبلغ * (IQD)</Label>
@@ -711,11 +722,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع *</Label>
-              <select className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as MethodValue)}>
+              <AppSelect className="h-9" value={method} onValueChange={(value) => setMethod(value as MethodValue)}>
                 {METHODS.map((m) => (
                   <option key={m.value} value={m.value} disabled={!isInboundPaymentMethodEnabled(m.value)}>{m.label}</option>
                 ))}
-              </select>
+              </AppSelect>
             </div>
 
             {(method === "TRANSFER" ||
@@ -735,7 +746,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             )}
             {method === "CARD" && (
               <div className="space-y-1">
-                <Label>آخر ٤ من البطاقة *</Label>
+                <Label>آخر 4 من البطاقة *</Label>
                 <Input
                   value={cardLastFour}
                   onChange={(e) =>
@@ -768,14 +779,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   </Button>
                 )}
               </div>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={
                   voucherCategoryId === "" ? "" : String(voucherCategoryId)
                 }
-                onChange={(e) =>
+                onValueChange={(value) =>
                   setVoucherCategoryId(
-                    e.target.value === "" ? "" : Number(e.target.value),
+                    value === "" ? "" : Number(value),
                   )
                 }
               >
@@ -804,7 +815,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                       : ` — ${voucherCategoryRoleLabel(c.postingRole)}`}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               {/* حقلٌ إلزاميّ بقائمةٍ فارغة = طريقٌ مسدود. حين لا توجد ولا فئةٌ جاهزة لهذا الاتجاه
                   نقول ذلك صراحةً ونعرض المخرجين: إنشاء فئة الآن، أو استعادة الكتالوج الافتراضي. */}
               {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
@@ -868,11 +879,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <CardContent className="grid grid-cols-1 gap-3">
             <div className="space-y-1">
               <Label>نوع الطرف *</Label>
-              <select
-                className={selectCls}
+              <AppSelect
+                className="h-9"
                 value={partyType}
-                onChange={(e) => {
-                  const v = e.target.value as typeof partyType;
+                onValueChange={(value) => {
+                  const v = value as typeof partyType;
                   setPartyType(v);
                   setCustomerId(null);
                   setSupplierId(null);
@@ -884,7 +895,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 </option>
                 <option value="CUSTOMER">عميل</option>
                 <option value="SUPPLIER">مورّد</option>
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">
                 {partyType === "OTHER" &&
                   "لا تأثير على الذمم — تأثير على الصندوق/الدفتر فقط."}
@@ -922,7 +933,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                         onKeyDown={(e) =>
                           invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)
                         }
-                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
+                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر 50 فقط)"
                         className={barcodeSearchInputClass}
                       />
                       <BarcodeSearchCue />
@@ -1008,7 +1019,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               <div className="rounded-md border bg-muted/30 p-2 text-[12px] space-y-1">
                 <div className="font-bold text-foreground flex items-center gap-1">
                   <Info aria-hidden className="size-3.5" />
-                  آخر سندات لنفس الطَرف (٧ أيام):
+                  آخر سندات لنفس الطَرف (7 أيام):
                 </div>
                 {(recent.data ?? []).map((r) => (
                   <div
@@ -1053,30 +1064,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             {ledgerPreview && (
               <div className="space-y-1">
                 <Label>مَعاينة قَيد الدفتر</Label>
-                <div className="rounded-md border bg-muted/20 overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead className="bg-muted">
-                      <tr>
-                        <th className="p-1.5 text-right">المُحَدِّد</th>
-                        <th className="p-1.5 text-right">الحساب</th>
-                        <th className="p-1.5 text-left">المبلغ</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {ledgerPreview.map((row, i) => (
-                        <tr key={i} className="border-t">
-                          <td className="p-1.5 font-bold">{row.side}</td>
-                          <td className="p-1.5">{row.account}</td>
-                          <td
-                            className="p-1.5 text-left tabular-nums"
-                            dir="ltr"
-                          >
-                            {row.amount}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                {/* مَعاينةٌ ساكنة داخل حقلٍ في نموذج: مُضمَّنة بلا بحثٍ ولا ترقيمٍ ولا فرز. */}
+                <div className="rounded-md border bg-muted/20 overflow-hidden text-xs">
+                  <DataTable<LedgerPreviewRow>
+                    embedded
+                    searchable={false}
+                    bounded={false}
+                    pageSize={Infinity}
+                    columns={ledgerPreviewColumns}
+                    data={ledgerPreview}
+                    emptyText="لا قَيد للمعاينة."
+                  />
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {isReceipt

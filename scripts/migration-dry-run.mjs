@@ -67,24 +67,41 @@ const stripComments = (sql) =>
 
 /** يستخرج ما تُنشئه الهجراتُ المستهدَفة كي يُسقَط قبل التطبيق. */
 function artifactsOf(files) {
-  const tables = new Set(), cols = new Set(), keys = new Set();
+  const tables = new Set(), cols = new Set(), keys = new Set(), constraints = new Set();
   for (const f of files) {
     const s = stripComments(readFileSync(join(MIG_DIR, f), "utf8"));
     for (const m of s.matchAll(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+`?(\w+)`?/gi)) tables.add(m[1]);
     for (const m of s.matchAll(/ALTER TABLE `(\w+)` ADD COLUMN `(\w+)`/g)) cols.add(`${m[1]}.${m[2]}`);
     for (const m of s.matchAll(/ALTER TABLE\s+`?(\w+)`?([\s\S]*?)(?=;|$)/gi)) {
-      for (const c of m[2].matchAll(/ADD COLUMN\s+`?(\w+)`?/gi)) cols.add(`${m[1]}.${c[1]}`);
+      const table = m[1];
+      const body = m[2];
+      for (const c of body.matchAll(/ADD COLUMN\s+`?(\w+)`?/gi)) cols.add(`${table}.${c[1]}`);
+      for (const k of body.matchAll(/ADD\s+(?:UNIQUE\s+)?(?:INDEX|KEY)\s+`?(\w+)`?/gi)) keys.add(`${table}.${k[1]}`);
+      for (const c of body.matchAll(/ADD\s+CONSTRAINT\s+`?(\w+)`?/gi)) constraints.add(`${table}.${c[1]}`);
     }
     for (const m of s.matchAll(/CREATE (?:UNIQUE )?INDEX\s+`?(\w+)`?\s+ON\s+`?(\w+)`?/gi)) keys.add(`${m[2]}.${m[1]}`);
     for (const m of s.matchAll(/ALTER TABLE `(\w+)` ADD (?:UNIQUE )?(?:INDEX|KEY|CONSTRAINT)\s+`(\w+)`/gi)) keys.add(`${m[1]}.${m[2]}`);
   }
-  return { tables: [...tables], cols: [...cols], keys: [...keys] };
+  return {
+    tables: [...tables],
+    cols: [...cols],
+    keys: [...keys],
+    constraints: [...constraints],
+  };
 }
 
 const c = await createConnection({ uri: url, multipleStatements: true });
-const { tables, cols, keys } = artifactsOf(targets);
+const { tables, cols, keys, constraints } = artifactsOf(targets);
 
 await c.query("SET FOREIGN_KEY_CHECKS = 0");
+// الأعمدة المضافة قد تعتمد عليها CHECK/FK؛ إسقاط العمود أولاً يفشل ويترك حالةً جزئية
+// تجعل dry-run يختبر إعادة تطبيق فوق المخطط الحالي بدلاً من حالة ما قبل الهجرة.
+for (const spec of constraints) {
+  const [t, n] = spec.split(".");
+  try { await c.query(`ALTER TABLE \`${t}\` DROP FOREIGN KEY \`${n}\``); } catch { /* ليس FK أو الجدول أُسقط */ }
+  try { await c.query(`ALTER TABLE \`${t}\` DROP CHECK \`${n}\``); } catch { /* ليس CHECK */ }
+  try { await c.query(`ALTER TABLE \`${t}\` DROP INDEX \`${n}\``); } catch { /* ليس UNIQUE constraint */ }
+}
 for (const spec of keys) {
   const [t, n] = spec.split(".");
   try { await c.query(`ALTER TABLE \`${t}\` DROP FOREIGN KEY \`${n}\``); } catch { /* ليس مفتاحاً */ }

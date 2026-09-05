@@ -1,6 +1,7 @@
 import { router } from "./trpc";
 import { systemRouter } from "./routers/systemRouter";
 import { authRouter } from "./routers/authRouter";
+import { selfApprovalAuditRouter } from "./routers/selfApprovalAuditRouter";
 import { saleRouter } from "./routers/saleRouter";
 import { purchaseRouter } from "./routers/purchaseRouter";
 import { inventoryRouter } from "./routers/inventoryRouter";
@@ -17,6 +18,7 @@ import { digitalCardsRouter } from "./routers/digitalCardsRouter";
 import { giftsRouter } from "./routers/giftsRouter";
 import { branchRouter } from "./routers/branchRouter";
 import { workOrderRouter } from "./routers/workOrderRouter";
+import { refundRailsRouter } from "./routers/refundRailsRouter";
 import { customerRouter } from "./routers/customerRouter";
 import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
@@ -82,6 +84,16 @@ import { receptionRouter } from "./routers/receptionRouter";
 import { executiveRouter } from "./routers/executiveRouter";
 import { cashRemediationRouter } from "./routers/cashRemediationRouter";
 import { statutoryAccountingRouter } from "./routers/statutoryAccountingRouter";
+import { workOrderDesignApprovalRouter } from "./routers/workOrderDesignApprovalRouter";
+import { salesPipelineRouter } from "./routers/salesPipelineRouter";
+import { salesControlRouter } from "./routers/salesControlRouter";
+import { purchaseReturnGovernanceRouter } from "./routers/purchaseReturnGovernanceRouter";
+import { supplierPaymentsRouter } from "./routers/supplierPaymentsRouter";
+import { purchaseChargesRouter } from "./routers/purchaseChargesRouter";
+import { purchaseIntegrityRouter } from "./routers/purchaseIntegrityRouter";
+import { goodsReceiptReversalRouter } from "./routers/goodsReceiptReversalRouter";
+import { supplierInvoiceApprovalRouter } from "./routers/supplierInvoiceApprovalRouter";
+import { decisionsRouter } from "./routers/decisionsRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -98,7 +110,15 @@ export const appRouter = router({
   users: userRouter,
   roles: roleRouter,
   sales: saleRouter,
+  salesPipeline: salesPipelineRouter,
+  salesControl: salesControlRouter,
   purchases: purchaseRouter,
+  purchaseReturnGovernance: purchaseReturnGovernanceRouter,
+  supplierPayments: supplierPaymentsRouter,
+  purchaseCharges: purchaseChargesRouter,
+  purchaseIntegrity: purchaseIntegrityRouter,
+  goodsReceiptReversal: goodsReceiptReversalRouter,
+  supplierInvoiceApproval: supplierInvoiceApprovalRouter,
   inventory: inventoryRouter,
   accounts: accountsRouter,
   returns: returnRouter,
@@ -113,6 +133,11 @@ export const appRouter = router({
   gifts: giftsRouter,
   branches: branchRouter,
   workOrders: workOrderRouter,
+  // <RefundRailPicker> — بوّابةٌ واحدة أمام تمهيدات الردّ المتخصّصة (م٢ ق١٠، ٣/٩/٢٦).
+  // تُلغي «ثمانية سلوكيات في ثمانية مواضع» بتوحيد الاستفتاء: الشاشة تعرف نوع المستند
+  // ومعرّفه، والخادم يفتي بأربعة أسئلة (هل نقد؟ كم؟ من أيّ فرع؟ ما القوائم المتاحة؟).
+  refundRails: refundRailsRouter,
+  workOrderDesignApproval: workOrderDesignApprovalRouter,
   customers: customerRouter,
   customerNotes: customerNoteRouter,
   arReminders: arRemindersRouter,
@@ -196,6 +221,11 @@ export const appRouter = router({
   documentDelivery: documentDeliveryRouter,
   // إعلانات الموظفين الداخلية (ش١): إدارة تنشر/تستهدف/تتابع الإقرار + قراءة ذاتيّة للموظف.
   announcements: announcementsRouter,
+  // تقريرُ الاعتماد الذاتي (٤/٩/٢٦): الضابطُ التعويضيّ لقرار المالك «لا اعتماد ثانٍ بعد
+  // المالك» (٣/٩/٢٦، PR #962) — راجع shared/approvalPolicy.ts.
+  selfApprovalAudit: selfApprovalAuditRouter,
+  // صندوق «مطلوب مني الآن» من سجلّ القرارات (م٧ ق٢، ٥/٩/٢٦): سردٌ موحّد + حسمٌ في مكانه.
+  decisions: decisionsRouter,
 });
 
 export type AppRouter = typeof appRouter;

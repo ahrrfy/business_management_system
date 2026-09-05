@@ -4,6 +4,7 @@
  *  (#3) رياضة كشف حساب المورّد: الرصيد الجاري يجب أن يتّزن مع currentBalance عبر الإشارة الصحيحة لكل نوع قيد
  *       (كان يعامل كل الدفعات مديناً ⇒ مرتجع الشراء بإشارة معكوسة).
  */
+import { randomUUID } from "node:crypto";
 import Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it, beforeEach } from "vitest";
@@ -13,6 +14,10 @@ import { appRouter } from "../../routers";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { getSupplierStatement } from "../reports/apAging";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 function db() {
   const d = getDb();
@@ -23,6 +28,8 @@ const TABLES = [
   "documentPrintEvents", "purchaseReturnItems", "purchaseReturns", "idempotencyKeys",
   "auditLogs", "accountingEntries", "receipts", "inventoryMovements",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties",
+  "purchaseOrderEvents", "purchaseOrderControlRequests", "purchaseOrderRequisitionAllocations",
+  "purchaseOrderRevisionItems", "purchaseOrderRevisions",
   "purchaseOrderItems", "purchaseOrders", "invoiceItems", "invoices",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "suppliers", "customers", "users", "branches",
@@ -43,6 +50,7 @@ async function seed() {
     { id: 1, openId: "adm", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 4, openId: "c1", name: "كاشير ف١", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "c2", name: "كاشير ف٢", role: "cashier", loginMethod: "local", branchId: 2 },
+    { id: 6, openId: "po-reviewer", name: "مراجع مشتريات", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PAP", costPrice: "200.00" });
@@ -55,6 +63,21 @@ function caller(role: string, branchId: number, id: number) {
 function callerOverride(role: string, branchId: number, id: number, permissionsOverride: Record<string, string>) {
   const ctx = { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: { id, role, branchId, permissionsOverride } } as any;
   return appRouter.createCaller(ctx);
+}
+
+async function approvePurchaseOrder(po: Awaited<ReturnType<typeof createPurchaseOrder>>) {
+  const submitted = await submitPurchaseOrderForApproval({
+    purchaseOrderId: po.purchaseOrderId,
+    expectedVersion: po.version,
+    reason: "إرسال أمر تدقيق كشف المورد للمراجعة المستقلة",
+    requestKey: `f7-po-submit:${randomUUID()}`,
+  }, { userId: 1, branchId: 1, role: "admin" });
+  await decidePurchaseOrderControl({
+    requestId: submitted.requestId,
+    decisionKey: `f7-po-approve:${randomUUID()}`,
+    approve: true,
+    reason: "راجعت المورد والكميات والأسعار واعتمدت أمر التدقيق",
+  }, { userId: 6, branchId: 1, role: "manager" }, { legacyConfirmOnly: true });
 }
 
 beforeEach(async () => { await reset(); await seed(); });
@@ -123,6 +146,7 @@ describe("F7 #3 — رياضة كشف حساب المورّد تتّزن مع cu
       { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "200.00" }] },
       actor,
     );
+    await approvePurchaseOrder(po);
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 5 }] }, actor);
     await createPurchaseReturn(

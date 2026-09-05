@@ -17,10 +17,11 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     expect(source).toContain("isPosPaymentMethodEnabled(method)");
     expect(source).toContain('setMethod("CASH")');
     expect(source).toContain("disabled={!isPosPaymentMethodEnabled(p.v)}");
-    expect(reception).toContain("if (!isPosPaymentMethodEnabled(String(method)))");
-    expect(reception.indexOf("if (!isPosPaymentMethodEnabled(String(method)))")).toBeLessThan(
-      reception.indexOf("customerId = await ensureCustomerId()"),
+    expect(reception).toContain("if (!isPosPaymentMethodEnabled(String(method)))",
     );
+    expect(reception.indexOf("if (!isPosPaymentMethodEnabled(String(method)))"),
+    ).toBeLessThan(
+      reception.indexOf("customerId = await ensureCustomerId()"));
     // البطاقة مدعومة ⇒ الزرّ مفتوح فعلياً لا مُعطَّلاً.
     expect(isPosPaymentMethodEnabled("CARD")).toBe(true);
   });
@@ -43,8 +44,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
     expect(workOrderNew).toContain('onClick={() => setPaymentMethod("CARD")}');
-    expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
-    expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}');
+    expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}",
+    );
+    expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}',
+    );
     expect(workOrders).not.toContain('<option value="CARD" disabled>');
     expect(reservations).toContain("!isPosPaymentMethodEnabled(value)");
     expect(isPosPaymentMethodEnabled("CHECK")).toBe(false);
@@ -59,7 +62,8 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     expect(invoice).toContain("PaymentReferenceField");
     expect(invoice).toContain("initiateExternalPayment");
     expect(invoice).toContain("confirmExternalPayment");
-    expect(invoice).toContain("externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined");
+    expect(invoice).toContain("externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined",
+    );
     // جهاز المحاولة يُرسَل مع الإنشاء وإلا رُفض استهلاكها؛ وفرعُ المحاولة = فرع الفاتورة.
     expect(invoice).toContain("deviceId: externalAttempt.deviceId");
     expect(invoice).toContain("const branchId = state.branchId;");
@@ -71,17 +75,29 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     const quotation = readClient("../../pages/QuotationDetail.tsx");
 
     expect(quotation).not.toContain('setPayMethod("CASH");');
-    expect(quotation).toContain('id="quotation-pay-reference"');
-    expect(quotation).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()');
+    expect(quotation).toContain('inputId="quotation-pay-reference"');
+    expect(quotation).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()',
+    );
   });
 
   it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {
     const workOrders = readClient("../../pages/WorkOrders.tsx");
     const invoiceDetail = readClient("../../pages/InvoiceDetail.tsx");
+    const receptionQueue = readComponent("ReceptionInvoiceQueue.tsx");
 
-    expect(workOrders).toContain('reference: methodV === "CASH" ? undefined : reference.trim()');
+    expect(workOrders).toContain('reference: methodV === "CASH" ? undefined : reference.trim()',
+    );
     expect(workOrders).not.toContain("reference: undefined } : undefined)");
-    expect(invoiceDetail).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()');
-    expect(invoiceDetail).toContain('id="invoice-pay-reference"');
+    expect(invoiceDetail).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()',
+    );
+    expect(invoiceDetail).toContain('inputId="invoice-pay-reference"');
+    expect(receptionQueue).toContain('channel: "SALES_COLLECTION"');
+    expect(receptionQueue).toContain("PaymentReferenceField");
+    expect(receptionQueue).toMatch(
+      /externalPaymentAttemptId:\s*externalAttempt\?\.attemptId\s*\?\?\s*undefined/,
+    );
+    expect(receptionQueue).toMatch(
+      /externalPaymentDeviceId:\s*externalAttempt\?\.deviceId\s*\?\?\s*undefined/,
+    );
   });
 });

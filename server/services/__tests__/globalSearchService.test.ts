@@ -49,6 +49,8 @@ type SeedRefs = {
   workOrderId: number;
   poId: number;
   expenseId: number;
+  employeeMain: number;
+  employeeSales: number;
 };
 
 async function syncGlobalSearchNormFixture() {
@@ -100,6 +102,13 @@ async function seed(): Promise<SeedRefs> {
   ]);
   const [branchMain] = await d.select({ id: s.branches.id }).from(s.branches).where(eq(s.branches.code, "MAIN"));
   const [branchSales] = await d.select({ id: s.branches.id }).from(s.branches).where(eq(s.branches.code, "SALES"));
+
+  await d.insert(s.employees).values([
+    { branchId: branchMain.id, firstName: "موظف", lastName: "الرئيسي", isActive: true },
+    { branchId: branchSales.id, firstName: "موظف", lastName: "المبيعات", isActive: true },
+  ]);
+  const [employeeMain] = await d.select({ id: s.employees.id }).from(s.employees).where(eq(s.employees.lastName, "الرئيسي"));
+  const [employeeSales] = await d.select({ id: s.employees.id }).from(s.employees).where(eq(s.employees.lastName, "المبيعات"));
 
   await d.insert(s.products).values([
     { name: "قلم جاف أزرق فاخر" },
@@ -174,6 +183,7 @@ async function seed(): Promise<SeedRefs> {
     supplierLibrary: supLib.id,
     invoiceMain: invMain.id, invoiceSales: invSales.id,
     quotationId: qt.id, workOrderId: wo.id, poId: po.id, expenseId: exp.id,
+    employeeMain: employeeMain.id, employeeSales: employeeSales.id,
   };
 }
 
@@ -218,6 +228,27 @@ describe("globalSearch — توجيه حسب النمط", () => {
     expect(products).toHaveLength(1);
     expect(products[0].title).toContain("قلم");
     expect(products[0].rank).toBe(0);
+  });
+
+  it("يجد باركود المورد القصير أو الحرفي أو UPC حتى إن صنّفه الموجّه وثيقةً أو نصاً", async () => {
+    const d = db();
+    const [unit] = await d
+      .select({ id: s.productUnits.id })
+      .from(s.productUnits)
+      .innerJoin(s.productVariants, eq(s.productVariants.id, s.productUnits.variantId))
+      .where(eq(s.productVariants.sku, "PEN-BLUE"))
+      .limit(1);
+    await d.insert(s.productUnitBarcodes).values([
+      { productUnitId: unit.id, barcode: "10095" },
+      { productUnitId: unit.id, barcode: "NASR-6A" },
+      { productUnitId: unit.id, barcode: "0036000291452" },
+    ]);
+
+    for (const query of ["10095", "nasr-6a", "036000291452"]) {
+      const out = await globalSearch({ query, branchId: refs.branchMain, role: "admin", scopes: ["PRODUCT"] });
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({ type: "PRODUCT", id: refs.productPen, rank: 0 });
+    }
   });
 
   it("DOC_NUMBER كامل ⇒ يطابق الفاتورة بالضبط", async () => {
@@ -313,6 +344,35 @@ describe("globalSearch — عزل الفرع", () => {
     const invs = out.filter((r) => r.type === "INVOICE");
     expect(invs).toHaveLength(1);
     expect(invs[0].title).toBe("INV-2606-1001");
+  });
+
+  it("مدير الفرع يرى موظفي فرعه فقط", async () => {
+    const out = await globalSearch({
+      query: "موظف",
+      branchId: refs.branchMain,
+      role: "manager",
+      scopes: ["EMPLOYEE"],
+    });
+    expect(out.map((r) => r.id)).toEqual([refs.employeeMain]);
+  });
+
+  it("المستخدم غير العابر بلا فرع يفشل مغلقاً", async () => {
+    await expect(globalSearch({
+      query: "موظف",
+      branchId: null,
+      role: "manager",
+      scopes: ["EMPLOYEE"],
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("الأدمن يبقى عابر الفروع في بحث الموظفين", async () => {
+    const out = await globalSearch({
+      query: "موظف",
+      branchId: null,
+      role: "admin",
+      scopes: ["EMPLOYEE"],
+    });
+    expect(new Set(out.map((r) => r.id))).toEqual(new Set([refs.employeeMain, refs.employeeSales]));
   });
 
   it("المنتجات/العملاء/الموردين عبور الفروع دائماً (master data)", async () => {

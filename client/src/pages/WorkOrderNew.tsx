@@ -17,6 +17,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { esc } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
+import { ACTION_LABELS } from "@shared/actionLabels";
 import { cn } from "@/lib/utils";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -476,9 +477,11 @@ export default function WorkOrderNew() {
   // التركيز التلقائي على البحث عند فتح الصفحة لتسريع العمل.
   useEffect(() => { barcodeRef.current?.focus(); }, []);
 
-  // اختصارات: Ctrl+S يحفظ (بلا طباعة، نمط الزرّ الأساسي). بلا Esc — النموذج مكتظّ بعناصر
-  // <select> أصلية (الفرع/المنفّذ/طريقة التسليم) لا تُكتشَف حالتها فيتعارض إغلاقها مع إلغاء النموذج
-  // (نفس تحذير CustomerNew.tsx). حارس فقدان البيانات لكل حقلٍ أدخله المستخدم فعلياً.
+  // اختصارات: Ctrl+S يحفظ (بلا طباعة، نمط الزرّ الأساسي). بلا Esc — النموذج مكتظّ بقوائم منسدلة
+  // (الفرع/المنفّذ/طريقة التسليم) تبتلع Esc لإغلاق قائمتها فيتعارض ذلك مع إلغاء النموذج
+  // (نفس تحذير CustomerNew.tsx). والسبب باقٍ بعد الهجرة إلى AppSelect: Radix Select يبتلع Esc
+  // كما كان يفعل <select> الأصليّ — تغيَّر المكوّن لا التعارض.
+  // حارس فقدان البيانات لكل حقلٍ أدخله المستخدم فعلياً.
   useSaveShortcuts({
     onSave: () => void handleSave({ print: false }),
     enabled: !createWO.isPending && !createSale.isPending && !createCustomer.isPending,
@@ -648,16 +651,16 @@ export default function WorkOrderNew() {
             </div>
             <div className="space-y-1">
               <Label>الفرع {needsBranchChoice && <span className="text-destructive">*</span>}</Label>
-              <select
-                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
-                value={needsBranchChoice ? "" : effectiveBranch}
-                onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
+              <AppSelect
+                className="h-9 px-3 text-sm"
+                value={needsBranchChoice ? "" : String(effectiveBranch)}
+                onValueChange={(value) => setBranchId(value ? Number(value) : "")}
               >
                 {needsBranchChoice && <option value="">— اختر الفرع —</option>}
                 {(branches.data ?? []).map((b: any) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
-              </select>
+              </AppSelect>
               {needsBranchChoice && <p className="text-[11px] text-destructive">يلزم اختيار الفرع قبل الحفظ.</p>}
             </div>
           </div>
@@ -808,28 +811,28 @@ export default function WorkOrderNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="assignee">المنفّذ المسؤول</Label>
-            <select
+            <AppSelect
               id="assignee"
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
-              value={assignedTo}
-              onChange={(e) => setAssignedTo(e.target.value ? Number(e.target.value) : "")}
+              className="h-9 border-input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
+              value={String(assignedTo)}
+              onValueChange={(next) => setAssignedTo(next ? Number(next) : "")}
             >
               <option value="">— غير مُسنَد —</option>
               {(staff.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>{s.name ?? `#${s.id}`}{s.role ? ` — ${s.role}` : ""}</option>
               ))}
-            </select>
+            </AppSelect>
           </div>
           <div className="space-y-1">
             <Label htmlFor="dm">طريقة التسليم</Label>
-            <select
+            <AppSelect
               id="dm"
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
+              className="h-9 border-input px-3 text-sm focus-visible:ring-1 focus-visible:ring-ring"
               value={deliveryMethod}
-              onChange={(e) => setDeliveryMethod(e.target.value)}
+              onValueChange={(next) => setDeliveryMethod(next)}
             >
               {DELIVERY_METHODS.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+            </AppSelect>
           </div>
         </CardContent>
       </Card>
@@ -1031,7 +1034,7 @@ export default function WorkOrderNew() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => handleSave({ print: false })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending || createCustomer.isPending}>
-          {!effectiveBranch ? "اختر الفرع أولاً" : createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
+          {!effectiveBranch ? "اختر الفرع أولاً" : createWO.isPending || createSale.isPending ? ACTION_LABELS.saving : "حفظ"}
         </Button>
         <Button variant="default" onClick={() => handleSave({ print: true })} disabled={!effectiveBranch || createWO.isPending || createSale.isPending}>
           <Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حفظ وطباعة

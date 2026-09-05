@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -10,6 +11,10 @@ import {
   settlePurchaseUsdDirect,
 } from "../purchaseService";
 import { approveVoucher } from "../voucher/approval";
+import {
+  decidePurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "../purchase/controls";
 
 const creator = { userId: 1, branchId: 1, role: "manager" } as const;
 const receiver = { userId: 2, branchId: 1, role: "manager" } as const;
@@ -38,6 +43,11 @@ async function reset() {
     "exchangeHouses",
     "receipts",
     "inventoryMovements",
+    "purchaseOrderEvents",
+    "purchaseOrderControlRequests",
+    "purchaseOrderRequisitionAllocations",
+    "purchaseOrderRevisionItems",
+    "purchaseOrderRevisions",
     "purchaseOrderItems",
     "purchaseOrders",
     "branchStock",
@@ -161,6 +171,26 @@ describe("فاتورة المورد الدولارية — التكلفة وال
     expect(item.usdUnitPrice).toBe("20.0000");
     expect(item.usdTotal).toBe("200.00");
     expect(item.unitPrice).toBe("29000.00");
+
+    const submitted = await submitPurchaseOrderForApproval(
+      {
+        purchaseOrderId: created.purchaseOrderId,
+        expectedVersion: created.version,
+        reason: "إرسال أمر الشراء الدولاري للمراجعة المستقلة",
+        requestKey: `purchase-usd-submit:${randomUUID()}`,
+      },
+      creator,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `purchase-usd-approve:${randomUUID()}`,
+        approve: true,
+        reason: "راجعت سعر الصرف وقيمة المورد والشحن واعتمدت الأمر",
+      },
+      checker,
+      { legacyConfirmOnly: true },
+    );
 
     await receivePurchase(
       {

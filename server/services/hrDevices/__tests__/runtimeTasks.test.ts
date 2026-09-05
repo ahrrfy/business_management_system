@@ -26,9 +26,41 @@ afterEach(() => {
   vi.doUnmock("../../attendanceService");
   vi.doUnmock("../../appNotificationService");
   vi.doUnmock("../../pushService");
+  vi.doUnmock("../../sessionEventNotifier");
 });
 
 describe("تصريف مهام عامل جسر الحضور", () => {
+  it("لا يرسل إشعاراً إدارياً عند تسجيل الدخول إلى الحساب", async () => {
+    const createAppNotification = vi.fn();
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: async () => [{ id: 1 }],
+        }),
+      })),
+    };
+
+    vi.doMock("../../tx", () => ({ requireDb: () => db }));
+    vi.doMock("../../appNotificationService", () => ({
+      createAppNotification,
+    }));
+
+    const { notifyAdminsOfSessionEvent } = await import(
+      "../../sessionEventNotifier"
+    );
+    await notifyAdminsOfSessionEvent({
+      userId: 9,
+      userBranchId: 1,
+      userDisplayName: "أحمد علي",
+      kind: "LOGIN",
+      sessionId: 77,
+      occurredAt: new Date("2026-09-02T05:05:00.000Z"),
+    });
+
+    expect(db.select).not.toHaveBeenCalled();
+    expect(createAppNotification).not.toHaveBeenCalled();
+  });
+
   it("يعيد claim المتزامن مع الإغلاق إلى queued ولا يرسل على وصلة ميتة", async () => {
     const claimStarted = deferred();
     const releaseClaim = deferred();
@@ -408,13 +440,8 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     }
   });
 
-  it("يحفظ إشعار العامل وnative outbox ويطلق Web Push دون انتظاره", async () => {
-    const pushStarted = deferred();
-    const sendPushToUser = vi.fn(() => {
-      pushStarted.resolve();
-      // قناة PWA قد تتأخر؛ لا يجوز أن تحجز طيّ الحضور أو مهلة shutdown.
-      return new Promise<never>(() => undefined);
-    });
+  it("يحفظ إشعار العامل وصندوقي native/Web Push دون انتظار الشبكة", async () => {
+    const sendPushToUser = vi.fn(() => new Promise<never>(() => undefined));
     const inserted: unknown[] = [];
     const tx = {
       insert: vi.fn(() => ({
@@ -453,17 +480,22 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       lockScreenSafe: true,
       push: true,
     });
-    await pushStarted.promise;
-
-    let settled = false;
-    void creating.then(() => {
-      settled = true;
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(inserted).toHaveLength(2);
-    expect(sendPushToUser).toHaveBeenCalledOnce();
-    expect(settled).toBe(true);
     await expect(creating).resolves.toEqual({ created: true });
+    expect(inserted).toHaveLength(3);
+    expect(inserted[0]).toEqual(
+      expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+    );
+    expect(inserted[1]).toEqual(
+      expect.objectContaining({
+        environment: expect.any(String),
+        payload: expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
+      }),
+    );
+    expect(inserted[2]).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
+      }),
+    );
+    expect(sendPushToUser).not.toHaveBeenCalled();
   });
 });

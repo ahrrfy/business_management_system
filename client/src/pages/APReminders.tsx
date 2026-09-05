@@ -2,6 +2,7 @@
 // الموظف يسجّل «تمّت المتابعة» (يُخفيه ٧ أيام) أو يؤجّل بتاريخ وعد سداد. كل فعل يُسجَّل في `apReminders`
 // مع snapshots لحظية للتدقيق. تبريد ٧ أيام يمنع تكرار المورد. لا cron ولا أيّ مراسلة خارجية.
 import { useMemo, useState } from "react";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Info, Bot, Printer, Download } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -500,10 +501,10 @@ function QueueTab({
             aria-label="شريحة التقادم"
             placeholder="كل شرائح التقادم"
           >
-            <option value="7-30">٧-٣٠ يوماً</option>
-            <option value="31-60">٣١-٦٠ يوماً</option>
-            <option value="61-90">٦١-٩٠ يوماً</option>
-            <option value="90+">أكثر من ٩٠ يوماً</option>
+            <option value="7-30">7-30 يوماً</option>
+            <option value="31-60">31-60 يوماً</option>
+            <option value="61-90">61-90 يوماً</option>
+            <option value="90+">أكثر من 90 يوماً</option>
           </AppSelect>
           <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
             <RotateCcw className="size-3.5" aria-hidden /> تحديث
@@ -679,7 +680,7 @@ function HistoryTab({
           <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 w-36" aria-label="من تاريخ" />
           <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 w-36" aria-label="إلى تاريخ" />
           {(search || status || from || to) && (
-            <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>مسح الفلاتر</Button>
+            <Button variant="ghost" size="sm" onClick={() => { setSearch(""); setStatus(""); setFrom(""); setTo(""); }}>{FILTER_LABELS.reset}</Button>
           )}
         </div>
         <ScrollTableShell bordered={false}>

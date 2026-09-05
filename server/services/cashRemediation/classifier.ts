@@ -110,12 +110,16 @@ function classify(
   if (pairedInternalTransfer) {
     const isClosingHandover =
       receipt.referenceNumber?.startsWith("CH-") === true;
-    const hasSourceLedgerEntry = receipt.ledgerEntryTypes.includes(
-      isClosingHandover ? "CASH_HANDOVER" : "CASH_TRANSFER_OUT",
-    );
+    const hasLegacyHandover =
+      isClosingHandover && receipt.ledgerEntryTypes.includes("CASH_HANDOVER");
+    const hasStagedTransfer = receipt.ledgerEntryTypes.includes("CASH_TRANSFER_OUT");
+    // CH التاريخي أثبت الخزينة في مرحلة واحدة. CH/CD الجديدان يحتاجان مرحلتي transit.
+    const hasSourceLedgerEntry = isClosingHandover
+      ? hasLegacyHandover !== hasStagedTransfer
+      : hasStagedTransfer;
     const hasPairedLedgerEntry =
-      isClosingHandover ||
-      receipt.pairedTreasuryLedgerEntryTypes.includes("CASH_TRANSFER_IN");
+      hasLegacyHandover ||
+      (hasStagedTransfer && receipt.pairedTreasuryLedgerEntryTypes.includes("CASH_TRANSFER_IN"));
     const fullyAccepted =
       receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) &&
       receipt.pairedTreasuryReceiptStatus === "COMPLETED" &&

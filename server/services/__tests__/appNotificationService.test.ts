@@ -1,8 +1,9 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { nativePushOutbox, users } from "../../../drizzle/schema";
+import { appNotifications, nativePushOutbox, users, webPushOutbox } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  buildAppWebPushPayload,
   createAppNotification,
   getNotificationPreferences,
   listUserNotifications,
@@ -22,6 +23,7 @@ beforeEach(async () => {
   const database = db();
   await database.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   await database.execute(sql`TRUNCATE TABLE nativePushOutbox`);
+  await database.execute(sql`TRUNCATE TABLE webPushOutbox`);
   await database.execute(sql`TRUNCATE TABLE appNotificationPreferences`);
   await database.execute(sql`TRUNCATE TABLE appNotifications`);
   await database.execute(sql`TRUNCATE TABLE users`);
@@ -32,6 +34,65 @@ beforeEach(async () => {
 });
 
 describe("appNotificationService", () => {
+  it("يعرض نص الحضور الموجّه كاملاً في Web Push فقط عند اعتماده لشاشة القفل", () => {
+    const safe = buildAppWebPushPayload({
+      userId: 41,
+      kind: "ATTENDANCE",
+      title: "أحمد علي سجّل الحضور",
+      body: "08:05 • فرع الكرادة",
+      route: "/hr?tab=attendance",
+      eventKey: "attendance:supervisor:41:91:2026-08-08:ATTENDANCE_CHECK_IN",
+      lockScreenSafe: true,
+    });
+    expect(safe).toMatchObject({
+      title: "أحمد علي سجّل الحضور",
+      body: "08:05 • فرع الكرادة",
+      url: "/hr?tab=attendance",
+    });
+
+    const privatePayload = buildAppWebPushPayload({
+      userId: 41,
+      kind: "ATTENDANCE",
+      title: "نص غير معتمد",
+      body: "تفاصيل خاصة",
+      route: "/hr?tab=attendance",
+      eventKey: "attendance:41:2026-08-08:ATTENDANCE_CHECK_OUT",
+    });
+    expect(privatePayload).toMatchObject({
+      title: "تحديث الحضور",
+      body: "تم تحديث سجل الدوام.",
+    });
+  });
+
+  it("يبني Web Push آمناً لإشعارات النظام والإعلانات بدل حصرها داخل الصندوق", () => {
+    expect(buildAppWebPushPayload({
+      userId: 41,
+      kind: "SYSTEM",
+      title: "تسوية مطلوبة",
+      body: "تفاصيل داخلية لا تظهر على القفل",
+      route: "/my-work",
+      eventKey: "system:reconciliation:41:2026-09-01",
+    })).toMatchObject({
+      kind: "SYSTEM",
+      title: "تحديث من النظام",
+      body: "افتح النظام لعرض التفاصيل.",
+      url: "/my-work",
+    });
+
+    expect(buildAppWebPushPayload({
+      userId: 41,
+      kind: "ANNOUNCEMENT",
+      title: "إعلان إداري",
+      body: "اجتماع داخلي",
+      route: "/my-work#announcements",
+      eventKey: "announcement:8:41",
+    })).toMatchObject({
+      kind: "ANNOUNCEMENT",
+      title: "إعلان جديد",
+      body: "افتح النظام لقراءة الإعلان.",
+    });
+  });
+
   it("يحفظ الحدث مرة واحدة ويحسب غير المقروء ثم يعلّمه مقروءاً", async () => {
     const input = {
       userId: 41,
@@ -107,10 +168,55 @@ describe("appNotificationService", () => {
     });
     expect(rows[0].payload).toMatchObject({
       kind: "TASK_ASSIGNED",
+      family: "OPERATIONS",
       destination: "alrueya://app/module/tasks/view/902",
       urgency: "action",
       sensitive: "false",
     });
+    const webRows = await db().select().from(webPushOutbox);
+    expect(webRows).toHaveLength(1);
+    expect(webRows[0]).toMatchObject({ userId: 41, eventKey: input.eventKey, status: "PENDING" });
+  });
+
+  it("يصنّف إشعار الإدارة ويحفظ النظام والجلسة للتسليم خارج التطبيق", async () => {
+    await createAppNotification({
+      userId: 41,
+      kind: "ATTENDANCE",
+      family: "ADMIN",
+      title: "أحمد سجّل الحضور",
+      body: "08:00 · فرع الكرادة",
+      route: "/hr?tab=attendance",
+      eventKey: "attendance:manager:41:1:ATTENDANCE_CHECK_IN",
+      lockScreenSafe: true,
+    });
+    await createAppNotification({
+      userId: 41,
+      kind: "SESSION_EVENT",
+      family: "ADMIN",
+      title: "دخول: أحمد",
+      body: "جهاز موثوق",
+      route: "/mobile#session-events",
+      eventKey: "session:login:1:41",
+    });
+    await createAppNotification({
+      userId: 41,
+      kind: "SYSTEM",
+      title: "تسوية مطلوبة",
+      body: "افتح التنبيهات",
+      route: "/my-work",
+      eventKey: "system:settlement:41:2026-09-01",
+    });
+
+    const notices = await db().select().from(appNotifications);
+    expect(notices.map((row) => row.family)).toEqual(["ADMIN", "ADMIN", "SYSTEM"]);
+    const nativeRows = await db().select().from(nativePushOutbox);
+    expect(nativeRows).toHaveLength(3);
+    expect(nativeRows[0].payload).toMatchObject({ family: "ADMIN" });
+    expect(nativeRows[1].payload).toMatchObject({ family: "ADMIN" });
+    expect(nativeRows[2].payload).toMatchObject({ family: "SYSTEM" });
+    expect(nativeRows[1].payload).toMatchObject({ destination: "alrueya://app/alerts" });
+    expect(nativeRows[2].payload).toMatchObject({ kind: "SYSTEM", destination: "alrueya://app/alerts" });
+    expect(await db().select().from(webPushOutbox)).toHaveLength(3);
   });
 
   it("يوجّه إشعار حملة الاستوديو إلى وجهة Android مسجّلة", async () => {
@@ -191,6 +297,32 @@ describe("appNotificationService", () => {
       title: "تحديث آمن",
       body: "افتح سوبر العربية لعرض التفاصيل.",
       sensitive: "true",
+    });
+  });
+
+  it("يعرض تنبيه الإدارة الكامل خارج التطبيق عندما تكون حمولته العددية معتمدة", async () => {
+    await createAppNotification({
+      userId: 41,
+      kind: "SYSTEM",
+      family: "ADMIN",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
+      route: "/dashboard",
+      eventKey: "morning-brief:2026-09-01:41",
+      lockScreenSafe: true,
+    });
+    const [native] = await db().select().from(nativePushOutbox);
+    const [web] = await db().select().from(webPushOutbox);
+    expect(native.payload).toMatchObject({
+      kind: "SYSTEM",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
+      sensitive: "false",
+    });
+    expect(web.payload).toMatchObject({
+      kind: "SYSTEM",
+      title: "برنامج اليوم — الرؤية العربية",
+      body: "3 بنود للمتابعة: 2 مهمة مفتوحة، 1 أمر شغل متأخر",
     });
   });
 

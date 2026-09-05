@@ -52,7 +52,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -615,7 +614,7 @@ private fun ShiftCloseDialog(
         confirmButton = {
             Button(onClick = onConfirm, enabled = validation == null && !state.closing) {
                 if (state.closing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("إغلاق وتثبيت المطابقة")
+                else Text(if (ShiftMoney.parseUnsigned(draft.countedCash)?.isPositive() == true) "إغلاق وترحيل النقد للخزينة" else "إغلاق وتثبيت المطابقة")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !state.closing) { Text("رجوع") } },

@@ -20,6 +20,9 @@
  *  D10 (I14) — المسوّدة المموّلة لا تمنع إغلاق الوردية، والكنّاس لا يطويها، وZ يحمل الإفصاح.
  *  D11 — إلغاء مسوّدةٍ عليها محتجزٌ مرفوض حتى يُردّ؛ وبعد الردّ الكامل يبقى الإلغاء مديرياً.
  *  D12 (I8) — إعادة التثبيت تعيد نفس appliedPayments بلا تطبيقٍ مزدوج.
+ *  R8 (مراجعة Codex على PR #988) — إلغاء فاتورةٍ مموَّلة بعربونٍ مُشظّى بين هدفين (بلا إيصالٍ
+ *      مختوم) يستردّ نقدها فعلياً؛ سقف refundable في cancelSaleInTx يرى حصّة APPLICATION غير
+ *      المختومة الآن (نفس استعلام returns/refundCaps.ts خطوة ②).
  */
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,8 +37,16 @@ import { reconcileCustomerBalances } from "../reconcileService";
 import { getCustomerStatement } from "../reports/arAging";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
 import { returnSale } from "../returnService";
+import { cancelSale } from "../sale/cancel";
 import { deliverWorkOrder } from "../workOrder/deliver";
-import { cancelWorkOrder } from "../workOrder/cancel";
+import {
+  decideWorkOrderDesignApproval,
+  requestWorkOrderDesignApproval,
+} from "../workOrder/designApproval";
+import {
+  approveWorkOrderControlRequest,
+  requestWorkOrderControl,
+} from "../workOrder/controlRequests";
 import {
   cancelDraft,
   collectDeposit,
@@ -48,6 +59,9 @@ import {
 } from "../reception";
 
 const TABLES = [
+  "workOrderEvents", "workOrderControlRequests",
+  "workOrderDesignApprovals", "workOrderDesignRevisions",
+  "taskEvents", "tasks", "serviceTypes", "auditLogs",
   "orderPayments", "receptionDraftLines", "receptionDrafts",
   "idempotencyKeys", "accountingEntries", "receipts",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -80,6 +94,14 @@ async function seed() {
     { id: 2, openId: "rc", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "rc2", name: "موظف ثانٍ", email: "r2@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.serviceTypes).values({
+    name: "موافقة تصميم",
+    defaultKind: "SERVICE_REQUEST",
+    defaultPriority: "HIGH",
+    slaHours: 24,
+    blocksExecution: true,
+    isActive: true,
+  });
   await d.insert(s.customers).values([{ id: 1, name: "عميل", currentBalance: "0.00", creditLimit: "1000000.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "NB-1", costPrice: "500.00" }]);
@@ -109,6 +131,30 @@ async function promoteMixed(customerId: number | null = 1) {
 }
 
 const uuid = (tag: string) => `${tag}-0000-4000-8000-000000000000`.slice(0, 36);
+
+async function approveCurrentDesign(woId: number, tag: string) {
+  const requested = await requestWorkOrderDesignApproval(
+    {
+      workOrderId: woId,
+      requestKey: `reception-design-request-${tag}`,
+      note: "اعتماد التصميم قبل التسليم",
+    },
+    CASHIER,
+  );
+  await decideWorkOrderDesignApproval(
+    {
+      approvalId: Number(requested.approval.id),
+      decisionKey: `reception-design-decision-${tag}`,
+      decision: "APPROVED",
+      reason: "وافق العميل على التصميم النهائي",
+      evidence: {
+        type: "WHATSAPP_MESSAGE",
+        reference: `wamid.reception.${tag}`,
+      },
+    },
+    MANAGER,
+  );
+}
 
 beforeEach(async () => {
   await reset();
@@ -195,6 +241,7 @@ describe("D2 — I6: عربونٌ يصل أمر الشغل فعلاً والتس
     expect(wo.depositReceiptId).toBeNull();
 
     // التسليم بالباقي 25,000 ⇒ الفاتورة مدفوعة كاملاً وإجمالي المدفوع = السعر بالضبط.
+    await approveCurrentDesign(woId, "d2");
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
     const delivered = await deliverWorkOrder(
       { workOrderId: woId, payment: { amount: "25000.00", method: "CASH" } }, CASHIER,
@@ -225,7 +272,26 @@ describe("D3 — إلغاء أمرٍ عربونُه مقبوض سلفاً يرد
     }, CASHIER);
     const woId = r.workOrders[0].workOrderId;
 
-    await cancelWorkOrder(woId, MANAGER);
+    const [current] = await db()
+      .select({ version: s.workOrders.version })
+      .from(s.workOrders)
+      .where(eq(s.workOrders.id, woId));
+    const request = await requestWorkOrderControl(
+      {
+        requestKey: `reception-cancel-${woId}`,
+        workOrderId: woId,
+        requestType: "CANCEL",
+        baseVersion: Number(current.version),
+        reason: "إلغاء بطلب العميل ورد العربون",
+        payload: { refundShiftId: shift.shiftId },
+      },
+      CASHIER,
+    );
+    await approveWorkOrderControlRequest(
+      Number(request.id),
+      MANAGER,
+      "تم التحقق من طلب العميل ومبلغ الرد",
+    );
 
     const outs = await db().select().from(s.receipts)
       .where(and(eq(s.receipts.workOrderId, woId), eq(s.receipts.direction, "OUT")));
@@ -458,6 +524,7 @@ describe("R1 — مراجعة: القبض المردود جزئياً لا يُ�
     const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0];
     expect(wo.deposit).toBe("15000.00"); // الصافي بعد الردّ
 
+    await approveCurrentDesign(woId, "r1");
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
     const delivered = await deliverWorkOrder({ workOrderId: woId, payment: null }, CASHIER);
     // الإيصال المشوب بردٍّ جزئيّ (20,000 قُبضت، 15,000 صافياً) لا يُختم — مبلغه الكامل يكذب
@@ -745,5 +812,90 @@ describe("DB — قرار المالك (ب): سلطة ردّ العربون ال
     expect(out.cashBucket).toBeNull();
     const coll = (await db().select().from(s.orderPayments).where(eq(s.orderPayments.id, dep.paymentId)))[0];
     expect(coll.status).toBe("REFUNDED");
+  });
+});
+
+describe("R8 — مراجعة (Codex على PR #988): إلغاء فاتورةٍ مموَّلة من عربونٍ مُشظّى بين هدفين", () => {
+  it("بضاعة 2,000 + تخصيص، عربونٌ واحد يغطّيهما ⇒ cancelSale يستردّ 2,000 رغم غياب إيصالٍ مختوم", async () => {
+    const shift = await openReception();
+    const p = await promoteMixed(1);
+    await collectDeposit(
+      { draftId: p.draftId, amount: "10000.00", method: "CASH", clientRequestId: uuid("r8c00001") },
+      CASHIER,
+    );
+    // heldNet (10,000) يغطّي البيع المباشر (2,000) ⇒ التثبيت بلا collectNow جائز — القبض يتشظّى
+    // (2,000 للفاتورة + 8,000 للأمر) فلا يُختم إيصاله بأيّ فاتورة (نفس تمهيد R2).
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "47000.00", shiftId: shift.shiftId, collectNow: null,
+    }, CASHIER);
+    const invId = r.regularSale!.invoiceId;
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invId)))[0];
+    expect(inv.paidAmount).toBe("2000.00");
+    const linked = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, invId));
+    expect(linked.length).toBe(0); // لا إيصال مربوط — الحقيقة في orderPayments
+
+    // قبل الإصلاح: refundable = 0 (materialReceipts لا يرى حصّة APPLICATION غير المختومة)
+    // ⇒ لا استرداد لفاتورةٍ PAID بالكامل، والفاتورة تُلغى بلا ردّ مالٍ للعميل رغم دفعه فعلاً.
+    // المُلغي MANAGER لا CASHIER: cancelSaleInTx يرفض إلغاء منشئ الفاتورة نفسه (فصل مهام) —
+    // CASHIER هو من ثبّت المسوّدة. MANAGER بلا وردية ⇒ TREASURY؛ نموّلها هنا (نظير saleCancel
+    // .test.ts) كي لا يعتمد الاختبار على وردية درجٍ لا صلة لها بموضوع الإصلاح.
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "10000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-R8", createdBy: 1,
+    });
+    const cancelled = await cancelSale({ invoiceId: invId, refundPaymentMethod: "CASH" }, MANAGER);
+    expect(cancelled.refundAmount).toBe("2000.00");
+    const invAfter = (await db().select().from(s.invoices).where(eq(s.invoices.id, invId)))[0];
+    expect(invAfter.status).toBe("CANCELLED");
+    const outs = await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.invoiceId, invId), eq(s.receipts.direction, "OUT")));
+    expect(outs.length).toBe(1);
+    expect(outs[0].amount).toBe("2000.00");
+    expect(outs[0].status).toBe("COMPLETED");
+    expect(outs[0].approvalStatus).toBe("APPROVED");
+
+    // orderPayments غير مُلزَمٍ بالتزامن هنا (نظير returnService — الحقيقة الحاكمة بعد التطبيق
+    // في receipts/accountingEntries؛ العربون الأصل يبقى تاريخاً APPLIED لا يُعاد فتحه).
+    const collectionRow = (
+      await db().select().from(s.orderPayments)
+        .where(and(eq(s.orderPayments.draftId, p.draftId), eq(s.orderPayments.kind, "COLLECTION")))
+    )[0];
+    expect(collectionRow.status).toBe("APPLIED");
+  });
+
+  it("idempotency: نفس clientRequestId يُعيد نفس refundAmount بلا استرداد ثانٍ (لا يخطف إيصال الحصّة السابقة)", async () => {
+    const shift = await openReception();
+    const p = await promoteMixed(1);
+    await collectDeposit(
+      { draftId: p.draftId, amount: "10000.00", method: "CASH", clientRequestId: uuid("r8c00002") },
+      CASHIER,
+    );
+    const r = await commitDraft({
+      draftId: p.draftId, version: 0, expectedTotal: "47000.00", shiftId: shift.shiftId, collectNow: null,
+    }, CASHIER);
+    const invId = r.regularSale!.invoiceId;
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "10000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-R8B", createdBy: 1,
+    });
+
+    const first = await cancelSale(
+      { invoiceId: invId, refundPaymentMethod: "CASH", clientRequestId: uuid("r8x00001") },
+      MANAGER,
+    );
+    expect(first.idempotentReplay).toBeUndefined();
+    expect(first.refundAmount).toBe("2000.00");
+
+    const replay = await cancelSale(
+      { invoiceId: invId, refundPaymentMethod: "CASH", clientRequestId: uuid("r8x00001") },
+      MANAGER,
+    );
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.refundAmount).toBe("2000.00");
+    const outs = await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.invoiceId, invId), eq(s.receipts.direction, "OUT")));
+    expect(outs.length).toBe(1); // لا استرداد ثانٍ
   });
 });

@@ -2,6 +2,7 @@
 // managerProcedure). خمسة أقسام: الإعدادات العامّة (وضع/هامش/تجهيز) + أسعار الوجه (مقاس×نمط) +
 // الورق المميّز + الوسائط العريضة + خيارات التشطيب. كل حقل ماليّ عبر MoneyInput (قيمة خام للإرسال).
 import { useEffect, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Link } from "wouter";
 import { Plus, Trash2, Edit3, X, Check, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list/RowActions";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { confirm } from "@/lib/confirm";
@@ -32,6 +35,7 @@ import {
   type PricingMode,
 } from "@shared/printPricing";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 
 const sizeLabel = (c: string) => PAPER_SIZES.find((s) => s.code === c)?.label ?? c;
@@ -55,7 +59,7 @@ export default function PrintPricingSettings() {
       />
 
       {bundle.isLoading ? (
-        <Card><CardContent className="p-6 text-center text-muted-foreground">جارٍ التحميل…</CardContent></Card>
+        <Card><CardContent className="p-6 text-center text-muted-foreground">{ACTION_LABELS.loading}</CardContent></Card>
       ) : bundle.isError ? (
         <Card><CardContent className="p-6 text-center text-[var(--sem-warn)]">{bundle.error?.message}</CardContent></Card>
       ) : (
@@ -99,15 +103,15 @@ function GeneralSettings({
       <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="space-y-1">
           <Label>وضع التسعير</Label>
-          <select
-            className={selectClsFull}
+          <AppSelect
+            className="h-9"
             value={form.pricingMode}
-            onChange={(e) => setForm({ ...form, pricingMode: e.target.value as PricingMode })}
+            onValueChange={(next) => setForm({ ...form, pricingMode: next as PricingMode })}
           >
             {PRICING_MODES.map((m) => (
               <option key={m} value={m}>{PRICING_MODE_AR[m]}</option>
             ))}
-          </select>
+          </AppSelect>
         </div>
         <div className="space-y-1">
           <Label>نسبة الهامش الافتراضية ٪</Label>
@@ -141,11 +145,14 @@ function GeneralSettings({
 }
 
 // ─── أسعار الوجه (المقاس × النمط) ────────────────────────────────────────────
+/** صفّ سعر وجهٍ مطبوع (مقاس × نمط). */
+type FacePriceRow = { id: number; paperSize: PaperSizeCode; colorMode: ColorMode; pricePerFace: string };
+
 function FacePricesSection({
   rows,
   onChanged,
 }: {
-  rows: { id: number; paperSize: PaperSizeCode; colorMode: ColorMode; pricePerFace: string }[];
+  rows: FacePriceRow[];
   onChanged: () => Promise<unknown>;
 }) {
   const [size, setSize] = useState<PaperSizeCode>("A4");
@@ -181,6 +188,38 @@ function FacePricesSection({
     del.mutate({ id });
   }
 
+  const faceColumns: ColumnDef<FacePriceRow, unknown>[] = [
+    { id: "paperSize", header: "المقاس", accessorFn: (r) => sizeLabel(r.paperSize), cell: ({ row }) => sizeLabel(row.original.paperSize) },
+    { id: "colorMode", header: "النمط", accessorFn: (r) => COLOR_MODE_AR[r.colorMode], cell: ({ row }) => COLOR_MODE_AR[row.original.colorMode] },
+    {
+      id: "pricePerFace",
+      header: "سعر الوجه",
+      accessorFn: (r) => formatIqd(r.pricePerFace),
+      meta: { kind: "money" },
+      cell: ({ row }) => formatIqd(row.original.pricePerFace),
+    },
+    {
+      id: "actions",
+      header: "حذف",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[{
+            key: "delete",
+            kind: "delete",
+            label: "حذف",
+            icon: Trash2,
+            variant: "destructive",
+            gate: { managerOnly: true },
+            onSelect: () => void remove(row.original.id, `${sizeLabel(row.original.paperSize)} / ${COLOR_MODE_AR[row.original.colorMode]}`),
+          }]}
+        />
+      ),
+    },
+  ];
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -188,57 +227,28 @@ function FacePricesSection({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-          <select className={selectClsFull} value={mode} onChange={(e) => setMode(e.target.value as ColorMode)} aria-label="النمط">
+          <AppSelect className="h-9" value={mode} onValueChange={(next) => setMode(next as ColorMode)} aria-label="النمط">
             {COLOR_MODES.map((m) => <option key={m} value={m}>{COLOR_MODE_AR[m]}</option>)}
-          </select>
-          <select className={selectClsFull} value={size} onChange={(e) => setSize(e.target.value as PaperSizeCode)} aria-label="المقاس">
+          </AppSelect>
+          <AppSelect className="h-9" value={size} onValueChange={(next) => setSize(next as PaperSizeCode)} aria-label="المقاس">
             {PAPER_SIZES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-          </select>
+          </AppSelect>
           <MoneyInput value={price} onChange={setPrice} ariaLabel="سعر الوجه" placeholder="سعر الوجه" />
           <Button onClick={submit} disabled={upsert.isPending} className="bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos)]/90">
             <Plus aria-hidden className="size-4 ms-1" /> حفظ السعر
           </Button>
         </div>
 
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">لا أسعار وجه مضبوطة بعد — أضِف المقاسات التي تستعملها.</p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">المقاس</th>
-                  <th className="p-2 text-start">النمط</th>
-                  <th className="p-2 text-start">سعر الوجه</th>
-                  <th className="p-2 text-center">حذف</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t border-border">
-                    <td className="p-2">{sizeLabel(r.paperSize)}</td>
-                    <td className="p-2">{COLOR_MODE_AR[r.colorMode]}</td>
-                    <td className="p-2 tabular-nums">{formatIqd(r.pricePerFace)}</td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        mode="inline"
-                        actions={[{
-                          key: "delete",
-                          kind: "delete",
-                          label: "حذف",
-                          icon: Trash2,
-                          variant: "destructive",
-                          gate: { managerOnly: true },
-                          onSelect: () => void remove(r.id, `${sizeLabel(r.paperSize)} / ${COLOR_MODE_AR[r.colorMode]}`),
-                        }]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* مُضمَّن في بطاقةٍ تحمل عنوان القسم ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<FacePriceRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={faceColumns}
+          data={rows}
+          emptyText="لا أسعار وجه مضبوطة بعد — أضِف المقاسات التي تستعملها."
+        />
       </CardContent>
     </Card>
   );
@@ -308,6 +318,63 @@ function ManagedListSection({
     reset();
   }
 
+  // عمود الوحدة مشروطٌ بوجود خيارات وحدة — كما كان الجدول الخامّ.
+  const managedColumns: ColumnDef<ManagedRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الاسم",
+      accessorFn: (r) => r.name,
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+    },
+    ...(unitOptions
+      ? [{
+          id: "unit",
+          header: unitLabel ?? "الوحدة",
+          accessorFn: (r: ManagedRow) => unitOptions.find((u) => u.value === r.unit)?.label ?? r.unit ?? "",
+          cell: ({ row }) => unitOptions.find((u) => u.value === row.original.unit)?.label ?? row.original.unit,
+        } as ColumnDef<ManagedRow, unknown>]
+      : []),
+    {
+      id: "money",
+      header: moneyLabel,
+      accessorFn: (r) => formatIqd(r.money),
+      meta: { kind: "money" },
+      cell: ({ row }) => formatIqd(row.original.money),
+    },
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (r) => (r.isActive ? "فعّال" : "معطّل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => <span className="text-xs">{row.original.isActive ? "فعّال" : "معطّل"}</span>,
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => (
+        <RowActions
+          mode="inline"
+          actions={[
+            { key: "edit", kind: "edit", label: "تعديل", icon: Edit3, gate: { managerOnly: true }, onSelect: () => startEdit(row.original) },
+            {
+              key: "toggle",
+              kind: "approve",
+              label: row.original.isActive ? "تعطيل" : "تفعيل",
+              gate: { managerOnly: true },
+              // تبديلُ التفعيل يحفظ الإعداد على الخادم، فحالةُ الانتظار هنا حفظٌ لا تحميل.
+              disabled: busy,
+              disabledReason: ACTION_LABELS.saving,
+              onSelect: () => onUpdate({ id: row.original.id, isActive: !row.original.isActive }),
+            },
+          ]}
+        />
+      ),
+    },
+  ];
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -318,9 +385,9 @@ function ManagedListSection({
         <div className={`grid grid-cols-1 gap-2 ${unitOptions ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم" />
           {unitOptions && (
-            <select className={selectClsFull} value={unit} onChange={(e) => setUnit(e.target.value)} aria-label={unitLabel}>
+            <AppSelect className="h-9" value={unit} onValueChange={(next) => setUnit(next)} aria-label={unitLabel}>
               {unitOptions.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
-            </select>
+            </AppSelect>
           )}
           <MoneyInput value={money} onChange={setMoney} ariaLabel={moneyLabel} placeholder={moneyLabel} />
           <div className="flex gap-1">
@@ -333,50 +400,17 @@ function ManagedListSection({
           </div>
         </div>
 
-        {rows.length === 0 ? (
-          <p className="text-sm text-muted-foreground">لا عناصر بعد.</p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2 text-start">الاسم</th>
-                  {unitOptions && <th className="p-2 text-start">{unitLabel}</th>}
-                  <th className="p-2 text-start">{moneyLabel}</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className={`border-t border-border ${r.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{r.name}</td>
-                    {unitOptions && <td className="p-2">{unitOptions.find((u) => u.value === r.unit)?.label ?? r.unit}</td>}
-                    <td className="p-2 tabular-nums">{formatIqd(r.money)}</td>
-                    <td className="p-2 text-center text-xs">{r.isActive ? "فعّال" : "معطّل"}</td>
-                    <td className="p-2 text-center">
-                      <RowActions
-                        mode="inline"
-                        actions={[
-                          { key: "edit", kind: "edit", label: "تعديل", icon: Edit3, gate: { managerOnly: true }, onSelect: () => startEdit(r) },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: r.isActive ? "تعطيل" : "تفعيل",
-                            gate: { managerOnly: true },
-                            disabled: busy,
-                            disabledReason: "جارٍ تحديث الإعداد",
-                            onSelect: () => onUpdate({ id: r.id, isActive: !r.isActive }),
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {/* مُضمَّن في بطاقةٍ تحمل عنوان القسم ⇒ بلا شريط حالةٍ ولا بحثٍ ولا ترقيم. */}
+        <DataTable<ManagedRow>
+          embedded
+          searchable={false}
+          bounded={false}
+          pageSize={Infinity}
+          columns={managedColumns}
+          data={rows}
+          getRowClassName={(r) => (r.isActive ? undefined : "opacity-60")}
+          emptyText="لا عناصر بعد."
+        />
       </CardContent>
     </Card>
   );

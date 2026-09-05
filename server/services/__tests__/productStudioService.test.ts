@@ -9,6 +9,7 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import { createAppNotification } from "../appNotificationService";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
+import { reserveStudioImageTasks, bulkReassignStudioTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -1247,6 +1248,76 @@ describe("product studio governed workflow", () => {
       unitId: 105,
       matchKind: "BARCODE_PRIMARY",
     });
+  });
+
+  it("(٤/٩) يحلّ باركوداً مخزَّناً بمسافةٍ طرفية أو بأرقامٍ عربية-هندية — إرثٌ حُفظ قبل تطبيع الحفظ", async () => {
+    // الجذر الحقيقيّ لبلاغ «الرمز الممسوح لا يطابق» المتكرّر: مخطّطات الحفظ كانت بلا `.trim()`،
+    // فحُفظ «10095 » بمسافةٍ طرفية، بينما مساواةُ SQL الخامّة في `listStudioProducts` لا تراه ⇒ لا يدخل
+    // الصفحةَ أصلاً ولا يصل إلى `contextFor` (الذي طُبِّع في #912 — فكان الإصلاح السابق يُصلح نصف
+    // السلسلة). الإدراج هنا خامٌّ (يتجاوز الخدمة) لمحاكاة صفٍّ إرثيّ.
+    const d = db();
+    await d.insert(s.products).values({ id: 108, name: "المنهج — الأستاذ ٢٠٢٧" });
+    await d.insert(s.productVariants).values({ id: 108, productId: 108, sku: "MNHJ-27", costPrice: "1" });
+    await d.insert(s.productUnits).values({ id: 108, variantId: 108, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: " 10095 " });
+    await d.insert(s.productUnitBarcodes).values({ productUnitId: 108, barcode: "٩٩٩٠٠٠٠١٠٠٩٥" });
+
+    await expect(listStudioProducts(manager, { search: "10095" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 108, unitId: 108, matchKind: "BARCODE_PRIMARY" })],
+    });
+    await expect(resolveStudioBarcode(manager, "10095")).resolves.toMatchObject({ productId: 108, variantId: 108, unitId: 108, matchKind: "BARCODE_PRIMARY" });
+    await expect(resolveStudioBarcode(manager, "999000010095")).resolves.toMatchObject({ productId: 108, unitId: 108, matchKind: "BARCODE_ALIAS" });
+    // المصوّر (غير المدير) يصل إليه أيضاً — المسار لا يعتمد على `includeInactive`.
+    await expect(resolveStudioBarcode(worker, "10095")).resolves.toMatchObject({ productId: 108 });
+    // ومُدخلٌ يدويّ بأرقامٍ عربية على الحقل يُطبَّع قبل المطابقة.
+    await expect(resolveStudioBarcode(worker, "١٠٠٩٥")).resolves.toMatchObject({ productId: 108 });
+  });
+
+  it("يستعمل محلّل الباركود المركزي للمسافة الداخلية وتكافؤ UPC-A/EAN-13", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 109, name: "منتج مورد متعدد الترميز" });
+    await d.insert(s.productVariants).values({ id: 109, productId: 109, sku: "SUP-109", variantName: "قياسي", costPrice: "1" });
+    await d.insert(s.productUnits).values([
+      { id: 109, variantId: 109, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "AB  12" },
+      { id: 119, variantId: 109, unitName: "علبة", conversionFactor: "10", isBaseUnit: false, barcode: "0036000291452" },
+    ]);
+
+    await expect(resolveStudioBarcode(worker, "AB  12")).resolves.toMatchObject({
+      productId: 109,
+      unitId: 109,
+      matchKind: "BARCODE_PRIMARY",
+    });
+    await expect(resolveStudioBarcode(worker, "036000291452")).resolves.toMatchObject({
+      productId: 109,
+      unitId: 119,
+      matchKind: "BARCODE_PRIMARY",
+    });
+    await expect(listStudioProducts(manager, { search: "AB  12" })).resolves.toMatchObject({ rows: [{ unitId: 109, matchKind: "BARCODE_PRIMARY" }] });
+    await expect(listStudioProducts(manager, { search: "036000291452" })).resolves.toMatchObject({ rows: [{ unitId: 119, matchKind: "BARCODE_PRIMARY" }] });
+    await d.update(s.productUnits).set({ barcode: "1  0095" }).where(eq(s.productUnits.id, 109));
+    await expect(resolveStudioBarcode(worker, "1  0095")).resolves.toMatchObject({ productId: 109, unitId: 109 });
+    await expect(listStudioProducts(manager, { search: "1  0095" })).resolves.toMatchObject({ rows: [{ unitId: 109, matchKind: "BARCODE_PRIMARY" }] });
+    await expect(resolveStudioBarcode(worker, "10095")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("(٤/٩، Codex P1) يرفض الغموض: باركودان إرثيّان لمنتجين يتطبّعان لنفس الرمز ⇒ لا يفتح عملاً لمنتجٍ خاطئ", async () => {
+    // نظير حارس الكاشير: أخذُ أوّل صفٍّ مطابقٍ يجعل الاختيار رهنَ ترتيب الاسم فيفتح تصويراً لمنتجٍ خاطئ.
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 110, name: "دفتر أ" },
+      { id: 111, name: "دفتر ب" },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 110, productId: 110, sku: "DFT-A", costPrice: "1" },
+      { id: 111, productId: 111, sku: "DFT-B", costPrice: "1" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 110, variantId: 110, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: " 77700 " }, // مسافة ⇒ 77700
+      { id: 111, variantId: 111, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "77700\t" }, // تبويب ⇒ 77700
+    ]);
+    await expect(resolveStudioBarcode(manager, "77700")).rejects.toMatchObject({ code: "CONFLICT" });
+    // وحين يبقى منتجٌ واحدٌ ملوَّث (نُظّف الآخر) ⇒ يُحسَم له بلا غموض.
+    await d.update(s.productUnits).set({ barcode: "77701" }).where(eq(s.productUnits.id, 111));
+    await expect(resolveStudioBarcode(manager, "77700")).resolves.toMatchObject({ productId: 110, matchKind: "BARCODE_PRIMARY" });
   });
 
   it("البديل: يُكشف بباركوده، وصورته منفصلة عن الأساس، ويظهر في كشف الناقصة ثمّ يختفي بصورته", async () => {
@@ -2606,6 +2677,92 @@ describe("product studio governed workflow", () => {
       .from(s.productImages)
       .where(and(eq(s.productImages.productId, 1), eq(s.productImages.variantId, 910)));
     expect(image).toMatchObject({ productId: 1, variantId: 910 });
+  });
+
+  it("reserves campaign photos idempotently and reviews each source independently", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "تصوير متعدد", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3,
+    });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    expect(batch.tasks).toHaveLength(3);
+    expect(batch.maxImages).toBe(3);
+    const repeated = await Promise.all([
+      reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 }),
+      reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 }),
+    ]);
+    expect(repeated.map((row) => row.tasks.map((task) => task.taskId))).toEqual([
+      batch.tasks.map((task) => task.taskId), batch.tasks.map((task) => task.taskId),
+    ]);
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 4 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(reserveStudioImageTasks(otherWorker, { taskId: first.taskId, count: 3 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    for (const [index, task] of batch.tasks.entries()) {
+      await saveStudioDraft(worker, { taskId: task.taskId, proposedDescription: "" });
+      await submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: index === 1 ? PNG_1X1_ALT : PNG_1X1, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    }
+    await rejectStudioTask(manager, batch.tasks[1].taskId, "أعد ضبط الإضاءة");
+    const source = await getStudioSourcePreview(worker, batch.tasks[1].taskId);
+    expect(source.base64).toBe(PNG_1X1_ALT.split(",")[1]);
+    await submitStudioCandidate(worker, { taskId: batch.tasks[1].taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    for (const task of [...batch.tasks].reverse()) await approveStudioTask(manager, task.taskId);
+    const images = await db().select().from(s.productImages).where(eq(s.productImages.productId, 1));
+    expect(images).toHaveLength(3);
+    expect(images.every((image) => image.reviewStatus === "APPROVED")).toBe(true);
+  });
+
+  it("claims an available sibling before another photographer's older job", async () => {
+    await db().insert(s.productVariants).values({ id: 901, productId: 1, sku: "BATCH-SCAN", costPrice: "1" });
+    await db().insert(s.productUnits).values({ id: 901, variantId: 901, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000901" });
+    await createStudioCampaign(manager, { name: "التقاط جماعي", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3, assigneeIds: [worker.userId, otherWorker.userId] });
+    const first = await claimStudioProductByBarcode(worker, "6001000000901");
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    await bulkReassignStudioTasks(manager, { taskIds: [batch.tasks[2].taskId], newAssigneeId: null });
+    const claimed = await claimStudioProductByBarcode(otherWorker, "6001000000901");
+    expect(claimed.taskId).toBe(batch.tasks[2].taskId);
+  });
+
+  it("bulk assignment preserves all queued sibling jobs", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "دفعة الطابور", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3 });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    await bulkReassignStudioTasks(manager, { taskIds: batch.tasks.map((task) => task.taskId), newAssigneeId: null });
+    expect(await bulkAssignStudioTasks(manager, { productIds: [1], assigneeId: worker.userId })).toMatchObject({ createdCount: 3 });
+    const jobs = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.assignedTo === worker.userId)).toBe(true);
+    await bulkReassignStudioTasks(manager, { taskIds: [batch.tasks[1].taskId], newAssigneeId: null });
+    const after = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    expect(after.filter((job) => job.assignedTo == null).map((job) => Number(job.id))).toEqual([batch.tasks[1].taskId]);
+  });
+
+  it("ANY_REGARDLESS does not consume another campaign's image allowance", async () => {
+    const firstCampaign = await createStudioCampaign(manager, { name: "الحملة الأولى", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 1 });
+    await createStudioCampaignBacklog(manager, firstCampaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const second = await createStudioCampaign(manager, { name: "الحملة الثانية", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3, imagesPolicy: "ANY_REGARDLESS" });
+    // A different variant scope can have work in an independent campaign.
+    await db().insert(s.productVariants).values({ id: 901, productId: 1, sku: "OTHER-CAMPAIGN", costPrice: "1" });
+    await db().update(s.productImageJobs).set({ variantId: 901 }).where(eq(s.productImageJobs.id, first.taskId));
+    const other = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await db().update(s.productImageJobs).set({ campaignId: second.campaignId }).where(eq(s.productImageJobs.id, other.taskId));
+    const batch = await reserveStudioImageTasks(worker, { taskId: other.taskId, count: 3 });
+    expect(batch.maxImages).toBe(3);
+    expect(batch.tasks).toHaveLength(3);
+  });
+
+  it("does not grant multiple photos for standalone, single-image or paused campaigns", async () => {
+    const standalone = await assignStudioTask(manager, { productId: 2, assigneeId: worker.userId });
+    await expect(reserveStudioImageTasks(worker, { taskId: standalone.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const campaign = await createStudioCampaign(manager, {
+      name: "صورة واحدة", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 1,
+    });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.productStudioCampaigns).set({ requiredImages: 3, status: "PAUSED" }).where(eq(s.productStudioCampaigns.id, campaign.campaignId));
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("توجيه عدد الصور نافذٌ: المنتج يبقى ناقصاً حتى يبلغ العدد المطلوب", async () => {

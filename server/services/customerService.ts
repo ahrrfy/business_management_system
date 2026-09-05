@@ -37,6 +37,7 @@ import {
 } from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
+import { snapshotBeforeUpdate } from "./versioning/recordVersion";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -65,6 +66,11 @@ export interface CreateCustomerInput {
 
 export interface UpdateCustomerInput extends Partial<CreateCustomerInput> {
   customerId: number;
+  /**
+   * سببُ التعديل — يُلحق بلقطة `recordVersions` (م٦ ق٨). اختياريّ اليوم بسبب أنّ الشاشة
+   * لم تُوصل حقلَ سببٍ بعد؛ في غيابه يُستعمل النصُّ الافتراضيّ «تعديل بيانات العميل».
+   */
+  updateReason?: string | null;
 }
 
 export interface ListCustomersInput {
@@ -433,7 +439,7 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
 }
 
 /** تعديل عميل قائم. */
-export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) {
+export async function updateCustomer(input: UpdateCustomerInput, actor: Actor) {
   return withTx(async (tx) => {
     const existing = (
       await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1)
@@ -486,7 +492,29 @@ export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) 
       }
     }
 
-    if (Object.keys(patch).length === 0) return { customerId: input.customerId, changed: openingChanged };
+    // Codex #963 P2: اللقطةُ **بعد** بناء الـpatch لا قبله — نمرّر نداءَ حفظٍ بلا تغييرات
+    // بلا تلويثِ التاريخ. حالتان مشروعتان للتخطّي: (١) لا حقول في الـpatch ولم يتغيّر الرصيد
+    // الافتتاحيّ. (٢) الرصيدُ الافتتاحيّ صُحِّح لكنّ الحقولَ لا تغيّرت — نُبقي اللقطةَ لأنّ
+    // مسار الرصيد أثرٌ ماديّ. حين نصل هنا بلا شيءٍ يتغيّر، نعود فوراً.
+    if (Object.keys(patch).length === 0 && !openingChanged) {
+      return { customerId: input.customerId, changed: false };
+    }
+    if (Object.keys(patch).length === 0) {
+      return { customerId: input.customerId, changed: openingChanged };
+    }
+
+    // م٦ ق٨: لقطة قبل التعديل — «لا لقطة ⇒ لا تعديل». الكتابةُ داخل نفس المعاملة، فإن
+    // فشلت اللقطةُ (أو التعديلُ لاحقاً) ⇒ ROLLBACK كامل.
+    await snapshotBeforeUpdate(
+      tx,
+      {
+        entityType: "customer",
+        entityId: input.customerId,
+        payloadJson: existing,
+        reason: input.updateReason?.trim() || "تعديل بيانات العميل",
+      },
+      actor,
+    );
 
     await tx.update(customers).set(patch).where(eq(customers.id, input.customerId));
     return { customerId: input.customerId, changed: true };
@@ -564,7 +592,7 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
 }
 
 /** تعطيل عميل (soft delete) — يُرفض إن كان عليه رصيد مفتوح. */
-export async function deactivateCustomer(customerId: number, _actor: Actor) {
+export async function deactivateCustomer(customerId: number, actor: Actor) {
   return withTx(async (tx) => {
     const c = (
       await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1)
@@ -599,19 +627,42 @@ export async function deactivateCustomer(customerId: number, _actor: Actor) {
         message: "لا يمكن تعطيل عميل له فواتير غير مسوّاة (معلّقة/مؤكّدة/مدفوعة جزئياً)",
       });
 
+    // Codex #963 P2: التعطيلُ تغييرٌ حقيقيّ في حالة العميل — يستحقّ لقطةً كأيّ تعديل.
+    // بلا هذه اللقطة، دورةُ deactivate/activate تُسقَط من التاريخ فيصير سجلُّ الاستعادة كاذباً.
+    await snapshotBeforeUpdate(
+      tx,
+      {
+        entityType: "customer",
+        entityId: customerId,
+        payloadJson: c,
+        reason: "تعطيل العميل (soft delete)",
+      },
+      actor,
+    );
     await tx.update(customers).set({ isActive: false }).where(eq(customers.id, customerId));
     return { customerId, isActive: false };
   });
 }
 
 /** إعادة تفعيل عميل معطّل. */
-export async function activateCustomer(customerId: number, _actor: Actor) {
+export async function activateCustomer(customerId: number, actor: Actor) {
   return withTx(async (tx) => {
     const c = (
       await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1)
     )[0];
     if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
     if (c.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل مفعّل بالفعل" });
+    // Codex #963 P2: نفس المنطق — إعادةُ التفعيل تغييرُ حالة، لقطةٌ إلزامية.
+    await snapshotBeforeUpdate(
+      tx,
+      {
+        entityType: "customer",
+        entityId: customerId,
+        payloadJson: c,
+        reason: "إعادة تفعيل العميل",
+      },
+      actor,
+    );
     await tx.update(customers).set({ isActive: true }).where(eq(customers.id, customerId));
     return { customerId, isActive: true };
   });

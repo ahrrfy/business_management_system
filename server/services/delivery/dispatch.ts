@@ -2,7 +2,7 @@
 //
 // READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -30,9 +30,10 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
+import { workOrderInvoiceSourceId } from "../workOrder/helpers";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -49,6 +50,17 @@ export interface DispatchInput {
   assignedUserId?: number | null;
   /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
+}
+
+function reopenedConsignmentSourceId(wo: { id: number | string; version: number | string }): number {
+  const id = Number(wo.id);
+  const version = Number(wo.version);
+  const paired = id * 1_000_000 + version;
+  if (!Number.isSafeInteger(paired) || id <= 0 || version <= 0 || version >= 1_000_000) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر اشتقاق نسخة مصدر الإرسالية" });
+  }
+  // المصادر التاريخية هي id موجب؛ النسخ السالبة لا تصطدم بها ولا تغيّر معنى الصف القديم.
+  return -paired;
 }
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
@@ -206,28 +218,36 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const priorCn = (await tx
       .select()
       .from(deliveryConsignments)
-      .where(and(
-        eq(deliveryConsignments.sourceType, "WORK_ORDER"),
-        eq(deliveryConsignments.sourceId, Number(wo.id)),
-      ))
+      .where(eq(deliveryConsignments.workOrderId, Number(wo.id)))
+      .orderBy(desc(deliveryConsignments.id))
       .for("update")
       .limit(1))[0];
-    if (priorCn && (
-      priorCn.status !== "CANCELLED"
-      || priorCn.parcelStatus !== "CANCELLED"
-      || priorCn.moneyStatus !== "CANCELLED"
-    )) {
+    const cancelledConsignment = priorCn != null
+      && priorCn.status === "CANCELLED"
+      && priorCn.parcelStatus === "CANCELLED"
+      && priorCn.moneyStatus === "CANCELLED";
+    const returnedConsignment = priorCn != null
+      && priorCn.status === "RETURNED"
+      && priorCn.parcelStatus === "RETURNED"
+      && priorCn.moneyStatus === "CANCELLED";
+    if (priorCn && !cancelledConsignment && !returnedConsignment) {
       throw new TRPCError({
         code: "CONFLICT",
         message: `الأمر مُسنَد أصلاً للإرسالية ${priorCn.consignmentNumber} — ألغِ إسنادها أو استرجعها قبل إسنادٍ جديد`,
       });
     }
-    if (priorCn && (!round2(money(priorCn.collectedAmount ?? "0")).isZero() || priorCn.remittanceId != null)) {
+    if (priorCn && !returnedConsignment
+      && (!round2(money(priorCn.collectedAmount ?? "0")).isZero() || priorCn.remittanceId != null)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
       });
     }
+    // صفٌّ له تخصيص توريد immutable لا يُعاد استعماله؛ وإلا تغيّر invoice/party في كشفٍ
+    // تاريخي. ينشأ صف revision جديد، بينما الإلغاء غير المحصّل يبقى قابلاً لإعادة التنشيط.
+    const reusableCn = returnedConsignment && (
+      !round2(money(priorCn!.collectedAmount ?? "0")).isZero() || priorCn!.remittanceId != null
+    ) ? undefined : priorCn;
     // الفاتورة القائمة (من الإسناد الملغى) تُعاد استعمالها — ما لم تكن ميتة.
     const priorInvoice = wo.invoiceId != null
       ? (await tx.select().from(invoices).where(eq(invoices.id, Number(wo.invoiceId))).for("update").limit(1))[0]
@@ -313,7 +333,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     const invRes = reusingInvoice ? null : await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
-      sourceId: `WO-${wo.id}`,
+      sourceId: workOrderInvoiceSourceId(wo),
       shiftId: dispatchShiftId,
       branchId: Number(wo.branchId),
       customerId: wo.customerId ?? null,
@@ -415,8 +435,8 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     }
     }
 
-    const consignmentNumber = priorCn
-      ? priorCn.consignmentNumber
+    const consignmentNumber = reusableCn
+      ? reusableCn.consignmentNumber
       : await nextConsignmentNumber(tx, Number(wo.branchId));
     const codPositive = codAmount.gt(0);
     // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
@@ -428,7 +448,8 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // Phase 2: fees are earned only after physical delivery.
     // إعادة التنشيط: تحديثُ الصفّ الملغى في مكانه (سابقة dispatchInvoice.ts) — يحفظ سلسلة
     // أحداثه وتاريخه، ويُبقي القيدَين الفريدَين حارسَين بنيويَّين بلا هجرة ولا شواهد قبور.
-    if (priorCn) {
+    if (reusableCn) {
+      assertConsignmentStatusTransition(reusableCn.status, "DISPATCHED");
       await tx.update(deliveryConsignments).set({
         branchId: Number(wo.branchId),
         partyId: input.partyId,
@@ -437,6 +458,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         endCustomerId: wo.customerId ?? null,
         codAmount: toDbMoney(codAmount),
         collectedAmount: "0",
+        counterSettledAmount: "0",
         deliveryFee: toDbMoney(fee),
         recipientName: input.recipientName ?? null,
         recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
@@ -461,16 +483,22 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         cancellationReason: null,
         cancelledBy: null,
         returnedAt: null,
-      }).where(eq(deliveryConsignments.id, Number(priorCn.id)));
+        returnDeclaredAt: null,
+        returnDeclaredBy: null,
+        returnDeclaredReason: null,
+      }).where(eq(deliveryConsignments.id, Number(reusableCn.id)));
     }
-    const cnRes = priorCn ? null : await tx.insert(deliveryConsignments).values({
+    const consignmentSourceId = reusableCn
+      ? Number(reusableCn.sourceId)
+      : returnedConsignment ? reopenedConsignmentSourceId(wo) : Number(wo.id);
+    const cnRes = reusableCn ? null : await tx.insert(deliveryConsignments).values({
       consignmentNumber,
       branchId: Number(wo.branchId),
       partyId: input.partyId,
       invoiceId,
       workOrderId: Number(wo.id),
       sourceType: "WORK_ORDER",
-      sourceId: Number(wo.id),
+      sourceId: consignmentSourceId,
       assignedUserId,
       endCustomerId: wo.customerId ?? null,
       codAmount: toDbMoney(codAmount),
@@ -491,12 +519,12 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
     });
-    const consignmentId = priorCn ? Number(priorCn.id) : extractInsertId(cnRes!);
+    const consignmentId = reusableCn ? Number(reusableCn.id) : extractInsertId(cnRes!);
 
     await appendDeliveryEvent(tx, {
       // مفتاحُ حدثٍ فريدٌ لكل إسناد (append-only): إعادةُ التنشيط حدثٌ مستقلّ لا استبدالٌ
       // للأول — فيبقى تاريخ الطرد كاملاً: أُسنِد، أُلغي، أُعيد إسناده لجهةٍ أخرى.
-      eventKey: priorCn
+      eventKey: reusableCn
         ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? Date.now()}`
         : `CN:${consignmentId}:ASSIGNED`,
       consignmentId,
@@ -504,12 +532,12 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       toParcelStatus: "ASSIGNED",
       toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       actorUserId: actor.userId,
-      payload: { partyId: input.partyId, sourceType: "WORK_ORDER", sourceId: Number(wo.id) },
+      payload: { partyId: input.partyId, sourceType: "WORK_ORDER", sourceId: consignmentSourceId },
     });
     if (codPositive) {
       await appendDeliveryLedgerEntry(tx, {
         // تعرّضٌ جديد لجهةٍ جديدة ⇒ قيدٌ جديد (الأول حُرِّر بـCOD_RELEASED عند الإلغاء).
-        eventKey: priorCn
+        eventKey: reusableCn
           ? `CN:${consignmentId}:COD_ASSIGNED:REACTIVATED:${input.clientRequestId ?? Date.now()}`
           : `CN:${consignmentId}:COD_ASSIGNED`,
         partyId: input.partyId,

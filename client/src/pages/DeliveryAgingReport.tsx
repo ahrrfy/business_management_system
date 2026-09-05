@@ -2,6 +2,7 @@
 // من تاريخ الإرسال (٠-٧ / ٨-١٤ / ١٥-٣٠ / +٣٠ يوماً) بقيمة متبقّي COD. كان الموجود «أقدم
 // مستحق» لكل جهة فقط — بلا توزيع مركزي يوجّه أولوية المتابعة.
 import { useMemo, useState } from "react";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -37,9 +38,12 @@ export default function DeliveryAgingReport() {
     ? [
         { label: "إرساليات مفتوحة", value: fmtAr(totals.openCount), tone: "info" },
         { label: "إجمالي المتبقّي", value: formatIqd(totals.totalOutstanding), tone: Number(totals.totalOutstanding) > 0 ? "warning" : "default" },
-        { label: "٠-٧ أيام", value: formatIqd(totals.d0_7), tone: "default" },
-        { label: "٨-١٤ يوماً", value: formatIqd(totals.d8_14), tone: Number(totals.d8_14) > 0 ? "warning" : "default" },
-        { label: "+١٥ يوماً", value: formatIqd(String(Number(totals.d15_30) + Number(totals.d31p))), tone: Number(totals.d15_30) + Number(totals.d31p) > 0 ? "negative" : "default" },
+        // قاعدة مالك (٢٥/٨): كل رقمٍ لاتينيّ — كانت هذه التسميات مكتوبةً حرفياً بأرقامٍ هندية
+        // (٠-٧/٨-١٤/+١٥)، وهي سلسلةٌ نصّية ثابتة لا تمرّ عبر toLocaleString فيفوتها حارس
+        // check:locale-numbers الآليّ. صُحِّحت لاتينياً مطابقةً لبقية أرقام الشاشة.
+        { label: "0-7 أيام", value: formatIqd(totals.d0_7), tone: "default" },
+        { label: "8-14 يوماً", value: formatIqd(totals.d8_14), tone: Number(totals.d8_14) > 0 ? "warning" : "default" },
+        { label: "+15 يوماً", value: formatIqd(String(Number(totals.d15_30) + Number(totals.d31p))), tone: Number(totals.d15_30) + Number(totals.d31p) > 0 ? "negative" : "default" },
       ]
     : [];
 
@@ -56,10 +60,12 @@ export default function DeliveryAgingReport() {
         ),
       },
       { id: "openCount", header: "مفتوحة", accessorFn: (r) => r.openCount, cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.openCount)}</span> },
-      { id: "d0_7", header: "٠-٧", accessorFn: (r) => Number(r.d0_7), cell: ({ row }) => <span dir="ltr" className="tabular-nums">{Number(row.original.d0_7) > 0 ? fmtAr(row.original.d0_7) : "—"}</span> },
-      { id: "d8_14", header: "٨-١٤", accessorFn: (r) => Number(r.d8_14), cell: ({ row }) => <span dir="ltr" className="tabular-nums text-[var(--sem-warn)]">{Number(row.original.d8_14) > 0 ? fmtAr(row.original.d8_14) : "—"}</span> },
-      { id: "d15_30", header: "١٥-٣٠", accessorFn: (r) => Number(r.d15_30), cell: ({ row }) => <span dir="ltr" className="tabular-nums text-money-negative">{Number(row.original.d15_30) > 0 ? fmtAr(row.original.d15_30) : "—"}</span> },
-      { id: "d31p", header: "+٣١", accessorFn: (r) => Number(r.d31p), cell: ({ row }) => <span dir="ltr" className="tabular-nums font-bold text-money-negative">{Number(row.original.d31p) > 0 ? fmtAr(row.original.d31p) : "—"}</span> },
+      // bidi: ترويسة «0-7» رقمان لاتينيّان بشرطة — تحتاج dir="ltr" صريحاً مثل أيّ مدىً رقميّ
+      // آخر (نفس عطب حزمة/ReportShell أعلاه)؛ `header` هنا سلسلة خامّة تُعرَض بلا عزلٍ تلقائيّ.
+      { id: "d0_7", header: () => <span dir="ltr">0-7</span>, accessorFn: (r) => Number(r.d0_7), cell: ({ row }) => <span dir="ltr" className="tabular-nums">{Number(row.original.d0_7) > 0 ? fmtAr(row.original.d0_7) : "—"}</span> },
+      { id: "d8_14", header: () => <span dir="ltr">8-14</span>, accessorFn: (r) => Number(r.d8_14), cell: ({ row }) => <span dir="ltr" className="tabular-nums text-[var(--sem-warn)]">{Number(row.original.d8_14) > 0 ? fmtAr(row.original.d8_14) : "—"}</span> },
+      { id: "d15_30", header: () => <span dir="ltr">15-30</span>, accessorFn: (r) => Number(r.d15_30), cell: ({ row }) => <span dir="ltr" className="tabular-nums text-money-negative">{Number(row.original.d15_30) > 0 ? fmtAr(row.original.d15_30) : "—"}</span> },
+      { id: "d31p", header: () => <span dir="ltr">+31</span>, accessorFn: (r) => Number(r.d31p), cell: ({ row }) => <span dir="ltr" className="tabular-nums font-bold text-money-negative">{Number(row.original.d31p) > 0 ? fmtAr(row.original.d31p) : "—"}</span> },
       { id: "totalOutstanding", header: "الإجمالي", accessorFn: (r) => Number(r.totalOutstanding), cell: ({ row }) => <span dir="ltr" className="tabular-nums font-bold">{fmtAr(row.original.totalOutstanding)}</span> },
       { id: "oldestDays", header: "أقدم (يوم)", accessorFn: (r) => r.oldestDays, cell: ({ row }) => <span dir="ltr" className={`tabular-nums ${row.original.oldestDays > 14 ? "font-bold text-money-negative" : ""}`}>{fmtAr(row.original.oldestDays)}</span> },
       {
@@ -88,10 +94,10 @@ export default function DeliveryAgingReport() {
         { key: "partyName", header: "الجهة" },
         { key: "partyType", header: "النوع", map: (r) => PARTY_TYPE_LABEL[r.partyType] ?? r.partyType },
         { key: "openCount", header: "مفتوحة" },
-        { key: "d0_7", header: "٠-٧ أيام", money: true, map: (r) => Number(r.d0_7) },
-        { key: "d8_14", header: "٨-١٤ يوماً", money: true, map: (r) => Number(r.d8_14) },
-        { key: "d15_30", header: "١٥-٣٠ يوماً", money: true, map: (r) => Number(r.d15_30) },
-        { key: "d31p", header: "+٣١ يوماً", money: true, map: (r) => Number(r.d31p) },
+        { key: "d0_7", header: "0-7 أيام", money: true, map: (r) => Number(r.d0_7) },
+        { key: "d8_14", header: "8-14 يوماً", money: true, map: (r) => Number(r.d8_14) },
+        { key: "d15_30", header: "15-30 يوماً", money: true, map: (r) => Number(r.d15_30) },
+        { key: "d31p", header: "+31 يوماً", money: true, map: (r) => Number(r.d31p) },
         { key: "totalOutstanding", header: "الإجمالي", money: true, map: (r) => Number(r.totalOutstanding) },
         { key: "oldestDays", header: "أقدم (يوم)" },
       ],
@@ -121,10 +127,10 @@ export default function DeliveryAgingReport() {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <AppSelect className="h-9" value={String(branchId)} onValueChange={(next) => setBranchId(next ? Number(next) : "")}>
               <option value="">الكل</option>
               {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
+            </AppSelect>
           </div>
         </div>
       }

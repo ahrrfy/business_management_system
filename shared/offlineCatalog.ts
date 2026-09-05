@@ -23,6 +23,9 @@ export interface OfflineCatalogRow {
   allBarcodes: string[];
   isBaseUnit: boolean;
   isService: boolean;
+  /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده. يُنقَل في لقطة الأوفلاين كي
+   *  لا يعود الكاشير المنقطع يرى «نافذ» على بيعٍ سيُرحَّل بنجاح عند عودة الاتصال. */
+  allowBackorder: boolean;
   isBundle: boolean;
   isCustomizable: boolean;
   isPrintService: boolean;

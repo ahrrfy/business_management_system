@@ -23,6 +23,15 @@ const RECIPIENT = 21;
 const INTRUDER = 22;
 const CASHIER = 23;
 
+function acceptInput(receiptId: number, clientRequestId: string) {
+  return {
+    receiptId,
+    countedCash: "75000.00",
+    countedBreakdown: { "25000": 1, "50000": 1 },
+    clientRequestId,
+  };
+}
+
 async function user(id: number) {
   return (
     await db().select().from(s.users).where(eq(s.users.id, id)).limit(1)
@@ -33,8 +42,9 @@ async function pendingContract(
   referenceNumber = "CD-1-20260725-0001",
   sourceShiftId: number | null = null,
   stageSource: "NEW" | "LEGACY" | false = "NEW",
+  recipientId: number = RECIPIENT,
 ) {
-  if (referenceNumber.startsWith("CD-") && stageSource) {
+  if ((referenceNumber.startsWith("CD-") || referenceNumber.startsWith("CH-")) && stageSource) {
     const sourceResult = await db().insert(s.receipts).values({
       branchId: 1,
       shiftId: sourceShiftId,
@@ -74,7 +84,7 @@ async function pendingContract(
     approvalStatus: "APPROVED",
     partyType: "OTHER",
     description: "cash custody pending recipient acceptance",
-    createdBy: RECIPIENT,
+    createdBy: recipientId,
   });
   return Number((result as any)[0]?.insertId ?? (result as any).insertId);
 }
@@ -85,6 +95,7 @@ beforeEach(async () => {
   for (const table of [
     "auditLogs",
     "accountingEntries",
+    "cashCustodyCounts",
     "receipts",
     "shifts",
     "users",
@@ -134,7 +145,7 @@ describe("treasury handover receipt acceptance", () => {
 
     expect(await intruder.treasury.pendingHandoverReceipts()).toEqual([]);
     await expect(
-      intruder.treasury.acceptHandoverReceipt({ receiptId }),
+      intruder.treasury.acceptHandoverReceipt(acceptInput(receiptId, "intruder")),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const row = (
@@ -160,13 +171,13 @@ describe("treasury handover receipt acceptance", () => {
     expect(queue[0]).toMatchObject({
       id: receiptId,
       referenceNumber: "CD-1-20260725-0001",
-      amount: "75000.00",
       source: "CASH_DROP",
     });
+    expect(queue[0]).not.toHaveProperty("amount");
 
-    const accepted = await recipient.treasury.acceptHandoverReceipt({
-      receiptId,
-    });
+    const accepted = await recipient.treasury.acceptHandoverReceipt(
+      acceptInput(receiptId, "accept-1"),
+    );
     expect(accepted.idempotent).toBe(false);
 
     const acceptanceEntries = await db()
@@ -177,7 +188,7 @@ describe("treasury handover receipt acceptance", () => {
     expect(acceptanceEntries[0]).toMatchObject({
       entryType: "CASH_TRANSFER_IN",
       amount: "75000.00",
-      dedupeKey: `CASH_DROP_ACCEPT:${receiptId}`,
+      dedupeKey: `CASH_CUSTODY_ACCEPT:${receiptId}`,
     });
 
     const after = await getDashboard(
@@ -189,9 +200,9 @@ describe("treasury handover receipt acceptance", () => {
     ).toBe("75000.00");
     expect(await recipient.treasury.pendingHandoverReceipts()).toEqual([]);
 
-    const replay = await recipient.treasury.acceptHandoverReceipt({
-      receiptId,
-    });
+    const replay = await recipient.treasury.acceptHandoverReceipt(
+      acceptInput(receiptId, "accept-1"),
+    );
     expect(replay.idempotent).toBe(true);
     expect(
       await db()
@@ -222,7 +233,7 @@ describe("treasury handover receipt acceptance", () => {
     const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
 
     await expect(
-      recipient.treasury.acceptHandoverReceipt({ receiptId }),
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "orphan")),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     const row = (
@@ -246,7 +257,7 @@ describe("treasury handover receipt acceptance", () => {
     const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
 
     await expect(
-      recipient.treasury.acceptHandoverReceipt({ receiptId }),
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "legacy")),
     ).resolves.toMatchObject({ idempotent: false, receiptId });
 
     expect(
@@ -255,6 +266,58 @@ describe("treasury handover receipt acceptance", () => {
         .from(s.accountingEntries)
         .where(eq(s.accountingEntries.receiptId, receiptId)),
     ).toHaveLength(0);
+  });
+
+  it("saves a blind-count variance and keeps the full custody amount out of treasury", async () => {
+    const receiptId = await pendingContract("CH-1-20260725-VARIANCE");
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    const result = await recipient.treasury.acceptHandoverReceipt({
+      receiptId,
+      countedCash: "50000.00",
+      countedBreakdown: { "50000": 1 },
+      clientRequestId: "variance-1",
+    });
+    expect(result).toMatchObject({
+      accepted: false,
+      countStatus: "VARIANCE_OPEN",
+      variance: "-25000.00",
+    });
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
+    expect(receipt.status).toBe("PENDING");
+    const counts = await db().select().from(s.cashCustodyCounts);
+    expect(counts).toHaveLength(1);
+    expect(counts[0]).toMatchObject({ countedAmount: "50000.00", variance: "-25000.00", status: "VARIANCE_OPEN" });
+    const dashboard = await getDashboard(
+      { branchId: 1 },
+      { scopedBranchId: null, role: "admin", userId: RECIPIENT },
+    );
+    expect(dashboard.treasuryBalances.find((row) => row.branchId === 1)?.balance).toBe("0.00");
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt({
+        receiptId,
+        countedCash: "75000.00",
+        countedBreakdown: { "50000": 1, "25000": 1 },
+        clientRequestId: "variance-recipient-retry",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    await expect(
+      recipient.treasury.reassignHandoverReceipt({ receiptId, toUserId: INTRUDER }),
+    ).resolves.toMatchObject({ receiptId, assignedToId: INTRUDER });
+    const independentRecipient = appRouter.createCaller(makeCtx(await user(INTRUDER)));
+    await expect(
+      independentRecipient.treasury.acceptHandoverReceipt({
+        receiptId,
+        countedCash: "75000.00",
+        countedBreakdown: { "50000": 1, "25000": 1 },
+        clientRequestId: "variance-independent-recount",
+      }),
+    ).resolves.toMatchObject({ accepted: true, countStatus: "MATCHED" });
+
+    const finalReceipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
+    expect(finalReceipt).toMatchObject({ status: "COMPLETED", approvedBy: INTRUDER });
   });
 
   it("shows the cashier and the source shift for a pending cash drop", async () => {
@@ -290,7 +353,7 @@ describe("treasury handover receipt acceptance", () => {
     expect(queue[0]).toMatchObject({ id: receiptId, source: "CASH_HANDOVER" });
 
     await expect(
-      recipient.treasury.acceptHandoverReceipt({ receiptId }),
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "handover")),
     ).resolves.toMatchObject({ idempotent: false, receiptId });
 
     const row = (
@@ -306,6 +369,56 @@ describe("treasury handover receipt acceptance", () => {
         .select({ id: s.accountingEntries.id })
         .from(s.accountingEntries)
         .where(eq(s.accountingEntries.receiptId, receiptId)),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+  });
+
+  it("rejects the courier who dropped the cash from accepting their own custody", async () => {
+    // المستلِم = المُسلِّم نفسه (CASHIER)، عبر إدخالٍ مباشر يتجاوز حارس الإنشاء
+    // (createCashDrop) عمداً — القبول يجب أن يرفضه بمعزل عن ذلك الحارس الأعلى.
+    const receiptId = await pendingContract(
+      "CD-1-20260725-SELFCOURIER",
+      null,
+      "NEW",
+      CASHIER,
+    );
+    const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
+
+    await expect(
+      cashier.treasury.acceptHandoverReceipt(acceptInput(receiptId, "self-courier")),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز لمُسلِّم النقد قبول عهدته",
+    });
+
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId))
+    )[0];
+    expect(row.status).toBe("PENDING");
+  });
+
+  it("rejects the shift owner from accepting cash dropped out of their own drawer", async () => {
+    const shiftResult = await db().insert(s.shifts).values({
+      branchId: 1,
+      userId: RECIPIENT,
+      openingBalance: "0",
+      openGuard: "recipient-shift-owner:1:RETAIL",
+    });
+    const shiftId = Number(
+      (shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId,
+    );
+    const receiptId = await pendingContract("CD-1-20260725-SELFSHIFT", shiftId);
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt(acceptInput(receiptId, "self-shift-owner")),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز لمالك الوردية قبول النقد الخارج من درجها",
+    });
+
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId))
+    )[0];
+    expect(row.status).toBe("PENDING");
   });
 });

@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { FILTER_LABELS } from "@shared/uiContracts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -7,10 +8,10 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
 import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { CustomerFollowUpDialog, type FollowUpValue } from "@/components/customers/CustomerFollowUpDialog";
 import { Badge } from "@/components/ui/badge";
@@ -216,16 +217,13 @@ export default function Customers() {
   const total = list.data?.total ?? 0;
   const rows = (list.data?.rows ?? []) as DisplayRow[];
   const summary = operations.data?.summary;
-  const pages = Math.max(1, Math.ceil(total / limit));
   // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
   const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
 
   // التحديد المُتعدِّد + النسخ الجماعي — TSV للصق في Excel، وملخّص واتساب لقائمة العملاء.
   const sel = useRowSelection<number>();
   const { copy } = useClipboard({ successMessage: null });
-  const pageIds = useMemo(() => rows.map((r) => Number(r.id)), [rows]);
-  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => sel.isSelected(id));
-  const someOnPageSelected = pageIds.some((id) => sel.isSelected(id));
+  // «تحديد كل المرئي» صار من مسؤولية DataTable (عمود الاختيار في ترويسته).
   const selectedRows = useMemo(
     () => rows.filter((r) => sel.isSelected(Number(r.id))),
     [rows, sel],
@@ -411,6 +409,217 @@ export default function Customers() {
     del.mutate({ customerId: id });
   }
 
+  // أعمدة الجدول — تقرأ الصلاحيات وحالات الطفرات وإبراز الصفّ المُركَّز، فتُبنى في جسم المكوّن.
+  const columns: ColumnDef<DisplayRow, unknown>[] = [
+    {
+      id: "name",
+      header: "الاسم",
+      accessorFn: (c) => c.name ?? "",
+      meta: { width: "wide", wrap: true },
+      cell: ({ row }) => {
+        const c = row.original;
+        const id = Number(c.id);
+        /* الميل من البحث الشامل (?focus=): الصفّ يُمرَّر لوسط الشاشة. DataTable لا يمرّر ref
+           للصفّ، فنعلّق ref التمرير على أوّل خليّةٍ فيه — نفس النتيجة البصرية. */
+        const fr = rowProps(id);
+        return (
+          <span ref={fr.ref} className="font-medium">
+            {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية. للأدوار بلا
+                `reports:READ` نعرضه نصاً — كشف الحساب مقصور خادميّاً على المرتفعين. */}
+            {canOpenStatement ? (
+              <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
+                {c.name}
+              </Link>
+            ) : (
+              c.name
+            )}
+          </span>
+        );
+      },
+    },
+    // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ) — كما كان.
+    ...(hasLegacy
+      ? [{
+          id: "legacyCode",
+          header: "الرقم القديم",
+          accessorFn: (c: DisplayRow) => legacyCodeOf(c) ?? "—",
+          meta: { kind: "code" as const },
+          cell: ({ row }) => <span className="text-xs text-muted-foreground">{legacyCodeOf(row.original) ?? "—"}</span>,
+        } as ColumnDef<DisplayRow, unknown>]
+      : []),
+    { id: "customerType", header: "النوع", accessorFn: (c) => c.customerType ?? "—", cell: ({ row }) => <span className="text-xs">{row.original.customerType ?? "—"}</span> },
+    {
+      id: "phone",
+      header: "الهاتف",
+      accessorFn: (c) => c.phone ?? "",
+      meta: { kind: "phone" },
+      cell: ({ row }) => <CopyInline value={row.original.phone} />,
+    },
+    {
+      id: "city",
+      header: "المدينة/المنطقة",
+      accessorFn: (c) => [c.city, c.district].filter(Boolean).join(" / ") || "—",
+      cell: ({ row }) => <span className="text-xs">{[row.original.city, row.original.district].filter(Boolean).join(" / ") || "—"}</span>,
+    },
+    {
+      id: "priceTier",
+      header: "فئة السعر",
+      accessorFn: (c) => TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier,
+      cell: ({ row }) => <span className="text-xs">{TIER_LABEL[row.original.defaultPriceTier] ?? row.original.defaultPriceTier}</span>,
+    },
+    {
+      id: "creditLimit",
+      header: "سقف الائتمان",
+      // للكاشير `null` = «مخفيّ» لا «بلا حدّ» (maskCustomerSensitive) — التمييز محفوظ كما كان.
+      accessorFn: (c) => (isElevated && c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)),
+      meta: { kind: "money" },
+      cell: ({ row }) => (isElevated && row.original.creditLimit == null ? "بلا حدّ" : fmt(row.original.creditLimit)),
+    },
+    {
+      id: "balance",
+      header: "الرصيد",
+      accessorFn: (c) => fmt(c.currentBalance ?? 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => <BalanceCell amount={row.original.currentBalance} entityType="customer" />,
+    },
+    ...(isElevated
+      ? [{
+          id: "collection",
+          header: "حالة التحصيل",
+          accessorFn: (c: DisplayRow) =>
+            isOperationsRow(c) ? (COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus) : "—",
+          meta: { kind: "status" as const },
+          cell: ({ row }) => {
+            const c = row.original;
+            if (!isOperationsRow(c)) return "—";
+            return (
+              <div className="flex flex-col items-center gap-1">
+                <Badge variant={COLLECTION_STATUS[c.collectionStatus]?.variant ?? "neutral"}>
+                  {COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus}
+                </Badge>
+                {c.daysOverdue > 0 && <span className="text-[10px] text-muted-foreground">{c.daysOverdue} يوم</span>}
+                {c.openTasks > 0 && <span className="text-[10px] text-muted-foreground">{c.openTasks} مهمة مفتوحة</span>}
+              </div>
+            );
+          },
+        } as ColumnDef<DisplayRow, unknown>]
+      : []),
+    {
+      id: "status",
+      header: "الحالة",
+      accessorFn: (c) => (c.isActive ? "مفعّل" : "معطّل"),
+      meta: { kind: "status" },
+      cell: ({ row }) => {
+        const isActive = !!row.original.isActive;
+        return (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
+            {isActive ? "مفعّل" : "معطّل"}
+          </span>
+        );
+      },
+    },
+    {
+      id: "actions",
+      header: "إجراء",
+      enableSorting: false,
+      meta: { kind: "actions" },
+      cell: ({ row }) => {
+        const c = row.original;
+        const id = Number(c.id);
+        const isActive = !!c.isActive;
+        return (
+          /* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */
+          <RowActions
+            contact={{
+              phone: c.phone,
+              whatsapp: (c as { whatsapp?: string | null }).whatsapp,
+              alternativePhones: [
+                (c as { phone2?: string | null }).phone2,
+                (c as { phone3?: string | null }).phone3,
+              ],
+              label: `واتساب ${c.name}`,
+              message: buildOperationalContactMessage({
+                partyName: c.name,
+                entityLabel: "حساب العميل",
+                nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
+              }),
+              gate: { module: "crm", level: "READ" },
+            }}
+            actions={[
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل",
+                href: `/customers/${id}/edit`,
+                gate: { roles: ["manager"], module: "crm", level: "FULL" },
+              },
+              // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
+              {
+                key: "stmt",
+                kind: "view",
+                label: "كشف حساب",
+                href: `/customers-statement?id=${id}`,
+                gate: { module: "crm", level: "READ" },
+              },
+              {
+                key: "receipt",
+                kind: "pay",
+                label: "تسجيل دفعة",
+                href: `/vouchers/receipt/new?customerId=${id}`,
+                hidden: !isElevated,
+                gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+              },
+              {
+                key: "follow",
+                kind: "create",
+                label: "تسجيل متابعة",
+                hidden: !isElevated,
+                onSelect: () => setFollowTarget(c),
+                gate: { roles: ["manager"], module: "crm", level: "FULL" },
+              },
+              {
+                key: "notes",
+                kind: "view",
+                label: "سجل المتابعة",
+                href: `/crm?tab=followups&id=${id}`,
+                gate: { module: "crm", level: "READ" },
+              },
+              {
+                key: "reminder",
+                kind: "create",
+                label: "تذكير واتساب",
+                href: "/ar-reminders",
+                hidden: !isElevated,
+                gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
+              },
+              {
+                key: "toggle",
+                kind: "approve",
+                label: isActive ? "تعطيل" : "تفعيل",
+                variant: isActive ? "destructive" : "default",
+                disabled: deactivate.isPending || activate.isPending,
+                disabledReason: "توجد عملية تحديث قيد التنفيذ",
+                onSelect: () => void toggle(id, isActive, c.name ?? ""),
+                gate: { roles: ["manager"], module: "crm", level: "FULL" },
+              },
+              {
+                key: "delete",
+                kind: "delete",
+                label: "حذف نهائي",
+                variant: "destructive",
+                disabled: del.isPending,
+                disabledReason: "توجد عملية حذف قيد التنفيذ",
+                hidden: !isElevated,
+                onSelect: () => void remove(id, c.name ?? ""),
+                gate: { managerOnly: true },
+              },
+            ]}
+          />
+        );
+      },
+    },
+  ];
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -482,26 +691,26 @@ export default function Customers() {
                 {/* E (١٢/٨): تسميات صريحة بدل placeholder — يختفي عند الاختيار فيضيع معنى الحقل.
                     شكوى المالك الأصلية «الفلاتر مبعثرة» تسبب رئيسيّ لها هو غياب التسميات. */}
                 <FilterField label="النوع">
-                  <select
-                    className={selectClsSm}
+                  <AppSelect
+                    className="h-9"
                     value={customerType}
-                    onChange={(e) => { setCustomerType(e.target.value as any); setPage(0); }}
+                    onValueChange={(value) => { setCustomerType(value as any); setPage(0); }}
                   >
                     <option value="">كل الأنواع</option>
                     {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="فئة السعر">
-                  <select
-                    className={selectClsSm}
+                  <AppSelect
+                    className="h-9"
                     value={priceTier}
-                    onChange={(e) => { setPriceTier(e.target.value as any); setPage(0); }}
+                    onValueChange={(value) => { setPriceTier(value as any); setPage(0); }}
                   >
                     <option value="">كل الفئات</option>
                     <option value="RETAIL">مفرد</option>
                     <option value="WHOLESALE">جملة</option>
                     <option value="GOVERNMENT">حكومي</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 {/* فلتر مدينة — مدعوم خادمياً في customers.search فقط (المستخدم غير المرتفع)؛
                     لوحة العمليات (operations) للمرتفعين لا تدعمه فنُخفيه عنهم بدل عرض فلتر معطَّل. */}
@@ -518,46 +727,46 @@ export default function Customers() {
                 {isElevated && (
                   <>
                     <FilterField label="حالة الرصيد">
-                      <select className={selectClsSm} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={balanceFilter} onValueChange={(value) => { setBalanceFilter(value as typeof balanceFilter); setPage(0); }}>
                         <option value="">كل الأرصدة</option>
                         <option value="RECEIVABLE">لنا عليهم</option>
                         <option value="CREDIT">لهم علينا</option>
                         <option value="ZERO">رصيد صفر</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="حالة التحصيل">
-                      <select className={selectClsSm} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={collectionFilter} onValueChange={(value) => { setCollectionFilter(value as typeof collectionFilter); setPage(0); }}>
                         <option value="">كل حالات التحصيل</option>
                         <option value="OVERDUE">فواتير متأخرة</option>
                         <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
                         <option value="PROMISE_FUTURE">وعد قادم</option>
                         <option value="NO_FOLLOWUP">بلا متابعة</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="الحالة الائتمانية">
-                      <select className={selectClsSm} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }}>
+                      <AppSelect className="h-9" value={creditFilter} onValueChange={(value) => { setCreditFilter(value as typeof creditFilter); setPage(0); }}>
                         <option value="">كل الحالات الائتمانية</option>
                         <option value="CASH_ONLY">نقدي فقط</option>
                         <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
                         <option value="OVER_LIMIT">تجاوز الحد</option>
                         <option value="UNLIMITED">بلا حد</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="نشاط الشراء">
-                      <select className={selectClsSm} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }}>
+                      <AppSelect className="h-9" value={String(inactivityDays)} onValueChange={(value) => { setInactivityDays(value ? Number(value) as 30 | 60 | 90 : ""); setPage(0); }}>
                         <option value="">كل نشاطات الشراء</option>
                         <option value="30">لم يشترِ منذ 30 يوماً</option>
                         <option value="60">لم يشترِ منذ 60 يوماً</option>
                         <option value="90">لم يشترِ منذ 90 يوماً</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     <FilterField label="الترتيب">
-                      <select className={selectClsSm} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }}>
+                      <AppSelect className="h-9" value={sort} onValueChange={(value) => { setSort(value as typeof sort); setPage(0); }}>
                         <option value="NAME">ترتيب بالاسم</option>
                         <option value="BALANCE_DESC">أعلى مديونية</option>
                         <option value="OLDEST_DUE">أقدم استحقاق</option>
                         <option value="LAST_PURCHASE">الأطول بلا شراء</option>
-                      </select>
+                      </AppSelect>
                     </FilterField>
                     {(balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME") && (
                       <Button type="button" variant="ghost" size="sm" onClick={resetOperationalFilters}>مسح فلاتر التشغيل</Button>
@@ -576,7 +785,7 @@ export default function Customers() {
                   </label>
                 </FilterField>
                 {hasAnyFilter && (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>مسح كل الفلاتر</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => resetAllFilters()}>{FILTER_LABELS.reset}</Button>
                 )}
               </>
             }
@@ -624,237 +833,56 @@ export default function Customers() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2 w-8 text-center">
-                  <input
-                    type="checkbox"
-                    className="size-4"
-                    aria-label="تحديد كل العملاء في الصفحة"
-                    checked={allOnPageSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = !allOnPageSelected && someOnPageSelected;
-                    }}
-                    onChange={(e) => sel.setMany(pageIds, e.target.checked)}
-                  />
-                </th>
-                <th className="p-2">الاسم</th>
-                {hasLegacy && <th className="p-2">الرقم القديم</th>}
-                <th className="p-2">النوع</th>
-                <th className="p-2">الهاتف</th>
-                <th className="p-2">المدينة/المنطقة</th>
-                <th className="p-2">فئة السعر</th>
-                <th className="p-2 text-right">سقف الائتمان</th>
-                <th className="p-2 text-start">الرصيد</th>
-                {isElevated && <th className="p-2 text-center">حالة التحصيل</th>}
-                <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((c) => {
-                const id = Number(c.id);
-                const isActive = !!c.isActive;
-                const fr = rowProps(id);
-                return (
-                  <tr key={id} ref={fr.ref} className={`border-t ${isActive ? "" : "opacity-60"} ${fr.className}`}>
-                    <td className="p-2 text-center">
-                      <input
-                        type="checkbox"
-                        className="size-4"
-                        aria-label={`تحديد ${c.name ?? "العميل"}`}
-                        checked={sel.isSelected(id)}
-                        onChange={() => sel.toggle(id)}
-                      />
-                    </td>
-                    <td className="p-2 font-medium">
-                      {/* ٢٤/٨ (تدقيق): اسمُ العميل رابطٌ لكشف حسابه — يوفّر خطوةً يومية. للأدوار بلا
-                          `reports:READ` نعرضه نصاً — كشف الحساب مقصور خادميّاً على المرتفعين. */}
-                      {canOpenStatement ? (
-                        <Link href={`/customers-statement?id=${id}`} className="text-primary hover:underline" title="فتح كشف حساب العميل">
-                          {c.name}
-                        </Link>
-                      ) : (
-                        c.name
-                      )}
-                    </td>
-                    {hasLegacy && (
-                      <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
-                        {legacyCodeOf(c) ?? "—"}
-                      </td>
-                    )}
-                    <td className="p-2 text-xs">{c.customerType ?? "—"}</td>
-                    <td className="p-2"><CopyInline value={c.phone} /></td>
-                    <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
-                    <td className="p-2 text-xs">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{isElevated && c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}</td>
-                    <td className="p-2 text-start">
-                      <BalanceCell amount={c.currentBalance} entityType="customer" />
-                    </td>
-                    {isElevated && (
-                      <td className="p-2 text-center">
-                        {isOperationsRow(c) ? (
-                          <div className="flex flex-col items-center gap-1">
-                            <Badge variant={COLLECTION_STATUS[c.collectionStatus]?.variant ?? "neutral"}>
-                              {COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus}
-                            </Badge>
-                            {c.daysOverdue > 0 && <span className="text-[10px] text-muted-foreground">{c.daysOverdue} يوم</span>}
-                            {c.openTasks > 0 && <span className="text-[10px] text-muted-foreground">{c.openTasks} مهمة مفتوحة</span>}
-                          </div>
-                        ) : "—"}
-                      </td>
-                    )}
-                    <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
-                        {isActive ? "مفعّل" : "معطّل"}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
-                      <RowActions
-                        contact={{
-                          phone: c.phone,
-                          whatsapp: (c as { whatsapp?: string | null }).whatsapp,
-                          alternativePhones: [
-                            (c as { phone2?: string | null }).phone2,
-                            (c as { phone3?: string | null }).phone3,
-                          ],
-                          label: `واتساب ${c.name}`,
-                          message: buildOperationalContactMessage({
-                            partyName: c.name,
-                            entityLabel: "حساب العميل",
-                            nextAction: "نتواصل معكم لمتابعة طلبكم أو حسابكم. يرجى الرد عند الملاءمة.",
-                          }),
-                          gate: { module: "crm", level: "READ" },
-                        }}
-                        actions={[
-                          {
-                            key: "edit",
-                            kind: "edit",
-                            label: "تعديل",
-                            href: `/customers/${id}/edit`,
-                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
-                          },
-                          // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
-                          {
-                            key: "stmt",
-                            kind: "view",
-                            label: "كشف حساب",
-                            href: `/customers-statement?id=${id}`,
-                            gate: { module: "crm", level: "READ" },
-                          },
-                          {
-                            key: "receipt",
-                            kind: "pay",
-                            label: "تسجيل دفعة",
-                            href: `/vouchers/receipt/new?customerId=${id}`,
-                            hidden: !isElevated,
-                            gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                          },
-                          {
-                            key: "follow",
-                            kind: "create",
-                            label: "تسجيل متابعة",
-                            hidden: !isElevated,
-                            onSelect: () => setFollowTarget(c),
-                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
-                          },
-                          {
-                            key: "notes",
-                            kind: "view",
-                            label: "سجل المتابعة",
-                            href: `/crm?tab=followups&id=${id}`,
-                            gate: { module: "crm", level: "READ" },
-                          },
-                          {
-                            key: "reminder",
-                            kind: "create",
-                            label: "تذكير واتساب",
-                            href: "/ar-reminders",
-                            hidden: !isElevated,
-                            gate: { roles: ["manager", "accountant"], module: "collections", level: "FULL" },
-                          },
-                          {
-                            key: "toggle",
-                            kind: "approve",
-                            label: isActive ? "تعطيل" : "تفعيل",
-                            variant: isActive ? "destructive" : "default",
-                            disabled: deactivate.isPending || activate.isPending,
-                            disabledReason: "توجد عملية تحديث قيد التنفيذ",
-                            onSelect: () => void toggle(id, isActive, c.name ?? ""),
-                            gate: { roles: ["manager"], module: "crm", level: "FULL" },
-                          },
-                          {
-                            key: "delete",
-                            kind: "delete",
-                            label: "حذف نهائي",
-                            variant: "destructive",
-                            disabled: del.isPending,
-                            disabledReason: "توجد عملية حذف قيد التنفيذ",
-                            hidden: !isElevated,
-                            onSelect: () => void remove(id, c.name ?? ""),
-                            gate: { managerOnly: true },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-              {!list.isLoading && rows.length === 0 && (
-                <tr>
-                  {/* ٢٤/٨ (تدقيق): بدل نصٍّ جامد، إن كانت هناك فلاتر مفعَّلة نعرض زرّ «مسح كل الفلاتر»
-                      داخل الرسالة نفسها — لا حاجةَ لتتبّع الفلاتر أعلى الصفحة عند خطأ فلترة. */}
-                  <td colSpan={(hasLegacy ? 11 : 10) + (isElevated ? 1 : 0)} className="p-6 text-center text-sm text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <span>لا عملاء مطابقين.</span>
-                      {hasAnyFilter ? (
-                        <Button type="button" variant="outline" size="sm" onClick={() => { resetAllFilters(); setPage(0); }}>
-                          مسح كل الفلاتر
-                        </Button>
-                      ) : (
-                        <span className="text-xs">أضِف عميلاً جديداً أو غيّر البحث.</span>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          </ScrollTableShell>
+          {/* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام الخادميّ) ⇒ `searchable={false}`
+              وإلّا ظهر حقلا بحثٍ متجاوران. والترقيم خادميّ يُصيّره DataTable — فزال شريط
+              «السابق/التالي» اليدويّ تحته (شريطان يقفزان بمقدارَين مختلفَين يتخطّيان صفوفاً)،
+              وعدّاد «N عميل» يبقى في ListToolbar (`count={total}`) وفي شريط الترقيم معاً.
+              التحديد المتعدّد يُصيّره DataTable نفسه (عمود اختيار + «تحديد كل المرئي»). */}
+          <DataTable<DisplayRow, number>
+            columns={columns}
+            data={rows}
+            searchable={false}
+            externalFiltersActive={hasAnyFilter}
+            selection={sel}
+            getRowId={(c) => Number(c.id)}
+            getRowSelectionLabel={(c) => `تحديد ${c.name}`}
+            loading={list.isLoading}
+            errorState={{
+              isError: list.isError,
+              message: list.error?.message,
+              // `list` اتحادُ استعلامَين (المرتفع/العاديّ) — نُعيد الجلب على المُفعَّل منهما صراحةً.
+              onRetry: () => void (isElevated ? operations.refetch() : basicList.refetch()),
+            }}
+            getRowClassName={(c) =>
+              [c.isActive ? "" : "opacity-60", rowProps(Number(c.id)).className].filter(Boolean).join(" ") || undefined
+            }
+            serverPagination={{
+              page,
+              onPageChange: (next) => setPage(next),
+              pageSize: limit,
+              total,
+              isFetching: list.isFetching,
+            }}
+            emptyState={
+              <div className="flex flex-col items-center gap-2">
+                <span>لا عملاء مطابقين.</span>
+                <span className="text-xs">أضِف عميلاً جديداً أو غيّر البحث.</span>
+              </div>
+            }
+            emptyFilteredState={
+              /* ٢٤/٨ (تدقيق): زرّ «مسح كل الفلاتر» داخل الرسالة نفسها — لا حاجةَ لتتبّع
+                 الفلاتر أعلى الصفحة عند خطأ فلترة. */
+              <div className="flex flex-col items-center gap-2">
+                <span>لا عملاء مطابقين.</span>
+                <Button type="button" variant="outline" size="sm" onClick={() => { resetAllFilters(); setPage(0); }}>
+                  {FILTER_LABELS.reset}
+                </Button>
+              </div>
+            }
+          />
         </CardContent>
       </Card>
 
-      {/* ٢٤/٨ (Codex P2): إجماليّ العملاء ظاهرٌ **دائماً** خارج شرط `pages > 1` — الشركات
-          الصغيرة (≤٥٠ عميل) كانت لا ترى أيّ عدّاد لأنّ الترقيم يختفي في الصفحة الواحدة. */}
-      {rows.length > 0 && (
-        <div className="flex items-center justify-between text-sm">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pages <= 1 || page <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            style={{ visibility: pages > 1 ? "visible" : "hidden" }}
-          >
-            ← السابق
-          </Button>
-          <div className="text-muted-foreground">
-            {pages > 1 && <>صفحة {page + 1} من {pages} · </>}
-            <span className="tabular-nums">{total.toLocaleString("en-US")}</span> عميل
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pages <= 1 || page >= pages - 1}
-            onClick={() => setPage((p) => p + 1)}
-            style={{ visibility: pages > 1 ? "visible" : "hidden" }}
-          >
-            التالي →
-          </Button>
-        </div>
-      )}
 
       {isElevated && (
         <OperationsSummary

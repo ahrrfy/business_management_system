@@ -53,6 +53,7 @@ export function DeviceLinkCard({
   onChanged: () => Promise<void> | void;
 }) {
   const utils = trpc.useUtils();
+  const bridge = trpc.hrDevices.bridgeStatus.useQuery();
   const [open, setOpen] = useState(false);
   const [deviceId, setDeviceId] = useState<string>("");
   const [enrollId, setEnrollId] = useState<string>("");
@@ -88,6 +89,10 @@ export function DeviceLinkCard({
     setEnrollId("");
     setEffectiveFrom(hireDate ?? "");
   }, [open, hireDate]);
+
+  // لا نعرض تحذير «غير مربوط» ولا أدوات ربطٍ لا تعمل عندما تكون مزامنة الأجهزة
+  // معطلة صراحةً. undefined (تحميل/خطأ) لا يخفي البطاقة بلا يقين.
+  if (bridge.data?.enabled === false) return null;
 
   const activeDevices = (devices.data ?? []).filter((d) => d.enabled);
   const alreadyLinkedDeviceIds = new Set(links.map((l) => l.deviceId));

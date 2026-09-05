@@ -40,13 +40,24 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({
-    id: 1,
-    openId: "local_test",
-    name: "admin",
-    role: "admin",
-    loginMethod: "local",
-  });
+  await d.insert(s.users).values([
+    {
+      id: 1,
+      openId: "local_test",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+    },
+    {
+      id: 99,
+      openId: "shift_custody_manager",
+      name: "مدير استلام العهدة",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isActive: true,
+    },
+  ]);
   // رصيد خزينة حقيقي يمول عهد الورديات والمصروفات الإدارية في اختبارات النجاح.
   await d.insert(s.receipts).values({
     branchId: 1,

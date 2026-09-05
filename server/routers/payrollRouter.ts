@@ -9,10 +9,12 @@ import { eq } from "drizzle-orm";
 import { employees, payrollItems } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { createAppNotification } from "../services/appNotificationService";
-import * as adv from "../services/advancesService";
+import * as adv from "../services/advances";
 import * as svc from "../services/payrollService";
 import * as legal from "../services/payrollLegalService";
 import { getPayrollSummary } from "../services/reportsHrService";
+import { getCommissionPayrollReadiness } from "../services/commissions/payrollReadiness";
+import { listCommissionRunApprovalRequests } from "../services/commissions/runApprovals";
 import { managerProcedure, ownerProcedure, protectedProcedure, requireModule, router } from "../trpc";
 import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -86,6 +88,38 @@ export const payrollRouter = router({
   financialLedger: ownerHrRead
     .input(z.object({ period: period.optional() }).optional())
     .query(({ input }) => svc.getPayrollFinancialLedger(input)),
+
+  /**
+   * جاهزية العمولة لشهرٍ ما — قراءةٌ استباقية تُغذّي بانراً دائماً على شاشة الرواتب بدل
+   * الاعتماد على رسالة الخطأ العابرة (توست ٦ث) الوحيدة التي كانت تصف الحالة سابقاً.
+   * تكشف أيضاً: من احتسب التشغيلة، وطلب اعتماد الشركة المعلَّق (إن وُجد) وصاحبه — كي تعرف
+   * الواجهة أنّ المستخدم الحالي هو نفسه من احتسب/طلب فلا يملك اعتماد طلبه بنفسه (فصل مهام).
+   */
+  commissionReadiness: hrRead
+    .input(z.object({ period }))
+    .query(async ({ input, ctx }) => {
+      const readiness = await getCommissionPayrollReadiness(requireDb(), input.period);
+      if (readiness.ready || readiness.runId == null) {
+        return { ...readiness, pendingCompanyRequest: null };
+      }
+      const pending = await listCommissionRunApprovalRequests(
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role },
+        null,
+        { status: "PENDING", runId: readiness.runId },
+      );
+      const companyPending = pending.find((row) => row.scopeBranchId == null) ?? null;
+      return {
+        ...readiness,
+        pendingCompanyRequest: companyPending
+          ? {
+              id: Number(companyPending.id),
+              requestedBy: Number(companyPending.requestedBy),
+              requesterName: companyPending.requesterName,
+              createdAt: companyPending.createdAt,
+            }
+          : null,
+      };
+    }),
 
   generate: ownerHrWrite
     .input(z.object({ period }))

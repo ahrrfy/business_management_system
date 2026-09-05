@@ -16,6 +16,7 @@ import { extractInsertId } from "../../lib/insertId";
 import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
+  lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
 import { baghdadToday } from "../businessDay";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -31,6 +32,7 @@ import type {
   PayrollPaymentMethod,
   PayrollReturnInput,
 } from "./types";
+import { assertCommissionArtifactReadyForPayrollTx } from "../commissions/payrollReadiness";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -74,10 +76,16 @@ export function assertPayrollPaymentEvidence(
   return ref;
 }
 
+/**
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «مختلفٌ عن صانع العملية»
+ * (كان هنا نظيراً مستقلاً لِـauthorizeExternalTreasuryDisbursement في cashAvailability.ts،
+ * التفصيل هناك). `forbiddenUserIds` يبقى في التوقيع توثيقاً لهوية الطالب في مواضع الاستدعاء —
+ * الأثر التدقيقي (createdBy/executedBy) يبقى مسجَّلاً كما هو.
+ */
 export async function assertPayrollActiveOwnerChecker(
   tx: Tx,
   actor: Actor,
-  forbiddenUserIds: Array<number | null | undefined>,
+  _forbiddenUserIds: Array<number | null | undefined>,
   operation: string,
 ): Promise<void> {
   const [owner] = await tx
@@ -90,17 +98,6 @@ export async function assertPayrollActiveOwnerChecker(
     throw new TRPCError({
       code: "FORBIDDEN",
       message: `${operation}: التنفيذ محصور بحساب مالك نشط.`,
-    });
-  }
-  if (
-    forbiddenUserIds
-      .filter((id): id is number => id != null)
-      .map(Number)
-      .includes(Number(owner.id))
-  ) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `${operation}: يلزم منفّذ مستقل عن صانع العملية الأصلية.`,
     });
   }
 }
@@ -201,6 +198,9 @@ export async function payRun(
         code: "BAD_REQUEST",
         message: "يُدفع المسيّر بعد اعتماده الاستحقاقي فقط.",
       });
+    }
+    if (run.status === "approved") {
+      await assertCommissionArtifactReadyForPayrollTx(tx, run.period);
     }
     if (run.createdBy !== preview.createdBy || run.revisionNo !== preview.revisionNo) {
       throw new TRPCError({
@@ -435,6 +435,36 @@ export async function returnSalaryPayment(
     });
   }
   return withTx(async (tx) => {
+    const [returnPreview] = await tx
+      .select({ id: payrollAccountingEvents.id })
+      .from(payrollAccountingEvents)
+      .where(eq(payrollAccountingEvents.reversalOfId, input.accountingEventId))
+      .limit(1);
+    const [cashPreview] = await tx
+      .select({
+        paymentMethod: receipts.paymentMethod,
+        branchId: payrollObligations.branchIdSnapshot,
+      })
+      .from(payrollAccountingEvents)
+      .innerJoin(receipts, eq(payrollAccountingEvents.receiptId, receipts.id))
+      .innerJoin(
+        payrollObligations,
+        eq(payrollAccountingEvents.obligationId, payrollObligations.id),
+      )
+      .where(eq(payrollAccountingEvents.id, input.accountingEventId))
+      .limit(1);
+    let prelockedCashBranchId: number | null = null;
+    if (!returnPreview && cashPreview?.paymentMethod === "CASH") {
+      prelockedCashBranchId = Number(cashPreview.branchId);
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId: prelockedCashBranchId,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
+    }
     const [original] = await tx
       .select({
         event: payrollAccountingEvents,
@@ -465,6 +495,16 @@ export async function returnSalaryPayment(
       "إعادة راتب مدفوع",
     );
     const method = supportedReceiptMethod(original.receipt.paymentMethod);
+    if (
+      method === "CASH" &&
+      prelockedCashBranchId !== Number(original.obligation.branchIdSnapshot) &&
+      !returnPreview
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر مصدر إعادة الراتب أثناء قفل النقد؛ أعد المحاولة.",
+      });
+    }
     const referenceNumber = assertPayrollPaymentEvidence(
       method,
       input.referenceNumber ?? original.receipt.referenceNumber,

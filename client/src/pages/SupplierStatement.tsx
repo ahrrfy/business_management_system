@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import SupplierPicker from "@/components/voucher/SupplierPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,15 +13,18 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
 import { usePrintAudit } from "@/hooks/usePrintAudit";
-import { D, fmt, positiveDiff } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { D, fmt } from "@/lib/money";
+import { DataTable } from "@/components/data-table/DataTable";
+import type { ColumnDef } from "@tanstack/react-table";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { Info } from "lucide-react";
 
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
@@ -49,20 +53,132 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
   { label: "الكل", range: () => ({ from: "", to: "" }) },
 ];
 
-const PO_STATUS_LABEL: Record<string, string> = {
-  DRAFT: "مسوّدة",
-  SENT: "مُرسَل",
-  CONFIRMED: "مؤكّد",
-  RECEIVED: "مُستلَم",
-  CANCELLED: "ملغى",
+/** صفوف كشف حساب المورّد — مشتقّةٌ من عقد `reports.supplierStatement` فلا تنجرف عن الخادم.
+ *  ⚠️ `NonNullable` إلزاميّ: الراوتر يُرجع `res && {…}` و`getSupplierStatement` تُرجع `null`
+ *  حين لا مورّد/لا قاعدة ⇒ نوع المخرَج اتحادٌ مع `null`، والفهرسةُ عليه مباشرةً خطأ ترجمة. */
+type SupplierStatementData = NonNullable<RouterOutputs["reports"]["supplierStatement"]>;
+
+/** صفٌّ واحد في دفتر حركات المورّد الموحَّد — يجمع أوامر الشراء والدفعات في جدولٍ واحد
+ *  بنمط دفتر الأستاذ الفرعي (مدين/دائن/رصيدٌ جارٍ) المُتَّبع عالمياً (Odoo Partner Ledger،
+ *  ERPNext General Ledger، GnuCash Owner Report، Dolibarr Grand Livre). */
+type LedgerFilterGroup = "buy" | "pay_alloc" | "pay_unalloc" | "other";
+interface LedgerRow {
+  date: string;
+  ref: string;
+  description: string;
+  descriptionSub?: string;
+  actor: string;
+  debit: string | null;
+  credit: string | null;
+  balance: string;
+  filterGroup: LedgerFilterGroup;
+  openHref?: string;
+  paymentStatus?: "PAID" | "PARTIAL" | "UNPAID";
+}
+
+const FILTER_GROUP_LABEL: Record<"all" | LedgerFilterGroup, string> = {
+  all: "الكل",
+  buy: "فواتير شراء",
+  pay_alloc: "دفعات مخصَّصة",
+  pay_unalloc: "دفعات غير مخصَّصة",
+  other: "أخرى",
 };
-const PO_STATUS_CLS: Record<string, string> = {
-  DRAFT: "badge-status-cancelled",
-  SENT: "badge-status-pending",
-  CONFIRMED: "badge-stock-low",
-  RECEIVED: "badge-status-active",
-  CANCELLED: "badge-stock-out",
+
+const PAYMENT_STATUS_LABEL: Record<"PAID" | "PARTIAL" | "UNPAID", string> = {
+  PAID: "مسدَّد",
+  PARTIAL: "جزئي",
+  UNPAID: "غير مسدَّد",
 };
+const PAYMENT_STATUS_CLS: Record<"PAID" | "PARTIAL" | "UNPAID", string> = {
+  PAID: "badge-status-active",
+  PARTIAL: "badge-status-pending",
+  UNPAID: "badge-stock-out",
+};
+
+/** جمعُ عمود مدين/دائن بدقّة Decimal (§٥) — يتجاهل الخلايا الفارغة (—). */
+function sumMoneyCol(values: (string | null | undefined)[]): ReturnType<typeof D> {
+  return values.reduce((acc, v) => (v ? acc.plus(D(v)) : acc), D(0));
+}
+
+/** أعمدة دفتر الحركات الموحَّد — عمودا مدين/دائن + رصيدٌ جارٍ بارز، مطابقةً للنمط العالميّ. */
+const ledgerColumns: ColumnDef<LedgerRow, unknown>[] = [
+  { id: "date", header: "التاريخ", accessorFn: (r) => r.date, meta: { kind: "date" }, cell: ({ row }) => <span className="text-xs">{row.original.date}</span> },
+  {
+    id: "ref",
+    header: "المستند",
+    accessorFn: (r) => r.ref,
+    meta: { kind: "code" },
+    cell: ({ row }) => (row.original.ref === "—" ? <span className="text-xs text-muted-foreground">—</span> : <CopyInline value={row.original.ref} />),
+  },
+  {
+    id: "description",
+    header: "البيان",
+    accessorFn: (r) => r.description,
+    meta: { width: "wide" },
+    cell: ({ row }) => (
+      <div>
+        <div className="text-xs">{row.original.description}</div>
+        {row.original.descriptionSub && <div className="text-[10px] text-muted-foreground">{row.original.descriptionSub}</div>}
+      </div>
+    ),
+  },
+  {
+    id: "actor",
+    header: "المنفّذ",
+    accessorFn: (r) => r.actor,
+    meta: { kind: "actor" },
+    cell: ({ row }) => <span className="text-xs">{row.original.actor}</span>,
+  },
+  {
+    id: "debit",
+    header: "مدين (دفع)",
+    accessorFn: (r) => (r.debit == null ? "" : fmt(r.debit)),
+    meta: { kind: "money" },
+    cell: ({ row }) => (row.original.debit == null ? <span className="text-muted-foreground">—</span> : <span className="text-money-positive">{fmt(row.original.debit)}</span>),
+    footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.debit)).toFixed(2)),
+  },
+  {
+    id: "credit",
+    header: "دائن (مشتريات)",
+    accessorFn: (r) => (r.credit == null ? "" : fmt(r.credit)),
+    meta: { kind: "money" },
+    cell: ({ row }) => (row.original.credit == null ? <span className="text-muted-foreground">—</span> : fmt(row.original.credit)),
+    footer: ({ table }) => fmt(sumMoneyCol(table.getFilteredRowModel().rows.map((r) => r.original.credit)).toFixed(2)),
+  },
+  {
+    id: "balance",
+    header: "الرصيد الجاري",
+    accessorFn: (r) => fmt(r.balance),
+    meta: { kind: "money" },
+    cell: ({ row }) => <span className="font-bold">{fmt(row.original.balance)}</span>,
+  },
+  {
+    id: "paymentStatus",
+    header: "الحالة",
+    accessorFn: (r) => (r.paymentStatus ? PAYMENT_STATUS_LABEL[r.paymentStatus] : "—"),
+    meta: { kind: "status" },
+    cell: ({ row }) =>
+      row.original.paymentStatus ? (
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PAYMENT_STATUS_CLS[row.original.paymentStatus]}`}>
+          {PAYMENT_STATUS_LABEL[row.original.paymentStatus]}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      ),
+  },
+  {
+    id: "open",
+    header: "فتح",
+    enableSorting: false,
+    meta: { kind: "actions" },
+    cell: ({ row }) =>
+      row.original.openHref ? (
+        <Link href={row.original.openHref}>
+          <Button variant="outline" size="sm">فتح</Button>
+        </Link>
+      ) : null,
+  },
+];
 
 export default function SupplierStatement() {
   // الـURL مصدر الحقيقة لهوية المورد ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
@@ -77,26 +193,35 @@ export default function SupplierStatement() {
     navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
   };
   const [from, setFrom] = useState("");
+  const [ledgerFilter, setLedgerFilter] = useState<"all" | LedgerFilterGroup>("all");
   const [to, setTo] = useState("");
 
-  const index = trpc.reports.suppliersIndex.useQuery();
   const stmt = trpc.reports.supplierStatement.useQuery(
     { supplierId: supplierId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!supplierId }
   );
   const printAudit = usePrintAudit();
 
-  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة وتصدير Excel.
+  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة والتصدير **والعرض الحيّ**
+  // في الجدول الموحَّد أدناه (لم يعد مقصوراً على الطباعة/التصدير كما كان).
   const ledger = useMemo(() => {
     if (!stmt.data) return null;
     const d = stmt.data;
-    const poTxs = d.purchaseOrders.map((p) => ({
-      t: new Date(p.orderDate).getTime(),
-      date: fmtDate(p.orderDate),
-      ref: p.poNumber, description: "أمر شراء",
-      actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
-      debit: null as string | null, credit: p.total as string | null,
-    }));
+    const poTxs = d.purchaseOrders.map((p) => {
+      const poPaid = D(p.paidAmount);
+      const poTotal = D(p.total);
+      const paymentStatus: LedgerRow["paymentStatus"] = poTotal.gt(0) && poPaid.gte(poTotal) ? "PAID" : poPaid.gt(0) ? "PARTIAL" : "UNPAID";
+      return {
+        t: new Date(p.orderDate).getTime(),
+        date: fmtDate(p.orderDate),
+        ref: p.poNumber, description: "فاتورة شراء — بضاعة",
+        actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
+        debit: null as string | null, credit: p.total as string | null,
+        filterGroup: "buy" as const,
+        openHref: `/purchases/${p.id}`,
+        paymentStatus,
+      };
+    });
     // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
     //  PAYMENT_OUT/EXCHANGE_SETTLE ⇒ يخفض AP (−amount) = مدين؛ PAYMENT_IN/PURCHASE (يتيم) ⇒ يزيد (+amount) = دائن؛
     //  RETURN ⇒ amount مخزَّن سالباً فأثره يخفض AP = مدين. كان الكود السابق يضع كل الدفعات مديناً بلا نظر للنوع
@@ -114,36 +239,85 @@ export default function SupplierStatement() {
         // ب-١: تصحيح الرصيد الافتتاحيّ صار قيد فرقٍ مؤرَّخاً يظهر حركةً داخل فترته (إشارته
         // كما هي: موجب يزيد ما علينا). بلا هذا السطر يُعرَض باسم «دفعة مستقلة للمورد».
         : p.entryType === "OPENING" ? "تصحيح رصيد افتتاحي"
-        : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد");
+        : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة على الحساب — غير مخصَّصة");
+      // مراجعة Codex #966: جدول الدفعات المنفصل القديم كان يعرض ملاحظات القيد وبيت الصيرفة/المرجع
+      // — الدفتر الموحَّد أسقطها كلياً رغم أنّ الـAPI ما زال يُرجعها، فيتعذّر تمييز/تسوية دفعتين
+      // متشابهتين. الآن تُلحَق كل التفاصيل المتاحة (تخصيص + صيرفة + ملاحظة) بدل استبدالها.
+      const descriptionSub = [
+        p.entryType === "PAYMENT_OUT" && p.purchaseOrderId ? `مخصَّصة لأمر الشراء #${p.purchaseOrderId}` : undefined,
+        p.entryType === "PAYMENT_OUT" && !p.purchaseOrderId ? "بانتظار التخصيص لفاتورةٍ بعينها" : undefined,
+        p.entryType === "EXCHANGE_SETTLE" && p.exchangeHouseName
+          ? `عبر ${p.exchangeHouseName}${p.referenceNumber ? ` — مرجع ${p.referenceNumber}` : ""}`
+          : undefined,
+        p.notes || undefined,
+      ].filter(Boolean).join(" · ") || undefined;
+      // §الفلترة: PAYMENT_OUT وحدها تُصنَّف مخصَّصة/غير مخصَّصة (بحسب purchaseOrderId)؛ كل
+      // الأنواع الأخرى (مرتجع/استرداد/صيرفة/شراء يتيم/تصحيح افتتاحي) تقع في «أخرى».
+      const filterGroup: LedgerFilterGroup =
+        p.entryType === "PAYMENT_OUT" ? (p.purchaseOrderId ? "pay_alloc" : "pay_unalloc") : "other";
       return {
         t: new Date(p.entryDate).getTime(),
         date: fmtDate(p.entryDate),
-        ref: "دفعة",
+        ref: p.voucherNumber ?? "—",
         description,
+        descriptionSub,
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
         debit: signed.isNegative() ? signed.neg().toFixed(2) : (null as string | null),
         credit: signed.isPositive() ? signed.toFixed(2) : (null as string | null),
+        filterGroup,
       };
     });
     // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
     const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
-    // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-    let bal = from ? D(d.summary.openingBalance) : D(0);
+    // §٥: AP بـDecimal (دائن − مدين). مراجعة Codex #966: كان العمود يبدأ من صفرٍ بلا فترة رغم أنّ
+    // `openingBalance` بلا `from` هو أيضاً مجموع قيود OPENING المستورَدة فعلياً — فمورّدٍ افتُتح
+    // بـ1,000 ثمّ اشترى بـ200 كان يُعرَض بعمودٍ ينتهي بـ200 بدل 1,200 رغم أنّ بطاقة الملخّص تعرض
+    // 1,200 الصحيح. البذرة الآن دائماً openingBalance (لا شرط from).
+    const openingBal = D(d.summary.openingBalance);
+    let bal = openingBal;
     let totDebit = D(0), totCredit = D(0);
-    const rows = merged.map(({ t: _t, ...x }) => {
+    const activityRows = merged.map(({ t: _t, ...x }) => {
       bal = bal.plus(D(x.credit)).minus(D(x.debit));
       totDebit = totDebit.plus(D(x.debit));
       totCredit = totCredit.plus(D(x.credit));
       return { ...x, balance: bal.toFixed(2) };
     });
+    // صفّ «رصيد افتتاحي» أوّل السجل — يُثبِّت عمود الرصيد الجاري (نمط Odoo «Initial Balance» /
+    // بداية سجلّ GnuCash). يظهر كلّما وُجد رصيدٌ افتتاحيّ فعليّ (مستورَد)، بفترةٍ أو بلا فترة —
+    // لا يُغيّر مجموع مدين/دائن الفترة (خانتاه فارغتان)، رصيده وحده هو المُرحَّل.
+    const rows: LedgerRow[] = openingBal.abs().gt(0)
+      ? [
+          {
+            date: from ? fmtDate(from) : "—",
+            ref: "—",
+            description: "رصيد افتتاحي مُرحَّل",
+            descriptionSub: from ? "ما قبل الفترة (افتتاحي + نشاط سابق)" : "الرصيد الافتتاحي المستورَد",
+            actor: "—",
+            debit: null,
+            credit: null,
+            balance: openingBal.toFixed(2),
+            filterGroup: "other",
+          },
+          ...activityRows,
+        ]
+      : activityRows;
     return {
       rows,
       totalDebit: totDebit.toFixed(2),
       totalCredit: totCredit.toFixed(2),
-      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (رصيد المورّد الحقيقيّ
+      // — مصدر حقيقةٍ خادميّ منفصل عن الحساب المحليّ، يبقى الحكم الفصل عند أيّ انحرافٍ نادر).
       closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
     };
   }, [stmt.data, from]);
+
+  // فلترة نوع الحركة على دفتر الحركات المبنيّ أعلاه — بحثٌ حرّ عن طريق `DataTable` نفسه
+  // (searchable افتراضيّاً)؛ هذه رقاقاتٌ إضافية تُقصر النوع (شراء/دفعة مخصَّصة/غير مخصَّصة/أخرى).
+  const filteredLedgerRows = useMemo(() => {
+    if (!ledger) return [];
+    if (ledgerFilter === "all") return ledger.rows;
+    return ledger.rows.filter((r) => r.filterGroup === ledgerFilter);
+  }, [ledger, ledgerFilter]);
 
   // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
   // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
@@ -283,15 +457,12 @@ export default function SupplierStatement() {
       <Card>
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1 md:col-span-2">
-            <Label className="text-xs">المورد</Label>
-            <select className={selectClsFull} value={supplierId} onChange={(e) => selectSupplier(Number(e.target.value))}>
-              <option value={0}>— اختر مورداً —</option>
-              {(index.data ?? []).map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} {s.phone ? `· ${s.phone}` : ""}
-                </option>
-              ))}
-            </select>
+            <SupplierPicker
+              label="المورد"
+              source="reports"
+              supplierId={supplierId || null}
+              onSupplierChange={(id) => selectSupplier(id ?? 0)}
+            />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">من تاريخ</Label>
@@ -324,7 +495,7 @@ export default function SupplierStatement() {
       {stmt.data && (
         <>
           <Card>
-            <CardContent className="pt-6">
+            <CardContent className="pt-6 space-y-4">
               <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
                   <div className="text-lg font-semibold">{stmt.data.supplier.name}</div>
@@ -334,19 +505,36 @@ export default function SupplierStatement() {
                     {stmt.data.supplier.paymentTerms ? ` · شروط الدفع: ${stmt.data.supplier.paymentTerms}` : ""}
                   </div>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
-                  <Stat label="إجمالي المشتريات" value={stmt.data.summary.totalPurchases} />
-                  <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
-                  <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
-                  {/* عقد import-integration §٦: رصيد غير مفوتر = الرصيد الجاري − غير المدفوع (Decimal لا parseFloat) — يشمل الافتتاحي المستورد. */}
-                  <Stat
-                    label="رصيد غير مفوتر — يشمل الافتتاحي المستورد"
-                    value={D(stmt.data.summary.currentBalance).minus(D(stmt.data.summary.unpaid)).toFixed(2)}
-                  />
-                  <StatBalance label="الرصيد الحالي" value={stmt.data.summary.currentBalance} entityType="supplier" />
-                  <Stat label="الذمة الدولارية ($)" value={stmt.data.supplier.currentBalanceUsd ?? "0"} />
-                </div>
               </div>
+
+              {/* صفّ مؤشراتٍ واحد (نمط عالمي: Odoo Partner Ledger / ERPNext AP Summary / GnuCash
+                  Owner Report) — رصيدٌ رئيسيٌّ واحد بالدينار (والدولار مرجعٌ ثانويّ تحته، لا بطاقةٌ
+                  منافسة)، رصيدٌ افتتاحي يُثبِّت عمود الرصيد الجاري، ثمّ حركة الفترة، ثمّ الأعمار. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                <StatBalance
+                  label="الرصيد المستحق"
+                  value={stmt.data.summary.currentBalance}
+                  entityType="supplier"
+                  usdValue={stmt.data.supplier.currentBalanceUsd}
+                />
+                <Stat label="الرصيد الافتتاحي" value={stmt.data.summary.openingBalance} />
+                <Stat label="إجمالي المشتريات (الفترة)" value={stmt.data.summary.totalPurchases} />
+                <Stat label="إجمالي المسدَّد (الفترة)" value={stmt.data.summary.totalPaid} />
+                <AgingCard aging={stmt.data.summary.aging} scoped={!!(from || to)} />
+              </div>
+
+              {/* بند تسوية صريح لفجوة تخصيص الدفعات — بدل أن يبقى الفرق بين مجموع «المتبقّي»
+                  لكل فاتورة و«الرصيد المستحق» أعلاه صامتاً وغير مفسَّر (شكوى المالك الأصلية). */}
+              {D(stmt.data.summary.unallocatedPayments).gt(0) && (
+                <div className="flex items-start gap-2 rounded-md border bg-[var(--sem-warn-bg)]/60 px-3 py-2 text-xs">
+                  <Info aria-hidden className="size-4 shrink-0 mt-0.5 text-[var(--sem-warn)]" />
+                  <div>
+                    <span className="font-semibold">دفعاتٌ على الحساب غير مخصَّصة لفاتورةٍ بعينها: </span>
+                    <span className="tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.unallocatedPayments)}</span>
+                    <span> — هذا يُفسِّر الفرق بين مجموع «المتبقّي» لكل فاتورةٍ في دفتر الحركات أدناه وبين «الرصيد المستحق» أعلاه. ابحث عن «دفعة على الحساب» في الجدول.</span>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -358,112 +546,37 @@ export default function SupplierStatement() {
             onPdf={printStatement}
           />
 
+          {/* دفتر حركاتٍ موحَّد واحد (مدين/دائن/رصيدٌ جارٍ) بدل جدولَي «أوامر الشراء»/«الدفعات»
+              المنفصلَين سابقاً — نفس نمط Odoo Partner Ledger / ERPNext General Ledger / GnuCash
+              Owner Report / Dolibarr Grand Livre. بحثٌ حرّ مدمج في DataTable + رقاقات نوع الحركة. */}
           <Card>
             <CardContent className="p-0">
-              <div className="p-3 border-b bg-muted/30 text-sm font-medium">أوامر الشراء</div>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">السند / المرجع</th>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">الاستحقاق</th>
-                    <th className="p-2 text-right">الإجمالي</th>
-                    <th className="p-2 text-right">المدفوع</th>
-                    <th className="p-2 text-right">المتبقّي</th>
-                    <th className="p-2">الحالة</th>
-                    <th className="p-2">المنفذ</th>
-                    <th className="p-2 text-center">فتح</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* الرصيد المُرحَّل = افتتاحي مستورد + مشتريات ملتزمة − دفعات قبل from — صف أول يجعل رصيد الفترة قابلاً للتتبّع. */}
-                  {from && (
-                    <tr className="border-t bg-[var(--sem-warn-bg)]/60 font-medium">
-                      <td className="p-2 text-xs">رصيد مُرحَّل</td>
-                      <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
-                      <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
-                      <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
-                      <td className="p-2" colSpan={3} />
-                    </tr>
-                  )}
-                  {stmt.data.purchaseOrders.map((p) => {
-                    // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
-                    const remaining = positiveDiff(p.total, p.paidAmount).toFixed(2);
-                    return (
-                      <tr key={p.id} className="border-t">
-                        <td className="p-2"><CopyInline value={p.poNumber} /></td>
-                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
-                        <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
-                        <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
-                        <td className="p-2">
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLS[p.status] ?? "bg-muted"}`}>
-                            {PO_STATUS_LABEL[p.status] ?? p.status}
-                          </span>
-                        </td>
-                        <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
-                        <td className="p-2 text-center">
-                          <Link href={`/purchases/${p.id}/receive`}>
-                            <Button variant="outline" size="sm">فتح</Button>
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {stmt.data.purchaseOrders.length === 0 && (
-                    <TableEmptyRow colSpan={9} message="لا أوامر شراء لهذا المورد." />
-                  )}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-0">
-              <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات المسجّلة</div>
-              <table className="w-full text-sm">
-                <thead className="bg-muted/50">
-                  <tr>
-                    <th className="p-2">التاريخ</th>
-                    <th className="p-2">أمر الشراء</th>
-                    <th className="p-2 text-right">المبلغ</th>
-                    <th className="p-2">ملاحظات</th>
-                    <th className="p-2">المنفذ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stmt.data.payments.map((p) => (
-                    <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.entryDate)}</td>
-                      <td className="p-2">
-                        {p.voucherNumber ? (
-                          <div>
-                            <CopyInline value={p.voucherNumber} />
-                            {p.paymentMethod === "EXCHANGE" && (
-                              <div className="text-[10px] text-muted-foreground">
-                                صيرفة{p.exchangeHouseName ? `: ${p.exchangeHouseName}` : ""}
-                                {p.referenceNumber ? ` · ${p.referenceNumber}` : ""}
-                              </div>
-                            )}
-                          </div>
-                        ) : p.purchaseOrderId ? (
-                          <CopyInline value={p.purchaseOrderId} />
-                        ) : (
-                          // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
-                          <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">دفعة مستقلة</span>
-                        )}
-                      </td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
-                      <td className="p-2 text-xs">{p.notes ?? "—"}</td>
-                      <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
-                    </tr>
+              <div className="flex flex-wrap items-center gap-2 p-3 border-b bg-muted/30">
+                <span className="text-sm font-medium">دفتر الحركات</span>
+                <div className="flex flex-wrap gap-1 ms-1">
+                  {(["all", "buy", "pay_alloc", "pay_unalloc", "other"] as const).map((g) => (
+                    <Button
+                      key={g}
+                      type="button"
+                      size="sm"
+                      variant={ledgerFilter === g ? "default" : "outline"}
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => setLedgerFilter(g)}
+                    >
+                      {FILTER_GROUP_LABEL[g]}
+                    </Button>
                   ))}
-                  {stmt.data.payments.length === 0 && (
-                    <TableEmptyRow colSpan={5} message="لا دفعات مسجّلة لهذا المورد." />
-                  )}
-                </tbody>
-              </table>
+                </div>
+              </div>
+              <DataTable<LedgerRow>
+                embedded
+                bounded={false}
+                pageSize={Infinity}
+                columns={ledgerColumns}
+                data={filteredLedgerRows}
+                searchPlaceholder="ابحث بالمرجع أو البيان أو المنفّذ…"
+                emptyText="لا حركات لهذا المورد."
+              />
             </CardContent>
           </Card>
         </>
@@ -481,19 +594,96 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
   );
 }
 
-function StatBalance({ label, value, entityType }: { label: string; value: string | number; entityType: "customer" | "supplier" }) {
+/** بطاقة الرصيد الرئيسية — الرصيد الدينارّي يقود شكل البطاقة، والدولاريّ (حين وُجد) سطرٌ ثانويّ
+ *  تحته بدل بطاقةٍ منفصلة متنافسة (نمط Odoo/ERPNext/Dolibarr).
+ *  مراجعة Codex #966: `currentBalanceUsd` ذمّةٌ **مستقلّة الحساب** (سعر فاتورتها وقت الترحيل، لا
+ *  تحويلاً بسعر اليوم) — لا معادلاً محوَّلاً لنفس الدَّين الدينارّي كما وُصف سابقاً، وقد تحمل
+ *  إشارةً مختلفة عنه تماماً (مورّدٌ رصيدُه الدينارّي صفرٌ وذمّتُه الدولارية موجبة كان يُعرَض «لا
+ *  ذمم» بالخطأ؛ وإشارتان متعاكستان كانتا تُعرَضان بلافتة IQD الواحدة). كل عملةٍ تُشتقّ اتجاهها
+ *  وتُعرَض بشارتها الخاصّة الآن. */
+function StatBalance({
+  label, value, entityType, usdValue,
+}: {
+  label: string; value: string | number; entityType: "customer" | "supplier"; usdValue?: string | number | null;
+}) {
   const num = Number(value);
-  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر)
-  const weHaveClaim = entityType === "customer" ? num > 0 : num < 0;
-  const hasBalance = num !== 0;
+  const usdNum = usdValue != null ? Number(usdValue) : 0;
+  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر) — القاعدة نفسها لكلّ
+  // عملةٍ على حدة، مشتقّةً من قيمتها هي لا من الأخرى.
+  const dirOf = (n: number) => (entityType === "customer" ? n > 0 : n < 0);
+  const hasIqd = num !== 0;
+  const weHaveClaimIqd = dirOf(num);
+  const hasUsd = usdNum !== 0;
+  const weHaveClaimUsd = dirOf(usdNum);
   return (
-    <div className={`rounded-md p-2 ${hasBalance ? (weHaveClaim ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
+    <div className={`rounded-md p-2 ${hasIqd ? (weHaveClaimIqd ? "badge-status-active" : "badge-stock-out") : hasUsd ? (weHaveClaimUsd ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
+      <div className={`tabular-nums text-xl font-bold ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
-        {!hasBalance ? "لا ذمم" : weHaveClaim ? "لنا عليه" : "له علينا"}
+      <div className={`text-xs font-semibold mt-0.5 ${hasIqd ? (weHaveClaimIqd ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
+        {!hasIqd ? (hasUsd ? "لا ذمّة بالدينار" : "لا ذمم") : weHaveClaimIqd ? "لنا عليه" : "له علينا"}
+      </div>
+      {hasUsd && (
+        <div className={`text-[10px] mt-1 pt-1 border-t border-current/10 tabular-nums flex items-center justify-between gap-2 ${weHaveClaimUsd ? "text-money-positive" : "text-money-negative"}`}>
+          <span dir="ltr">${fmt(Math.abs(usdNum))}</span>
+          <span className="font-semibold">ذمّةٌ دولارية مستقلّة — {weHaveClaimUsd ? "لنا عليه" : "له علينا"}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AGING_BUCKETS: { key: "d0_30" | "d31_60" | "d61_90" | "d91p"; label: string; barCls: string; textCls: string }[] = [
+  { key: "d0_30", label: "0–30", barCls: "bg-[var(--sem-pos)]", textCls: "text-[var(--sem-pos)]" },
+  { key: "d31_60", label: "31–60", barCls: "bg-[var(--sem-warn)]", textCls: "text-[var(--sem-warn)]" },
+  { key: "d61_90", label: "61–90", barCls: "bg-[var(--sem-warn)]", textCls: "text-[var(--sem-warn)]" },
+  { key: "d91p", label: "+90", barCls: "bg-[var(--sem-neg)]", textCls: "text-[var(--sem-neg)]" },
+];
+
+/** تحليل أعمار الذمم — دلوٌ مدمج داخل نفس صفّ المؤشرات (نمط ERPNext: رسمٌ فوق الجدول مباشرةً
+ *  بدل تقريرٍ منفصل كما في Odoo/GnuCash). المجموع قد لا يُطابق «الرصيد المستحق» بالضبط (دفعاتٌ
+ *  غير مخصَّصة/رصيدٌ افتتاحيّ) — الفرق مكشوفٌ في بند «غير مصنَّف» بدل إخفائه.
+ *  مراجعة Codex #966: كان `unbucketed` يُحسَب من الخادم لكن لا يُعرَض هنا إطلاقاً — مورّدٌ
+ *  رصيدُه كلّه افتتاحيّ (بلا أوامر شراء) كان يُظهر رسماً فارغاً و٠ في كل الأعمدة رغم رصيدٍ حقيقيّ
+ *  غير صفريّ، عكس النيّة الموثَّقة أعلاه بالضبط. */
+function AgingCard({ aging, scoped }: { aging: { d0_30: string; d31_60: string; d61_90: string; d91p: string; unbucketed: string }; scoped: boolean }) {
+  const values = AGING_BUCKETS.map((b) => D(aging[b.key]));
+  const unbucketed = D(aging.unbucketed);
+  // شريط النسب: unbucketed سالبٌ نادرٌ (انحرافٌ محاسبيّ) يُستبعَد من مقام الشريط لا يُقصّ صامتاً —
+  // القيمة الحقيقية (حتى السالبة) تبقى ظاهرة في الخانة النصّية أدناه دائماً.
+  const barTotal = values.reduce((acc, v) => acc.plus(v), D(0)).plus(unbucketed.gt(0) ? unbucketed : D(0));
+  return (
+    <div className="rounded-md p-2 bg-muted/40">
+      <div className="text-xs text-muted-foreground">
+        تحليل الأعمار {scoped && <span className="opacity-70">(لأوامرَ نشطة ضمن الفترة)</span>}
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-muted mt-2 mb-1.5">
+        {barTotal.gt(0)
+          ? [
+              ...AGING_BUCKETS.map((b, i) => {
+                const pct = values[i].dividedBy(barTotal).times(100).toNumber();
+                return pct > 0 ? <div key={b.key} className={b.barCls} style={{ width: `${pct}%` }} /> : null;
+              }),
+              unbucketed.gt(0) ? (
+                <div key="unbucketed" className="bg-[var(--sem-info)]" style={{ width: `${unbucketed.dividedBy(barTotal).times(100).toNumber()}%` }} />
+              ) : null,
+            ]
+          : <div className="w-full bg-border" />}
+      </div>
+      <div className="grid grid-cols-5 gap-x-1 text-[10px]">
+        {AGING_BUCKETS.map((b, i) => (
+          <div key={b.key} className="text-center">
+            {/* bidi: "0–30" بلا مرساةٍ عربية تُعاد كتابتُها بصرياً "30-0" داخل حاويةٍ RTL بلا
+                عزلٍ صريح — dir="ltr" هنا إلزاميٌّ لا تجميليّ (أمسكته جولةٌ بصرية فعلية). */}
+            <div className={`font-semibold tabular-nums ${b.textCls}`} dir="ltr">{b.label}</div>
+            <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(values[i].toFixed(0))}</div>
+          </div>
+        ))}
+        <div className="text-center">
+          <div className="font-semibold tabular-nums text-[var(--sem-info)]">غير مصنَّف</div>
+          <div className="tabular-nums text-muted-foreground truncate" dir="ltr">{fmt(unbucketed.toFixed(0))}</div>
+        </div>
       </div>
     </div>
   );

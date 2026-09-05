@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { eq } from "drizzle-orm";
 import { auditLogs, customers, invoices, receipts, shifts } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
@@ -18,6 +19,7 @@ import { findIdempotentRefId } from "./idempotency";
 import { money, round2 } from "./money";
 import { assertTelecomCollectAllowed } from "./reception/telecom";
 import { canonicalIraqiMobile } from "../lib/phone";
+import { lockMaterializedCashReceiptSourceForWrite } from "./cash/cashAvailability";
 
 export interface ReceptionCheckoutInput {
   branchId: number;
@@ -145,7 +147,14 @@ function assertReceptionPaymentMethod(input: ReceptionCheckoutInput) {
   const newCash = round2(money(input.paidAmount ?? "0"));
   if (newCash.lte(0)) return;
   if (!input.paymentMethod) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد طريقة القبض للمبلغ المستلم" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "طريقة القبض غير محدَّدة",
+        why: `أرسلت مبلغاً مقبوضاً (${newCash.toFixed(2)}) لكن لم تحدّد طريقته (نقد/بطاقة/تحويل/…) — الطريقة إلزامية لتوجيه الإيصال`,
+        doThis: "اختر طريقة القبض من زر «طريقة الدفع» ثم أعد التثبيت",
+      }),
+    });
   }
   assertPosPaymentMethodEnabled(input.paymentMethod);
 }
@@ -169,14 +178,45 @@ export async function checkoutReceptionInTx(
       if (!current || current.status !== "OPEN" || Number(current.branchId) !== input.branchId) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "وردية الاستقبال مغلقة أو لا تخص هذا الفرع",
+          message: appErrorMessage({
+            what: "لا يمكن تثبيت الطلب على هذه الوردية",
+            why: "الوردية المرسلة أُغلقت للتوّ أو تخص فرعاً مختلفاً — لا مسار قبض متاح",
+            doThis: "افتح وردية استقبال جديدة على هذا الفرع من شاشة الورديات، ثم أعد التثبيت",
+          }),
         });
       }
       if (current.shiftType !== "RECEPTION") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "يجب استخدام وردية استقبال لتنفيذ هذه العملية" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "الوردية ليست وردية استقبال",
+            why: `ورديتك المفتوحة نوعها «${current.shiftType}» — الاستقبال يلزمه وردية RECEPTION (لأنّ درجها يستقبل العرابين والأمانات)`,
+            doThis: "أغلق وردية المبيعات الحالية وافتح وردية استقبال (RECEPTION) من شاشة الورديات، ثم أعد التثبيت",
+          }),
+        });
       }
       if (actor.role !== "admin" && actor.role !== "manager" && Number(current.userId) !== Number(actor.userId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التسجيل على وردية مستخدم آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "لا يمكنك التسجيل على هذه الوردية",
+            why: "الوردية المرسلة مفتوحة باسم مستخدم آخر، ودورك لا يعبُر الورديات (admin/manager فقط)",
+            doThis: "افتح وردية استقبال باسمك من شاشة الورديات ثم أعد التثبيت، أو اطلب من الإدارة تنفيذها",
+          }),
+        });
+      }
+      const writesMaterialCash =
+        (input.paymentMethod === "CASH" && money(input.paidAmount ?? "0").gt(0)) ||
+        money(input.deliveryFeeHeld ?? "0").gt(0);
+      if (writesMaterialCash) {
+        await lockMaterializedCashReceiptSourceForWrite(tx, {
+          branchId: input.branchId,
+          shiftId: input.shiftId,
+          cashBucket: "DRAWER",
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+        });
       }
     }
 
@@ -186,10 +226,24 @@ export async function checkoutReceptionInTx(
     let receptionDeferredAuthorized = false;
     if (!completeReplay && input.deferredDirect === true) {
       if (input.delivery) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "خيار بدون عربون لا يُجمع مع طلب التوصيل" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "لا يمكن إتمام هذا الطلب",
+            why: "خيار «بدون عربون» (بيع مباشر آجل) لا يُجمع مع التوصيل — التوصيل يشترط سداداً حتى ولو COD على المندوب",
+            doThis: "احذف التوصيل من الطلب لبيعٍ آجل داخل المكتبة، أو قبضْ عرباناً وتابع التوصيل عادةً",
+          }),
+        });
       }
       if (input.customerId == null) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "خيار بدون عربون يتطلب عميلاً محفوظاً ومربوطاً" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "خيار «بدون عربون» يتطلب عميلاً محفوظاً",
+            why: "بيعٌ آجل بلا عميلٍ يعني ذمّةً بلا صاحب — لن تعرف من يدفع لك لاحقاً",
+            doThis: "اربط الطلب بعميلٍ محفوظ من قائمة العملاء، أو أنشئ العميل من شاشة العملاء أوّلاً",
+          }),
+        });
       }
       const customer = (
         await tx
@@ -200,12 +254,23 @@ export async function checkoutReceptionInTx(
           .limit(1)
       )[0];
       if (!customer || customer.isActive === false) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "العميل غير موجود أو معطّل" });
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "لا يمكن ربط الطلب بهذا العميل",
+            why: "العميل غير موجود أو معطَّل (isActive=false) — لا يجوز فتح ذمّة على حساب مغلق",
+            doThis: "افتح شاشة العميل من قائمة العملاء وفعّله، أو اختر عميلاً آخر نشطاً",
+          }),
+        });
       }
       if (customer.name.trim().length < 2 || !canonicalIraqiMobile(customer.phone)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "بدون عربون متاح فقط لعميل فعّال باسمه ورقم هاتف عراقي مكتمل",
+          message: appErrorMessage({
+            what: "بيانات العميل ناقصة",
+            why: "بيع «بدون عربون» يشترط عميلاً فعّالاً باسم لا يقلّ عن حرفين ورقم هاتف عراقي مكتمل — أحد الشرطين مفقود",
+            doThis: "افتح شاشة العميل من قائمة العملاء وأكمل الاسم ورقم الهاتف العراقي، ثم أعد التثبيت",
+          }),
         });
       }
       receptionDeferredAuthorized = true;
@@ -253,11 +318,22 @@ export async function checkoutReceptionInTx(
       if (!input.delivery && applied.lt(directTotal) && !allowDeferredDirect) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `المبلغ المقبوض يجب أن يغطي البيع المباشر أولاً (${directTotal.toFixed(2)})`,
+          message: appErrorMessage({
+            what: "المبلغ المقبوض لا يغطي البيع المباشر",
+            why: `البيع المباشر (${directTotal.toFixed(2)}) لا يُسدَّد جزئياً بلا توصيلٍ أو خيار آجل معتمد، والمقبوض حالياً ${applied.toFixed(2)}`,
+            doThis: `أكمل المبلغ إلى ${directTotal.toFixed(2)} فأكثر، أو فعّل التوصيل، أو استعمل «بدون عربون» مع عميلٍ محفوظ`,
+          }),
         });
       }
       if (applied.gt(grandTotal)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المطبق يتجاوز إجمالي الطلب" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "المبلغ المدفوع يتجاوز إجمالي الطلب",
+            why: `مجموع المقبوض حديثاً + المحتجز سلفاً = ${applied.toFixed(2)}، وهو أكبر من إجمالي الطلب ${grandTotal.toFixed(2)}`,
+            doThis: `أنقص المبلغ المستلَم إلى ${grandTotal.toFixed(2)} فأقلّ، أو أضف بنوداً للطلب لرفع الإجمالي`,
+          }),
+        });
       }
 
       // ش٧: **الفاتورة الحاملة للـCOD واحدةٌ فقط** (البضاعة إن وُجدت، وإلا الطباعة) — لأنّ
@@ -270,7 +346,11 @@ export async function checkoutReceptionInTx(
       if (input.delivery && codCarrier === "SALE" && printAmount.gt(0) && applied.lt(printAmount)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `طلب التوصيل: تُسدَّد خدمات الطباعة (${printAmount.toFixed(2)}) أوّلاً — المتبقّي المُحصَّل عند الاستلام يكون على فاتورة البضاعة وحدها`,
+          message: appErrorMessage({
+            what: "توزيع المدفوع غير صحيح",
+            why: `في طلب التوصيل الحامل للـCOD على البضاعة يجب تسديد كامل الطباعة (${printAmount.toFixed(2)}) أوّلاً، والمقبوض ${applied.toFixed(2)} أقلّ من ذلك`,
+            doThis: `اكمل المقبوض إلى ${printAmount.toFixed(2)} فأكثر — الطباعة تُسدَّد كاملة قبل ترك متبقّي البضاعة عند الاستلام (COD)`,
+          }),
         });
       }
 
@@ -389,6 +469,8 @@ export async function checkoutReceptionInTx(
             }
             : null,
           codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
+          paymentMode: input.delivery != null ? "COD" : undefined,
           // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
           openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           clientRequestId: `${input.clientRequestId}-sale`,
@@ -424,6 +506,8 @@ export async function checkoutReceptionInTx(
             }
             : null,
           codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
+          paymentMode: input.delivery != null ? "COD" : undefined,
           clientRequestId: `${input.clientRequestId}-print`,
           offlineCapture: input.offlineCapture ?? null,
           creditApproved: false,
@@ -487,20 +571,32 @@ export async function checkoutReceptionInTx(
       if (input.delivery && (input.delivery.feeCollection ?? "COURIER") !== "COUNTER") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "أمانة أجرة التوصيل تُقبَض فقط مع توصيلٍ أجرته «مقبوضة في الاستقبال» — أزل المبلغ أو اضبط التوصيل",
+          message: appErrorMessage({
+            what: "أمانة الأجرة لا تناسب طريقة التوصيل",
+            why: `أرسلت مبلغ أمانة أجرة (${feeHeldD.toFixed(2)}) مع توصيل أجرته على المندوب (COURIER) — المندوب سيقبضها من الزبون فيصير قبضاً مزدوجاً وأمانتك تعلق بلا تبرئة`,
+            doThis: "غيّر «التحصيل» إلى «مقبوضة في الاستقبال» (COUNTER)، أو احذف مبلغ الأمانة",
+          }),
         });
       }
       if (input.delivery && !feeHeldD.eq(round2(money(input.delivery.fee ?? "0")))) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `أمانة الأجرة المقبوضة (${feeHeldD.toFixed(2)}) يجب أن تساوي أجرة التوصيل (${round2(money(input.delivery.fee ?? "0")).toFixed(2)})`,
+          message: appErrorMessage({
+            what: "قيمة الأمانة يجب أن تساوي أجرة التوصيل",
+            why: `الأمانة المقبوضة ${feeHeldD.toFixed(2)} لا تساوي أجرة التوصيل ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} — الفرق سيترك مالاً بلا مسار ردٍّ عند التوريد`,
+            doThis: `اضبط الأمانة على ${round2(money(input.delivery.fee ?? "0")).toFixed(2)} بالضبط، أو عدّل أجرة التوصيل لتطابقها`,
+          }),
         });
       }
       const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId == null) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "أجرة التوصيل المقبوضة الآن تحتاج فاتورةً في السلّة (بضاعة أو طباعة) — أوامر الشغل وحدها أجرتُها على بندها",
+          message: appErrorMessage({
+            what: "لا فاتورة تحمل أمانة الأجرة",
+            why: "أمانة أجرة التوصيل تُختم على فاتورة (بضاعة أو طباعة)، ولا فاتورة من هذين النوعين في هذا الطلب — أوامر الشغل وحدها أجرتها على بندها",
+            doThis: "أضف فاتورة بضاعة أو طباعة للسلّة قبل قبض الأمانة، أو انزع أمانة الأجرة",
+          }),
         });
       }
       const feeRes = await tx.insert(receipts).values({
@@ -547,7 +643,11 @@ export async function checkoutReceptionInTx(
       if (carrierInvoiceId == null) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "التوصيل يحتاج فاتورةً في الطلب (بضاعة أو طباعة) — أوامر الشغل تُسلَّم من طابور الطلبات عند جاهزيّتها",
+          message: appErrorMessage({
+            what: "لا فاتورة تصلح للتوصيل",
+            why: "الإرسالية تُربط بفاتورة بيع مباشر أو طباعة، ولا فاتورة من هذين النوعين في هذا الطلب — أوامر الشغل تُسلَّم من طابور الطلبات عند جاهزيّتها لا من التثبيت",
+            doThis: "أضف فاتورة بضاعة أو طباعة قبل جدولة التوصيل، أو انزع خيار التوصيل من الطلب",
+          }),
         });
       }
       dispatch = await dispatchInvoiceInTx(

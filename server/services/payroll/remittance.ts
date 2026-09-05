@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -16,6 +17,7 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import {
   assertApprovedTreasuryOutAvailable,
   authorizeExternalTreasuryDisbursement,
+  lockMaterializedCashReceiptSourceForWrite,
 } from "../cash/cashAvailability";
 import { baghdadToday } from "../businessDay";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -48,7 +50,14 @@ export function assertValidRemittanceDocument(value: string): void {
   const mime = normalized.slice(5, normalized.indexOf(";"));
   const dimensions = parseImageDimensions(Buffer.from(normalized.slice(comma + 1), "base64"), mime);
   if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "The remittance evidence is not a complete readable image." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول مستند التحويل",
+        why: "الصورة غير مكتملة أو غير قابلة للقراءة (أبعاد الصورة غير صالحة)",
+        doThis: "أعد تصوير المستند بوضوحٍ كامل ثم أرفق الصورة الجديدة، بحدٍّ أقصى 2 ميجابايت",
+      }),
+    });
   }
 }
 
@@ -60,10 +69,24 @@ function paymentDate(value?: string | null): string {
     Number.isNaN(parsed) ||
     new Date(parsed).toISOString().slice(0, 10) !== ymd
   ) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ التحويل غير صالح." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول تاريخ التحويل",
+        why: `التاريخ (${ymd}) غير صالح — الصيغة المطلوبة YYYY-MM-DD`,
+        doThis: "أعد إدخال تاريخ التحويل بصيغة YYYY-MM-DD (مثلاً 2026-09-03)",
+      }),
+    });
   }
   if (ymd > baghdadToday()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ التحويل لا يكون مستقبلياً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبول تاريخ التحويل",
+        why: `تاريخ التحويل (${ymd}) مستقبليّ (اليوم ${baghdadToday()}) — لا يقبل النظام تسجيل تحويلاتٍ لم تقع بعد`,
+        doThis: "استعمل تاريخ اليوم أو تاريخاً سابقاً، ثم أعد الإرسال",
+      }),
+    });
   }
   return ymd;
 }
@@ -77,22 +100,37 @@ export function payrollRemittancePaymentReference(
   if (method === "CARD" && !/^\d{4}$/.test(normalized ?? "")) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "Card evidence must be exactly the last four digits.",
+      message: appErrorMessage({
+        what: "تعذّر قبول دليل البطاقة",
+        why: "إثبات البطاقة يجب أن يكون آخر أربعة أرقامٍ فقط لا غير",
+        doThis: "أدخل آخر أربعة أرقام من البطاقة (مثلاً 1234) بدل نصٍّ آخر",
+      }),
     });
   }
   if ((method === "TRANSFER" || method === "WALLET") && !normalized) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "رقم مرجع التحويل/البطاقة/المحفظة مطلوب.",
+      message: appErrorMessage({
+        what: "تعذّر قبول التحويل",
+        why: "رقم مرجع التحويل أو المحفظة مفقود — إثبات الطريقة إلزاميّ للحوالة والمحفظة",
+        doThis: "أدخل رقم مرجع الحوالة أو معرّف المحفظة، ثم أعد الإرسال",
+      }),
     });
   }
   return normalized;
 }
 
+/**
+ * ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — أُزيل شرط «مختلفٌ عن صانع العملية»
+ * (نظيرٌ مستقلّ لِـauthorizeExternalTreasuryDisbursement في cashAvailability.ts ولـ
+ * assertPayrollActiveOwnerChecker في payroll/settlement.ts، التفصيل هناك).
+ * `_forbidden` يبقى في التوقيع توثيقاً لهوية الطالب في مواضع الاستدعاء — الأثر التدقيقي
+ * (createdBy/approvedBy/paidBy) يبقى مسجَّلاً كما هو.
+ */
 async function assertOwner(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   actor: Actor,
-  forbidden: Array<number | null | undefined>,
+  _forbidden: Array<number | null | undefined>,
   operation: string,
 ): Promise<void> {
   const [owner] = await tx
@@ -104,18 +142,11 @@ async function assertOwner(
   if (!owner?.isActive || !owner.isOwner) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: `${operation}: الاعتماد محصور بمالك نشط.`,
-    });
-  }
-  if (
-    forbidden
-      .filter((value): value is number => value != null)
-      .map(Number)
-      .includes(Number(owner.id))
-  ) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: `${operation}: لا يجوز لصانع الطلب اعتماد تنفيذه.`,
+      message: appErrorMessage({
+        what: `تعذّر تنفيذ العملية «${operation}»`,
+        why: "هذا الاعتماد محصورٌ بحساب المالك النشط — دورك لا يملك الصلاحية",
+        doThis: "أحل الطلب إلى المالك ليعتمده، أو سجّل الدخول بحساب المالك إن كان بحوزتك",
+      }),
     });
   }
 }
@@ -151,19 +182,34 @@ export async function createRemittanceRequest(
   if (!actor.isOwner && actor.role !== "admin" && Number(actor.branchId) !== input.payingBranchId) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "لا يجوز إنشاء تحويل قانوني على فرع آخر.",
+      message: appErrorMessage({
+        what: "تعذّر إنشاء التحويل القانوني",
+        why: `دورك يعمل على فرع (${actor.branchId}) والتحويل مطلوبٌ على فرع (${input.payingBranchId})`,
+        doThis: "أنشئ التحويل من الفرع الدافع بحسابٍ يخصّه، أو اطلب من المدير التنفيذ",
+      }),
     });
   }
   const amount = round2(money(input.amount));
   if (amount.lte(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ التحويل يجب أن يكون موجباً." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل التحويل",
+        why: `مبلغ التحويل (${amount.toString()}) صفر أو سالب — لا يُسجَّل تحويلٌ بلا قيمة`,
+        doThis: "أدخل مبلغاً موجباً بالدينار العراقيّ ثم أعد الإرسال",
+      }),
+    });
   }
   const authorityName = input.authorityName.trim();
   const referenceNumber = input.referenceNumber.trim();
   if (!authorityName || !referenceNumber || !input.supportingDocumentUrl.trim()) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "الجهة والمرجع والمستند المؤيد مطلوبة للتحويل القانوني.",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل التحويل القانوني",
+        why: "الجهة أو رقم المرجع أو المستند المؤيّد فارغ — كلّها إلزاميّة",
+        doThis: "أكمل الجهة (الضريبة/الضمان)، ورقم المرجع، وأرفق صورة إيصال، ثم أعد الإرسال",
+      }),
     });
   }
   const sourceKey = `PAYROLL:REMIT-REQ:${input.clientRequestId.trim()}`;
@@ -172,7 +218,11 @@ export async function createRemittanceRequest(
     if (!sameRequest(replay, input)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "مفتاح الطلب مستعمل لتحويل قانوني مختلف.",
+        message: appErrorMessage({
+          what: "تعذّر تسجيل التحويل",
+          why: "مفتاح الطلب مستعمل لتحويلٍ قانونيّ بحمولةٍ مختلفة — التزامن يمنع إعادة استعمال نفس المفتاح",
+          doThis: "أنشئ تحويلاً جديداً بمفتاح فريد، أو استرجع نتيجة الطلب السابق بمفتاحه الأصليّ",
+        }),
       });
     }
     return { ...replay, replayed: true };
@@ -185,7 +235,15 @@ export async function createRemittanceRequest(
         .where(eq(branches.id, input.payingBranchId))
         .for("update")
         .limit(1);
-      if (!branch) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود." });
+      if (!branch)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل التحويل",
+            why: `الفرع رقم ${input.payingBranchId} غير موجود — الرقم مغلوط أو الفرع محذوف`,
+            doThis: "افتح قائمة الفروع واختر فرعاً صالحاً، ثم أعد الإرسال",
+          }),
+        });
       // The branch lock serializes all reservations for this liability grain.
       // Re-read the idempotency key as a current locking read after waiting: a
       // concurrent first request may have committed while this transaction was
@@ -200,7 +258,11 @@ export async function createRemittanceRequest(
         if (!sameRequest(lockedReplay, input)) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "مفتاح الطلب مستعمل لتحويل قانوني مختلف.",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل التحويل",
+              why: "مفتاح الطلب مستعمل لتحويلٍ قانونيّ بحمولةٍ مختلفة — التزامن يمنع إعادة استعمال نفس المفتاح",
+              doThis: "أنشئ تحويلاً جديداً بمفتاح فريد، أو استرجع نتيجة الطلب السابق بمفتاحه الأصليّ",
+            }),
           });
         }
         return { ...lockedReplay, replayed: true };
@@ -241,7 +303,11 @@ export async function createRemittanceRequest(
       if (amount.gt(round2(outstanding.minus(reserved)))) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "مبلغ الطلب يتجاوز الالتزام المفتوح غير المحجوز لهذا الفرع.",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل التحويل",
+            why: `مبلغ الطلب (${amount.toString()}) يتجاوز المتاح للحجز — الالتزام المفتوح ${outstanding.toString()} والمحجوز ${reserved.toString()}`,
+            doThis: `اخفض مبلغ الطلب إلى ${round2(outstanding.minus(reserved)).toString()} أو أقلّ، أو انتظر انتهاء الطلبات المعلَّقة السابقة`,
+          }),
         });
       }
       const result = await tx.insert(payrollRemittanceRequests).values({
@@ -271,7 +337,11 @@ export async function createRemittanceRequest(
     }
     throw new TRPCError({
       code: "CONFLICT",
-      message: "تعارض مفتاح طلب التحويل القانوني.",
+      message: appErrorMessage({
+        what: "تعذّر تسجيل التحويل",
+        why: "طلبٌ متزامن آخر استعمل نفس مفتاح الطلب بحمولة مختلفة — تعارض على المفتاح الفريد",
+        doThis: "أنشئ طلباً بمفتاح فريد جديد وأعد الإرسال",
+      }),
     });
   }
 }
@@ -284,13 +354,28 @@ export async function approveRemittanceRequest(id: number, actor: Actor) {
       .where(eq(payrollRemittanceRequests.id, id))
       .for("update")
       .limit(1);
-    if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحويل غير موجود." });
+    if (!request)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر متابعة العملية",
+          why: `طلب التحويل بالرقم ${id} غير موجود — قد يكون حُذف أو الرقم مغلوط`,
+          doThis: "افتح قائمة طلبات التحويل واختر طلباً موجوداً، أو تحقّق من رقمه",
+        }),
+      });
     await assertOwner(tx, actor, [request.createdBy], "اعتماد تحويل الاستقطاعات");
     if (request.status === "APPROVED" || request.status === "PAID") {
       return { ...request, replayed: true };
     }
     if (request.status !== "PENDING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يعتمد إلا الطلب المعلّق." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد الطلب",
+          why: `حالة الطلب ${request.status} — الاعتماد مسموحٌ لطلبٍ معلَّق (PENDING) فقط`,
+          doThis: "افتح قائمة الطلبات وتحقّق من الحالة — الطلب المعتمد أو المرفوض لا يقبل اعتماداً ثانياً",
+        }),
+      });
     }
     await tx
       .update(payrollRemittanceRequests)
@@ -307,7 +392,14 @@ export async function rejectRemittanceRequest(
 ) {
   const normalizedReason = reason.trim();
   if (normalizedReason.length < 5 || normalizedReason.length > 255) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "The rejection reason must be between 5 and 255 characters." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر رفض الطلب",
+        why: `سبب الرفض بطول ${normalizedReason.length} محرفاً والمطلوب بين 5 و255`,
+        doThis: "اكتب سبباً واضحاً للرفض بين 5 و255 محرف، ثم أعد الإرسال",
+      }),
+    });
   }
   return withTx(async (tx) => {
     const [request] = await tx
@@ -316,19 +408,38 @@ export async function rejectRemittanceRequest(
       .where(eq(payrollRemittanceRequests.id, id))
       .for("update")
       .limit(1);
-    if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحويل غير موجود." });
+    if (!request)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر متابعة العملية",
+          why: `طلب التحويل بالرقم ${id} غير موجود — قد يكون حُذف أو الرقم مغلوط`,
+          doThis: "افتح قائمة طلبات التحويل واختر طلباً موجوداً، أو تحقّق من رقمه",
+        }),
+      });
     await assertOwner(tx, actor, [request.createdBy], "رفض تحويل الاستقطاعات");
     if (request.status === "REJECTED") {
       if (request.rejectionReason !== normalizedReason) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "سبب إعادة محاولة الرفض لا يطابق السبب المحفوظ.",
+          message: appErrorMessage({
+            what: "تعذّر رفض الطلب",
+            why: "سبب المحاولة الجديد لا يطابق سبب الرفض المحفوظ للطلب — لا يجوز تغيير سبب رفضٍ صار نافذاً",
+            doThis: "أعد إرسال الرفض بالسبب المحفوظ للاسترجاع، أو راجع سجلّ الطلب للاطّلاع على السبب الصحيح",
+          }),
         });
       }
       return { ...request, replayed: true };
     }
     if (request.status !== "PENDING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يرفض إلا الطلب المعلّق." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر رفض الطلب",
+          why: `حالة الطلب ${request.status} — الرفض مسموحٌ لطلبٍ معلَّق (PENDING) فقط`,
+          doThis: "افتح قائمة الطلبات وتحقّق من الحالة — الطلب المعتمد أو المدفوع لا يقبل رفضاً",
+        }),
+      });
     }
     await tx
       .update(payrollRemittanceRequests)
@@ -355,7 +466,15 @@ export async function payRemittanceRequest(
       .from(payrollRemittanceRequests)
       .where(eq(payrollRemittanceRequests.id, input.requestId))
       .limit(1);
-    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحويل غير موجود." });
+    if (!preview)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر متابعة العملية",
+          why: `طلب التحويل بالرقم ${input.requestId} غير موجود — قد يكون حُذف أو الرقم مغلوط`,
+          doThis: "افتح قائمة طلبات التحويل واختر طلباً موجوداً، أو تحقّق من رقمه",
+        }),
+      });
     let approval: Awaited<ReturnType<typeof authorizeExternalTreasuryDisbursement>> | null = null;
     if (input.paymentMethod === "CASH") {
       approval = await authorizeExternalTreasuryDisbursement(tx, {
@@ -378,7 +497,15 @@ export async function payRemittanceRequest(
       .where(eq(payrollRemittanceRequests.id, input.requestId))
       .for("update")
       .limit(1);
-    if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحويل غير موجود." });
+    if (!request)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر متابعة العملية",
+          why: `طلب التحويل بالرقم ${input.requestId} غير موجود — قد يكون حُذف أو الرقم مغلوط`,
+          doThis: "افتح قائمة طلبات التحويل واختر طلباً موجوداً، أو تحقّق من رقمه",
+        }),
+      });
     if (request.status === "PAID") {
       const [savedReceipt] = request.receiptId == null
         ? [undefined]
@@ -399,15 +526,36 @@ export async function payRemittanceRequest(
         (savedReceipt.referenceNumber?.trim() || null) !== referenceNumber ||
         savedReceipt.voucherYmd !== ymd
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "إعادة محاولة التحويل لا تطابق إيصال الدفع المحفوظ." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل تحويل التنفيذ",
+            why: "بيانات إعادة المحاولة (طريقة/مرجع/تاريخ) لا تطابق إيصال الدفع المحفوظ للطلب — لا يجوز تغيير إيصالٍ نافذ",
+            doThis: "أعد الإرسال بنفس بيانات الإيصال المحفوظ، أو راجع سجلّ الطلب للاطّلاع على القيم الصحيحة",
+          }),
+        });
       }
       return { replayed: true, request };
     }
     if (request.status !== "APPROVED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "يُدفع الطلب بعد اعتماده فقط." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ التحويل",
+          why: `حالة الطلب ${request.status} — التنفيذ مسموحٌ لطلبٍ معتمَد فقط`,
+          doThis: "افتح الطلب واعتمده أوّلاً (بواسطة المالك)، ثم أعد التنفيذ",
+        }),
+      });
     }
     if (request.createdBy !== preview.createdBy || request.requestedAmount !== preview.requestedAmount) {
-      throw new TRPCError({ code: "CONFLICT", message: "تغيّر طلب التحويل أثناء التنفيذ." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ التحويل",
+          why: "تغيّر الطلب أثناء التنفيذ (تنافس مع مسار آخر) — القيم المعروضة لم تعد مطابقةً للمحفوظ",
+          doThis: "أعد تحميل صفحة الطلب وابدأ التنفيذ من جديد بالقيم المحدَّثة",
+        }),
+      });
     }
     const amount = money(request.requestedAmount);
     if (input.paymentMethod === "CASH") {
@@ -446,7 +594,11 @@ export async function payRemittanceRequest(
     if (available.lt(amount)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "الرصيد المفتوح لا يكفي طلب التحويل المعتمد.",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ التحويل",
+          why: `الرصيد المفتوح للفرع (${available.toString()}) لا يكفي مبلغ الطلب (${amount.toString()}) — قد يكون التزامٌ آخر استنفده`,
+          doThis: "افتح شاشة الالتزامات المفتوحة وتحقّق من الرصيد، أو اخفض مبلغ الطلب ثم أعد الإرسال",
+        }),
       });
     }
     const receiptResult = await tx.insert(receipts).values({
@@ -536,7 +688,14 @@ export async function payRemittanceRequest(
         .where(eq(payrollObligations.id, Number(obligation.id)));
     }
     if (!left.isZero()) {
-      throw new TRPCError({ code: "CONFLICT", message: "تعذّر تخصيص كامل التحويل." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ التحويل",
+          why: `تعذّر تخصيص كامل مبلغ التحويل — تبقّى ${left.toString()} بلا التزامٍ مفتوحٍ يستوعبه`,
+          doThis: "أعد تحميل شاشة الالتزامات وابدأ التحويل من جديد بمبلغٍ يطابق ما يتّسع له الوعاء",
+        }),
+      });
     }
     await tx
       .update(payrollRemittanceRequests)
@@ -559,21 +718,71 @@ export async function returnRemittance(
 ) {
   const normalizedReason = reason.trim();
   if (normalizedReason.length < 5 || normalizedReason.length > 255) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "The return reason must be between 5 and 255 characters." });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إعادة التحويل",
+        why: `سبب الإعادة بطول ${normalizedReason.length} محرفاً والمطلوب بين 5 و255`,
+        doThis: "اكتب سبباً واضحاً للإعادة بين 5 و255 محرف، ثم أعد الإرسال",
+      }),
+    });
   }
   const ymd = paymentDate(input?.returnedAt);
   return withTx(async (tx) => {
+    const [requestPreview] = await tx
+      .select({
+        status: payrollRemittanceRequests.status,
+        payingBranchId: payrollRemittanceRequests.payingBranchId,
+        receiptId: payrollRemittanceRequests.receiptId,
+      })
+      .from(payrollRemittanceRequests)
+      .where(eq(payrollRemittanceRequests.id, requestId))
+      .limit(1);
+    let prelockedCashReceiptId: number | null = null;
+    if (requestPreview?.status === "PAID" && requestPreview.receiptId != null) {
+      const [receiptPreview] = await tx
+        .select({ paymentMethod: receipts.paymentMethod })
+        .from(receipts)
+        .where(eq(receipts.id, Number(requestPreview.receiptId)))
+        .limit(1);
+      if (receiptPreview?.paymentMethod === "CASH") {
+        prelockedCashReceiptId = Number(requestPreview.receiptId);
+        await lockMaterializedCashReceiptSourceForWrite(tx, {
+          branchId: Number(requestPreview.payingBranchId),
+          shiftId: null,
+          cashBucket: "TREASURY",
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+        });
+      }
+    }
     const [request] = await tx
       .select()
       .from(payrollRemittanceRequests)
       .where(eq(payrollRemittanceRequests.id, requestId))
       .for("update")
       .limit(1);
-    if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحويل غير موجود." });
+    if (!request)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر متابعة العملية",
+          why: `طلب التحويل بالرقم ${requestId} غير موجود — قد يكون حُذف أو الرقم مغلوط`,
+          doThis: "افتح قائمة طلبات التحويل واختر طلباً موجوداً، أو تحقّق من رقمه",
+        }),
+      });
     await assertOwner(tx, actor, [request.createdBy, request.paidBy], "إعادة تحويل قانوني");
     if (request.status === "REVERSED") {
       if (request.reversalReason !== normalizedReason) {
-        throw new TRPCError({ code: "CONFLICT", message: "The retry reason does not match the stored return reason." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "سبب المحاولة الجديد لا يطابق سبب الإعادة المحفوظ — لا يجوز تغيير سبب إعادةٍ نافذة",
+            doThis: "أعد الإرسال بسبب الإعادة المحفوظ، أو راجع سجلّ الطلب للاطّلاع على السبب الصحيح",
+          }),
+        });
       }
       const events = await tx
         .select()
@@ -584,7 +793,14 @@ export async function returnRemittance(
       const originalEvent = events.find((event) => event.eventKind !== "REMITTANCE_RETURN");
       const returnEvent = events.find((event) => event.eventKind === "REMITTANCE_RETURN");
       if (!originalEvent || !returnEvent?.receiptId) {
-        throw new TRPCError({ code: "CONFLICT", message: "Stored remittance return evidence is incomplete." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "دليل إعادة التحويل المحفوظ غير مكتمل (لا حدث أصليّ أو إيصال إعادةٍ مربوط)",
+            doThis: "أبلغ الدعم الفنّي — الطلب يحتاج فحصاً بيانياً قبل إعادة المحاولة",
+          }),
+        });
       }
       const [returnReceipt] = await tx
         .select()
@@ -593,11 +809,25 @@ export async function returnRemittance(
         .for("update")
         .limit(1);
       if (!returnReceipt || returnReceipt.status !== "COMPLETED") {
-        throw new TRPCError({ code: "CONFLICT", message: "Stored remittance return receipt is incomplete." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "إيصال إعادة التحويل المحفوظ غير مكتمل أو ليس بحالة COMPLETED",
+            doThis: "أبلغ الدعم الفنّي — الإيصال يحتاج فحصاً بيانياً قبل إعادة المحاولة",
+          }),
+        });
       }
       const method = returnReceipt.paymentMethod as PayrollPaymentMethod;
       if (!["CASH", "CARD", "TRANSFER", "WALLET"].includes(method)) {
-        throw new TRPCError({ code: "CONFLICT", message: "Stored remittance return method is unsupported." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: `طريقة الإعادة المحفوظة غير مدعومة (${method}) — يُقبل النقد/البطاقة/الحوالة/المحفظة`,
+            doThis: "أبلغ الدعم الفنّي — طريقة الدفع تحتاج تصحيحاً بيانياً قبل إعادة المحاولة",
+          }),
+        });
       }
       const referenceNumber = payrollRemittancePaymentReference(
         method,
@@ -613,12 +843,26 @@ export async function returnRemittance(
         reason: normalizedReason,
       });
       if (returnEvent.sourceHash !== expectedHash) {
-        throw new TRPCError({ code: "CONFLICT", message: "The retry does not match the stored remittance return evidence." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "المحاولة الجديدة لا تطابق دليل الإعادة المحفوظ (طريقة/مرجع/تاريخ/سبب مختلف)",
+            doThis: "أعد الإرسال بنفس بيانات الإعادة المحفوظة، أو راجع سجلّ الطلب للاطّلاع على القيم الصحيحة",
+          }),
+        });
       }
       return { replayed: true, requestId };
     }
     if (request.status !== "PAID" || request.receiptId == null) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعاد إلا تحويل مدفوع." });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إعادة التحويل",
+          why: `حالة الطلب ${request.status} — الإعادة مسموحةٌ لتحويلٍ مدفوعٍ فقط (PAID)`,
+          doThis: "تحقّق من حالة الطلب — إن كان معلَّقاً أو مرفوضاً فلا حاجة لإعادةٍ، وإن مدفوعاً فأعد تحميل الصفحة",
+        }),
+      });
     }
     const [originalReceipt] = await tx
       .select()
@@ -633,12 +877,23 @@ export async function returnRemittance(
       .for("update")
       .limit(1);
     if (!originalReceipt || !originalEvent || originalEvent.eventKind === "REMITTANCE_RETURN") {
-      throw new TRPCError({ code: "CONFLICT", message: "دليل التحويل الأصلي ناقص." });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إعادة التحويل",
+          why: "دليل التحويل الأصليّ ناقص (لا إيصال أصليّ أو حدث محاسبيّ صالح)",
+          doThis: "أبلغ الدعم الفنّي — الطلب يحتاج فحصاً بيانياً قبل الإعادة",
+        }),
+      });
     }
     if (originalReceipt.status !== "COMPLETED") {
       throw new TRPCError({
         code: "CONFLICT",
-        message: "إيصال التحويل الأصلي سبق عكسه أو ليس مكتملاً.",
+        message: appErrorMessage({
+          what: "تعذّر إعادة التحويل",
+          why: `إيصال التحويل الأصليّ بحالة ${originalReceipt.status} — إمّا سبق عكسه أو ليس مكتملاً`,
+          doThis: "افتح سجلّ الطلب وتحقّق من حالة الإيصال — الإعادة لا تجوز مرّتين على نفس الأصل",
+        }),
       });
     }
     const originalYmd = originalReceipt.voucherDate
@@ -647,12 +902,33 @@ export async function returnRemittance(
     if (ymd < originalYmd) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "تاريخ إعادة التحويل لا يسبق تاريخ دفعه.",
+        message: appErrorMessage({
+          what: "تعذّر قبول تاريخ الإعادة",
+          why: `تاريخ الإعادة (${ymd}) يسبق تاريخ الدفع الأصليّ (${originalYmd}) — الإعادة لا تسبق الدفع`,
+          doThis: `استعمل تاريخاً بعد ${originalYmd}، ثم أعد الإرسال`,
+        }),
       });
     }
     const method = originalReceipt.paymentMethod as PayrollPaymentMethod;
     if (!["CASH", "CARD", "TRANSFER", "WALLET"].includes(method)) {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "طريقة التحويل الأصلية غير مدعومة للإعادة." });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "تعذّر إعادة التحويل",
+          why: `طريقة التحويل الأصليّ غير مدعومة للإعادة (${method}) — يُقبل النقد/البطاقة/الحوالة/المحفظة`,
+          doThis: "أبلغ الدعم الفنّي — الطريقة تحتاج تصحيحاً بيانياً قبل إعادة المحاولة",
+        }),
+      });
+    }
+    if (method === "CASH" && prelockedCashReceiptId !== Number(request.receiptId)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر إعادة التحويل",
+          why: "تغيّر مصدر إعادة التحويل أثناء قفل النقد — إيصالٌ مختلف صار مربوطاً بالطلب",
+          doThis: "أعد تحميل شاشة الطلب وكرّر الإعادة على المصدر الحاليّ",
+        }),
+      });
     }
     const referenceNumber = payrollRemittancePaymentReference(method, input?.referenceNumber ?? originalReceipt.referenceNumber);
     const amount = money(request.requestedAmount);
@@ -725,10 +1001,25 @@ export async function returnRemittance(
         .where(eq(payrollObligations.id, Number(allocation.obligationId)))
         .for("update")
         .limit(1);
-      if (!obligation) throw new TRPCError({ code: "CONFLICT", message: "التزام التحويل مفقود." });
+      if (!obligation)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "الالتزام المرتبط بأحد تخصيصات التحويل مفقود — لعلّه حُذف بعد الدفع",
+            doThis: "أبلغ الدعم الفنّي — عكس التخصيص يحتاج فحصاً بيانياً قبل الاستكمال",
+          }),
+        });
       const after = round2(money(obligation.remainingAmount).plus(money(allocation.amount)));
       if (after.gt(money(obligation.originalAmount))) {
-        throw new TRPCError({ code: "CONFLICT", message: "عكس التحويل يتجاوز أصل الالتزام." });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: appErrorMessage({
+            what: "تعذّر إعادة التحويل",
+            why: "مبلغ العكس يتجاوز أصل الالتزام — يعيد إلى الوعاء أكثر مما استقبله",
+            doThis: "افحص سجلّ التخصيصات — إن كنت تحاول عكسَ عمليتين، فافصلهما وأعد كلاًّ على حدة",
+          }),
+        });
       }
       await tx.insert(payrollObligationAllocations).values({
         obligationId: Number(obligation.id),

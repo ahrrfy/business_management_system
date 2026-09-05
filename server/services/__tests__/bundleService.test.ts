@@ -157,6 +157,22 @@ describe("bundleService — ثوابت الأمان B1..B6", () => {
     ).rejects.toThrow(/رصيد/);
   });
 
+  it("Codex #1008: بكجٌ مُوجَّهٌ لشبكة الطباعة (showInPrintPos) مرفوضٌ عند الإنشاء", async () => {
+    // بلا الرفض: يُوسَم PRINT_SERVICE فيظهر في `listPrintServices` ثمّ يسقط `createPrintSale` على `applyMovement`.
+    await expect(
+      createProduct(
+        {
+          name: "طقم-طباعة",
+          isBundle: true,
+          showInPrintPos: true,
+          variants: [{ sku: "BDL-PP", costPrice: "0", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "20.00" }] }] }],
+          bundleComponents: [{ componentVariantId: 1, componentBaseQuantity: 2 }],
+        } as any,
+        actor,
+      ),
+    ).rejects.toThrow(/شبكة الطباعة/);
+  });
+
   it("بكجٌ يحتوي على نفسه (self-ref) مرفوض في validateBundleComponents", async () => {
     await withTx(async (tx) => {
       await expect(validateBundleComponents(tx, 1, [{ componentVariantId: 1, componentBaseQuantity: 2 }])).rejects.toThrow(/نفسه/);
@@ -315,7 +331,14 @@ describe("bundleService — التوسيع في المرتجع", () => {
     expect(await stockOf(2, 1)).toBe(8);
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true, refund: { amount: "48.00", method: "CASH" } } as any,
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND", method: "CASH", amount: "48.00", shiftId,
+          reason: "مرتجع بكج كامل قابل للإرجاع للمخزون", disposition: "RESTOCK",
+        },
+      } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20);
@@ -333,7 +356,14 @@ describe("bundleService — التوسيع في المرتجع", () => {
     );
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }], restock: false, refund: { amount: "24.00", method: "CASH" } } as any,
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND", method: "CASH", amount: "24.00", shiftId,
+          reason: "مرتجع بكج تالف لا يعود للمخزون", disposition: "DAMAGED",
+        },
+      } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20 - 3);
@@ -387,7 +417,14 @@ describe("bundleService — gstack B6 (لقطة المرتجع) + M9 (ثابت �
     // إرجاع البكج — يجب أن يعيد **الوصفة الأصلية (قلم/دفتر)** لا الجديدة (مسطرة).
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true, refund: { amount: "48.00", method: "CASH" } } as any,
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND", method: "CASH", amount: "48.00", shiftId,
+          reason: "مرتجع يثبت لقطة مكونات البكج التاريخية", disposition: "RESTOCK",
+        },
+      } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20);  // القلم: عاد للأصل ✅
@@ -405,7 +442,14 @@ describe("bundleService — gstack B6 (لقطة المرتجع) + M9 (ثابت �
     );
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }], restock: true, refund: { amount: "30.00", method: "CASH" } } as any,
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }],
+        resolution: {
+          kind: "IMMEDIATE_REFUND", method: "CASH", amount: "30.00", shiftId,
+          reason: "مرتجع كامل لاختبار تصفير الإيراد والربح", disposition: "RESTOCK",
+        },
+      } as any,
       actor,
     );
 

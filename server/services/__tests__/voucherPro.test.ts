@@ -270,7 +270,8 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(rc.approvedBy).toBe(1); // adminActor.userId
   });
 
-  it("المُنشئ نَفسه يُحاول اعتماد سَنده (غير admin) ⇒ يُرفض (SOD)", async () => {
+  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ (بأيّ دور) يعتمد سنده هو نفسه.
+  it("المالك ينشئ سنده ويعتمده بنفسه ⇒ يُنفَّذ (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك)", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
@@ -279,7 +280,42 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       attachmentUrl: "https://example.com/proof.pdf",
     }, managerActor);
 
-    await expect(approveVoucher(r.receiptId, managerActor)).rejects.toThrow(/أنشأته بنفسك/);
+    const ap = await approveVoucher(r.receiptId, managerActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.createdBy).toBe(managerActor.userId);
+    expect(rc.approvedBy).toBe(managerActor.userId); // الأثر التدقيقيّ يبقى كاملاً رغم الاعتماد الذاتيّ.
+  });
+
+  // الضابط الوحيد المتبقّي على نقدٍ مجهول المصدر (شارك/approvalTriggers.ts:
+  // voucherApprovalRetainsLegacy) — لم يمسّه قرار المالك ٣/٩/٢٦ (لا اعتماد ثانٍ بعد المالك)
+  // لأنه IN بلا systemKind، لا OUT ولا ERASE_EFFECT. مسارٌ حيٌّ: العلَم ownerOnlyApproval مطفأ
+  // ⇒ هذا هو الحارس الفعليّ اليوم على سند قبضٍ من طرف "أخرى" (partyType=OTHER).
+  it("قبض OTHER (نقد مجهول المصدر) — مالكٌ لا يعتمد سند القبض الذي أنشأه بنفسه", async () => {
+    const r = await createVoucher({
+      voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
+      paymentMethod: "CASH", partyType: "OTHER",
+      description: "إيراد بيع مخلفات",
+    }, adminActor);
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
+
+    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
+    });
+  });
+
+  it("قبض OTHER — مالكٌ آخر غير المُنشئ يعتمده بنجاح", async () => {
+    const r = await createVoucher({
+      voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
+      paymentMethod: "CASH", partyType: "OTHER",
+      description: "إيراد بيع مخلفات",
+    }, managerActor);
+
+    const ap = await approveVoucher(r.receiptId, adminActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.approvedBy).toBe(adminActor.userId);
   });
 
   it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {
@@ -313,7 +349,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(stored.approvalStatus).toBe("PENDING_APPROVAL");
   });
 
-  it("لا استثناء admin: المالك المنشئ لا يعتمد سند نفسه", async () => {
+  it("لا فرق بحسب الدور: مالكٌ role=admin يعتمد سندَه أيضاً بنفسه", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
@@ -321,7 +357,8 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       referenceNumber: "TRF-Y",
       attachmentUrl: "https://example.com/proof.pdf",
     }, adminActor);
-    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toThrow(/أنشأته بنفسك/);
+    const ap = await approveVoucher(r.receiptId, adminActor);
+    expect(ap.approvalStatus).toBe("APPROVED");
   });
 
   it("رَفض سَند مُعلَّق ⇒ لا أَثَر مالي + سَبب مُحفَّظ في internalNote", async () => {

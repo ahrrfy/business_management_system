@@ -1,12 +1,10 @@
 package online.alarabiya.superapp.data
 
 import online.alarabiya.superapp.core.network.TrpcClient
-import online.alarabiya.superapp.model.purchasing.PaymentMethod
 import online.alarabiya.superapp.model.purchasing.PurchaseCatalogItem
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDetail
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseOrderSummary
-import online.alarabiya.superapp.model.purchasing.PurchaseReceiveDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnDraft
 import online.alarabiya.superapp.model.purchasing.PurchaseReturnPage
 import online.alarabiya.superapp.model.purchasing.PurchasingCapabilities
@@ -20,8 +18,9 @@ import online.alarabiya.superapp.model.purchasing.SupplierKind
 import online.alarabiya.superapp.model.purchasing.SupplierPage
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
-data class PurchaseCreateResult(val purchaseOrderId: Long, val idempotent: Boolean)
+data class PurchaseCreateResult(val purchaseOrderId: Long, val version: Int, val idempotent: Boolean)
 data class PurchaseReturnResult(val purchaseReturnEntryId: Long, val returnedTotal: String, val idempotent: Boolean)
 data class ReminderSendResult(val sent: Boolean, val reminderId: Long?, val reason: String?)
 
@@ -35,9 +34,8 @@ interface PurchasingDataSource {
     suspend fun orders(query: String = ""): List<PurchaseOrderSummary>
     suspend fun order(id: Long): PurchaseOrderDetail
     suspend fun createOrder(draft: PurchaseOrderDraft): PurchaseCreateResult
-    suspend fun confirmOrder(id: Long)
-    suspend fun receiveOrder(draft: PurchaseReceiveDraft)
-    suspend fun cancelOrder(id: Long)
+    suspend fun confirmOrder(id: Long, expectedVersion: Int)
+    suspend fun cancelOrder(id: Long, expectedVersion: Int)
     suspend fun returns(query: String = ""): PurchaseReturnPage
     suspend fun createReturn(draft: PurchaseReturnDraft): PurchaseReturnResult
     suspend fun reminderQueue(allBranches: Boolean = false): List<ReminderQueueItem>
@@ -110,36 +108,40 @@ class PurchasingRepository(
             ?.let { throw IllegalArgumentException(it) }
         val input = JSONObject()
             .put("supplierId", draft.supplierId).put("branchId", requireNotNull(draft.branchId))
-            .put("taxRatePercent", draft.taxRatePercent).put("status", draft.status.name)
+            .put("taxRatePercent", draft.taxRatePercent)
             .put("notes", draft.notes.trim().takeIf(String::isNotEmpty) ?: JSONObject.NULL)
             .put("clientRequestId", draft.clientRequestId).put("agreedCurrency", draft.currency.name)
             .put("shippingCost", draft.shippingCost).put("customsCost", draft.customsCost)
             .put("items", JSONArray().apply { draft.items.forEach { line -> put(JSONObject().put("variantId", line.variantId).put("productUnitId", line.productUnitId).put("quantity", line.quantity.trim()).put("unitPrice", line.unitPrice.trim())) } })
         if (draft.currency.name == "USD") input.put("usdTotal", draft.usdTotal.trim()).put("agreedRate", draft.agreedRate.trim())
         val result = api.mutate("purchases.createOrder", input)
-        return PurchaseCreateResult(result.getLong("purchaseOrderId"), result.optBoolean("idempotent", false))
+        return PurchaseCreateResult(
+            result.getLong("purchaseOrderId"),
+            result.optInt("version", 1),
+            result.optBoolean("idempotent", false),
+        )
     }
 
-    override suspend fun confirmOrder(id: Long) {
-        require(capabilities.canWriteOrders) { "لا تملك صلاحية اعتماد أمر الشراء" }
-        api.mutate("purchases.confirmOrder", JSONObject().put("purchaseOrderId", id))
+    override suspend fun confirmOrder(id: Long, expectedVersion: Int) {
+        require(capabilities.canWriteOrders) { "لا تملك صلاحية إرسال أمر الشراء للاعتماد" }
+        val input = JSONObject()
+            .put("purchaseOrderId", id)
+            .put("expectedVersion", expectedVersion)
+            .put("reason", "إرسال فاتورة الشراء للمراجعة والاعتماد المستقل")
+            .put("clientRequestId", UUID.randomUUID().toString())
+        api.mutate("purchases.confirmOrder", input)
     }
 
-    override suspend fun receiveOrder(draft: PurchaseReceiveDraft) {
-        require(capabilities.canReceiveOrders) { "لا تملك صلاحية استلام أمر الشراء أو لا يوجد فرع مرتبط" }
-        val detail = order(draft.purchaseOrderId)
-        PurchasingValidation.receive(draft, detail)?.let { throw IllegalArgumentException(it) }
-        val input = JSONObject().put("purchaseOrderId", draft.purchaseOrderId).put("clientRequestId", draft.clientRequestId)
-            .put("lines", JSONArray().apply { draft.lines.forEach { put(JSONObject().put("purchaseOrderItemId", it.purchaseOrderItemId).put("receivedBaseQuantity", it.receivedBaseQuantity.toInt())) } })
-        draft.paymentAmount.trim().takeIf(String::isNotEmpty)?.let {
-            input.put("payment", JSONObject().put("amount", it).put("method", draft.paymentMethod.name))
-        }
-        api.mutate("purchases.receive", input)
-    }
-
-    override suspend fun cancelOrder(id: Long) {
+    override suspend fun cancelOrder(id: Long, expectedVersion: Int) {
         require(capabilities.canWriteOrders && capabilities.branchId != null) { "لا يمكن إلغاء الأمر دون صلاحية وفرع مرتبط" }
-        api.mutate("purchases.cancel", JSONObject().put("purchaseOrderId", id))
+        api.mutate(
+            "purchases.cancel",
+            JSONObject()
+                .put("purchaseOrderId", id)
+                .put("expectedVersion", expectedVersion)
+                .put("reason", "إلغاء أمر الشراء من تطبيق أندرويد")
+                .put("requestKey", UUID.randomUUID().toString()),
+        )
     }
 
     override suspend fun returns(query: String): PurchaseReturnPage {

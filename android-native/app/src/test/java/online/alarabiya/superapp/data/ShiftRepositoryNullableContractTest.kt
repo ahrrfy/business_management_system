@@ -1,7 +1,10 @@
 package online.alarabiya.superapp.data
 
 import kotlinx.coroutines.runBlocking
+import online.alarabiya.superapp.model.shifts.ShiftCloseCommand
+import online.alarabiya.superapp.model.shifts.ShiftMoney
 import online.alarabiya.superapp.model.shifts.ShiftType
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -58,6 +61,40 @@ class ShiftRepositoryNullableContractTest {
         assertTrue(error is IllegalStateException)
         assertTrue(error !is ShiftReportNotFoundException)
     }
+
+    @Test
+    fun closePassesOnlyTheMatchedCashAndReturnsTheAutomaticTreasuryReference() = runBlocking {
+        val api = FakeShiftApi(
+            mutationResponse = JSONObject()
+                .put("shiftId", 41)
+                .put("openingBalance", "100")
+                .put("expectedCash", "125000")
+                .put("countedCash", "125000")
+                .put("variance", "0")
+                .put("reconciliationStatus", "MATCHED")
+                .put("requiresManagerReview", false)
+                .put("alreadyClosed", false)
+                .put(
+                    "treasuryReturn",
+                    JSONObject()
+                        .put("handoverNumber", "CH-7-20260831-0001"),
+                ),
+        )
+
+        val result = ShiftRepository(api).close(
+            ShiftCloseCommand(
+                shiftId = 41,
+                countedCash = ShiftMoney.fromServer("125000"),
+            ),
+        )
+
+        assertEquals("CH-7-20260831-0001", result.treasuryHandoverNumber)
+        val call = api.calls.single()
+        assertEquals("shifts.close", call.procedure)
+        assertEquals(41L, call.input?.getLong("shiftId"))
+        assertEquals("125000", call.input?.getString("countedCash"))
+        assertTrue(call.input?.has("handoverToUserId") == false)
+    }
 }
 
 private data class ShiftApiCall(
@@ -66,7 +103,10 @@ private data class ShiftApiCall(
     val nullable: Boolean,
 )
 
-private class FakeShiftApi(private val nullableResponse: JSONObject?) : ShiftApi {
+private class FakeShiftApi(
+    private val nullableResponse: JSONObject? = null,
+    private val mutationResponse: JSONObject? = null,
+) : ShiftApi {
     val calls = mutableListOf<ShiftApiCall>()
 
     override suspend fun queryObject(procedure: String, input: JSONObject?): JSONObject {
@@ -79,8 +119,13 @@ private class FakeShiftApi(private val nullableResponse: JSONObject?) : ShiftApi
         return nullableResponse
     }
 
+    override suspend fun queryArray(procedure: String, input: JSONObject?): JSONArray {
+        calls += ShiftApiCall(procedure, input, nullable = false)
+        return JSONArray()
+    }
+
     override suspend fun mutateObject(procedure: String, input: JSONObject?): JSONObject {
         calls += ShiftApiCall(procedure, input, nullable = false)
-        error("Unexpected mutation: $procedure")
+        return mutationResponse ?: error("Unexpected mutation: $procedure")
     }
 }

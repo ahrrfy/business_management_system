@@ -1,5 +1,7 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
+import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import { branchStock, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
@@ -8,7 +10,7 @@ import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotionService";
 import { withTx } from "../tx";
-import { resolveBarcodeOwner } from "./barcodeAliases";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
 import { loadVariantAvailability } from "./variantAvailability";
@@ -39,6 +41,9 @@ export interface PosRow {
   /** «وضع الافتتاح» (ش٥): لحظة تثبيت الرصيد الافتتاحي — null = غير مُفتتَح (يُباع نقداً بالسالب أثناء النافذة). */
   openedAt: Date | null;
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
+  // «يُباع بالطلب» (0318): صنفٌ مخزنيّ يُسمح ببيعه قبل توريده — الكاشير لا يراه «نافذاً»،
+  // ورصيدُه ينزل بالسالب عدّادَ التزامٍ يرفعه الشراء (فاتورة مورّد) أو الإنتاج الداخليّ.
+  allowBackorder: boolean;
   // شاشة الاستقبال الهجينة: المنتج المخصّص يفتح نافذة التخصيص بدل الإضافة المباشرة للسلّة.
   isCustomizable: boolean;
   // خدمة طباعة (productType=PRINT_SERVICE): تُباع عبر مسار createPrintSale (خصم مواد + COGS) لا sales.create.
@@ -80,6 +85,7 @@ export interface CatalogStockSnapshotRow {
   availableBase: number;
   openedAt: Date | null;
   isService: boolean;
+  allowBackorder: boolean;
   isBundle: boolean;
 }
 
@@ -109,6 +115,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       // أثناء النافذة) عن «نافذ» الصارم — الحارس الفعلي خادميّ في sale/create بأي حال.
       openedAt: branchStock.openedAt,
       isService: products.isService,
+      allowBackorder: products.allowBackorder,
       isCustomizable: products.isCustomizable,
       productType: products.productType,
       isBundle: products.isBundle,
@@ -147,6 +154,7 @@ function normalize(rows: any[], branchId: number): PosRow[] {
     availableBase: Math.max(0, (r.stockBase ?? 0) - (r.reservedBase ?? 0)),
     openedAt: r.openedAt ?? null,
     isService: !!r.isService,
+    allowBackorder: !!r.allowBackorder,
     isCustomizable: !!r.isCustomizable,
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
     isContractPrice: false,
@@ -300,6 +308,7 @@ export async function listStockByUnitIds(
       reservedBase: reservationStock.reservedBase,
       openedAt: branchStock.openedAt,
       isService: products.isService,
+      allowBackorder: products.allowBackorder,
       isBundle: products.isBundle,
     })
     .from(productUnits)
@@ -327,6 +336,7 @@ export async function listStockByUnitIds(
       availableBase: Math.max(0, stockBase - reservedBase),
       openedAt: row.openedAt ?? null,
       isService: !!row.isService,
+      allowBackorder: !!row.allowBackorder,
       isBundle: !!row.isBundle,
     };
   });
@@ -360,12 +370,29 @@ export async function lookupByBarcode(
   customerId?: number | null,
 ): Promise<PosRow | null> {
   const db = getDb();
-  if (!db) return null;
-  const owner = await resolveBarcodeOwner(db, barcode);
-  if (!owner) return null;
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const resolution = await resolveBarcodeOwnerResult(db, barcode);
+  if (resolution.status === "NOT_FOUND") return null;
+  if (resolution.status === "AMBIGUOUS") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: barcodeAmbiguityMessage("تعذّر إضافة الصنف الممسوح إلى الكاشير"),
+    });
+  }
+  const owner = resolution.owner;
   const rows = await baseSelect(db, branchId, tier)
     .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
+  if (!rows.length) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر إضافة الصنف الممسوح إلى الكاشير",
+        why: "المنتج أو متغيّره أو وحدة الباركود معطّلة أو غير قابلة للبيع في الكاشير",
+        doThis: "راجع تفعيل المنتج والمتغيّر والوحدة ونوع المنتج، ثم أعد المسح",
+      }),
+    });
+  }
   const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
   const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   // promotions v2: يحلّ العرض للأسطر غير-التعاقدية غير-البكجية غير-الخدمية.

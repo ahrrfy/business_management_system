@@ -12,16 +12,20 @@ import {
 } from "../services/quotationService";
 import { utcDayStart, utcNextDayStart } from "../services/businessDay";
 import { logAudit } from "../services/auditService";
-import { canSeeCostForUser, router, salesManagerProcedure, salesReadProcedure } from "../trpc";
-import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
+import { canSeeCostForUser, router, salesManagerProcedure, salesReadProcedure,
+} from "../trpc";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString,
+} from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
+} from "@shared/posPaymentPolicy";
 
 const cashPaymentMethod = z
   .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
+  })
   .transform((value) => value as "CASH");
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على createdAt).
@@ -44,10 +48,11 @@ export const quotationRouter = router({
           from: ymd.optional(),
           to: ymd.optional(),
           branchId: z.number().int().positive().optional(),
-          status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).optional(),
+          status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED",
+            ]).optional(),
           q: z.string().trim().min(1).optional(),
         })
-        .optional()
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -109,7 +114,9 @@ export const quotationRouter = router({
       if (q && ctx.scopedBranchId != null && Number(q.branchId) !== ctx.scopedBranchId) return null;
       if (!q) return null;
       const showCost = canSeeCostForUser(ctx.user);
-      return { ...q, items: q.items.map((item) => ({ ...item, costBase: showCost ? item.costBase : null })) };
+      return { ...q, items: q.items.map((item) => ({ ...item, costBase: showCost ? item.costBase : null,
+        })),
+      };
     }),
 
   // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected
@@ -135,10 +142,10 @@ export const quotationRouter = router({
               unitPriceOverride: nonNegMoneyString.nullish(),
               discountPercent: percentString.nullish(),
               discountAmount: nonNegMoneyString.nullish(),
-            })
+            }),
           )
           .min(1),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع (تدقيق ١٧/٧): createQuotation كان يستعمل input.branchId مباشرةً في الترقيم والتخزين
@@ -146,17 +153,20 @@ export const quotationRouter = router({
       // convert/setStatus (admin فقط يعبُر). الآن: غير الأدمن يُجبَر على فرعه ويُتجاهَل input.branchId.
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء عرض سعر" });
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء عرض سعر",
+        });
       }
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم العرض (QUO) يحرّر GET_LOCK قبل الالتزام ⇒ عرضان متزامنان
       // قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على التصادم (createQuotation ذرّية).
       const res = await retryOnDup(() =>
-        createQuotation({ ...input, branchId: effectiveBranchId }, { userId: ctx.user.id, branchId: effectiveBranchId }),
+        createQuotation({ ...input, branchId: effectiveBranchId }, { userId: ctx.user.id, branchId: effectiveBranchId },
+        ),
       );
       // لا نُسجّل تدقيقاً على إعادة idempotent (لا إنشاء فعليّاً حدث).
       if (!(res as { idempotentReplay?: boolean }).idempotentReplay) {
-        await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
+        await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId },
+        });
       }
       return res;
     }),
@@ -187,7 +197,8 @@ export const quotationRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       const before = await getQuotation(input.quotationId);
       const res = await updateQuotation(input, {
@@ -200,9 +211,11 @@ export const quotationRouter = router({
         entityType: "quotation",
         entityId: input.quotationId,
         oldValue: before
-          ? { customerId: before.customerId, total: before.total, taxAmount: before.taxAmount, status: before.status }
+          ? { customerId: before.customerId, total: before.total, taxAmount: before.taxAmount, status: before.status,
+            }
           : null,
-        newValue: { customerId: input.customerId, total: res.total, lines: input.lines.length },
+        newValue: { customerId: input.customerId, total: res.total, lines: input.lines.length,
+        },
       });
       return res;
     }),
@@ -210,17 +223,21 @@ export const quotationRouter = router({
   // Q1 (تدقيق ١٤/٦/٢٦): عزل فرع صارم — admin فقط يعدّل حالة عرض فرع آخر (manager محصور بفرعه).
   // عرض السعر التزام سعري؛ التعديل في فرع آخر = تجاوز سلطة تسعيرية.
   setStatus: salesManagerProcedure
-    .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]) }))
+    .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       const res = await setQuotationStatus(input.quotationId, input.status, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
         role: ctx.user.role,
       });
-      await logAudit(ctx, { action: "quotation.setStatus", entityType: "quotation", entityId: input.quotationId, newValue: { status: input.status } });
+      await logAudit(ctx, { action: "quotation.setStatus", entityType: "quotation", entityId: input.quotationId, newValue: { status: input.status },
+      });
       return res;
     }),
 
@@ -232,21 +249,59 @@ export const quotationRouter = router({
         payment: z.object({
           amount: positiveMoneyString,
           method: cashPaymentMethod,
-          // نواة البيع تفرضه لغير النقد؛ نمرّره كي لا يُرفض التحويل عند حدّها.
-          reference: z.string().trim().max(100).nullish(),
-        }).optional(),
+              // المرجع يُستخدم لإنشاء المحاولة فقط؛ الكاتب المالي يشتق المرجع من المحاولة المؤكدة.
+              reference: z.string().trim().max(100).nullish(),
+              externalPaymentAttemptId: z.number().int().positive().nullish(),
+              externalPaymentDeviceId: z
+                .string()
+                .trim()
+                .min(1)
+                .max(64)
+                .nullish(),
+            }).optional(),
       })
+        .superRefine((input, refinement) => {
+          const payment = input.payment;
+          if (!payment) return;
+          if (payment.method !== "CASH" && !payment.externalPaymentAttemptId) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["payment", "externalPaymentAttemptId"],
+              message: "أكّد الدفع الخارجي قبل تحويل العرض",
+            });
+          }
+          if (payment.method !== "CASH" && !payment.externalPaymentDeviceId) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["payment", "externalPaymentDeviceId"],
+              message: "جهاز محاولة الدفع مطلوب",
+            });
+          }
+          if (
+            payment.method === "CASH" &&
+            (payment.externalPaymentAttemptId != null ||
+              payment.externalPaymentDeviceId != null)
+          ) {
+            refinement.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["payment", "externalPaymentAttemptId"],
+              message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
+            });
+          }
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       const res = await convertQuotation(input, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
         role: ctx.user.role,
       });
-      await logAudit(ctx, { action: "quotation.convert", entityType: "quotation", entityId: input.quotationId, newValue: { invoiceId: (res as { invoiceId?: number })?.invoiceId } });
+      await logAudit(ctx, { action: "quotation.convert", entityType: "quotation", entityId: input.quotationId, newValue: { invoiceId: (res as { invoiceId?: number })?.invoiceId },
+      });
       return res;
     }),
 });

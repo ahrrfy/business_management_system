@@ -9,6 +9,7 @@ import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
+import { RETURN_EXECUTED_AUDIT_ACTION } from "../returns/auditActions";
 import { createVoucher } from "../voucher/create";
 import { approveVoucher } from "../voucher/approval";
 import { cancelVoucher } from "../voucher/cancel";
@@ -181,9 +182,13 @@ describe("D3 — تركّز المرتجعات", () => {
       { invoiceId: sale1.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }], restock: true },
       actor2,
     );
-    // logAudit يستدعيه returnRouter لا الخدمة ⇒ نحاكي سطر الراوتر (معالج الإرجاع = المستخدم 2).
+    // logAudit يستدعيه الراوتر لا الخدمة ⇒ نحاكي سطره. والفعلُ من **المصدر المشترك** لا نصّاً
+    // ثابتاً: كان الاختبار يُدرج `'return.create'` وهو فعلٌ لا يكتبه أيّ سطرٍ في الخادم، فكان
+    // يُثبت أنّ الكاشف يقرأ ما كتبه الاختبار نفسه لا ما يكتبه النظام (أخضرُ كاذب).
+    // ويحرس التطابقَ مع الراوترات اختبارُ العقد في `returnAuditContract.test.ts`.
     await db().insert(s.auditLogs).values({
-      userId: 2, branchId: 1, action: "return.create", entityType: "invoice", entityId: String(sale1.invoiceId),
+      userId: 2, branchId: 1, action: RETURN_EXECUTED_AUDIT_ACTION,
+      entityType: "invoice", entityId: String(sale1.invoiceId),
     });
 
     const aw = await getAnomalyWatch({ from: TODAY(), to: TODAY() });

@@ -127,7 +127,10 @@ export function ReportShell({
             return (
               <div key={i} className="min-w-36 flex-1 border-e border-border/70 px-3 py-0.5 text-center last:border-e-0">
                 <div className="flex items-center justify-center gap-1 text-2xs text-muted-foreground">
-                  <span className="truncate">{k.label}</span>
+                  {/* bidi: تسمياتٌ كثيرةٌ عبر مركز التقارير تحمل مدىً رقمياً بشرطة («0–30 يوم») —
+                      بلا dir="ltr" يُعاد ترتيبها بصرياً «30-0» داخل حاويةٍ RTL (أثبتَتْه جولةٌ
+                      بصرية بقياس مواضع الأحرف، ٣/٩). لا أثر على تسميةٍ عربيةٍ بحتة. */}
+                  <span className="truncate" dir="ltr">{k.label}</span>
                   {hint && (
                     <Popover>
                       <PopoverTrigger asChild>

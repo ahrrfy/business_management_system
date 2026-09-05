@@ -1,9 +1,10 @@
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -21,7 +22,7 @@ import {
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
 import { fmtDateTime } from "@/lib/date";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printShiftClose } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -41,6 +42,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
    يستهلك shifts.list (branch-scoped): ورديات الكاشير مع فُتحت/أُغلقت/المتوقع/المعدود/الفرق.
@@ -69,6 +71,8 @@ const fmtDT = (d: string | number | Date | null | undefined) => fmtDateTime(d);
 
 // نوع الصفّ صريحاً (الإجراء يُعيد {rows,total}) — حسمٌ يُجنّب فشل استدلال T في fetchAllPaged.
 type Row = RouterOutputs["shifts"]["list"]["rows"][number];
+/** صفُّ فواتير الوردية — مشتقٌّ من عقد `sales.list` فلا ينجرف عن الخادم. */
+type ShiftInvoiceRow = RouterOutputs["sales"]["list"][number];
 
 export default function Shifts() {
   const [query, setQuery] = useState("");
@@ -195,7 +199,10 @@ export default function Shifts() {
       notify.ok(
         "legacyNegativeRemediation" in result
           ? "مُوّلت الوردية من الخزنة بالقيمة الدقيقة، وصُفّرت وأُغلقت"
-          : "أُغلقت الوردية",
+          : result.treasuryReturn
+            ? `أُغلقت الوردية ورُحّل ${formatIqd(result.countedCash)} إلى الخزينة تلقائياً`
+            : "أُغلقت الوردية",
+        result.treasuryReturn ? `سند الترحيل ${result.treasuryReturn.handoverNumber}` : undefined,
       );
       setClosingShiftId(null);
       setCloseCounted("");
@@ -622,29 +629,29 @@ export default function Shifts() {
             filters={
               <>
                 <FilterField label="الحالة">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={status}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setStatus,
-                        e.target.value as "" | "OPEN" | "CLOSED",
+                        value as "" | "OPEN" | "CLOSED",
                       )
                     }
                   >
                     <option value="">الكل</option>
                     <option value="OPEN">مفتوحة</option>
                     <option value="CLOSED">مغلقة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="نوع الوردية">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={shiftType}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setShiftType,
-                        e.target.value as
+                        value as
                           | ""
                           | "RETAIL"
                           | "RECEPTION"
@@ -656,16 +663,16 @@ export default function Shifts() {
                     <option value="RETAIL">تجزئة</option>
                     <option value="RECEPTION">خدمة العملاء</option>
                     <option value="PRINT_SERVICES">خدمات طباعة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="المطابقة النقدية">
-                  <select
-                    className={selectCls}
+                  <AppSelect
+                    className="h-9"
                     value={varianceState}
-                    onChange={(e) =>
+                    onValueChange={(value) =>
                       setFilter(
                         setVarianceState,
-                        e.target.value as
+                        value as
                           | ""
                           | "WITH_VARIANCE"
                           | "MATCHED"
@@ -677,16 +684,16 @@ export default function Shifts() {
                     <option value="WITH_VARIANCE">بفرق نقدي</option>
                     <option value="MATCHED">مطابقة</option>
                     <option value="UNRECONCILED">غير محسوبة</option>
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="الفرع">
-                  <select
-                    className={selectCls}
-                    value={branchId}
-                    onChange={(e) =>
+                  <AppSelect
+                    className="h-9"
+                    value={String(branchId)}
+                    onValueChange={(value) =>
                       setFilter(
                         setBranchId,
-                        e.target.value ? Number(e.target.value) : "",
+                        value ? Number(value) : "",
                       )
                     }
                   >
@@ -696,7 +703,7 @@ export default function Shifts() {
                         {b.name}
                       </option>
                     ))}
-                  </select>
+                  </AppSelect>
                 </FilterField>
                 <FilterField label="من تاريخ">
                   <Input
@@ -811,182 +818,175 @@ export default function Shifts() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollTableShell bordered={false}>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="p-2">#</th>
-                  <th className="p-2">الموظف</th>
-                  <th className="p-2">الفرع</th>
-                  <th className="p-2">النوع</th>
-                  <th className="p-2">فُتحت</th>
-                  <th className="p-2">أُغلقت</th>
-                  <th className="p-2 text-right">الافتتاحي</th>
-                  <th className="p-2 text-right">المتوقع</th>
-                  <th className="p-2 text-right">المعدود</th>
-                  <th className="p-2 text-right">الفرق</th>
-                  <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2 text-center">إجراء</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className="border-t">
-                    <td className="p-2 tabular-nums" dir="ltr">
-                      {r.id}
-                    </td>
-                    <td className="p-2 font-medium">
-                      {r.userName ?? `#${r.userId}`}
-                    </td>
-                    <td className="p-2">{branchName(r.branchId)}</td>
-                    <td className="p-2 whitespace-nowrap text-xs">
-                      {SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType}
-                    </td>
-                    <td
-                      className="p-2 text-xs whitespace-nowrap tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtDT(r.openedAt)}
-                    </td>
-                    <td
-                      className="p-2 text-xs whitespace-nowrap tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtDT(r.closedAt)}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {fmt(r.openingBalance)}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {r.expectedCash != null ? fmt(r.expectedCash) : "—"}
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">
-                      {r.countedCash != null ? fmt(r.countedCash) : "—"}
-                    </td>
-                    <td
-                      className={`p-2 text-right font-semibold tabular-nums ${varianceCls(r.variance)}`}
-                      dir="ltr"
-                    >
-                      {r.variance != null ? fmt(r.variance) : "—"}
-                    </td>
-                    <td className="p-2 text-center">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}
-                      >
-                        {STATUS_LABEL[r.status] ?? r.status}
-                      </span>
-                    </td>
-                    <td className="p-2 text-center">
-                      {/* زر Z-report + نَسخ مُلَخَّص نَصّي (RowActions inline). */}
-                      <RowActions
-                        mode="inline"
-                        actions={[
-                          {
-                            key: "invoices",
-                            kind: "view",
-                            label: "الفواتير",
-                            icon: Receipt,
-                            onSelect: () => setInvoicesShiftId(r.id),
-                            gate: { module: "sales", level: "READ" },
+          <DataTable<Row>
+            data={rows}
+            loading={list.isLoading}
+            errorState={{ isError: list.isError, message: list.error?.message, onRetry: () => void list.refetch() }}
+            /* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
+            searchable={false}
+            externalFiltersActive={anyFilter}
+            /* الترقيم خادميّ (limit/offset + total) ⇒ شريطٌ واحد داخل الجدول بدل شريطٍ يدويّ تحته. */
+            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE, total, isFetching: list.isFetching }}
+            emptyState="لا ورديات بعد. تُفتح الورديات من نقطة البيع."
+            emptyFilteredState="لا ورديات مطابقة. غيّر الفلتر."
+            columns={[
+              {
+                id: "id",
+                header: "#",
+                accessorFn: (r) => r.id,
+                meta: { kind: "number", width: "id" },
+                cell: ({ row }) => row.original.id,
+              },
+              {
+                id: "user",
+                header: "الموظف",
+                accessorFn: (r) => r.userName ?? `#${r.userId}`,
+                meta: { width: "actor" },
+                cell: ({ row }) => <span className="font-medium">{row.original.userName ?? `#${row.original.userId}`}</span>,
+              },
+              {
+                id: "branch",
+                header: "الفرع",
+                accessorFn: (r) => branchName(r.branchId),
+                cell: ({ row }) => branchName(row.original.branchId),
+              },
+              {
+                id: "shiftType",
+                header: "النوع",
+                // التسمية المعروضة لا الرمز الخامّ — «نسخ القيمة» يجب أن يطابق ما يقرأه المستعمِل.
+                accessorFn: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType,
+                cell: ({ row }) => (
+                  <span className="text-xs">{SHIFT_TYPE_LABEL[row.original.shiftType] ?? row.original.shiftType}</span>
+                ),
+              },
+              {
+                id: "openedAt",
+                header: "فُتحت",
+                accessorFn: (r) => fmtDT(r.openedAt),
+                meta: { kind: "datetime" },
+                cell: ({ row }) => <span className="text-xs">{fmtDT(row.original.openedAt)}</span>,
+              },
+              {
+                id: "closedAt",
+                header: "أُغلقت",
+                accessorFn: (r) => fmtDT(r.closedAt),
+                meta: { kind: "datetime" },
+                cell: ({ row }) => <span className="text-xs">{fmtDT(row.original.closedAt)}</span>,
+              },
+              {
+                id: "openingBalance",
+                header: "الافتتاحي",
+                accessorFn: (r) => fmt(r.openingBalance),
+                meta: { kind: "money" },
+                cell: ({ row }) => fmt(row.original.openingBalance),
+              },
+              {
+                id: "expectedCash",
+                header: "المتوقع",
+                accessorFn: (r) => (r.expectedCash != null ? fmt(r.expectedCash) : "—"),
+                meta: { kind: "money" },
+                cell: ({ row }) => (row.original.expectedCash != null ? fmt(row.original.expectedCash) : "—"),
+              },
+              {
+                id: "countedCash",
+                header: "المعدود",
+                accessorFn: (r) => (r.countedCash != null ? fmt(r.countedCash) : "—"),
+                meta: { kind: "money" },
+                cell: ({ row }) => (row.original.countedCash != null ? fmt(row.original.countedCash) : "—"),
+              },
+              {
+                id: "variance",
+                header: "الفرق",
+                accessorFn: (r) => (r.variance != null ? fmt(r.variance) : "—"),
+                meta: { kind: "money" },
+                cell: ({ row }) => (
+                  <span className={`font-semibold ${varianceCls(row.original.variance)}`}>
+                    {row.original.variance != null ? fmt(row.original.variance) : "—"}
+                  </span>
+                ),
+              },
+              {
+                id: "status",
+                header: "الحالة",
+                accessorFn: (r) => STATUS_LABEL[r.status] ?? r.status,
+                meta: { kind: "status" },
+                cell: ({ row }) => (
+                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+                    {STATUS_LABEL[row.original.status] ?? row.original.status}
+                  </span>
+                ),
+              },
+              {
+                id: "actions",
+                header: "إجراء",
+                enableSorting: false,
+                meta: { kind: "actions" },
+                cell: ({ row }) => {
+                  const r = row.original;
+                  return (
+                    /* زر Z-report + نَسخ مُلَخَّص نَصّي (RowActions inline). */
+                    <RowActions
+                      mode="inline"
+                      actions={[
+                        {
+                          key: "invoices",
+                          kind: "view",
+                          label: "الفواتير",
+                          icon: Receipt,
+                          onSelect: () => setInvoicesShiftId(r.id),
+                          gate: { module: "sales", level: "READ" },
+                        },
+                        {
+                          key: "zreport",
+                          kind: "print",
+                          label: printing === r.id ? "جارٍ…" : "Z-report",
+                          icon: Printer,
+                          disabled: printing === r.id,
+                          disabledReason: "التقرير قيد التحضير",
+                          onSelect: () => void reprintZ(r.id),
+                          gate: { module: "treasury", level: "READ" },
+                        },
+                        {
+                          key: "copy",
+                          kind: "export",
+                          label: copying === r.id ? "جارٍ…" : "نسخ",
+                          icon: Copy,
+                          disabled: copying === r.id,
+                          disabledReason: "الملخص قيد التحضير",
+                          onSelect: () => void copyZ(r.id),
+                          gate: { module: "treasury", level: "READ" },
+                        },
+                        {
+                          key: "funding",
+                          kind: "transfer",
+                          label: "تمويل إضافي",
+                          icon: CircleDollarSign,
+                          hidden: r.status !== "OPEN" || !isOwner || Number(r.userId) === Number(me.data?.id),
+                          onSelect: () => openFundingDialog(r.id),
+                          gate: { module: "treasury", level: "FULL" },
+                        },
+                        {
+                          key: "close",
+                          kind: "reverse",
+                          label: "إغلاق",
+                          icon: Lock,
+                          hidden: r.status !== "OPEN" || !isElevated,
+                          onSelect: () => openCloseDialog(r.id),
+                          gate: {
+                            roles: ["cashier", "manager"],
+                            module: "treasury",
+                            level: "READ",
                           },
-                          {
-                            key: "zreport",
-                            kind: "print",
-                            label: printing === r.id ? "جارٍ…" : "Z-report",
-                            icon: Printer,
-                            disabled: printing === r.id,
-                            disabledReason: "التقرير قيد التحضير",
-                            onSelect: () => void reprintZ(r.id),
-                            gate: { module: "treasury", level: "READ" },
-                          },
-                          {
-                            key: "copy",
-                            kind: "export",
-                            label: copying === r.id ? "جارٍ…" : "نسخ",
-                            icon: Copy,
-                            disabled: copying === r.id,
-                            disabledReason: "الملخص قيد التحضير",
-                            onSelect: () => void copyZ(r.id),
-                            gate: { module: "treasury", level: "READ" },
-                          },
-                          {
-                            key: "funding",
-                            kind: "transfer",
-                            label: "تمويل إضافي",
-                            icon: CircleDollarSign,
-                            hidden:
-                              r.status !== "OPEN" ||
-                              !isOwner ||
-                              Number(r.userId) === Number(me.data?.id),
-                            onSelect: () => openFundingDialog(r.id),
-                            gate: { module: "treasury", level: "FULL" },
-                          },
-                          {
-                            key: "close",
-                            kind: "reverse",
-                            label: "إغلاق",
-                            icon: Lock,
-                            hidden: r.status !== "OPEN" || !isElevated,
-                            onSelect: () => openCloseDialog(r.id),
-                            gate: {
-                              roles: ["cashier", "manager"],
-                              module: "treasury",
-                              level: "READ",
-                            },
-                          },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                ))}
-                {!list.isLoading && rows.length === 0 && (
-                  <TableEmptyRow
-                    colSpan={12}
-                    message={
-                      total === 0 && !anyFilter
-                        ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع."
-                        : "لا ورديات مطابقة. غيّر الفلتر."
-                    }
-                  />
-                )}
-                {list.isLoading && (
-                  <tr>
-                    <td colSpan={12}>
-                      <LoadingState />
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </ScrollTableShell>
+                        },
+                      ]}
+                    />
+                  );
+                },
+              },
+            ]}
+          />
         </CardContent>
       </Card>
-
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-muted-foreground" dir="ltr">
-          {total === 0
-            ? "لا صفوف"
-            : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
-        </span>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-          >
-            السابق
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={(page + 1) * PAGE >= total}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            التالي
-          </Button>
-        </div>
-      </div>
 
       <Dialog
         open={fundingShiftId != null}
@@ -1022,13 +1022,13 @@ export default function Shifts() {
               <label htmlFor="shift-funding-source" className="text-sm font-bold">
                 سحب الوردية المصدر
               </label>
-              <select
+              <AppSelect
                 id="shift-funding-source"
                 className={`${selectCls} h-10 w-full`}
                 value={fundingSourceReceiptId}
                 disabled={fundingSourcesQ.isLoading}
-                onChange={(event) => {
-                  const nextId = event.target.value;
+                onValueChange={(value) => {
+                  const nextId = value;
                   setFundingSourceReceiptId(nextId);
                   const selected = fundingSources.find(
                     (source) => Number(source.receiptId) === Number(nextId),
@@ -1042,7 +1042,7 @@ export default function Shifts() {
                     {source.referenceNumber} — وردية #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">
                 إلزامي: يجب أن يكون سحباً مقبولاً من وردية أخرى وبنفس المبلغ، ولا يمكن استعماله مرتين. من دون سحبٍ فعلي أغلق الوردية وافتح وردية جديدة بعهدة من الخزينة.
               </p>
@@ -1195,7 +1195,7 @@ export default function Shifts() {
                 });
               }}
             >
-              {respondFundingM.isPending ? "جارٍ الرفض…" : "تأكيد الرفض بلا أثر نقدي"}
+              {respondFundingM.isPending ? ACTION_LABELS.rejecting : "تأكيد الرفض بلا أثر نقدي"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1245,7 +1245,7 @@ export default function Shifts() {
                 });
               }}
             >
-              {cancelFundingM.isPending ? "جارٍ الإلغاء…" : "إلغاء الطلب بلا أثر نقدي"}
+              {cancelFundingM.isPending ? ACTION_LABELS.cancelling : "إلغاء الطلب بلا أثر نقدي"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1476,64 +1476,79 @@ export default function Shifts() {
                 </b>{" "}
                 د.ع
               </div>
-              <ScrollTableShell bordered maxHeightClass="max-h-[60vh]">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/50">
-                    <tr>
-                      <th className="p-2">رقم الفاتورة</th>
-                      <th className="p-2">الوقت</th>
-                      <th className="p-2">طريقة الدفع</th>
-                      <th className="p-2 text-right">الإجمالي</th>
-                      <th className="p-2 text-right">المدفوع</th>
-                      <th className="p-2 text-center">الحالة</th>
-                      <th className="p-2 text-center">فتح</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(invoicesShiftQ.data ?? []).map((inv) => (
-                      <tr key={inv.id} className="border-t">
-                        <td className="p-2 font-medium tabular-nums" dir="ltr">
-                          {inv.invoiceNumber}
-                        </td>
-                        <td
-                          className="p-2 text-xs whitespace-nowrap tabular-nums"
-                          dir="ltr"
-                        >
-                          {fmtDT(inv.invoiceDate)}
-                        </td>
-                        <td className="p-2 text-xs">
-                          {inv.paymentMethod
-                            ? paymentMethodLabel(inv.paymentMethod)
-                            : "—"}
-                        </td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">
-                          {fmt(inv.total)}
-                        </td>
-                        <td className="p-2 text-right tabular-nums" dir="ltr">
-                          {fmt(inv.paidAmount)}
-                        </td>
-                        <td className="p-2 text-center text-xs">
-                          {invoiceStatusLabel(inv.status)}
-                        </td>
-                        <td className="p-2 text-center">
-                          <Link
-                            href={`/invoices/${inv.id}`}
-                            className="text-primary underline-offset-2 hover:underline"
-                          >
-                            فتح
-                          </Link>
-                        </td>
-                      </tr>
-                    ))}
-                    {(invoicesShiftQ.data ?? []).length === 0 && (
-                      <TableEmptyRow
-                        colSpan={7}
-                        message="لا فواتير على هذه الوردية."
-                      />
-                    )}
-                  </tbody>
-                </table>
-              </ScrollTableShell>
+              {/* قائمةٌ مُضمَّنة في الحوار وعدَّها معروضٌ فوقها ⇒ بلا شريط حالةٍ ولا منتقي أعمدة. */}
+              <DataTable<ShiftInvoiceRow>
+                embedded
+                searchable={false}
+                pageSize={Infinity}
+                maxHeightClass="max-h-[60vh]"
+                data={invoicesShiftQ.data ?? []}
+                errorState={{
+                  isError: invoicesShiftQ.isError,
+                  message: invoicesShiftQ.error?.message,
+                  onRetry: () => void invoicesShiftQ.refetch(),
+                }}
+                emptyText="لا فواتير على هذه الوردية."
+                columns={[
+                  {
+                    id: "invoiceNumber",
+                    header: "رقم الفاتورة",
+                    accessorFn: (inv) => inv.invoiceNumber,
+                    meta: { kind: "code" },
+                    cell: ({ row }) => <span className="font-medium">{row.original.invoiceNumber}</span>,
+                  },
+                  {
+                    id: "invoiceDate",
+                    header: "الوقت",
+                    accessorFn: (inv) => fmtDT(inv.invoiceDate),
+                    meta: { kind: "datetime" },
+                    cell: ({ row }) => <span className="text-xs">{fmtDT(row.original.invoiceDate)}</span>,
+                  },
+                  {
+                    id: "paymentMethod",
+                    header: "طريقة الدفع",
+                    accessorFn: (inv) => (inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"),
+                    cell: ({ row }) => (
+                      <span className="text-xs">
+                        {row.original.paymentMethod ? paymentMethodLabel(row.original.paymentMethod) : "—"}
+                      </span>
+                    ),
+                  },
+                  {
+                    id: "total",
+                    header: "الإجمالي",
+                    accessorFn: (inv) => fmt(inv.total),
+                    meta: { kind: "money" },
+                    cell: ({ row }) => fmt(row.original.total),
+                  },
+                  {
+                    id: "paidAmount",
+                    header: "المدفوع",
+                    accessorFn: (inv) => fmt(inv.paidAmount),
+                    meta: { kind: "money" },
+                    cell: ({ row }) => fmt(row.original.paidAmount),
+                  },
+                  {
+                    id: "status",
+                    header: "الحالة",
+                    // المصدر الوحيد لتسمية الحالة — لا قاموسَ محلّياً (shared/invoiceStatus).
+                    accessorFn: (inv) => invoiceStatusLabel(inv.status),
+                    meta: { kind: "status" },
+                    cell: ({ row }) => <span className="text-xs">{invoiceStatusLabel(row.original.status)}</span>,
+                  },
+                  {
+                    id: "open",
+                    header: "فتح",
+                    enableSorting: false,
+                    meta: { kind: "actions" },
+                    cell: ({ row }) => (
+                      <Link href={`/invoices/${row.original.id}`} className="text-primary underline-offset-2 hover:underline">
+                        فتح
+                      </Link>
+                    ),
+                  },
+                ]}
+              />
             </>
           )}
           <DialogFooter>

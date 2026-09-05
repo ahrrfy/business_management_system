@@ -18,11 +18,39 @@ export type {
   PurchaseDocumentInput,
   CreatePurchaseOrderInput,
   UpdatePurchaseOrderInput,
+  ConfirmPurchaseOrderInput,
+  PurchaseRequisitionAllocationInput,
   SettlePurchaseUsdDirectInput,
   ReceiveLineInput,
   ReceivePurchaseInput,
   PurchaseSettlementType,
 } from "./purchase/types";
 export { createPurchaseOrder, updatePurchaseOrder, confirmPurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
+export {
+  decidePurchaseOrderControl,
+  getPurchaseOrderControlRequest,
+  listPendingPurchaseOrderControls,
+  listPurchaseOrderEvents,
+  requestPurchaseOrderControl,
+  submitPurchaseOrderForApproval,
+} from "./purchase/controls";
+export {
+  diffPurchaseOrderRevisions,
+  getPurchaseOrderRevision,
+  getPurchaseOrderRevisionDiff,
+  listPurchaseOrderRevisions,
+} from "./purchase/revisions";
+export {
+  createPurchaseRequisition,
+  decidePurchaseRequisitionControl,
+  getPurchaseControlSettings,
+  getPurchaseRequisition,
+  listPurchaseRequisitions,
+  listPendingPurchaseRequisitionControls,
+  requestPurchaseRequisitionCancellation,
+  submitPurchaseRequisition,
+  updatePurchaseControlSettings,
+  updatePurchaseRequisition,
+} from "./purchase/requisitions";
 export { assertUniqueReceiveLines, cumulativePurchaseTax, receivePurchase } from "./purchase/receive";
 export { settlePurchaseUsdDirect } from "./purchase/usdSettlement";
