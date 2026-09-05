@@ -35,6 +35,57 @@ function imageResponse(data = "QUJD", mime = "image/png", extra: Record<string, 
 
 // ────────────────────────── generateStudioImage (نقيّ) ──────────────────────────
 describe("generateStudioImage (fetch مُموَّه)", () => {
+  it("retries empty HTTP 200 IMAGE_OTHER once with the same request", async () => {
+    const fakeFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })))
+      .mockResolvedValueOnce(imageResponse());
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "QUJD" }, { fetchImpl: fakeFetch }))
+      .resolves.toMatchObject({ imageBase64: "QUJD" });
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+    expect(fakeFetch.mock.calls[1][1]?.body).toBe(fakeFetch.mock.calls[0][1]?.body);
+  });
+
+  it("bounds IMAGE_OTHER to two separately guarded attempts", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    const runAttempt = vi.fn(async (run: () => Promise<any>) => run());
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt }))
+      .rejects.toMatchObject({ kind: "IMAGE_OTHER" });
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+    expect(runAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a exhausted budget before sending the retry", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    const blocked = new Error("budget exhausted");
+    const runAttempt = vi.fn(async (run: () => Promise<any>) => run()).mockImplementationOnce(async run => run())
+      .mockRejectedValueOnce(blocked);
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt })).rejects.toBe(blocked);
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ finishReason: "IMAGE_SAFETY" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_PROHIBITED_CONTENT" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_RECITATION" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_OTHER", safetyRatings: [{ blocked: true }] }, "BLOCKED"],
+    [{ finishReason: "IMAGE_OTHER", content: { parts: [{ text: "Cannot edit this image" }] } }, "NO_IMAGE"],
+    [{ finishReason: "IMAGE_OTHER", finishMessage: "Content not supported" }, "NO_IMAGE"],
+  ])("does not retry safety or explained refusal %j", async (candidate, kind) => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ candidates: [candidate] })));
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not extend the total timeout for retries", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, timeoutMs: 100 }))
+      .rejects.toMatchObject({ kind: "IMAGE_OTHER" });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("EDIT: يُرسل نصّاً + inline_data ومفتاحاً في الترويسة، ويستخرج الصورة", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | undefined;

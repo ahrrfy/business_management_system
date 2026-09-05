@@ -27,6 +27,7 @@ export type AiImageErrorKind =
   | "BAD_INPUT" // طلب غير صالح (400 غير المصادقة)
   | "BLOCKED" // حجب أمان من المزوّد (المحتوى/السلامة)
   | "NO_IMAGE" // نجح النداء لكن بلا صورة في الردّ (رفض النموذج/نصّ فقط)
+  | "IMAGE_OTHER" // عطل توليد بلا صورة أو تفسير من المزوّد
   | "TIMEOUT" // انتهت مهلة الاتصال بالمزوّد
   | "RESPONSE_TOO_LARGE" // تجاوز ردّ المزوّد حدّ ذاكرة الخادم
   | "SERVICE" // 5xx أو غير متوقّع
@@ -72,6 +73,8 @@ export interface AiImageCallOptions {
   timeoutMs?: number;
   /** سقف بايتات JSON من المزوّد قبل التحليل. */
   maxResponseBytes?: number;
+  /** يحجز الحصة والصلاحية التنفيذية لكل محاولة مدفوعة، بما فيها الإعادة. */
+  runAttempt?: (run: () => Promise<GenerateStudioImageResult>) => Promise<GenerateStudioImageResult>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -113,7 +116,7 @@ async function readBoundedText(res: Response, maxBytes: number): Promise<string>
 }
 
 /** أسباب الحجب الأمنيّ من finishReason (candidate) — تُصنَّف BLOCKED لا NO_IMAGE. */
-const SAFETY_FINISH_REASONS = new Set(["SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "RECITATION", "BLOCKLIST", "SPII"]);
+const SAFETY_FINISH_REASONS = new Set(["SAFETY", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "PROHIBITED_CONTENT", "RECITATION", "BLOCKLIST", "SPII"]);
 
 /** يستخرج جزء الصورة (inlineData/inline_data) من أوّل مرشّح — يدعم camelCase وsnake_case. */
 function extractImagePart(json: any): { data: string; mime: string } | null {
@@ -182,6 +185,28 @@ export async function generateStudioImage(
   params: GenerateStudioImageParams,
   opts: AiImageCallOptions = {},
 ): Promise<GenerateStudioImageResult> {
+  const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const run = () => {
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs <= 0) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+    return generateStudioImageAttempt(params, { ...opts, timeoutMs });
+  };
+  const attempt = () => opts.runAttempt ? opts.runAttempt(run) : run();
+  try {
+    return await attempt();
+  } catch (error) {
+    // IMAGE_OTHER بلا تفسير قد يكون مؤقتاً. محاولة إضافية واحدة بنفس المدخلات،
+    // دون إعادة رفض السلامة/النص أو تمديد المهلة الكلية.
+    if (!(error instanceof AiImageError) || error.kind !== "IMAGE_OTHER" || deadline - Date.now() <= 250) throw error;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return attempt();
+  }
+}
+
+async function generateStudioImageAttempt(
+  params: GenerateStudioImageParams,
+  opts: AiImageCallOptions,
+): Promise<GenerateStudioImageResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -245,7 +270,9 @@ export async function generateStudioImage(
   // حجب أمنيّ على مستوى البرومت أو المرشّح ⇒ BLOCKED (لا NO_IMAGE) لرسالة أدقّ.
   const blockReason = json?.promptFeedback?.blockReason;
   const finishReason = json?.candidates?.[0]?.finishReason;
-  if (blockReason || (finishReason && SAFETY_FINISH_REASONS.has(String(finishReason)))) {
+  const candidate = json?.candidates?.[0];
+  const safetyBlocked = Array.isArray(candidate?.safetyRatings) && candidate.safetyRatings.some((rating: { blocked?: boolean }) => rating?.blocked === true);
+  if (blockReason || safetyBlocked || (finishReason && SAFETY_FINISH_REASONS.has(String(finishReason)))) {
     const diag = extractProviderDiagnostic(json);
     throw new AiImageError(
       "BLOCKED",
@@ -256,6 +283,13 @@ export async function generateStudioImage(
 
   const img = extractImagePart(json);
   if (!img) {
+    const hasExplanation = (typeof candidate?.finishMessage === "string" && candidate.finishMessage.trim()) ||
+      (Array.isArray(candidate?.content?.parts) && candidate.content.parts.some(
+        (part: { text?: string }) => typeof part?.text === "string" && part.text.trim(),
+      ));
+    if (finishReason === "IMAGE_OTHER" && !hasExplanation) {
+      throw new AiImageError("IMAGE_OTHER", res.status, "finishReason=IMAGE_OTHER");
+    }
     // ⭐ فجوة تشخيصية أُغلقت: النموذج يُرجع أحياناً نصَّ رفضٍ ضمنيّ («I cannot edit this image...»)
     // أو ينهي بـfinishReason غير STOP (MAX_TOKENS/OTHER/IMAGE_OTHER) — كنّا نبتلع كليهما فيرى المالك
     // «جرّب مجدّداً» بلا معرفة السبب. الآن نمرّر السبب الحقيقيّ في `message` (يُلحقه الراوتر بالرسالة).
@@ -289,6 +323,8 @@ export function aiImageErrorMessageAr(kind: AiImageErrorKind): string {
       return "حَجَب المزوّد الطلب لأسباب سلامة المحتوى — جرّب صورةً/برومتاً آخر.";
     case "NO_IMAGE":
       return "لم يُعِد المزوّد صورةً — جرّب مجدّداً أو بصياغة برومت أوضح.";
+    case "IMAGE_OTHER":
+      return "تعذّر على المزوّد إنشاء الصورة حالياً؛ أعد المحاولة لاحقاً.";
     case "TIMEOUT":
       return "تأخر مزوّد الذكاء الاصطناعي في الردّ؛ أعد المحاولة لاحقاً.";
     case "RESPONSE_TOO_LARGE":
