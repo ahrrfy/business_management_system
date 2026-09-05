@@ -6,15 +6,19 @@ import {
   applyPartySelection,
   buildDeliveryPayload,
   deliveryModeUnavailableReason,
+  deliveryReceiptAmounts,
+  deliverySendsPayment,
   emptyDeliveryDraft,
   governorateOptions,
   normalizeFee,
+  saleReceiptAmounts,
   toE164Iraq,
   validateDeliveryDraft,
   withRecipientDefaults,
   type DeliveryDraft,
 } from "./deliveryMode";
 import { GOVERNORATES } from "@shared/governorates";
+import Decimal from "decimal.js";
 
 const parties = [
   { id: 3, name: "مندوب الكرادة", defaultFee: "4000.00" },
@@ -168,5 +172,35 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     // بلا اقتراحٍ أو بلا محافظة ⇒ لا تغيير.
     expect(applyZoneSuggestion(base, null)).toBe(base);
     expect(applyZoneSuggestion(emptyDeliveryDraft(), s)).toEqual(emptyDeliveryDraft());
+  });
+
+  const D = (n: number | string) => new Decimal(n);
+
+  it("قرارُ إرسال الدفع في التوصيل: يُحجَب فقط للنقد بلا قبضٍ الآن؛ غيرُ النقد يُرسَل دائماً (Codex #1012 P1)", () => {
+    expect(deliverySendsPayment("CASH", D(0))).toBe(false);   // COD كامل: لا دفع
+    expect(deliverySendsPayment("CASH", D(2500))).toBe(true);  // قبضٌ جزئيّ نقديّ
+    expect(deliverySendsPayment("CARD", D(0))).toBe(true);     // بطاقةٌ مؤكَّدة سلفاً ⇒ تُرسَل ولو كان الحقل صفراً
+    expect(deliverySendsPayment("TRANSFER", D(0))).toBe(true);
+  });
+
+  it("مبالغُ إيصال التوصيل: الفكّةُ تُحفَظ عند دفعٍ نقديٍّ زائد ولا آجلَ على العميل (Codex #1012 P2)", () => {
+    // COD كامل: لا مقبوض، لا فكّة.
+    expect(deliveryReceiptAmounts({ method: "CASH", paidNow: D(0), total: D(10000), isCredit: false }))
+      .toEqual({ received: D(0), change: D(0) });
+    // دفعٌ نقديٌّ زائد (12000 على 10000): المقبوض الإجماليّ والفكّة 2000 — لا تُبتلَع.
+    expect(deliveryReceiptAmounts({ method: "CASH", paidNow: D(12000), total: D(10000), isCredit: false }))
+      .toEqual({ received: D(10000), change: D(2000) });
+    // بطاقةٌ كاملة: المقبوض الإجماليّ بلا فكّة.
+    expect(deliveryReceiptAmounts({ method: "CARD", paidNow: D(0), total: D(10000), isCredit: false }))
+      .toEqual({ received: D(10000), change: D(0) });
+  });
+
+  it("مبالغُ إيصال البيع: عهدةُ COD ليست ذمّةً على العميل (credit=0)، والبيعُ العاديّ الآجلُ يُظهر الباقي ذمّةً", () => {
+    expect(saleReceiptAmounts({ codMode: true, method: "CASH", paidNow: D(0), total: D(10000), isCredit: false }))
+      .toEqual({ received: D(0), change: D(0), credit: D(0) });
+    expect(saleReceiptAmounts({ codMode: true, method: "CASH", paidNow: D(12000), total: D(10000), isCredit: false }).change).toEqual(D(2000));
+    // بيعٌ عاديٌّ آجلٌ جزئيّ: مدفوعٌ 4000 من 10000 ⇒ المقبوض 4000، لا فكّة، وذمّةٌ 6000.
+    expect(saleReceiptAmounts({ codMode: false, method: "CASH", paidNow: D(4000), total: D(10000), isCredit: true }))
+      .toEqual({ received: D(4000), change: D(0), credit: D(6000) });
   });
 });

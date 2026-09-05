@@ -41,6 +41,8 @@ export interface CartPanelProps {
   addTick: number;
   /** م١ PR-B — وضع «توصيل» للتبويب (null = بيعٌ عاديّ). */
   tabId: number;
+  /** علَمُ الطرح التدريجيّ `ROLLOUT_POS_DELIVERY_MODE=ON` (Codex #1012 P1): بدونه لا يظهر مفتاحُ التوصيل. */
+  deliveryModeAvailable: boolean;
   delivery: DeliveryDraft | null;
   onDeliveryChange: (next: DeliveryDraft | null) => void;
   onDeliveryIdentity: (identity: DeliveryCustomerIdentity) => void;
@@ -48,7 +50,7 @@ export interface CartPanelProps {
   customerBalance: string | null;
 }
 
-export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
+export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, deliveryModeAvailable, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
@@ -154,6 +156,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
             setCustId={setCustId}
             showCustPicker={showCustPicker}
             setShowCustPicker={setShowCustPicker}
+            deliveryAvailable={deliveryModeAvailable}
             delivery={delivery != null}
             onToggleDelivery={() => onDeliveryChange(delivery ? null : emptyDeliveryDraft())}
             deliveryDisabledReason={deliveryDisabledReason}
@@ -183,8 +186,8 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
       {/* سلّة الكاشير: شبكةُ تحرير (‎−/+‎ وحذفٌ لكل سطر) بتصميمٍ مخصّصٍ بأنماطٍ سطرية
           (لا Tailwind) لأنّ سطحَ الكاشير مضبوطٌ لشاشة اللمس وحجم الخطّ الكبير.
           `DataTable` أداةُ عرضٍ فلا تُطبَّق هنا. */}
-      {/* م١ PR-B — وضع «توصيل»: العميل بالهاتف + حقول الطرد في نفس الشاشة فوق السلّة. */}
-      {delivery && (
+      {/* م١ PR-B — وضع «توصيل»: العميل بالهاتف + حقول الطرد في نفس الشاشة فوق السلّة (خلف علَم الطرح التدريجيّ). */}
+      {deliveryModeAvailable && delivery && (
         <CartDeliveryPanel
           C={C}
           tabId={tabId}

@@ -10,6 +10,7 @@
  */
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { type DeliveryFeeCollection } from "@shared/deliveryFeeCollection";
+import Decimal from "decimal.js";
 
 export interface DeliveryDraft {
   /** معرّف المحافظة من `shared/governorates` ("baghdad" …) أو "" قبل الاختيار. */
@@ -98,6 +99,57 @@ export function buildDeliveryPayload(d: DeliveryDraft): DeliveryPayload | null {
     ...(d.recipientPhone.trim() ? { recipientPhone: d.recipientPhone.trim() } : {}),
     address: d.address.trim(),
     ...(d.governorate ? { governorate: d.governorate } : {}),
+  };
+}
+
+/**
+ * وضع التوصيل — قرارُ إرسال `payment` (تدقيق Codex #1012 P1): يُحجَب الدفعُ **فقط** لبيعٍ نقديٍّ بلا
+ * قبضٍ الآن (COD كامل يقبضه المندوب لاحقاً). غيرُ النقد (بطاقة/تحويل/محفظة) مؤكَّدٌ سلفاً بمحاولةٍ
+ * خارجيّة ناجحة يشترطها البيع، فيُرسَل **دائماً**؛ حجبُه كان يُهمِل قبضاً خارجياً وقع فعلاً ويُسنِد
+ * الطلبَ COD خطأً (نقدٌ يُطالَب به مرّتين).
+ */
+export function deliverySendsPayment(method: string, paidNow: Decimal): boolean {
+  return !(method === "CASH" && paidNow.lte(0));
+}
+
+/**
+ * وضع التوصيل — مبالغُ الإيصال (تدقيق Codex #1012 P1/P2): «المقبوض الآن» = ما يُسجَّل على الفاتورة (صفرٌ
+ * لِـCOD الكامل · المدفوعُ لقبضٍ جزئيّ · الإجماليُّ لدفعٍ كامل/بطاقة)، والفكّةُ تبقى صفراً لتحصيل COD
+ * الجزئيّ وتُحسب كبيعٍ عاديّ حين قُبض نقدٌ ≥ الإجماليّ (فائضٌ يُردّ) — «COD يمنع الآجل لا الفكّة».
+ */
+export function deliveryReceiptAmounts(args: {
+  method: string;
+  paidNow: Decimal;
+  total: Decimal;
+  isCredit: boolean;
+}): { received: Decimal; change: Decimal } {
+  const { method, paidNow, total, isCredit } = args;
+  const received = deliverySendsPayment(method, paidNow) ? (isCredit ? paidNow : total) : new Decimal(0);
+  const change = method === "CASH" && paidNow.gte(total) ? paidNow.minus(total) : new Decimal(0);
+  return { received, change };
+}
+
+/**
+ * مبالغُ إيصال بيع الكاشير (تدقيق Codex #1012 P1/P2) — مصدرٌ واحدٌ للوضعين: في التوصيل تُشتقّ من
+ * `deliveryReceiptAmounts` (وعهدةُ COD ليست ذمّةً على العميل ⇒ credit=0)؛ وفي البيع العاديّ الآجلُ
+ * الجزئيُّ يُظهر المدفوعَ، الفكّةَ صفراً، وذمّةً بالباقي (السلوكُ القائم بلا تغيير).
+ */
+export function saleReceiptAmounts(args: {
+  codMode: boolean;
+  method: string;
+  paidNow: Decimal;
+  total: Decimal;
+  isCredit: boolean;
+}): { received: Decimal; change: Decimal; credit: Decimal } {
+  const { codMode, method, paidNow, total, isCredit } = args;
+  if (codMode) {
+    const { received, change } = deliveryReceiptAmounts({ method, paidNow, total, isCredit });
+    return { received, change, credit: new Decimal(0) };
+  }
+  return {
+    received: isCredit ? paidNow : total,
+    change: isCredit ? new Decimal(0) : paidNow.minus(total),
+    credit: isCredit ? total.minus(paidNow) : new Decimal(0),
   };
 }
 

@@ -23,17 +23,21 @@ export interface CartCustomerButtonProps {
   showCustPicker: boolean; setShowCustPicker: (v: boolean) => void;
   /** م١ PR-B — وضع «توصيل» للتبويب: يستبدل منتقي العميل بشارة «عميل بالهاتف» ويُظهر مفتاح التبديل. */
   delivery: boolean;
+  /** علَمُ `ROLLOUT_POS_DELIVERY_MODE=ON` (Codex #1012 P1): بدونه لا يُعرَض مفتاحُ التوصيل أصلاً. */
+  deliveryAvailable: boolean;
   onToggleDelivery: () => void;
   /** سبب تعطيل تفعيل الوضع (الأوفلاين) — يُعطّل المفتاح ويشرح في title. */
   deliveryDisabledReason: string | null;
 }
 
 /** زرّ العميل في رأس السلّة + منتقي العميل/فئة السعر المنبثق. */
-export function CartCustomerButton({ C, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, delivery, onToggleDelivery, deliveryDisabledReason }: CartCustomerButtonProps) {
+export function CartCustomerButton({ C, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, delivery, deliveryAvailable, onToggleDelivery, deliveryDisabledReason }: CartCustomerButtonProps) {
   const toggleDisabled = !delivery && !!deliveryDisabledReason;
   return (
   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-  {/* م١ PR-B: مفتاح وضع «توصيل» — لكلّ تبويبٍ حالته. معطَّلٌ دون اتصال (لا إسناد بلا حرّاس الخادم الحيّة). */}
+  {/* م١ PR-B: مفتاح وضع «توصيل» — لكلّ تبويبٍ حالته. معطَّلٌ دون اتصال (لا إسناد بلا حرّاس الخادم الحيّة).
+      ولا يظهر أصلاً إلّا حين `ROLLOUT_POS_DELIVERY_MODE=ON` (طرحٌ تدريجيّ — لا يُفتَح لكلّ كاشير بالنشر). */}
+  {deliveryAvailable && (
   <button
     type="button"
     onClick={onToggleDelivery}
@@ -43,6 +47,7 @@ export function CartCustomerButton({ C, customerId, selectedCustomer, tierOverri
     style={{ height: 34, padding: "0 11px", background: delivery ? C.primary : C.card, border: `1.5px solid ${delivery ? C.primary : C.border}`, borderRadius: 8, cursor: toggleDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: delivery ? C.primaryFg : toggleDisabled ? C.mutedFg : C.fg, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", opacity: toggleDisabled ? 0.6 : 1 }}>
     <Truck size={14} aria-hidden /> توصيل
   </button>
+  )}
   {delivery ? (
     <span style={{ height: 34, padding: "0 11px", background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 8, fontSize: 12.5, fontWeight: 700, color: C.primary, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
       <Phone size={14} aria-hidden /> {selectedCustomer ? selectedCustomer.name : "عميلٌ بالهاتف — أدخل رقمه أدناه"}
