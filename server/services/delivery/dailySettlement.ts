@@ -20,9 +20,11 @@ import {
   deliveryConsignments,
   deliveryLedgerEntries,
   deliveryParties,
+  deliveryRemittances,
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { checkIdempotency } from "../idempotency";
 import { money, round2 } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
@@ -178,6 +180,44 @@ export async function settleDailyTx(
   actor: DeliveryTxActor,
 ): Promise<SettleDailyResult> {
   const party = await loadPartyOrThrow(tx, input.partyId, "تعذّر تسجيل التسوية اليوميّة");
+  // إعادةُ الطلب بنفس مفتاح idempotency (نقرٌ مزدوج · إعادةُ شبكة · إعادةُ محاولة الراوتر على
+  // ER_DUP): التوريدُ الأوّل نقل الطرود إلى «مُسوّاة» فيعود `loadSettlementLines` فارغاً — ولو
+  // فحصنا الأسطر أوّلاً لرُفضت الإعادةُ بـ«لا شيء يُسوَّى» بدل إعادة السند نفسه (عطبٌ عرَضيّ
+  // للمستعمل). فنفحص المفتاح **قبل** تحميل الأسطر — نفس عمليّة `recordDeliveryRemittanceInTx`
+  // (`delivery.remit`) وبلا payloadHash لأنّ أسطرَ الحمولة الأصلية استُهلكت بالتسوية الأولى:
+  // وُجِد ⇒ نُعيد نتيجة التوريد المخزَّنة حرفياً بلا تسويةٍ جديدة ولا فحص أسطر.
+  if (input.clientRequestId) {
+    const existingRemittanceId = await checkIdempotency(tx, "delivery.remit", input.clientRequestId);
+    if (existingRemittanceId != null) {
+      const rm = (
+        await tx
+          .select()
+          .from(deliveryRemittances)
+          .where(eq(deliveryRemittances.id, existingRemittanceId))
+          .limit(1)
+      )[0];
+      if (rm) {
+        // نفس حارس replay في `recordDeliveryRemittanceInTx`: المفتاحُ نفسُه لجهةٍ/فرعٍ مختلف ليس
+        // إعادةً بريئة بل مفتاحٌ ملوَّث — تعارضٌ لا تسوية.
+        if (Number(rm.branchId) !== Number(input.branchId) || Number(rm.partyId) !== Number(input.partyId)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "تعذّر تسجيل التسوية اليوميّة",
+              why: "مفتاح الطلب مستعمَلٌ سلفاً لتوريد جهةٍ أو فرعٍ مختلف",
+              doThis: "أعد المحاولة بمفتاح طلبٍ جديد، أو راجع التوريد السابق لهذا المفتاح",
+            }),
+          });
+        }
+        return {
+          remittanceId: Number(rm.id),
+          status: rm.status === "SHORT" ? "SHORT" : "BALANCED",
+          shortfallTotal: String(rm.shortfallTotal),
+          receiptId: rm.receiptInId != null ? Number(rm.receiptInId) : null,
+        };
+      }
+    }
+  }
   const lines = await loadSettlementLines(tx, input);
   if (!lines.length) {
     throw new TRPCError({

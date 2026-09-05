@@ -152,18 +152,22 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
   });
 
   /**
-   * ⚠️ عطبٌ معروف في «settleDailyTx» (م١-خادم — server/services/delivery/dailySettlement.ts): فحص «لا شيء
-   * يُسوَّى» يسبق فحص idempotency الذي يعيش داخل «recordDeliveryRemittanceInTx»، فإعادةُ الطلب بنفس المفتاح
-   * بعد نجاحه (نقرٌ مزدوج/إعادة شبكة) تُرفض PRECONDITION_FAILED بدل إعادة السند نفسه. «it.fails» يثبّت
-   * الفجوة بصدق: حين يُقدَّم فحصُ المفتاح على تحميل الأسطر يسقط هذا الاختبار «لأنّه نجح» فيُزال الوسم.
+   * إعادةُ الطلب بنفس مفتاح idempotency بعد نجاحه (نقرٌ مزدوج · إعادةُ شبكة · إعادةُ محاولة الراوتر على
+   * ER_DUP): يجب أن تعيد **السند نفسه** لا أن تُرفض PRECONDITION_FAILED. الجذر كان تقديمَ فحص «لا شيء
+   * يُسوَّى» على فحص idempotency (يعيش داخل «recordDeliveryRemittanceInTx»)؛ أُصلح بنقل فحص المفتاح
+   * قبل تحميل الأسطر في «settleDailyTx» (server/services/delivery/dailySettlement.ts). كان هذا
+   * الاختبار «it.fails» يثبّت الفجوة، وصار «it» بعد إغلاقها — حارسُ انحدارٍ بصدق.
    */
-  it.fails("②-ب إعادةُ الطلب بنفس مفتاح idempotency تعيد السند نفسه (عطب خادميّ معروف — يُحلّ في dailySettlement.ts)", async () => {
+  it("②-ب إعادةُ الطلب بنفس مفتاح idempotency تعيد السند نفسه (نقرٌ مزدوج/إعادةُ شبكة)", async () => {
     const a = await saleWithDelivery("r-6", "2");
     await confirmDelivered(a.consignmentId, "2000");
     const key = "settle-daily-replay-0001";
     const first = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", clientRequestId: key });
     const again = await cashier().settleDaily({ partyId: PARTY, countedCash: "2000.00", clientRequestId: key });
     expect(again.remittanceId).toBe(first.remittanceId);
+    // العائدُ متطابقٌ حرفياً (نفس SettleDailyResult) — لا نجاحٌ صامتٌ بقيمٍ مختلفة.
+    expect(again).toEqual(first);
+    // ولا سندَ توريدٍ ثانٍ في القاعدة.
     expect(await db().select().from(s.deliveryRemittances)).toHaveLength(1);
   });
 
