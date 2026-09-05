@@ -13,6 +13,8 @@ import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus,
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { nextActionTerminalReason } from "@shared/nextAction";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { appErrorMessage } from "@shared/errors";
 import { deriveInvoiceNextAction } from "../services/nextActionDerivation";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
@@ -524,6 +526,21 @@ export const saleRouter = router({
         // إفصاح التوصيل المجّاني (0152): يميّز «أُهديت أجرته» عن «بلا توصيل». بلا أثر ماليّ.
         deliveryFree: z.boolean().optional(),
         deliveryWaivedAmount: nonNegMoneyString.optional(),
+        // م١ (PR-1): إسنادُ البيع لجهة توصيل داخل معاملة البيع نفسها — نفس عقد
+        // `receptionCheckout.delivery` (workOrderRouter) + `governorate` للإسناد التلقائيّ بالمنطقة.
+        // وجودُه يجعل الفاتورة COD خادمياً: المتبقّي عهدةٌ على الجهة (`COD_ASSIGNED`) وسقفُ ائتمان
+        // العميل لا يُفحَص (المال يأتي مع المندوب — `server/lib/credit.ts`). مرفوضٌ من طابور الأوفلاين.
+        delivery: z.object({
+          partyId: z.number().int().positive(),
+          fee: nonNegMoneyString.nullish(),
+          feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+          recipientName: z.string().trim().max(255).nullish(),
+          recipientPhone: z.string().trim().max(32).nullish(),
+          address: z.string().trim().max(500).nullish(),
+          governorate: z.string().trim().max(40).nullish(),
+        }).nullish(),
+        // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
+        deliveryFeeHeld: positiveMoneyString.nullish(),
         payment: z.object({
           amount: positiveMoneyString,
           method: posPaymentMethod,
@@ -572,6 +589,22 @@ export const saleRouter = router({
       // role إلزامي: خدمة البيع تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager — بدونه يُحجب الجميع.
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role,
       };
+      // ⚠️ Codex #1006 P1 — حمولةُ `delivery` تُنشئ إرساليّةً وقيودَ عهدةٍ عبر `dispatchInvoiceInTx`،
+      // متجاوزةً بوّابةَ وحدة المتجر (`storeFulfillProcedure`) التي يمرّ بها `deliveryRouter.dispatchInvoice`.
+      // نفرض نفسَ القدرة خادمياً حين تكون `delivery` حاضرة: مَن مُنِع store:FULL لا يُنشئ إرساليّاتٍ من هذا الباب.
+      if (input.delivery != null) {
+        const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
+        if (!moduleAccessAllowed(ctx.user.role, override, "store", "FULL", ["manager", "cashier", "sales_rep"])) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا صلاحية لإسناد البيع لجهة توصيل",
+              why: "إسنادُ الفاتورة للتوصيل يُنشئ إرساليّةً وقيودَ عهدةٍ على المندوب، ويلزمه صلاحيّةُ وحدة «المتجر الإلكتروني» (كاملة) التي لا يملكها حسابك",
+              doThis: "أتمم البيع بلا توصيل، أو اطلب من المدير منحك صلاحيّة «المتجر الإلكتروني» (كاملة) من شاشة المستخدمين",
+            }),
+          });
+        }
+      }
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId,
@@ -596,6 +629,8 @@ export const saleRouter = router({
           // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
           if (!res.idempotentReplay) {
             await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy,
+                // م١ (PR-1): الإسناد وقع في معاملة البيع — أثرُه يُقرأ من سطر البيع نفسه.
+                ...(res.consignmentId != null ? { consignmentId: res.consignmentId, consignmentNumber: res.consignmentNumber ?? null } : {}),
               },
             });
             if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy },

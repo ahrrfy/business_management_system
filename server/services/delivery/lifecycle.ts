@@ -11,6 +11,8 @@ import {
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import type { DeliveryConsignmentStatus } from "@shared/deliveryStatuses";
+import { appErrorMessage } from "@shared/errors";
 
 export type ParcelStatus =
   | "ASSIGNED"
@@ -248,6 +250,56 @@ export function assertParcelTransition(
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: `انتقال حالة التوصيل غير مسموح: ${from} → ${to}`,
+    });
+  }
+}
+
+export type ConsignmentStatus = DeliveryConsignmentStatus;
+
+/**
+ * **جدولُ انتقالات الإغلاق الماليّ للإرسالية** (`deliveryConsignments.status`) — م١ (PR-4).
+ *
+ * كان كلُّ كاتبٍ يقرّر الحالةَ التالية بحرّاسه المحلّية (`status ∈ {DISPATCHED, PARTIAL}` هنا،
+ * `status === "DISPATCHED"` هناك) بلا مرجعٍ واحد يقول ما الانتقالُ المشروع. هذا الجدولُ يعلنه في
+ * موضعٍ واحد **بلا تغييرٍ سلوكيّ**: كلُّ زوجٍ فيه يقع في الشيفرة اليوم، وكلُّ كاتبٍ يمرّ بـ
+ * `assertConsignmentStatusTransition` قبل كتابته — فانتقالٌ جديد يظهر هنا وفي سجلّ الأتمتة
+ * (`shared/automationRegistry.ts`، يحرس تطابقَهما `deliveryConsignmentTransitions.test.ts`).
+ *
+ *   DISPATCHED  → DELIVERED (توريدٌ مكتمل/سدادٌ كاونتريّ/ختمُ طردٍ بلا COD) · PARTIAL (توريدٌ ناقص)
+ *               · CANCELLED (إلغاءُ إسناد) · RETURNED (استلامُ المرتجع) · WRITTEN_OFF (شطبٌ موجَّه)
+ *   PARTIAL     → DELIVERED (توريدٌ متمِّم) · WRITTEN_OFF (شطبُ الباقي)
+ *   CANCELLED   → DISPATCHED (إعادةُ تنشيط الصفّ الملغى بإسنادٍ جديد — `dispatch*.ts`)
+ *   RETURNED    → DISPATCHED (إعادةُ إسناد أمر شغلٍ أُرجع طردُه بلا تحصيل — `dispatch.ts`)
+ *   DELIVERED / WRITTEN_OFF نهائيّتان.
+ *
+ * الانتقالُ إلى الحالة نفسها (PARTIAL → PARTIAL عند توريدٍ ناقصٍ ثانٍ) لا يُعدّ انتقالاً ويمرّ.
+ */
+export const CONSIGNMENT_STATUS_TRANSITIONS: Readonly<Record<ConsignmentStatus, readonly ConsignmentStatus[]>> =
+  Object.freeze({
+    DISPATCHED: ["DELIVERED", "PARTIAL", "CANCELLED", "RETURNED", "WRITTEN_OFF"],
+    PARTIAL: ["DELIVERED", "WRITTEN_OFF"],
+    DELIVERED: [],
+    CANCELLED: ["DISPATCHED"],
+    RETURNED: ["DISPATCHED"],
+    WRITTEN_OFF: [],
+  });
+
+export function assertConsignmentStatusTransition(
+  from: ConsignmentStatus,
+  to: ConsignmentStatus,
+): void {
+  if (from === to) return;
+  if (!CONSIGNMENT_STATUS_TRANSITIONS[from]?.includes(to)) {
+    const exits = CONSIGNMENT_STATUS_TRANSITIONS[from] ?? [];
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `انتقال حالة إغلاق الإرسالية غير مسموح: ${from} → ${to}`,
+        why: exits.length
+          ? `الإرسالية بحالة ${from} ولا تخرج منها إلّا إلى ${exits.join(" / ")} — والمطلوب ${to} ليس بينها`
+          : `الحالة ${from} نهائيّة — أُغلق ملفُّ الإرسالية ماليّاً ولا مخرجَ منها`,
+        doThis: "افتح بطاقة الإرسالية وراجع حالتها الحاليّة وسجلّ أحداثها؛ فإن كان الإغلاق خطأً فأعِد إسنادها من جديد بدل تكرار العمليّة عليها",
+      }),
     });
   }
 }

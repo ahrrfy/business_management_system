@@ -46,6 +46,7 @@ import {
 import {
   appendDeliveryEvent,
   appendDeliveryLedgerEntry,
+  assertConsignmentStatusTransition,
   assertMemberCanUseConsignment,
   assertParcelTransition,
   getDeliveryFinancialSummary,
@@ -631,6 +632,15 @@ export async function confirmConsignmentDelivery(
        */
       shortfallReason?: string;
     };
+    /**
+     * م١ (PR-4، العيب ج) — **بوّابةُ المندوب**: ما قبضه فعلاً إن قلّ عن المتبقّي (غيابُه = المتبقّي
+     * كاملاً كما كان الختم دائماً). كان الختمُ من البوّابة يشترط التطابق التامّ فلا مسارَ للعجز
+     * من الميدان أصلاً — والمندوبُ الذي قبض أقلّ يقف بلا زرّ. أيُّ عجزٍ يلزمه `shortfallReason`
+     * من القائمة المغلقة ويُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة (نفس المسار الماليّ
+     * لمسارَي الكاشير — لا نسخةَ ثانية). يُتجاهَلان مع `statementWitness` (له حقولُه الخاصّة).
+     */
+    collectedAmount?: string;
+    shortfallReason?: string;
   },
   actor: { userId: number },
 ): Promise<ConfirmConsignmentResult> {
@@ -832,7 +842,11 @@ export async function confirmConsignmentDelivery(
      * بنقدٍ لم تقبضه. نسجّل **ما وقع فعلاً**، ويبقى المتبقّي مطالَباً به على العميل
      * (قرار المالك: «التحصيل الجزئي يُترك متبقّيه على العميل»).
      */
-    const declared = input.statementWitness?.collectedAmount;
+    // م١ (PR-4): البوّابةُ تُعلن المقبوض اختيارياً؛ إعلانُه يحوّل حارس الفاتورة من تطابقٍ إلى سقف.
+    const portalDeclared = !input.statementWitness && input.collectedAmount != null;
+    const declared = input.statementWitness
+      ? input.statementWitness.collectedAmount
+      : input.collectedAmount;
     const cod = declared != null
       ? round2(money(declared))
       : codRemaining;
@@ -860,6 +874,7 @@ export async function confirmConsignmentDelivery(
     // لاحقاً — والذي يشترط `status ∈ {DISPATCHED, PARTIAL}` (guards)، فإغلاقُه هنا كان يجعل
     // الذمّة غيرَ قابلةٍ للاستيفاء صامتاً.
     const originalCodIsZero = round2(money(cn.codAmount)).isZero();
+    if (originalCodIsZero) assertConsignmentStatusTransition(cn.status, "DELIVERED");
     await tx
       .update(deliveryConsignments)
       .set({
@@ -917,7 +932,7 @@ export async function confirmConsignmentDelivery(
       );
       // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
       // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً** — سقفٌ لا تطابق. لا يجوز بحال تجاوزُ متبقّي الفاتورة.
-      const collectionMismatch = input.statementWitness
+      const collectionMismatch = input.statementWitness || portalDeclared
         ? cod.gt(invoiceRemaining)
         : !invoiceRemaining.eq(cod);
       if (collectionMismatch) {
@@ -952,16 +967,23 @@ export async function confirmConsignmentDelivery(
        *   ٤) الفاتورة تُقفَل مسدَّدة كاملاً (`newPaid = invoiceRemaining`) — لا AR للعميل.
        *   ٥) ذمّة العميل تُصفَّى كاملاً (`adjustCustomerBalance` بـinvoiceRemaining كاملاً).
        *
-       * البيوّابة النظيرة في `manualProof` تحمل نفس السلوك (نفس المسار الماليّ). البيوّابة الجزئيّة
-       * الحقيقيّة عبر كشف الشركة الرسميّ تبقى مسموحةً بلا سبب (`kind='COMPANY_STATEMENT'` بلا شاهد
-       * SHORTFALL — نمطُ التحصيل الجزئيّ التقليديّ عبر مسار `counterCollection` لاحقاً).
+       * البوّابة النظيرة في `manualProof` تحمل نفس السلوك (نفس المسار الماليّ)، وكذلك **بوّابةُ
+       * المندوب** منذ م١ PR-4 (`collectedAmount` أعلى الدالّة). أمّا **كشفُ الشركة الرسميّ** فيبقى
+       * على قرار المالك (٢١/٨): سطرٌ بلا سبب = «المتبقّي يبقى على العميل» ذمّةً حيّة تُقبض كاونترياً
+       * (سطرُ الإثبات الصفريّ نموذجُه)؛ وسطرٌ يحمل `shortfallReason` يقيّد عجزَه على الجهة كالمسارَين
+       * الآخرَين تماماً — الاختيارُ في السطر لا في الشيفرة.
        */
       const shortage = round2(invoiceRemaining.minus(cod));
-      const isStaffOrManualPath =
-        input.statementWitness?.kind === "STAFF_CONFIRMED" ||
-        input.statementWitness?.kind === "MANUAL_PROOF";
-      if (shortage.gt(0) && isStaffOrManualPath) {
-        const reason = input.statementWitness?.shortfallReason;
+      const witnessKind = input.statementWitness
+        ? (input.statementWitness.kind ?? "COMPANY_STATEMENT")
+        : "COURIER_PORTAL";
+      const declaredReason = input.statementWitness
+        ? input.statementWitness.shortfallReason
+        : input.shortfallReason;
+      const shortfallOptional = witnessKind === "COMPANY_STATEMENT";
+      const booksShortfall = shortage.gt(0) && (!shortfallOptional || declaredReason != null);
+      if (booksShortfall) {
+        const reason = declaredReason;
         if (!reason || !isShortfallReason(reason)) {
           // ⚠️ «سبب مصنَّف» يبقى في النصّ: يُطابقه `deliveryProof` بالتعبير النمطيّ.
           // والقائمة تُشتقّ من `@shared/shortfallReason` لا تُكتب هنا — فلا تنجرف عن المُنتقي.
@@ -976,9 +998,7 @@ export async function confirmConsignmentDelivery(
           });
         }
       }
-      const shortfallReason = shortage.gt(0) && isStaffOrManualPath
-        ? input.statementWitness!.shortfallReason!
-        : null;
+      const shortfallReason = booksShortfall ? declaredReason! : null;
 
       if (cn.custodyRecognizedAt == null) {
         // نُصعِّد عهدةَ المندوب بـ**مجموع** ما يتحمّله (نقدٌ قبضه + عجزٌ يتحمّله):

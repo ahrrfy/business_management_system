@@ -90,6 +90,59 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
     FEE_REFUNDED: -1,
   });
 
+/**
+ * م١ (PR-2/3) — **العهدةُ الكلّية للجهة مشتقّةً من الدفتر** (نقدٌ ماديّ + عجزٌ محمَّل): الأنواعُ
+ * التي تحرّكها وإشارتُها، وهي عينُها إشارة `DELIVERY_LEDGER_ENTRY_SIGN` مقصورةً على أحداث العهدة:
+ *
+ *   custody = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ *
+ * ⚠️ **العجزُ داخل العهدة عمداً — لا داخل «نقد بيده»** (Codex #1012 P2): `SHORTFALL_ASSIGNED` ذمّةٌ
+ * غير نقديّة، لكنّه يرفع `deliveryParties.currentBalance` بـ`adjustDeliveryBalance` تماماً كالنقد،
+ * و`reconcileService` يطابق هذا المجموع بالعمود المخزَّن حرفياً — فإسقاطُه من هنا يُنتج انحرافاً
+ * كاذباً على كلّ جهةٍ لها عجز. لذلك يبقى في «العهدة الكلّية»، و**الفصلُ في العرض**: تطرحه
+ * `computePartyExposure` (عبر `deriveShortfallOwedFromLedger`) فيُعرَض العمود «نقد بيده» ماديّاً
+ * وحده، والعجزُ عمودٌ خامسٌ مستقلّ — فلا تُبنى قراراتُ الدرج على دَينٍ يظهر نقداً.
+ *
+ * لماذا هذه الأربعة وحدها (قُرئ كلُّ كاتبٍ لـ`adjustDeliveryBalance` قبل تثبيتها —
+ * [[read-every-writer-before-you-rely-on-a-field]]):
+ *   · `COD_ASSIGNED`/`COD_RELEASED` **تعرّضٌ** (بضاعةٌ خرجت / تحرّرت) لا نقدٌ قُبض — لا يمسّان العهدة.
+ *   · `COD_RECOVERED` **لا** يرفع العهدة: `recoverDeliveryWriteOff` يُدخل النقد المستردّ الدرجَ
+ *     بإيصال IN في المعاملة نفسها ولا يمسّ `currentBalance` (قيدان متعاكسان) — عدُّه هنا
+ *     يُنتج انحرافاً كاذباً عن العمود المخزَّن.
+ *   · الأجورُ `FEE_*` التزامٌ **علينا** لا نقدٌ بيدها — عمودٌ آخر (`feesOwedToThem`).
+ *
+ * ⛔ مصدرٌ واحد: `shared/partyExposure.deriveCashInHandFromLedger` (نقيّة) و
+ * `server/services/delivery/board.ts` (SQL مبنيٌّ من هذا الثابت) يقرآن هذه الخريطة — لا صيغةَ
+ * ثالثة مكتوبةً بيد. والعرضُ الماديّ للعمود ١ يطرح العجزَ في `board.ts`/`parties.ts` معاً.
+ */
+export const DELIVERY_CASH_CUSTODY_SIGN = Object.freeze({
+  COD_COLLECTED: 1,
+  SHORTFALL_ASSIGNED: 1,
+  COD_REMITTED: -1,
+  COD_WRITTEN_OFF: -1,
+} as const satisfies Partial<Record<DeliveryLedgerEntryType, 1 | -1>>);
+
+export type DeliveryCashCustodyEntryType = keyof typeof DELIVERY_CASH_CUSTODY_SIGN;
+
+/** أنواعُ الأجور — العمود الرابع في `partyExposure` («أجور مستحقّة للجهة»). */
+export const DELIVERY_FEE_ENTRY_TYPES = ["FEE_EARNED", "FEE_PAID", "FEE_OFFSET", "FEE_REFUNDED"] as const;
+export type DeliveryFeeEntryType = (typeof DELIVERY_FEE_ENTRY_TYPES)[number];
+
+/**
+ * أثرُ قيد أجرةٍ في «ما ندين به للجهة» — **مشتقٌّ من `DELIVERY_LEDGER_ENTRY_SIGN` بعكس
+ * الإشارة** (ما يرفع دَينَها لنا يخفض دَينَنا لها): `FEE_EARNED` يرفع ما ندين به، و`FEE_PAID`/
+ * `FEE_OFFSET` يخفضانه.
+ *
+ * ⚠️ **قرارُ مالكٍ معلَّق — `FEE_REFUNDED`:** إشارتُها في الجدول أعلاه `-1` (تُقرأ هنا: رفعٌ
+ * لما ندين به)، بينما صيغُ SQL الخادميّة القائمة (`fees.ts`/`lifecycle.ts`) تطرحها من
+ * المستحقّ. لا كاتبَ لها اليوم في الشيفرة، فالأثرُ صفريّ؛ و**لا يُحسم المعنى بالتخمين**:
+ * أهي ردٌّ منها إلينا أم إلغاءُ استحقاقٍ لها؟ قرارُ مالك منظومة التوصيل. إلى حينه يقرأ
+ * المصدران (`partyExposure` هنا والجدول) ثابتاً واحداً كي لا يفترقا مرّةً ثانية.
+ */
+export function deliveryFeeLiabilityDelta(entryType: DeliveryFeeEntryType): 1 | -1 {
+  return DELIVERY_LEDGER_ENTRY_SIGN[entryType] === 1 ? -1 : 1;
+}
+
 export function isDeliveryLedgerEntryType(v: unknown): v is DeliveryLedgerEntryType {
   return typeof v === "string" && (DELIVERY_LEDGER_ENTRY_TYPES as readonly string[]).includes(v);
 }

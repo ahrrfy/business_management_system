@@ -23,7 +23,7 @@ import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { assertSiblingsReady } from "../workOrder/siblings";
 
 export interface DispatchInvoiceInput {
@@ -239,6 +239,7 @@ export async function dispatchInvoiceInTx(
     let consignmentId: number;
     let consignmentNumber: string;
     if (already) {
+      assertConsignmentStatusTransition(already.status, "DISPATCHED");
       consignmentId = Number(already.id);
       consignmentNumber = already.consignmentNumber;
       await tx.update(deliveryConsignments).set({

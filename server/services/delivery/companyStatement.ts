@@ -50,6 +50,13 @@ export interface CompanyStatementLineInput {
   consignmentId: number;
   /** المُحصَّل فعلاً على هذا الطرد حسب الكشف (قد يقلّ عن COD — فرقٌ يبقى على العميل). */
   collectedAmount: string;
+  /**
+   * م١ (PR-4) — **اختياريّ على مستوى السطر**: سببُ العجز من `shared/shortfallReason.ts` حين تقرّ
+   * الشركةُ بأنّ الفرق عليها (قبضته ولم تُعلنه، ضاع بيد مندوبها…). بوجوده يُقيَّد
+   * `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة كمسارَي الكاشير؛ وبغيابه يبقى قرارُ المالك (٢١/٨):
+   * المتبقّي ذمّةُ عميلٍ حيّة تُقبض كاونترياً. لا يُطبَّق على الأسطر المختومة سلفاً (التحصيل المتمِّم).
+   */
+  shortfallReason?: string | null;
 }
 
 export interface CompanyStatementInput {
@@ -208,6 +215,7 @@ async function preValidateStatementLines(
  */
 function splitStatementLines(lines: CompanyStatementLineInput[]) {
   const collectedByLine = new Map<number, string>();
+  const reasonByLine = new Map<number, string>();
   const moneyLines: CompanyStatementLineInput[] = [];
   for (const l of lines) {
     const amt = round2(money(l.collectedAmount));
@@ -226,11 +234,12 @@ function splitStatementLines(lines: CompanyStatementLineInput[]) {
       });
     }
     collectedByLine.set(Number(l.consignmentId), amt.toFixed(2));
+    if (l.shortfallReason) reasonByLine.set(Number(l.consignmentId), l.shortfallReason);
     if (amt.gt(0)) {
       moneyLines.push({ consignmentId: Number(l.consignmentId), collectedAmount: amt.toFixed(2) });
     }
   }
-  return { collectedByLine, moneyLines };
+  return { collectedByLine, reasonByLine, moneyLines };
 }
 
 export async function recordCompanyStatement(
@@ -246,7 +255,7 @@ export async function recordCompanyStatement(
   }
   await assertStatementNotUsed(input.partyId, statementNumber);
 
-  const { collectedByLine, moneyLines } = splitStatementLines(input.lines);
+  const { collectedByLine, reasonByLine, moneyLines } = splitStatementLines(input.lines);
   const proofOnly = moneyLines.length === 0;
   if (proofOnly) {
     // كشفُ إثباتٍ محض: لا نقد يدخل ⇒ نقدٌ معدودٌ غير صفريّ تناقضٌ يُرفض **قبل أيّ كتابة**
@@ -287,6 +296,7 @@ export async function recordCompanyStatement(
           partyId: Number(input.partyId),
           statementNumber,
           collectedAmount: collectedByLine.get(id),
+          shortfallReason: reasonByLine.get(id),
         },
       },
       { userId: actor.userId },
@@ -419,7 +429,7 @@ export async function recordDeliveryProof(
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكشف بلا أسطر" });
   }
-  const { collectedByLine } = splitStatementLines(input.lines);
+  const { collectedByLine, reasonByLine } = splitStatementLines(input.lines);
   const { ids, byId } = await loadStatementConsignments(input);
   await preValidateStatementLines(input, ids, byId);
 
@@ -436,6 +446,7 @@ export async function recordDeliveryProof(
           partyId: Number(input.partyId),
           statementNumber,
           collectedAmount: collectedByLine.get(id),
+          shortfallReason: reasonByLine.get(id),
         },
       },
       { userId: actor.userId },
