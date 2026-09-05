@@ -35,6 +35,13 @@ export interface DecisionRowProps {
   row: DecisionRowModel;
   /** يُستدعى بعد كلّ حسمٍ (نجاحاً أو STALE) كي يُعيد الصندوق التحميل. */
   onDecided?: (result: DecisionDecideResult) => void;
+  /**
+   * نتيجةُ حسمٍ وقع للتوّ — يمرّرها الصندوق حين يُعيد تحميل قائمته فيختفي الصفُّ من المعلَّق:
+   * النتيجةُ المُهيكَلة تبقى أمام المُقرِّر حتى يُغلقها، لا تختفي مع الصفّ.
+   */
+  initialResult?: DecisionDecideResult | null;
+  /** إغلاقُ صفٍّ محسوم من العرض. */
+  onDismiss?: () => void;
 }
 
 function newClientRequestId(): string {
@@ -58,14 +65,14 @@ const OUTCOME_TONE: Record<DecisionDecideResult["outcome"], { cls: string; Icon:
   WITHDRAWN: { cls: "bg-muted text-muted-foreground", Icon: XCircle },
 };
 
-export function DecisionRow({ row, onDecided }: DecisionRowProps) {
+export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }: DecisionRowProps) {
   const spec = decisionSpec(row.kind);
   const formId = useId();
   const [reason, setReason] = useState("");
   const [reference, setReference] = useState("");
   const [confirmations, setConfirmations] = useState<Record<string, boolean>>({});
   const [mode, setMode] = useState<"IDLE" | "REJECT" | "APPROVE">("IDLE");
-  const [result, setResult] = useState<DecisionDecideResult | null>(null);
+  const [result, setResult] = useState<DecisionDecideResult | null>(initialResult);
 
   const decide = trpc.decisions.decide.useMutation({
     onSuccess: (res) => {
@@ -192,10 +199,15 @@ export function DecisionRow({ row, onDecided }: DecisionRowProps) {
         {result && outcomeTone && (
           <div className={`flex items-start gap-2 rounded-md p-2 text-xs ${outcomeTone.cls}`} role="status">
             <outcomeTone.Icon aria-hidden className="mt-0.5 size-4 shrink-0" />
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="font-extrabold">{DECISION_OUTCOME_LABEL_AR[result.outcome]}</p>
               <p className="mt-0.5 leading-relaxed">{result.message}</p>
             </div>
+            {onDismiss && (
+              <Button size="sm" variant="ghost" className="shrink-0" onClick={onDismiss} aria-label="إغلاق النتيجة">
+                {ACTION_LABELS.close}
+              </Button>
+            )}
           </div>
         )}
 

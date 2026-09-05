@@ -21,7 +21,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { decisionSpec } from "@shared/decisionRegistry";
+import { decisionSpec, type DecisionDecideResult, type DecisionRowModel } from "@shared/decisionRegistry";
+
+/** صفٌّ حُسم للتوّ: يُحفَظ مع نتيجته كي لا تختفي النتيجةُ المُهيكَلة حين يُعاد تحميل المعلَّق. */
+type DecidedRow = { row: DecisionRowModel; result: DecisionDecideResult };
+const rowKey = (r: Pick<DecisionRowModel, "kind" | "id">) => `${r.kind}-${r.id}`;
 
 /** فلاتر العمر — بالساعات؛ الصفر = الكلّ. */
 const AGE_OPTIONS: Array<{ value: string; label: string }> = [
@@ -37,6 +41,7 @@ export default function MyWork() {
   const [branchId, setBranchId] = useState("");
   const [minAge, setMinAge] = useState("0");
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [decided, setDecided] = useState<DecidedRow[]>([]);
 
   const branches = trpc.branches.list.useQuery();
   const inbox = trpc.decisions.inbox.useQuery(
@@ -55,7 +60,10 @@ export default function MyWork() {
   const markAnnouncementRead = trpc.announcements.markRead.useMutation({ onSuccess: () => void announcements.refetch() });
   const acknowledgeAnnouncement = trpc.announcements.acknowledge.useMutation({ onSuccess: () => void announcements.refetch() });
 
-  const rows = inbox.data?.rows ?? [];
+  // الصفوفُ المحسومة للتوّ تبقى ظاهرةً بنتيجتها فوق المعلَّق (لا تختفي مع إعادة التحميل)،
+  // ويُستبعَد نظيرُها من المعلَّق إن بقي فيه (مثل STALE على طلبٍ لا يزال قائماً).
+  const decidedKeys = new Set(decided.map((d) => rowKey(d.row)));
+  const rows = (inbox.data?.rows ?? []).filter((r) => !decidedKeys.has(rowKey(r)));
   const total = inbox.data?.total ?? 0;
   const failed = inbox.data?.failedSources ?? [];
   // فلترُ النوع يعرض الأنواع التي يملك المستخدم بوّابتها — لا كلَّ السجلّ.
@@ -169,8 +177,23 @@ export default function MyWork() {
             </CardContent></Card>
           )}
 
+          {decided.map(({ row, result }) => (
+            <DecisionRow
+              key={`decided-${rowKey(row)}`}
+              row={row}
+              initialResult={result}
+              onDismiss={() => setDecided((list) => list.filter((d) => rowKey(d.row) !== rowKey(row)))}
+            />
+          ))}
           {rows.map((row) => (
-            <DecisionRow key={`${row.kind}-${row.id}`} row={row} onDecided={() => void inbox.refetch()} />
+            <DecisionRow
+              key={rowKey(row)}
+              row={row}
+              onDecided={(result) => {
+                setDecided((list) => [{ row, result }, ...list.filter((d) => rowKey(d.row) !== rowKey(row))]);
+                void inbox.refetch();
+              }}
+            />
           ))}
           {total > rows.length && (
             <p className="text-center text-2xs text-muted-foreground">يُعرض {rows.length} من {total} — احسم ما يظهر ليظهر الباقي.</p>
