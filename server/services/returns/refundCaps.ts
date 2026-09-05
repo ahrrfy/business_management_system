@@ -68,6 +68,16 @@ function railToRefundMethod(rail: string): RefundMethod | null {
 export interface RefundCapSnapshot {
   /** الوعاء الحاكم: Σ(المقبوض بكل الطرق) − Σ(المسترَدّ بكل الطرق)، مقصوصاً عند الصفر. */
   pool: Decimal;
+  /**
+   * Σ(المقبوض بكل الطرق) **قبل** طرح المستردّ — أساسُ أثر `PAID_AMOUNT` (APPLY) في محرّك العكس.
+   * ⭐ مُجسِّدُ الفاتورة (`reversal/materialize/invoice.ts`) يقرأ الوعاء من هنا **لا من استعلامٍ
+   * موازٍ**: كان له استعلامُه الخاصّ الذي يغفل حصصَ العربون المطبَّقة على **أمر الشغل** وتحصيلَ
+   * المندوب المورَّد، فيُجسِّد مقبوضَ فاتورة التسليم صفراً ولا يخرج ردٌّ من الدرج بينما هذا
+   * الملفّ يُجيز ٱسترداده (أمسكه `receptionDeposits.test.ts` R1: عجزٌ −15,000 في الدرج).
+   */
+  grossIn: Decimal;
+  /** Σ(المستردّ بكل الطرق) سلفاً — إيصالاتُ OUT المتجسِّدة على الفاتورة. */
+  grossOut: Decimal;
   /** صافي المقبوض لكل طريقة ردّ (زين مطويٌّ في النقد) — إفصاحٌ للموظف وسقفٌ لغير النقد. */
   netByMethod: Map<RefundMethod, Decimal>;
   /** السقف الأقصى لكل طريقة **قبل** قصّه بقيمة المرتجع الجاري. */
@@ -176,7 +186,7 @@ export async function loadRefundCaps(
     capByMethod.set(m, isSurfacedRefundMethod(m) ? pool : Decimal.min(pool, net));
   }
 
-  return { pool, netByMethod, capByMethod };
+  return { pool, grossIn: totalIn, grossOut: totalOut, netByMethod, capByMethod };
 }
 
 /** السقف الفعليّ لطريقةٍ بعد قصّه بقيمة المرتجع الجاري — نفس المعادلة في القراءة والكتابة. */

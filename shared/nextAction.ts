@@ -72,11 +72,54 @@ export type NextActionOwner =
  * الموظّف. الخياراتُ الأخرى مكانُها شريطُ الأفعال (`documentActions`)؛ وهذا الحقلُ يجيب
  * سؤالاً واحداً: **ماذا الآن؟**
  */
+/**
+ * **هدفُ الخطوة مُهيكَلاً** (LC02 — م٢ ذيل): على أيّ مستندٍ تقع وبأيّ فعلٍ، **بهويّة المستند**.
+ *
+ * كان الهدفُ نصَّ مسارٍ (`href`) يُفقِد الهويّةَ في الطريق: خطوةُ «تابع الطرد» كانت تحمل `/delivery`
+ * بلا رقم الإرسالية، فتفتح الشاشةَ العامّة ويبحث الموظّفُ بنفسه عن طردٍ يعرفه النظامُ باسمه.
+ * الهدفُ المُهيكَل يحمل `docId` (رقمُ الإرسالية/الفاتورة/الأمر) ويُشتقّ منه `href` بدالّةٍ واحدة
+ * (`nextActionHref`) — فلا مسارَ يُكتب بيدٍ في الفروع، ولا هويّةَ تضيع.
+ */
+export type NextActionTarget =
+  | { docType: "SALE_INVOICE"; docId: number | null; action: "COLLECT" | "OPEN_REPLACEMENT" | "FIND_REPLACEMENT" }
+  | { docType: "WORK_ORDER"; docId: number; action: "START" | "MARK_READY" | "DELIVER" | "DISPATCH" }
+  | {
+      docType: "DELIVERY_CONSIGNMENT";
+      /** رقمُ الإرسالية حين يُعرَف — `null` حين عرف المستدعي أنّ طرداً حيّاً موجود ولم يحمل رقمَه. */
+      docId: number | null;
+      action: "CONFIRM_ARRIVAL" | "COLLECT_ON_DELIVERY" | "TRACK";
+    }
+  | { docType: "PURCHASE_ORDER"; docId: number | null; action: "SEND_FOR_APPROVAL" | "APPROVE" | "REQUEST_APPROVAL" | "CREATE_FOLLOW_UP" }
+  | { docType: "SUPPLIER_PAYMENT"; docId: null; action: "REQUEST_PAYMENT"; purchaseOrderId: number };
+
+/**
+ * **الرابطُ الوحيد المشتقّ من الهدف** — كلُّ مسارٍ هنا معرَّفٌ في `client/src/App.tsx`
+ * (`/invoices` · `/work-orders` · `/delivery` · `/purchases`)، ويحرسه اختبارٌ نصّيّ.
+ * الإرساليةُ تفتح تبويبَ «قيد التوصيل» وتحمل رقمَها في الاستعلام كي تُركِّز عليه الشاشة.
+ */
+export function nextActionHref(target: NextActionTarget): string {
+  switch (target.docType) {
+    case "SALE_INVOICE":
+      return target.docId != null ? `/invoices/${target.docId}` : "/invoices";
+    case "WORK_ORDER":
+      return `/work-orders/${target.docId}`;
+    case "DELIVERY_CONSIGNMENT":
+      return target.docId != null ? `/delivery?tab=transit&consignment=${target.docId}` : "/delivery?tab=transit";
+    case "PURCHASE_ORDER":
+      if (target.action === "CREATE_FOLLOW_UP" || target.docId == null) return "/purchases/new";
+      return `/purchases/${target.docId}`;
+    case "SUPPLIER_PAYMENT":
+      return "/purchases/supplier-payments";
+  }
+}
+
 export type NextAction = {
   /** ماذا — فعلُ أمرٍ قصيرٌ بالعربية، بلا تشكيل ولا إيموجي. */
   what: string;
   owner: NextActionOwner;
-  /** أين — مسارٌ داخليٌّ معرَّفٌ في `client/src/App.tsx`. */
+  /** على أيّ مستندٍ وبأيّ فعل — بهويّة المستند (منه يُشتقّ `href`). */
+  target?: NextActionTarget;
+  /** أين — مسارٌ داخليٌّ معرَّفٌ في `client/src/App.tsx`، **مشتقٌّ** من `target` لا مكتوبٌ بيد. */
   href?: string;
   /**
    * متى — سقفُ الساعات المتوقَّع للخطوة. `0` تعني **فوراً** (تجاوزَ الموعدَ أصلاً)،
@@ -150,6 +193,12 @@ export interface SaleInvoiceNextActionFacts {
   hasLiveConsignment: boolean;
   /** اسمُ جهة التوصيل (`deliveryParties.name`) حين وُجدت إرساليةٌ حيّة. */
   deliveryPartyLabel: string | null;
+  /**
+   * رقمُ الإرسالية الحيّة حين يحمله المستدعي (`deliveryConsignments.id`) — اختياريٌّ لأنّ بعض
+   * مسارات `hasLiveConsignment` تشتقّها من `onlineOrders` بلا إرساليةٍ بعد. يُحمَل في `target`
+   * كي يفتح الرابطُ الطردَ نفسه لا شاشةَ التوصيل العامّة (LC02).
+   */
+  consignmentId?: number | null;
   /**
    * مُعرِّفُ الفاتورة البديلة للمستبدَلة — `sale/correct.ts` يُصدر فاتورةً جديدة تحمل
    * الالتزام كلَّه ويسِمُ الأصلَ `SUPERSEDED`. `null` حين لم يُلتقَط الرابط.
@@ -321,16 +370,23 @@ function blockers(...entries: (string | null | undefined)[]): string[] | undefin
   return list.length > 0 ? list : undefined;
 }
 
-/** يُركّب الخطوة ويُسقِط الحقول الاختيارية الفارغة (فلا `href: undefined` في الحمولة). */
+/**
+ * يُركّب الخطوة ويُسقِط الحقول الاختيارية الفارغة (فلا `href: undefined` في الحمولة).
+ * الرابطُ **لا يُمرَّر** — يُشتقّ من الهدف المُهيكَل وحده (LC02): مسارٌ مكتوبٌ بيدٍ في فرعٍ هو
+ * بالضبط ما أضاع رقمَ الإرسالية.
+ */
 function action(input: {
   what: string;
   owner: NextActionOwner;
-  href?: string;
+  target?: NextActionTarget;
   slaHours?: number;
   blockedBy?: string[];
 }): NextAction {
   const out: NextAction = { what: input.what, owner: input.owner };
-  if (input.href != null) out.href = input.href;
+  if (input.target != null) {
+    out.target = input.target;
+    out.href = nextActionHref(input.target);
+  }
   if (input.slaHours != null) out.slaHours = input.slaHours;
   if (input.blockedBy != null && input.blockedBy.length > 0) out.blockedBy = input.blockedBy;
   return out;
@@ -372,10 +428,9 @@ function deriveSaleInvoiceNextAction(d: SaleInvoiceNextActionFacts): NextAction 
     return action({
       what: "افتح الفاتورة المصححة البديلة وتابع تحصيلها",
       owner: byRole("cashier"),
-      href:
-        d.replacementInvoiceId != null
-          ? `/invoices/${d.replacementInvoiceId}`
-          : "/invoices",
+      target: d.replacementInvoiceId != null
+        ? { docType: "SALE_INVOICE", docId: d.replacementInvoiceId, action: "OPEN_REPLACEMENT" }
+        : { docType: "SALE_INVOICE", docId: null, action: "FIND_REPLACEMENT" },
       blockedBy: blockers(
         d.replacementInvoiceId == null
           ? "الفاتورة البديلة غير مرتبطة بهذا المستند — ابحث عنها في قائمة الفواتير باسم العميل وتاريخ الاصل"
@@ -393,7 +448,7 @@ function deriveSaleInvoiceNextAction(d: SaleInvoiceNextActionFacts): NextAction 
       return action({
         what: "اثبت وصول الطرد واغلق الارسالية",
         owner: byCounterparty(d.deliveryPartyLabel, "جهة التوصيل"),
-        href: "/delivery",
+        target: { docType: "DELIVERY_CONSIGNMENT", docId: d.consignmentId ?? null, action: "CONFIRM_ARRIVAL" },
       });
     }
     return null; // نهائيّة — السببُ في NEXT_ACTION_TERMINAL_REASON.
@@ -414,7 +469,7 @@ function deriveSaleInvoiceNextAction(d: SaleInvoiceNextActionFacts): NextAction 
     return action({
       what: "حصل قيمة الفاتورة عند تسليم الطرد ثم ورد التحصيل",
       owner: byCounterparty(d.deliveryPartyLabel, "جهة التوصيل"),
-      href: "/delivery",
+      target: { docType: "DELIVERY_CONSIGNMENT", docId: d.consignmentId ?? null, action: "COLLECT_ON_DELIVERY" },
       slaHours: sla,
     });
   }
@@ -422,7 +477,7 @@ function deriveSaleInvoiceNextAction(d: SaleInvoiceNextActionFacts): NextAction 
   return action({
     what,
     owner: byRole("cashier"),
-    href: `/invoices/${d.invoiceId}`,
+    target: { docType: "SALE_INVOICE", docId: d.invoiceId, action: "COLLECT" },
     slaHours: sla,
   });
 }
@@ -442,7 +497,8 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
 
   const operator: NextActionOwner =
     d.assignedToUserId != null ? byUser(d.assignedToUserId) : byRole("print_operator");
-  const href = `/work-orders/${d.workOrderId}`;
+  const onOrder = (act: "START" | "MARK_READY" | "DELIVER" | "DISPATCH"): NextActionTarget =>
+    ({ docType: "WORK_ORDER", docId: d.workOrderId, action: act });
   const sla = workOrderSlaHours(d.status);
 
   /** المهمّةُ الحاجزة تمنع **البدء ووسمَ الجاهزية معاً** — نصٌّ واحدٌ لموضعين. */
@@ -455,7 +511,7 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
     return action({
       what: "ابدا التنفيذ واخصم المواد",
       owner: operator,
-      href,
+      target: onOrder("START"),
       slaHours: sla,
       blockedBy: blockers(blockingTask("لا يبدا التنفيذ")),
     });
@@ -470,7 +526,7 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
     return action({
       what: "ضع علامة جاهز عند انتهاء الشغل",
       owner: operator,
-      href,
+      target: onOrder("MARK_READY"),
       slaHours: sla,
       blockedBy: blockers(blockedByKanban, blockingTask("لا يوسم الامر جاهزا")),
     });
@@ -485,7 +541,7 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
       return action({
         what: "تابع الطرد مع جهة التوصيل حتى اثبات الوصول",
         owner: byCounterparty(null, "جهة التوصيل"),
-        href: "/delivery",
+        target: { docType: "DELIVERY_CONSIGNMENT", docId: d.consignmentId, action: "TRACK" },
         slaHours: sla,
       });
     }
@@ -494,7 +550,7 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
         ? "اسند الامر لمندوب التوصيل واصدر الارسالية"
         : "سلم الامر للعميل واصدر الفاتورة",
       owner: byRole("cashier"),
-      href,
+      target: onOrder(d.hasDelivery ? "DISPATCH" : "DELIVER"),
       slaHours: sla,
     });
   }
@@ -504,7 +560,7 @@ function deriveWorkOrderNextAction(d: WorkOrderNextActionFacts): NextAction | nu
     return action({
       what: "اثبت وصول الطرد وحصل قيمته",
       owner: byCounterparty(null, "جهة التوصيل"),
-      href: "/delivery",
+      target: { docType: "DELIVERY_CONSIGNMENT", docId: d.consignmentId, action: "CONFIRM_ARRIVAL" },
     });
   }
   return null; // نهائيّة — السببُ في NEXT_ACTION_TERMINAL_REASON.
@@ -533,7 +589,8 @@ function derivePurchaseOrderNextAction(
 ): NextAction | null {
   if (d.status === "CANCELLED") return null; // نهائيّة — ملغى ولا دفعة عليه.
 
-  const href = `/purchases/${d.purchaseOrderId}`;
+  const onOrder = (act: "SEND_FOR_APPROVAL" | "APPROVE" | "REQUEST_APPROVAL"): NextActionTarget =>
+    ({ docType: "PURCHASE_ORDER", docId: d.purchaseOrderId, action: act });
 
   /** غيابُ تغطية طلب الشراء يُسقِط **الإرسالَ والاعتمادَ** معاً — نصٌّ واحدٌ لموضعين. */
   const requisitionBlocker =
@@ -545,7 +602,7 @@ function derivePurchaseOrderNextAction(
     return action({
       what: "ارسل الامر للاعتماد",
       owner: byRole("purchasing"),
-      href,
+      target: onOrder("SEND_FOR_APPROVAL"),
       blockedBy: blockers(
         requisitionBlocker,
         d.hasCurrentRevision ? null : "امر الشراء بلا مراجعة ثابتة حالية — احفظ بنوده مرة اخرى لتثبت مراجعته",
@@ -563,7 +620,7 @@ function derivePurchaseOrderNextAction(
       return action({
         what: "اعتمد المراجعة واقر وصول الكميات كاملة",
         owner: byRole("manager"),
-        href,
+        target: onOrder("APPROVE"),
         blockedBy: blockers(requisitionBlocker),
       });
     }
@@ -573,7 +630,7 @@ function derivePurchaseOrderNextAction(
           ? "اعد طلب الاعتماد على المراجعة الحالية"
           : "اطلب اعتماد المراجعة",
       owner: byRole("purchasing"),
-      href,
+      target: onOrder("REQUEST_APPROVAL"),
       blockedBy: blockers(
         d.approvalRequest === "STALE"
           ? "طلب الاعتماد السابق لاغ: تغير امر الشراء بعد انشائه"
@@ -587,7 +644,7 @@ function derivePurchaseOrderNextAction(
     return action({
       what: "سجل الكميات الباقية بامر شراء مستقل عند وصولها",
       owner: byRole("purchasing"),
-      href: "/purchases/new",
+      target: { docType: "PURCHASE_ORDER", docId: null, action: "CREATE_FOLLOW_UP" },
       slaHours: slaFromHoursUntil(d.hoursUntilExpectedDelivery),
     });
   }
@@ -603,7 +660,7 @@ function derivePurchaseOrderNextAction(
     return action({
       what: "اطلب سداد المورد باعتماد ثان",
       owner: byRole("accountant"),
-      href: "/purchases/supplier-payments",
+      target: { docType: "SUPPLIER_PAYMENT", docId: null, action: "REQUEST_PAYMENT", purchaseOrderId: d.purchaseOrderId },
     });
   }
   return null; // نهائيّة — السببُ في NEXT_ACTION_TERMINAL_REASON.
