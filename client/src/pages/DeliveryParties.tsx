@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
-import { balanceDirection } from "@shared/predicates";
+import { hasOpenBalance, balanceDirection } from "@shared/predicates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ListToolbar } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -122,8 +122,9 @@ export default function DeliveryParties() {
       <PartyBoardSection
         outstandingOnly={f.outstandingOnly === "1"}
         onOpenDetail={(row) => setF({ detail: String(row.partyId) })}
-        onSettleLoose={canSettle ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p) setSettleFor(p); } : undefined}
-        onWriteOff={canRequestWriteOff ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p) setWriteOffFor(p); } : undefined}
+        // حوارا العهدة السائبة/الشطب يتطلّبان رصيداً مخزَّناً مفتوحاً — المسند المشترك (D2) لا فحصُ إشارةٍ بيد.
+        onSettleLoose={canSettle ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p && hasOpenBalance(p)) setSettleFor(p); } : undefined}
+        onWriteOff={canRequestWriteOff ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p && hasOpenBalance(p)) setWriteOffFor(p); } : undefined}
         contactFor={(row) => {
           const p = allRows.find((x) => Number(x.id) === row.partyId);
           if (!p) return null;

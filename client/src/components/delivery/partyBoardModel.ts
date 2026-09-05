@@ -11,6 +11,7 @@
  */
 import { DELIVERY_TERMS, type DeliveryTermKey } from "@shared/deliveryTerminology";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
+import { hasOpenBalance } from "@shared/predicates";
 import type { ConsignmentViewKey } from "@shared/consignmentView";
 
 import type { PartyBoardBucket, PartyBoardRow } from "@shared/deliveryBoard";
@@ -73,7 +74,7 @@ export function boardFlags(row: PartyBoardRow): BoardFlags {
     drift: Math.abs(toNum(row.cashInHandDrift)) >= 0.005,
     stale: row.staleOpenParcels > 0,
     hasOpenParcels: open > 0,
-    settleReady: row.deliveredUnremitted.count > 0 || toNum(row.cashInHandLedger) >= 0.005,
+    settleReady: row.deliveredUnremitted.count > 0 || hasOpenBalance({ currentBalance: row.cashInHandLedger }),
   };
 }
 
@@ -148,6 +149,6 @@ export function sortBoardRows(rows: PartyBoardRow[]): PartyBoardRow[] {
 export function filterOutstanding(rows: PartyBoardRow[]): PartyBoardRow[] {
   return rows.filter((r) => {
     const f = boardFlags(r);
-    return f.settleReady || f.hasOpenParcels || toNum(r.feesOwed) >= 0.005;
+    return f.settleReady || f.hasOpenParcels || hasOpenBalance({ currentBalance: r.feesOwed });
   });
 }

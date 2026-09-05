@@ -15,6 +15,7 @@ import { RowActions } from "@/components/list";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { DELIVERY_TERMS } from "@shared/deliveryTerminology";
+import { balanceDirection } from "@shared/predicates";
 import {
   BOARD_BUCKETS,
   BOARD_MONEY_LABEL,
@@ -204,7 +205,8 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
                 kind: "pay",
                 label: "تسوية عهدة سائبة",
                 hidden: !onSettleLoose,
-                disabled: toNum(r.cashInHandStored) <= 0,
+                // المسند المشترك (D2): «مدينٌ لنا» على الرصيد المخزَّن — لا فحصَ إشارةٍ بيد.
+                disabled: balanceDirection({ currentBalance: r.cashInHandStored }, "deliveryParty") !== "receivable",
                 disabledReason: "لا عهدة سائبة على الجهة",
                 onSelect: () => onSettleLoose?.(r),
                 gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
@@ -215,7 +217,7 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
                 label: "طلب شطب عجز",
                 variant: "destructive",
                 hidden: !onWriteOff,
-                disabled: toNum(r.cashInHandStored) <= 0,
+                disabled: balanceDirection({ currentBalance: r.cashInHandStored }, "deliveryParty") !== "receivable",
                 disabledReason: "لا عجز قابل للشطب",
                 onSelect: () => onWriteOff?.(r),
                 gate: { roles: ["admin"] },
