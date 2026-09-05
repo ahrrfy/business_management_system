@@ -111,7 +111,10 @@ const BASELINE_COUNTS = Object.fromEntries(
  */
 export function stripComments(source) {
   return source
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, " ") // {/* ... */}
+    // يمسك تعليقَ JSX المكتمل وحده. «النقطة المروَّضة» (tempered dot) في النمط أدناه تمنع
+    // تجاوزَ أوّل «*/»، فلا يُبتلَع جسمُ دالّةٍ يبدأ بتعليق JSDoc حتى أوّل «*/}» لاحق — وكان
+    // ذلك يطرح حقولَ النموذج الواقعةَ بعد الـJSDoc فيُنقِص القياس صامتاً (false negative) ويُمرّر انحرافاً.
+    .replace(/\{\s*\/\*(?:(?!\*\/)[\s\S])*?\*\/\s*\}/g, " ") // {/* ... */}
     .replace(/\/\*[\s\S]*?\*\//g, " ") // /* ... */
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 "); // // ...  (يتجنّب https://)
 }
@@ -507,6 +510,20 @@ export default function P() { return <A value={z} />; }
     collectFormFields('export default function P() { /* value={whatsapp} */ return <Input value={name} />; }').has("whatsapp"),
     false,
   );
+
+  // (stripper) جسمُ دالّةٍ يبدأ بـJSDoc لا يُبتلَع حتى أوّل تعليق JSX لاحق (الثقب المُصلَح، PR #1014):
+  //     بالنمط القديم كان حقلُ النموذج الواقعُ بعد الـJSDoc يُطرح مع أوّل «*/}» لاحق فيُنقَص القياس صامتاً.
+  const jsdocThenField = [
+    "export default function P() {",
+    "  /** doc */",
+    "  return (<div>",
+    "    <Input value={form.name} />",
+    "    {/* inline jsx comment */}",
+    "  </div>);",
+    "}",
+  ].join("\n");
+  eq("stripper يحفظ الحقلَ بعد JSDoc", /value=\{form\.name\}/.test(stripComments(jsdocThenField)), true);
+  has("الكاشف يرى الحقلَ بعد JSDoc", collectFormFields(jsdocThenField), "name");
 
   // ── الفرق
   const diff = diffFormParity(

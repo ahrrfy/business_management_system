@@ -29,6 +29,7 @@ const SCAN_ROOT = path.join(REPO_ROOT, "client", "src", "pages");
 const BASELINE_PATH = path.join(__dirname, "filter-shell-baseline.json");
 const BASELINE_REL = "scripts/filter-shell-baseline.json";
 const UPDATE = process.argv.includes("--update-baseline");
+const SELFTEST_ONLY = process.argv.includes("--selftest");
 
 const BASELINE = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
@@ -61,7 +62,10 @@ const FILTER_VOCAB = [
  */
 function stripComments(source) {
   return source
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, " ") // {/* ... */}
+    // يمسك تعليقَ JSX المكتمل وحده. «النقطة المروَّضة» (tempered dot) في النمط أدناه تمنع
+    // تجاوزَ أوّل «*/»، فلا يُبتلَع جسمُ دالّةٍ يبدأ بتعليق JSDoc حتى أوّل «*/}» لاحق — وكان
+    // ذلك يطرح مفرداتِ الفلاتر الواقعةَ بعد الـJSDoc فيُنقِص العدّ صامتاً (false negative) ويُمرّر مفردةً يدوية.
+    .replace(/\{\s*\/\*(?:(?!\*\/)[\s\S])*?\*\/\s*\}/g, " ") // {/* ... */}
     .replace(/\/\*[\s\S]*?\*\//g, " ") // /* ... */
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 "); // // ...  (يتجنّب https://)
 }
@@ -79,6 +83,54 @@ function* walkTsx(dir) {
 }
 
 const relOf = (full) => path.relative(REPO_ROOT, full).replace(/\\/g, "/");
+
+// ───────────────────────────── الاختبار الذاتيّ ─────────────────────────────
+
+/**
+ * يُثبت الكاشفَ قبل المسح الحيّ. أهمُّ حالةٍ «النقطة المروَّضة» في `stripComments` (PR #1014):
+ * جسمُ دالّةٍ يبدأ بتعليق JSDoc لا يُبتلَع حتى أوّل تعليق JSX لاحق. المسحُ يُستدعى **بعده**
+ * كي لا يبتلع خطأُ قراءةِ شجرةٍ ناقصة نتيجةَ الاختبار فيُعطي فشلاً لا علاقةَ له بالكاشف.
+ */
+function runSelfTest({ quiet }) {
+  const fails = [];
+  const eq = (name, got, want) => {
+    if (JSON.stringify(got) !== JSON.stringify(want)) {
+      fails.push(`${name}: توقّعنا ${JSON.stringify(want)} فجاء ${JSON.stringify(got)}`);
+    }
+  };
+
+  // (stripper) جسمُ دالّةٍ يبدأ بتعليق JSDoc لا يُبتلَع حتى أوّل تعليق JSX لاحق (الثقب المُصلَح):
+  //     بالنمط القديم كانت مفردةُ الفلترة الواقعةُ بعد الـJSDoc تُطرح مع أوّل «*/}» لاحق فيُنقَص العدّ.
+  const vocab = FILTER_VOCAB[0];
+  const jsdocThenVocab = [
+    "export default function Page() {",
+    "  /** doc */",
+    "  return (<div>",
+    `    <Button>${vocab}</Button>`,
+    "    {/* inline jsx comment */}",
+    "  </div>);",
+    "}",
+  ].join("\n");
+  const stripped = stripComments(jsdocThenVocab);
+  eq("stripper يحفظ مفردةَ الفلترة بعد JSDoc", stripped.includes(vocab), true);
+  eq(
+    "الكاشف يعدّ المفردةَ بعد JSDoc",
+    (stripped.match(new RegExp(vocab, "g")) ?? []).length,
+    1,
+  );
+
+  if (fails.length > 0) {
+    console.error("✗ الاختبار الذاتيّ لحارس FilterShell فشل:\n");
+    for (const f of fails) console.error(`  ${f}`);
+    process.exit(1);
+  }
+  if (!quiet) console.log("✓ الاختبار الذاتيّ لحارس FilterShell: كلّ الكواشف سليمة.");
+}
+
+runSelfTest({ quiet: !SELFTEST_ONLY });
+if (SELFTEST_ONLY) process.exit(0);
+
+// ───────────────────────────── المسح الحيّ ─────────────────────────────
 
 const current = new Map();
 for (const file of walkTsx(SCAN_ROOT)) {

@@ -767,22 +767,35 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ).toBe(true);
     }
 
-    const exceptionFiles = new Map([
+    // ملفٌّ ⇐ مفاتيحُه (م٢ ق٧): ردُّ إلغاء البيع **ومرتجعُه الكامل** صارا منفّذاً واحداً في محرّك
+    // العكس (`reversal/executors/invoiceRefund.ts`) يستدعي المفتاحَين حرفياً كلاًّ في سطره؛
+    // و`sale/cancel.ts` لم يعد يكتب إيصالاً. المرتجعُ الجزئيّ اليدويّ يبقي مفتاحَه في `returnService.ts`.
+    const exceptionFiles: ReadonlyArray<readonly [string, string]> = [
       ["cashTransferService.ts", "CASH_TRANSFER_INTERNAL"],
       ["cashDropService.ts", "CASH_DROP_INTERNAL"],
       ["cashHandoverService.ts", "CASH_HANDOVER_INTERNAL"],
       ["shiftService.ts", "SHIFT_FLOAT_INTERNAL"],
       ["shiftFundingService.ts", "SHIFT_FLOAT_INTERNAL"],
       ["legacyNegativeShiftService.ts", "LEGACY_SHIFT_REMEDIATION_INTERNAL"],
-      ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
+      ["reversal/executors/invoiceRefund.ts", "SALE_CANCELLATION_COMPENSATION"],
+      ["reversal/executors/invoiceRefund.ts", "SALE_RETURN_COMPENSATION"],
+      ["returnService.ts", "SALE_RETURN_COMPENSATION"],
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
       ["workOrder/cancel.ts", "WORK_ORDER_CANCELLATION_COMPENSATION"],
-    ]);
+      // م٢ ق١٠ — المفتاح الناقص: عكسُ التسليم بلا وردية استقبال مفتوحة يصرف من الخزينة بصفة المعتمِد؛
+      // يُعلَن في الخدمة (قفلُ المصدر) وفي المنفّذ (كتابةُ الإيصال) معاً.
+      ["workOrder/reverseDelivery.ts", "WORK_ORDER_REVERSE_DELIVERY_COMPENSATION"],
+      ["reversal/executors/workOrderDelivery.ts", "WORK_ORDER_REVERSE_DELIVERY_COMPENSATION"],
+    ];
     for (const [relative, key] of exceptionFiles) {
       const source = readFileSync(path.join(root, relative), "utf8");
-      expect(source).toContain(`assertTreasuryOutException("${key}")`);
+      expect(source, `${relative} must call the ${key} exception literally`).toContain(`assertTreasuryOutException("${key}")`);
     }
+    // ولا يبقى في `sale/cancel.ts` استثناءُ خزينةٍ ولا كاتبُ إيصال — الأثرُ كلُّه في المحرّك.
+    const cancelSource = readFileSync(path.join(root, "sale/cancel.ts"), "utf8");
+    expect(cancelSource).not.toContain("assertTreasuryOutException");
+    expect(cancelSource).not.toMatch(/\.insert\(receipts\)/);
   });
 
   // ⭐ قرار المالك (١٧/٨/٢٦): التصحيح صار ينقل المقبوض ويردّ الفرق الزائد، فلم يعد fail-closed.
@@ -806,7 +819,10 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       { file: "shiftService.ts", source: "await assertCashOutAvailable", target: "await tx.insert(shifts)" },
       { file: "purchase/receive.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
       { file: "returnService.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
-      { file: "sale/cancel.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
+      // إلغاءُ البيع (م٢ ق٧): الأثرُ الماليّ في المحرّك؛ يبقى هنا قفلُ مصدر النقد **قبل** قفل جهة
+      // التوصيل/الإرسالية ثمّ الفاتورة نفسها — الترتيبُ الذي يمنع التعاكس مع مسارات النقد.
+      { file: "sale/cancel.ts", source: "await lockCashSourceForUpdate", target: "await assertInvoiceCancellationDeliverySafeTx" },
+      { file: "sale/cancel.ts", source: "await lockCashSourceForUpdate", target: ".for(\"update\").limit(1)" },
       // تصحيح الفاتورة (١٧/٨): صار مساراً نقدياً مركّباً — يقفل الدرج قبل قفل الفاتورة، وإلّا
       // تعاكس مع `returnSaleInTx` (الذي يستدعيه داخلياً) على نفس الدرج والمستند ⇒ deadlock.
       { file: "sale/correct.ts", source: "await lockCashSourceForUpdate", target: ".for(\"update\").limit(1))[0]" },
