@@ -317,6 +317,12 @@ export default defineConfig({
       "shared/terms.test.ts",
       // FP-05 — حارس فقدان البيانات يعترض تنقّل SPA بحوارٍ عربيّ موحّد.
       "client/src/hooks/__tests__/useUnsavedGuard.test.ts",
+      // م١ (٥/٩/٢٦) — الكاشير بوضعين + لوحة الخمسة أعمدة + التسوية اليوميّة + مطابقة كشف الشركة (منطقٌ نقيّ بلا قاعدة).
+      "client/src/components/customer/customerByPhoneMachine.test.ts",
+      "client/src/components/pos/deliveryMode.test.ts",
+      "client/src/components/delivery/partyBoardModel.test.ts",
+      "client/src/components/delivery/dailySettlement.test.ts",
+      "client/src/components/delivery/companyStatementReconciliation.test.ts",
     ],
   },
 });

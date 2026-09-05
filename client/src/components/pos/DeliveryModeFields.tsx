@@ -3,10 +3,11 @@
  * المستلم — في نفس شاشة البيع. المنطق النقيّ (البناء/التحقّق/الاقتراح) في `deliveryMode.ts`.
  *
  *  - المحافظة من `shared/governorates` والتحصيل من `shared/deliveryFeeCollection` (⛔ لا قاموس محلّيّ).
- *  - اختيار المحافظة يقترح الجهة تلقائياً حين تصل `suggestedPartyId` من الخادم، ويقدّر الأجرة —
- *    «المستخدم يعدّل لا يبتدئ».
+ *  - اختيار المحافظة يستدعي `delivery.suggestPartyForZone` (الجهة المعتادة للمنطقة + أجرتها الفعّالة)
+ *    فتُختار الجهة وتُملأ الأجرة حين لا يكون الكاشير قد اختار/كتب — «المستخدم يعدّل لا يبتدئ».
  *  - `disabledReason` (الأوفلاين) يُعطّل الحقول ويُعلن السبب: لا إسناد بلا حرّاس الخادم الحيّة.
  */
+import { useEffect } from "react";
 import { Truck } from "lucide-react";
 import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -14,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
+import { fmt } from "@/lib/money";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   DELIVERY_FEE_COLLECTIONS,
@@ -25,6 +27,7 @@ import {
   DELIVERY_ISSUE_AR,
   applyGovernorateSelection,
   applyPartySelection,
+  applyZoneSuggestion,
   governorateOptions,
   validateDeliveryDraft,
   type DeliveryDraft,
@@ -51,6 +54,19 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
     defaultFee: String(p.defaultFee ?? "0"),
   }));
   const issues = disabled ? [] : validateDeliveryDraft(draft);
+  // أتمتة ٤: اقتراح الخادم للمحافظة المختارة — يُطبَّق مرّةً عند وصوله ولا يُطمس ما يختاره الكاشير بعده.
+  const suggestionQ = trpc.delivery.suggestPartyForZone.useQuery(
+    { governorate: draft.governorate },
+    { enabled: !disabled && draft.governorate.length > 0, staleTime: 60_000 },
+  );
+  const suggestion = suggestionQ.data ?? null;
+  const effectiveSuggestedId = suggestedPartyId ?? suggestion?.partyId ?? null;
+  useEffect(() => {
+    if (disabled || !suggestion) return;
+    const next = applyZoneSuggestion(draft, suggestion);
+    if (next !== draft) onChange(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestion?.partyId, suggestion?.fee, draft.governorate, disabled]);
 
   return (
     <section className="space-y-2 rounded-lg border bg-card p-2" aria-label="بيانات التوصيل">
@@ -73,7 +89,7 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
           <AppSelect
             id="pos-delivery-governorate"
             value={draft.governorate}
-            onValueChange={(v) => onChange(applyGovernorateSelection(draft, v, { suggestedPartyId, parties }))}
+            onValueChange={(v) => onChange(applyGovernorateSelection(draft, v, { suggestedPartyId: effectiveSuggestedId, parties }))}
             aria-label="المحافظة"
             className="h-9 text-xs"
             disabled={disabled}
@@ -97,10 +113,15 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
             <option value="">{partiesQ.isLoading ? ACTION_LABELS.loading : "اختر مندوباً أو شركة"}</option>
             {parties.map((p) => (
               <option key={p.id} value={String(p.id)}>
-                {p.name}{p.id === suggestedPartyId ? " — مقترَحة للمنطقة" : ""}
+                {p.name}{p.id === effectiveSuggestedId ? " — مقترَحة للمنطقة" : ""}
               </option>
             ))}
           </AppSelect>
+          {suggestion && !disabled && (
+            <p className="mt-1 text-[10px] text-muted-foreground" data-testid="pos-delivery-zone-suggestion">
+              مقترَحة للمنطقة: <span className="font-bold text-foreground">{suggestion.partyName}</span> — أجرة <span className="tabular-nums" dir="ltr">{fmt(suggestion.fee)}</span> د.ع (من تاريخ الإسناد الفعليّ)
+            </p>
+          )}
           {!partiesQ.isLoading && !disabled && parties.length === 0 && (
             <p className="mt-1 text-[10px] font-bold text-[var(--sem-warn)]">
               لا جهات توصيل نشطة — <Link href="/delivery?tab=parties" className="underline">أضِف مندوباً أو شركة</Link> أوّلاً.

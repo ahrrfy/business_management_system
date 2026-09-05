@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   FileCheck2,
-  FileText,
   History,
   MessageCircle,
   Phone,
@@ -39,6 +38,8 @@ import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTime
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
+import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -95,9 +96,11 @@ const tabBtn = (active: boolean) =>
     active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60",
   );
 
-function readTabFromSearch(search: string): "dispatch" | "transit" | "settle" {
+// م١ PR-C: «board» = لوحة الخمسة أعمدة — الصورة الحيّة لكلّ جهة + «سوِّ اليوم» بتأكيدٍ واحد (PartyBoardSection).
+type HubTabKey = "dispatch" | "transit" | "settle" | "board";
+function readTabFromSearch(search: string): HubTabKey {
   const t = new URLSearchParams(search).get("tab");
-  return t === "transit" ? "transit" : t === "settle" ? "settle" : "dispatch";
+  return t === "transit" ? "transit" : t === "settle" ? "settle" : t === "board" ? "board" : "dispatch";
 }
 
 export default function DeliveryHub() {
@@ -109,7 +112,7 @@ export default function DeliveryHub() {
    * يدوياً يبقى يعمل (setTab يتقدّم على الـeffect للتحديث المحلّيّ الفوريّ).
    */
   const search = useSearch();
-  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(() => readTabFromSearch(search));
+  const [tab, setTab] = useState<HubTabKey>(() => readTabFromSearch(search));
   useEffect(() => {
     setTab(readTabFromSearch(search));
   }, [search]);
@@ -146,8 +149,9 @@ export default function DeliveryHub() {
           )}
         </button>
         <button className={tabBtn(tab === "settle")} onClick={() => setTab("settle")}>تسوية المناديب</button>
+        <button className={tabBtn(tab === "board")} onClick={() => setTab("board")}>اللوحة</button>
       </div>
-      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : <SettleTab />}
+      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : tab === "board" ? <PartyBoardSection /> : <SettleTab />}
     </div>
   );
 }
@@ -1971,49 +1975,15 @@ function SettleTab() {
             </table>
           </ScrollTableShell>
 
-          {/* ─── كشف شركة التوصيل (يقلب الأهلية إلى opt-in) ─── */}
-          <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/40 p-4">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-info)]">
-                <FileText aria-hidden className="size-4" />
-                كشف شركة التوصيل (اختياريّ)
-              </div>
-              {statementMode && (
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="rounded bg-card px-2 py-1 font-bold">المحدَّد: <span className="tabular-nums">{totals.selectedCount}</span> من {list.filter((c) => isSettleable(c)).length}</span>
-                  <Button size="sm" variant="outline" onClick={selectAll}>تحديد الكل</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setRows({})}>مسح التحديد</Button>
-                </div>
-              )}
-            </div>
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="space-y-1">
-                <Label htmlFor="stmt-no" className="text-xs">رقم الكشف</Label>
-                <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
-                  onChange={(e) => { setStatementNumber(e.target.value); setRows({}); }} placeholder="STMT-…" className="h-9" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-date" className="text-xs">تاريخ الكشف</Label>
-                <Input id="stmt-date" type="date" value={statementDate}
-                  onChange={(e) => setStatementDate(e.target.value)} className="h-9" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
-                <MoneyInput id="stmt-deduct" value={String(statementDeductions || "")}
-                  onChange={(v) => setStatementDeductions(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-notes" className="text-xs">ملاحظة</Label>
-                <Input id="stmt-notes" value={statementNotes} maxLength={500}
-                  onChange={(e) => setStatementNotes(e.target.value)} placeholder="سبب الفرق مثلاً…" className="h-9" />
-              </div>
-            </div>
-            {statementMode && (
-              <p className="mt-2 text-[11px] font-bold text-[var(--sem-info)]">
-                وضعُ الكشف مُفعَّل: الصفوف تبدأ **غير محدَّدة** (opt-in). حدّد ما ورد في الكشف الورقيّ يدوياً — الأسطر الصفرية تُثبِت التسليم بلا نقد.
-              </p>
-            )}
-          </div>
+          {/* ─── كشف شركة التوصيل (يقلب الأهلية إلى opt-in) + مطابقته الحيّة مطابق/مختلف/مفقود (م١ PR-C) ─── */}
+          <CompanyStatementBox
+            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); }}
+            statementDate={statementDate} onStatementDateChange={setStatementDate}
+            deductions={statementDeductions} onDeductionsChange={setStatementDeductions}
+            notes={statementNotes} onNotesChange={setStatementNotes}
+            onSelectAll={selectAll} onClearSelection={() => setRows({})}
+            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: String(remainingOf(c)), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
+          />
 
           {/**
            * Slice DFP2 (٣١/٨/٢٦) — إعادة تصميم بطاقة توريد التسوية:

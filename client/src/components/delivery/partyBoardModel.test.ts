@@ -13,7 +13,7 @@ import {
   settleLinkFor,
   sortBoardRows,
   type PartyBoardRow,
-} from "./partyBoard";
+} from "./partyBoardModel";
 
 const bucket = (count = 0, amount = "0.00") => ({ count, amount });
 const row = (over: Partial<PartyBoardRow> = {}): PartyBoardRow => ({
@@ -73,7 +73,9 @@ describe("لوحة الخمسة أعمدة — المنطق النقيّ", () =>
   it("الروابط: العمود يفتح «قيد التوصيل» بفلتره وبحث الجهة، والتسوية والتفاصيل بمعرّف الجهة", () => {
     const r = row({ partyName: "شركة النقل" });
     expect(hubLinkFor(r, BOARD_BUCKETS[1])).toBe("/delivery?tab=transit&q=%D8%B4%D8%B1%D9%83%D8%A9+%D8%A7%D9%84%D9%86%D9%82%D9%84&view=IN_TRANSIT");
-    expect(hubLinkFor(r, { ...BOARD_BUCKETS[0], view: null })).not.toContain("view=");
+    // المُغلَق (رجع · أُلغي) لا يظهر في «قيد التوصيل» ⇒ تفاصيل الجهة وكشفها.
+    expect(hubLinkFor(r, BOARD_BUCKETS[3])).toBe("/delivery?tab=parties&detail=3");
+    expect(hubLinkFor(r, BOARD_BUCKETS[4])).toBe("/delivery?tab=parties&detail=3");
     expect(settleLinkFor(r)).toBe("/delivery?tab=settle&party=3");
     expect(partyDetailLinkFor(r)).toBe("/delivery?tab=parties&detail=3");
   });

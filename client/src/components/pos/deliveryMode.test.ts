@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyCustomerIdentity,
   applyGovernorateSelection,
+  applyZoneSuggestion,
   applyPartySelection,
   buildDeliveryPayload,
   deliveryModeUnavailableReason,
@@ -148,5 +149,24 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     const kept = withRecipientDefaults(filled({ recipientName: "الجار", recipientPhone: "07809999999" }), { name: "أحمد", phone: "07701234567" });
     expect(kept.recipientName).toBe("الجار");
     expect(kept.recipientPhone).toBe("07809999999");
+  });
+
+  it("اقتراح الخادم للمنطقة: يختار الجهة حين لا جهة، ويستبدل تقدير الأجرة الثابت لا ما كتبه الكاشير", () => {
+    const base = { ...emptyDeliveryDraft(), governorate: "baghdad" };
+    const s = { partyId: 7, partyName: "مندوب الكرادة", fee: "2500.00" };
+    // لا جهة ولا أجرة ⇒ الاثنتان من الاقتراح.
+    const fresh = applyZoneSuggestion(base, s);
+    expect(fresh.partyId).toBe(7);
+    expect(fresh.partyName).toBe("مندوب الكرادة");
+    expect(fresh.fee).toBe("2500.00");
+    // تقدير المحافظة الثابت (وضعه applyGovernorateSelection) ليس من يد الكاشير ⇒ يُستبدل بأجرة المنطقة.
+    const estimated = applyGovernorateSelection(emptyDeliveryDraft(), "baghdad", { suggestedPartyId: null, parties: [] });
+    expect(applyZoneSuggestion(estimated, s).fee).toBe("2500.00");
+    // أجرةٌ كتبها الكاشير وجهةٌ اختارها ⇒ لا تُطمس، والكائن يُعاد كما هو.
+    const typed = { ...base, partyId: 3, partyName: "شركة", fee: "1750" };
+    expect(applyZoneSuggestion(typed, s)).toBe(typed);
+    // بلا اقتراحٍ أو بلا محافظة ⇒ لا تغيير.
+    expect(applyZoneSuggestion(base, null)).toBe(base);
+    expect(applyZoneSuggestion(emptyDeliveryDraft(), s)).toEqual(emptyDeliveryDraft());
   });
 });

@@ -4,35 +4,17 @@
  * لكلّ جهةٍ خمسة أعمدة نقّالة (مُسنَد · بالطريق · سُلِّم ولم يُورَّد · رجع · أُلغي) + الأعمدة الماليّة
  * (نقدٌ بيده من الدفتر مع **شارة انحراف** حين يخالف المخزَّن — «الظلّ» — · أجورٌ له · الصافي) + شارة
  * الطرود المتأخّرة (SLA). التسميات من `shared/deliveryTerminology` و`shared/partyExposure` وحدهما
- * (⛔ لا قاموس محلّيّ). النقر على عمودٍ يفتح الطرود المطابقة في «إدارة التوصيل ← قيد التوصيل».
+ * (⛔ لا قاموس محلّيّ). النقر على عمودٍ يفتح الطرود المطابقة في «إدارة التوصيل ← قيد التوصيل»؛ والعمودان
+ * المُغلَقان (رجع · أُلغي) يفتحان تفاصيل الجهة — طردٌ مُغلَق لا يظهر في قائمة «قيد التوصيل» أصلاً.
  *
- * ⚠️ الأنواع أدناه نسخةٌ حرفيّة من عقد `shared/deliveryBoard.ts` (م١-خادم PR-2) ريثما يُدمج فرعه —
- * عندها تُستبدل بالاستيراد من `@shared/deliveryBoard` بلا تغييرٍ في المستهلكين.
+ * الأنواع من العقد المشترك `shared/deliveryBoard.ts` (م١-خادم PR-2) حرفياً — تُعاد هنا لمستهلكي المكوّنات.
  */
 import { DELIVERY_TERMS, type DeliveryTermKey } from "@shared/deliveryTerminology";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import type { ConsignmentViewKey } from "@shared/consignmentView";
 
-export type PartyBoardBucket = { count: number; amount: string };
-export type PartyBoardRow = {
-  partyId: number;
-  partyName: string;
-  partyType: "INDIVIDUAL" | "COMPANY";
-  assigned: PartyBoardBucket;
-  inTransit: PartyBoardBucket;
-  deliveredUnremitted: PartyBoardBucket;
-  returned: PartyBoardBucket;
-  cancelled: PartyBoardBucket;
-  /** نقدٌ بيد المندوب بحساب الدفتر (Σ قيود COD). */
-  cashInHandLedger: string;
-  /** نقدٌ بيده كما هو مخزَّن على الجهة (`deliveryParties.currentBalance`). */
-  cashInHandStored: string;
-  /** الفرق بين الدفتر والمخزَّن — «الظلّ»؛ غير الصفر انحرافٌ يستحقّ شارة. */
-  cashInHandDrift: string;
-  feesOwed: string;
-  net: string;
-  staleOpenParcels: number;
-};
+import type { PartyBoardBucket, PartyBoardRow } from "@shared/deliveryBoard";
+export type { PartyBoardBucket, PartyBoardRow };
 
 export type BoardBucketKey = "assigned" | "inTransit" | "deliveredUnremitted" | "returned" | "cancelled";
 export type BoardTone = "neutral" | "warning" | "danger" | "muted";
@@ -41,7 +23,7 @@ export interface BoardBucketColumn {
   key: BoardBucketKey;
   /** مفتاح المصطلح في `DELIVERY_TERMS` (الرأس/التلميح). */
   term: DeliveryTermKey;
-  /** فلتر «قيد التوصيل» المطابق؛ null ⇒ لا فلتر (رابطٌ عامّ). */
+  /** فلتر «قيد التوصيل» المطابق؛ null ⇒ طرودٌ مُغلَقة لا تظهر هناك ⇒ الرابط إلى تفاصيل الجهة. */
   view: ConsignmentViewKey | null;
   tone: BoardTone;
 }
@@ -51,8 +33,8 @@ export const BOARD_BUCKETS: readonly BoardBucketColumn[] = Object.freeze([
   { key: "assigned", term: "assigned", view: "ASSIGNED", tone: "neutral" },
   { key: "inTransit", term: "outForDelivery", view: "IN_TRANSIT", tone: "warning" },
   { key: "deliveredUnremitted", term: "awaitingRemittance", view: "DELIVERED_AWAITING_REMIT", tone: "danger" },
-  { key: "returned", term: "returned", view: "RETURN_DECLARED", tone: "muted" },
-  { key: "cancelled", term: "cancelled", view: "CLOSED", tone: "muted" },
+  { key: "returned", term: "returned", view: null, tone: "muted" },
+  { key: "cancelled", term: "cancelled", view: null, tone: "muted" },
 ]);
 
 /** الأعمدة الماليّة الثلاثة — تسمياتها من `partyExposure` (المصدر الوحيد). */
@@ -134,10 +116,10 @@ export function boardTotals(rows: PartyBoardRow[]): BoardTotals {
   };
 }
 
-/** رابط عمودٍ ⇒ طرود الجهة المطابقة في «قيد التوصيل» (الفلتر + بحث باسم الجهة). */
-export function hubLinkFor(row: Pick<PartyBoardRow, "partyName">, col: BoardBucketColumn): string {
-  const params = new URLSearchParams({ tab: "transit", q: row.partyName });
-  if (col.view) params.set("view", col.view);
+/** رابط عمودٍ ⇒ طرود الجهة المطابقة في «قيد التوصيل» (الفلتر + بحث باسم الجهة)؛ والمُغلَق ⇒ تفاصيل الجهة. */
+export function hubLinkFor(row: Pick<PartyBoardRow, "partyName" | "partyId">, col: BoardBucketColumn): string {
+  if (!col.view) return partyDetailLinkFor(row);
+  const params = new URLSearchParams({ tab: "transit", q: row.partyName, view: col.view });
   return `/delivery?${params.toString()}`;
 }
 

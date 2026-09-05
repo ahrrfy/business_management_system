@@ -130,6 +130,30 @@ export function applyGovernorateSelection(
   return next;
 }
 
+/** اقتراح الخادم للمنطقة (`delivery.suggestPartyForZone`): الجهة المعتادة + أجرة المنطقة الفعّالة. */
+export interface ZoneSuggestion {
+  partyId: number;
+  partyName: string;
+  fee: string;
+}
+
+/**
+ * تطبيق اقتراح الخادم حين يصل (أتمتة ٤ — «المستخدم يعدّل لا يبتدئ»): الجهة تُختار إن لم يختر
+ * الكاشير جهةً بعد؛ والأجرة المقترَحة تحلّ محلّ **الفارغ أو تقدير `shared/governorates` الثابت**
+ * فقط — أجرةٌ كتبها الكاشير بيده لا تُطمس. يُعيد نفس الكائن حين لا تغيير (لا حلقة تصيير).
+ */
+export function applyZoneSuggestion(d: DeliveryDraft, s: ZoneSuggestion | null | undefined): DeliveryDraft {
+  if (!s || !d.governorate) return d;
+  let next = d;
+  if (next.partyId == null) next = { ...next, partyId: s.partyId, partyName: s.partyName };
+  const estimate = String(deliveryFeeFor(d.governorate));
+  const fee = next.fee.trim();
+  const feeUntouched = !fee || fee === estimate;
+  const suggestedFee = normalizeFee(s.fee);
+  if (feeUntouched && suggestedFee != null && Number(suggestedFee) > 0 && fee !== s.fee) next = { ...next, fee: s.fee };
+  return next;
+}
+
 /** خيارات المحافظات للقائمة — من المصدر المشترك وحده (⛔ لا قاموس محلّيّ). */
 export function governorateOptions(): Array<{ value: string; label: string }> {
   return GOVERNORATES.map((g) => ({ value: g.id, label: g.name }));

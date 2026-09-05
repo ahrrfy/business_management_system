@@ -6,37 +6,13 @@
  *   طابق ⇒ زرّ «إقفال» واحد · نقص ⇒ سبب العجز إلزاميّ من `shared/shortfallReason` (يُقيَّد ذمّةً على
  *   الجهة خادمياً) · زاد ⇒ يُرسَل كما هو ورسالة الخادم تُعرض كما هي (لا حكمَ محلّيّ على الزيادة).
  *
- * ⚠️ الأنواع أدناه نسخةٌ حرفيّة من عقد `shared/deliveryBoard.ts` (م١-خادم PR-2) ريثما يُدمج فرعه.
+ * الأنواع من العقد المشترك `shared/deliveryBoard.ts` (م١-خادم PR-2) حرفياً — تُعاد هنا لمستهلكي المكوّنات.
  */
 import { SHORTFALL_REASONS, SHORTFALL_REASON_LABEL_AR, type ShortfallReason } from "@shared/shortfallReason";
 import { fmt } from "@/lib/money";
 
-export type SettlementPreviewLine = {
-  consignmentId: number;
-  consignmentNumber: string;
-  invoiceNumber: string;
-  customerName: string;
-  codAmount: string;
-  collectedAmount: string;
-  remaining: string;
-  parcelStatus: string;
-};
-export type SettlementPreview = {
-  partyId: number;
-  branchId: number;
-  expectedCash: string;
-  feeDue: string;
-  deductions: string;
-  net: string;
-  lines: SettlementPreviewLine[];
-  returnsAwaitingReceipt: number;
-};
-export type SettleDailyResult = {
-  remittanceId: number;
-  status: "BALANCED" | "SHORT";
-  shortfallTotal: string;
-  receiptId: number | null;
-};
+import type { SettlementPreview, SettlementPreviewLine, SettleDailyResult } from "@shared/deliveryBoard";
+export type { SettlementPreview, SettlementPreviewLine, SettleDailyResult };
 
 export type SettlementVerdictKind = "EMPTY" | "INVALID" | "BALANCED" | "SHORT" | "OVER";
 export interface SettlementVerdict {
@@ -79,6 +55,8 @@ export interface SettleDailyPayload {
   branchId: number;
   countedCash: string;
   shortfallReason?: ShortfallReason;
+  /** ملاحظةٌ اختياريّة مع العجز (مرجع المكالمة/المحضر) — تُحفظ على قيد الذمّة خادمياً. */
+  shortfallNotes?: string;
   shiftType: "RETAIL" | "RECEPTION";
   clientRequestId: string;
 }
@@ -89,13 +67,15 @@ export function buildSettleDailyPayload(
   reason: ShortfallReason | null,
   shiftType: "RETAIL" | "RECEPTION",
   clientRequestId: string,
+  shortfallNotes = "",
 ): SettleDailyPayload | null {
   if (!canSettle(verdict, reason) || verdict.counted == null) return null;
+  const notes = shortfallNotes.trim();
   return {
     partyId: preview.partyId,
     branchId: preview.branchId,
     countedCash: verdict.counted,
-    ...(verdict.kind === "SHORT" && reason ? { shortfallReason: reason } : {}),
+    ...(verdict.kind === "SHORT" && reason ? { shortfallReason: reason, ...(notes ? { shortfallNotes: notes } : {}) } : {}),
     shiftType,
     clientRequestId,
   };

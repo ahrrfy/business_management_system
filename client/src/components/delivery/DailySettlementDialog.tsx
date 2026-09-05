@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, Scale, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -46,6 +47,7 @@ export interface DailySettlementDialogProps {
 export function DailySettlementDialog({ party, open, onOpenChange, preview, previewLoading, previewError, onRetryPreview, shiftType, onSettle }: DailySettlementDialogProps) {
   const [counted, setCounted] = useState("");
   const [reason, setReason] = useState<ShortfallReason | null>(null);
+  const [notes, setNotes] = useState("");
   const [pending, setPending] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [result, setResult] = useState<SettleDailyResult | null>(null);
@@ -56,6 +58,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
     if (!open) return;
     setCounted("");
     setReason(null);
+    setNotes("");
     setServerError(null);
     setResult(null);
     setPending(false);
@@ -74,7 +77,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
   const submit = async () => {
     if (!preview || !verdict) return;
-    const payload = buildSettleDailyPayload(preview, verdict, reason, shiftType, clientRequestId);
+    const payload = buildSettleDailyPayload(preview, verdict, reason, shiftType, clientRequestId, notes);
     if (!payload) return;
     setPending(true);
     setServerError(null);
@@ -95,7 +98,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
         <DialogHeader>
           <DialogTitle className="inline-flex items-center gap-2"><Scale aria-hidden className="size-5" /> سوِّ اليوم — {party?.name}</DialogTitle>
           <DialogDescription>
-            الصافي محسوبٌ سلفاً من الطرود المُسلَّمة ونقد المندوب والأجرة. أدخل ما عُدَّ فعلاً وأقفل بتأكيدٍ واحد.
+            الصافي محسوبٌ سلفاً من الطرود المُسلَّمة غير المورَّدة (متبقّيها الحيّ) ناقص استقطاعات الكشف. أدخل ما عُدَّ فعلاً وأقفل بتأكيدٍ واحد.
           </DialogDescription>
         </DialogHeader>
 
@@ -112,7 +115,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
           <div className="space-y-3">
             <dl className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border bg-muted/40 p-3 text-xs">
               <dt className="text-muted-foreground">المتوقَّع (نقد الطرود المُسلَّمة)</dt><dd className="text-end font-bold tabular-nums" dir="ltr">{fmt(preview.expectedCash)} د.ع</dd>
-              <dt className="text-muted-foreground">{DELIVERY_TERMS.feesOwedToCourier.compact} (تُخصم)</dt><dd className="text-end font-bold tabular-nums" dir="ltr">− {fmt(preview.feeDue)} د.ع</dd>
+              <dt className="text-muted-foreground" title="تُصرف للجهة بسندٍ مستقلّ من «صرف الأجور» — لا تُخصم من نقد التوريد">{DELIVERY_TERMS.feesOwedToCourier.compact} (بسندٍ مستقلّ — لا تُخصم هنا)</dt><dd className="text-end font-bold tabular-nums text-muted-foreground" dir="ltr">{fmt(preview.feeDue)} د.ع</dd>
               <dt className="text-muted-foreground">استقطاعات</dt><dd className="text-end font-bold tabular-nums" dir="ltr">− {fmt(preview.deductions)} د.ع</dd>
               <dt className="font-black">الصافي المتوقَّع في يدك</dt><dd className="text-end text-base font-black tabular-nums text-primary" dir="ltr">{fmt(preview.net)} د.ع</dd>
             </dl>
@@ -166,6 +169,7 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
                   {SHORTFALL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </AppSelect>
                 {reason && <p className="mt-1 text-[11px] text-muted-foreground">{SHORTFALL_REASON_DESCRIPTION_AR[reason]}</p>}
+                <Input id="daily-settlement-notes" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={500} placeholder="ملاحظة (اختياريّ) — مرجع المكالمة أو المحضر" aria-label="ملاحظة العجز" className="mt-2 h-9 text-xs" />
               </div>
             )}
 

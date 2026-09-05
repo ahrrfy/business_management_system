@@ -3,7 +3,7 @@
  * يُورَّد · رجع · أُلغي) + نقدٌ بيده (مع شارة **انحراف** حين يخالف الدفترُ المخزَّن) + أجورٌ له + الصافي +
  * شارة الطرود المتأخّرة (SLA). النقر على عمودٍ يفتح طرود الجهة المطابقة في «قيد التوصيل»، والصفّ
  * يحمل فعله: «سوِّ اليوم» (التسوية اليوميّة بتأكيدٍ واحد) و«استيراد كشف» لشركات التوصيل.
- * البيانات تصل عبر props (`delivery.partyBoard`) — المنطق النقيّ في `partyBoard.ts`.
+ * البيانات تصل عبر props (`delivery.partyBoard`) — المنطق النقيّ في `partyBoardModel.ts` (الاسم يتفادى تصادم الحالة مع PartyBoard.tsx على ويندوز).
  */
 import { useMemo, type ComponentProps } from "react";
 import { Link } from "wouter";
@@ -30,7 +30,7 @@ import {
   type BoardBucketColumn,
   type BoardTone,
   type PartyBoardRow,
-} from "./partyBoard";
+} from "./partyBoardModel";
 
 const TONE_TEXT: Record<BoardTone, string> = {
   neutral: "text-foreground",
@@ -43,6 +43,8 @@ export interface PartyBoardProps {
   rows: PartyBoardRow[] | undefined;
   loading: boolean;
   isError: boolean;
+  /** رسالة الخادم عند الفشل — تُعرض كما هي (الشاشة لا تحجب ما يملكه الخادم). */
+  errorMessage?: string | null;
   onRetry: () => void;
   /** «ذمّة قائمة فقط» — يُفلتر الصفوف ويُعيد حساب الرأس منها. */
   outstandingOnly: boolean;
@@ -72,7 +74,7 @@ function BucketCell({ row, col }: { row: PartyBoardRow; col: BoardBucketColumn }
   );
 }
 
-export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, onSettleToday, onOpenDetail, onSettleLoose, onWriteOff, contactFor }: PartyBoardProps) {
+export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetry, outstandingOnly, onSettleToday, onOpenDetail, onSettleLoose, onWriteOff, contactFor }: PartyBoardProps) {
   const visible = useMemo(() => {
     const base = sortBoardRows(rows ?? []);
     return outstandingOnly ? filterOutstanding(base) : base;
@@ -180,7 +182,7 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
                 disabled: !f.settleReady,
                 disabledReason: "لا نقد بيده ولا طرود سُلِّمت بلا توريد",
                 onSelect: () => onSettleToday?.(r),
-                gate: { roles: ["cashier", "manager"] },
+                gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
               },
               {
                 key: "statement",
@@ -188,7 +190,7 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
                 label: "استيراد كشف الشركة",
                 hidden: r.partyType !== "COMPANY",
                 href: settleLinkFor(r),
-                gate: { roles: ["cashier", "manager"] },
+                gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
               },
               {
                 key: "detail",
@@ -205,7 +207,7 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
                 disabled: toNum(r.cashInHandStored) <= 0,
                 disabledReason: "لا عهدة سائبة على الجهة",
                 onSelect: () => onSettleLoose?.(r),
-                gate: { roles: ["cashier", "manager"] },
+                gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
               },
               {
                 key: "write-off",
@@ -249,7 +251,7 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
           searchable={false}
           externalFiltersActive={outstandingOnly}
           loading={loading}
-          errorState={{ isError, onRetry }}
+          errorState={{ isError, onRetry, message: errorMessage ?? undefined }}
           emptyState={<EmptyState icon={Truck} title="لا جهات توصيل" description="أضِف مندوباً أو شركة توصيل للبدء." />}
           emptyFilteredState={<EmptyState icon={Wallet} title="لا ذمّة قائمة" description="كلّ الجهات مُسوّاة — لا نقد بيد أحد ولا طرود مفتوحة." />}
         />

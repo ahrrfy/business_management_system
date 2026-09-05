@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Banknote, PackageOpen, ShieldCheck, Truck, Users, XCircle } from "lucide-react";
+import { ShieldCheck, Truck, XCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { StatCard } from "@/components/StatCard";
-import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,16 +10,14 @@ import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { D, fmt } from "@/lib/money";
-import { hasOpenBalance, balanceDirection } from "@shared/predicates";
+import { fmt } from "@/lib/money";
+import { balanceDirection } from "@shared/predicates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { cn } from "@/lib/utils";
-import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
-import { ListToolbar, RowActions } from "@/components/list";
+import { ListToolbar } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import DeliveryPartyDetail from "@/pages/DeliveryPartyDetail";
+import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
@@ -32,43 +28,6 @@ function ageDays(iso: string | null): number | null {
   const ms = Date.now() - new Date(iso).getTime();
   return Math.max(0, Math.floor(ms / 86400000));
 }
-function ageBadge(days: number | null) {
-  if (days == null) return <span className="text-muted-foreground">—</span>;
-  const cls = days <= 7 ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : days <= 14 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : days <= 30 ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]";
-  return <span className={cn("rounded px-2 py-0.5 text-xs font-bold", cls)}>{days} يوم</span>;
-}
-
-/**
- * عمود مبلغٍ في قائمة الجهات. الفرز رقميّ صريح: الفرز الافتراضيّ يقارن النصّ المنسّق
- * («1,234» قبل «999» بسبب فاصلة الآلاف) فيقلب ترتيب الذمم.
- *
- * `label` هو **المُعرِّف والتسمية معاً**: `DataTable` يشتقّ اسمَ العمود في منتقي الأعمدة
- * وفي «نسخ العمود كـTSV» من الترويسة حين تكون نصّاً، وإلّا رجع إلى `id`. ورؤوس هذه الأعمدة
- * الأربعة مركَّبة (تحمل شرحَ `title` الذي يُميّز «بذمته» عن «سلم لم يحصل» — Slice DFP1)
- * ⇒ لولا تعريب المُعرِّف لقرأ الموظّف «parcelsInTransit» وسط أعمدةٍ عربية.
- */
-function partyMoneyCol(
-  label: string,
-  tip: string,
-  get: (p: Party) => number,
-  tone: (v: number) => string,
-): ColumnDef<Party, unknown> {
-  return {
-    id: label,
-    header: () => <span title={tip}>{label}</span>,
-    accessorFn: (p) => fmt(get(p)),
-    meta: { kind: "money" },
-    sortDescFirst: true,
-    sortingFn: (a, b) => get(a.original) - get(b.original),
-    cell: ({ row }) => <span className={cn("font-bold", tone(get(row.original)))}>{fmt(get(row.original))}</span>,
-  };
-}
-
-/** القيم الأربع المنفصلة (Slice DFP1) — قراءةٌ متسامحة لأنّ العقد يوسّعها تدريجياً. */
-const inTransitOf = (p: Party) => Number((p as { parcelsInTransitAmount?: string }).parcelsInTransitAmount ?? 0);
-const uncollectedOf = (p: Party) => Number((p as { deliveredUncollectedAmount?: string }).deliveredUncollectedAmount ?? 0);
-const feesOwedOf = (p: Party) => Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? 0);
-
 export default function DeliveryParties() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role as RoleKey | undefined;
@@ -89,179 +48,25 @@ export default function DeliveryParties() {
   const [showCreate, setShowCreate] = useState(false);
   const [settleFor, setSettleFor] = useState<Party | null>(null);
   const [writeOffFor, setWriteOffFor] = useState<Party | null>(null);
-  // «ذمة قائمة»: رصيدٌ غير صفريّ (بذمّة المندوب/الجهة نقداً لم يُورَّد بعد) — محفوظ في querystring.
+  // «ذمة قائمة» (م١ PR-C): نقدٌ بيد الجهة أو طرودٌ مفتوحة أو أجورٌ لها — فلتر اللوحة (filterOutstanding)، محفوظ في querystring.
   // detail: لوحة تفاصيل الجهة (٩/٨) — في الرابط كي تفتحها روابط الفواتير مباشرة.
   const [f, setF, resetF] = useUrlFilters({ outstandingOnly: "", detail: "" });
   // ٩/٨: الكشف المطبوع السريع استُبدل بلوحة التفاصيل (كشف حيّ يشمل أمانات الأجرة التي كان
   // الكشف القديم يُسقطها صامتاً + جمع Decimal بدل Number العائم + المرجع = رقم الفاتورة الفعلي).
   const detailFor = f.detail ? (list.data ?? []).find((p) => String(p.id) === f.detail) ?? null : null;
 
-  const kpis = useMemo(() => {
-    const rows = list.data ?? [];
-    const totalFloat = rows.reduce((s, p) => s + Number(p.currentBalance ?? 0), 0);
-    const openCount = rows.reduce((s, p) => s + Number(p.openConsignments ?? 0), 0);
-    const oldest = rows.map((p) => ageDays(p.oldestOutstanding)).filter((d): d is number => d != null);
-    return { totalFloat, openCount, count: rows.length, oldest: oldest.length ? Math.max(...oldest) : null };
-  }, [list.data]);
-
   if (list.isError) return <div className="p-6"><ErrorState onRetry={() => list.refetch()} /></div>;
   const allRows = list.data ?? [];
-  const rows = f.outstandingOnly === "1" ? allRows.filter((p) => hasOpenBalance(p)) : allRows;
   const activeFilterCount = f.outstandingOnly === "1" ? 1 : 0;
-
-  /*
-   * Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7): أربعة أعمدة منفصلة (partyExposure) بدل عمود واحد ملتبس.
-   * الشروح على الرؤوس (title) تبقى — هي التي تُميّز «بذمته» عن «سلم لم يحصل».
-   * الأعمدة ليست داخل useMemo لأنّها تُغلِق على مُحدِّثات الحالة (setF/setSettleFor/…)،
-   * وتجميدُها بمصفوفة تبعيّاتٍ ناقصة يُنتج إجراءات تعمل على حالةٍ قديمة.
-   */
-  const columns: ColumnDef<Party, unknown>[] = [
-    {
-      id: "name",
-      header: "الجهة",
-      accessorFn: (p) => p.name,
-      meta: { width: "wide" },
-      cell: ({ row }) => (
-        <>
-          <button type="button" className="font-bold text-primary hover:underline" onClick={() => setF({ detail: String(row.original.id) })}>
-            {row.original.name}
-          </button>
-          {row.original.phone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{row.original.phone}</span>}
-        </>
-      ),
-    },
-    {
-      id: "partyType",
-      header: "النوع",
-      accessorFn: (p) => (p.partyType === "COMPANY" ? "شركة" : "مندوب"),
-      cell: ({ row }) => (row.original.partyType === "COMPANY" ? "شركة" : "مندوب"),
-    },
-    partyMoneyCol(
-      "بذمته",
-      "مسؤولية الدفتر على المندوب: نقد قبضه + عجز قبله ذمّةً (SHORTFALL_ASSIGNED). قد تحوي جزءا غير نقدي.",
-      (p) => Number(p.currentBalance ?? 0),
-      (v) => (v > 0 ? "text-foreground" : "text-muted-foreground"),
-    ),
-    partyMoneyCol(
-      "طرود بالطريق",
-      "بضاعة سُلِّمت للمندوب لم تصل الزبون",
-      inTransitOf,
-      (v) => (v > 0 ? "text-[var(--sem-warn)]" : "text-muted-foreground"),
-    ),
-    partyMoneyCol(
-      "سلم لم يحصل",
-      "طرد سُلِّم للزبون بلا قبضٍ كامل — خطر أعلى",
-      uncollectedOf,
-      // `PARTY_EXPOSURE_COLOR_TOKEN.deliveredUncollected = "danger"` والأعمدة الثلاثة الشقيقة
-      // تشتقّ من `--sem-*`، فكان هذا وحده على `destructive`: أحمرٌ أعلى تشبّعاً (C 0.245
-      // مقابل 0.170)، وتباينُه على بطاقة الوضع الداكن 4.11:1 دون عتبة AA (4.5) مقابل 7.29:1.
-      (v) => (v > 0 ? "text-[var(--sem-neg)]" : "text-muted-foreground"),
-    ),
-    partyMoneyCol(
-      "أجور له",
-      "أجور توصيل نحن مدينون بها للمندوب",
-      feesOwedOf,
-      (v) => (v > 0 ? "text-[var(--sem-pos)]" : "text-muted-foreground"),
-    ),
-    {
-      id: "openConsignments",
-      header: "شحنات مفتوحة",
-      accessorFn: (p) => p.openConsignments,
-      meta: { kind: "number", align: "center" },
-      cell: ({ row }) => row.original.openConsignments,
-    },
-    {
-      id: "oldestOutstanding",
-      header: "أقدم مستحق",
-      accessorFn: (p) => {
-        const d = ageDays(p.oldestOutstanding);
-        return d == null ? "—" : d + " يوم";
-      },
-      meta: { align: "center" },
-      sortingFn: (a, b) => (ageDays(a.original.oldestOutstanding) ?? -1) - (ageDays(b.original.oldestOutstanding) ?? -1),
-      cell: ({ row }) => ageBadge(ageDays(row.original.oldestOutstanding)),
-    },
-    {
-      id: "isActive",
-      header: "الحالة",
-      accessorFn: (p) => (p.isActive ? "نشط" : "معطل"),
-      meta: { kind: "status" },
-      cell: ({ row }) => (row.original.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطل</Badge>),
-    },
-    {
-      id: "actions",
-      header: "إجراءات",
-      meta: { kind: "actions" },
-      enableSorting: false,
-      cell: ({ row }) => {
-        const p = row.original;
-        const owesUs = balanceDirection(p, "deliveryParty") === "receivable";
-        return (
-          <RowActions
-            mode="menu"
-            contact={{
-              phone: p.phone,
-              alternativePhones: [(p as { phone2?: string | null }).phone2],
-              label: "واتساب " + p.name,
-              message: buildOperationalContactMessage({
-                partyName: p.name,
-                entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
-                status: p.openConsignments > 0 ? p.openConsignments + " شحنة مفتوحة" : "لا شحنات مفتوحة",
-                nextAction: owesUs ? "توجد عهدة قيد التسوية بقيمة " + fmt(p.currentBalance) + " د.ع." : null,
-              }),
-              gate: { module: "store", level: "READ" },
-            }}
-            actions={[
-              {
-                key: "detail",
-                kind: "view",
-                label: "تفاصيل وكشف",
-                onSelect: () => setF({ detail: String(p.id) }),
-                gate: { module: "store", level: "READ" },
-              },
-              {
-                key: "settle",
-                kind: "pay",
-                label: "تسوية",
-                hidden: !canSettle,
-                disabled: !owesUs,
-                disabledReason: "لا يوجد رصيد قابل للتسوية",
-                onSelect: () => setSettleFor(p),
-                gate: { roles: ["cashier", "manager"] },
-              },
-              {
-                key: "write-off",
-                kind: "reverse",
-                label: "شطب",
-                variant: "destructive",
-                hidden: !canRequestWriteOff,
-                disabled: !owesUs,
-                disabledReason: "لا يوجد عجز قابل للشطب",
-                onSelect: () => setWriteOffFor(p),
-                gate: { roles: ["admin"] },
-              },
-            ]}
-          />
-        );
-      },
-    },
-  ];
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
         title="جهات التوصيل وذممها"
-        description="المناديب وشركات التوصيل — العهدة القائمة (COD غير المورَّد) وأعمارها."
+        description="لوحة الخمسة أعمدة لكلّ جهة (مُسنَد · بالطريق · سُلِّم ولم يُورَّد · رجع · أُلغي) والنقد بيدها وأجورها — «سوِّ اليوم» بتأكيدٍ واحد من الصفّ."
         icon={<Truck className="size-6 text-primary" aria-hidden />}
         actions={<Button onClick={() => setShowCreate(true)} disabled={!isManager}>+ جهة جديدة</Button>}
       />
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="إجمالي النقد بذمّة المناديب" value={`${fmt(String(kpis.totalFloat))} د.ع`} icon={Banknote} tone={kpis.totalFloat > 0 ? "warning" : "default"} />
-        <StatCard label="شحنات مفتوحة" value={String(kpis.openCount)} icon={PackageOpen} />
-        <StatCard label="عدد الجهات" value={String(kpis.count)} icon={Users} />
-        <StatCard label="أقدم مستحق" value={kpis.oldest != null ? `${kpis.oldest} يوم` : "—"} icon={Truck} tone={kpis.oldest != null && kpis.oldest > 14 ? "warning" : "default"} />
-      </div>
 
       {canReviewWriteOff && (
         <WriteOffApprovalQueue
@@ -275,7 +80,7 @@ export default function DeliveryParties() {
 
       <ListToolbar
         title="الجهات"
-        count={rows.length}
+        count={allRows.length}
         loading={list.isLoading}
         activeFilterCount={activeFilterCount}
         onResetFilters={resetF}
@@ -284,7 +89,7 @@ export default function DeliveryParties() {
         exportSpec={{
           filename: "جهات-التوصيل",
           sheetName: "الجهات",
-          rows,
+          rows: allRows,
           formats: ["xlsx", "csv"],
           columns: [
             { key: "name", header: "الجهة" },
@@ -307,37 +112,35 @@ export default function DeliveryParties() {
               checked={f.outstandingOnly === "1"}
               onChange={(e) => setF({ outstandingOnly: e.target.checked ? "1" : "" })}
             />
-            ذمّة قائمة فقط (رصيد غير صفريّ)
+            ذمّة قائمة فقط (نقد بيده أو طرود مفتوحة أو أجور له)
           </label>
         }
       />
 
-      <div className="rounded-xl border bg-card">
-        <DataTable<Party>
-          columns={columns}
-          data={rows}
-          /* الفلترة في ListToolbar أعلاه (تغذّي rows) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
-          searchable={false}
-          externalFiltersActive={activeFilterCount > 0}
-          loading={list.isLoading}
-          /* صدق الخطأ: رفضُ ٤٠٣ أو انقطاعُ الشبكة ليس «لا جهات توصيل» — والدعوة لإضافة
-             جهةٍ جديدة فوق فشلِ جلبٍ تدفع الموظّف لتكرار بياناتٍ موجودة. */
-          /* ⚠️ بلا `message`: `list.error` هنا نوعُه `never` (تحلُّلُ استنتاجٍ في مخرَج
-             `delivery.listParties` العميق، حالةٌ قائمة في المستودع) — و`DataTable` يعرض
-             نصَّه الافتراضيّ العربيّ حين يغيب، فلا يضيع صدقُ الخطأ. */
-          errorState={{ isError: list.isError, onRetry: () => void list.refetch() }}
-          emptyState={
-            <EmptyState
-              icon={Truck}
-              title="لا جهات توصيل"
-              description="أضِف مندوباً أو شركة توصيل للبدء."
-              actionLabel={isManager ? "+ جهة جديدة" : undefined}
-              onAction={() => setShowCreate(true)}
-            />
-          }
-          emptyFilteredState={<EmptyState icon={Truck} title="لا نتائج" description="لا جهات مطابقة لفلترك الحالي." />}
-        />
-      </div>
+      {/* م١ PR-C: لوحة الخمسة أعمدة (delivery.partyBoard) بدل الجدول القديم — التسوية اليوميّة بتأكيدٍ واحد من الصفّ،
+          وأفعال الجهات القائمة (العهدة السائبة · الشطب · واتساب) تبقى لمن يملكها؛ رأس اللوحة يُشتقّ من صفوفها المعروضة. */}
+      <PartyBoardSection
+        outstandingOnly={f.outstandingOnly === "1"}
+        onOpenDetail={(row) => setF({ detail: String(row.partyId) })}
+        onSettleLoose={canSettle ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p) setSettleFor(p); } : undefined}
+        onWriteOff={canRequestWriteOff ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p) setWriteOffFor(p); } : undefined}
+        contactFor={(row) => {
+          const p = allRows.find((x) => Number(x.id) === row.partyId);
+          if (!p) return null;
+          return {
+            phone: p.phone,
+            alternativePhones: [(p as { phone2?: string | null }).phone2],
+            label: "واتساب " + p.name,
+            message: buildOperationalContactMessage({
+              partyName: p.name,
+              entityLabel: p.partyType === "COMPANY" ? "شركة التوصيل" : "المندوب",
+              status: p.openConsignments > 0 ? p.openConsignments + " شحنة مفتوحة" : "لا شحنات مفتوحة",
+              nextAction: balanceDirection(p, "deliveryParty") === "receivable" ? "توجد عهدة قيد التسوية بقيمة " + fmt(p.currentBalance) + " د.ع." : null,
+            }),
+            gate: { module: "store", level: "READ" },
+          };
+        }}
+      />
 
       {showCreate && <CreatePartyDialog onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); utils.delivery.listParties.invalidate(); }} />}
       {settleFor && <SettleDialog party={settleFor} onClose={() => setSettleFor(null)} onDone={() => { setSettleFor(null); utils.delivery.listParties.invalidate(); }} />}
