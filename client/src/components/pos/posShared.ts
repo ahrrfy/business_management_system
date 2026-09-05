@@ -9,6 +9,8 @@ import type { ReceiptBrowserData } from "@/lib/printing/print";
 import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
 import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
 import type { RouterOutputs } from "@/lib/trpc";
+import type { DeliveryFeeCollection } from "@shared/deliveryFeeCollection";
+import type { DeliveryDraft } from "./deliveryMode";
 
 export type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -80,6 +82,8 @@ export type POSTab = {
   /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥). سلطة الكاشير مقصورة على هذا السقف؛ ما فوقه
    *  بوّابة مدير خادمياً (`invoiceDiscountExceedsThreshold`). فارغ ⇒ لا خصم. */
   invoiceDiscountPct: string;
+  /** وضع «توصيل» (م١ PR-B): مسوّدة الطرد لهذا التبويب؛ null/غائب = بيعٌ عاديّ. يُحفظ مع المسوّدة. */
+  delivery?: DeliveryDraft | null;
 };
 
 export type Receipt = {
@@ -110,6 +114,10 @@ export type Receipt = {
   isCredit: boolean;
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
+  /** م١ PR-B: كتلة التوصيل على الإيصال (إفصاحٌ للزبون: الجهة/الأجرة/مَن يقبض/العنوان). */
+  delivery?: { partyName: string; fee: string; feeCollection: DeliveryFeeCollection; address?: string | null } | null;
+  /** م١ PR-B: رقم الطرد المُنشأ في معاملة البيع (يظهر في نافذة الإيصال مع رابط إدارة التوصيل). */
+  consignmentNumber?: string | null;
 };
 
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
@@ -203,6 +211,7 @@ export const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", externalPayment: null, dueDate: "",
   invoiceDiscountPct: "",
+  delivery: null,
 });
 
 /** السقف الأعلى لخصم رأس الفاتورة اليدويّ عند الكاشير (قرار المالك). فوقه يستلزم اعتماد مدير
@@ -245,5 +254,7 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     paymentMethod: r.method,
     // ش١٠: تفاصيل الكروت تأتي من الخادم بعد التثبيت (§١٢.٣) — لا من حالة React قبل الحفظ.
     digitalDetails: r.digitalDetails ?? null,
+    // م١ PR-B: كتلة التوصيل تُطبع بالراسم القائم نفسه (٨/٨) — الأجرة تمريرٌ لا إيراد.
+    delivery: r.delivery ?? null,
   };
 }

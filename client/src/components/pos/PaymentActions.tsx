@@ -24,17 +24,19 @@ export interface PaymentActionsProps {
   method: PaymentMethod;
   externalPaymentConfirmed: boolean;
   onPay: () => void; onQuickPay: () => void;
+  /** م١ PR-B — وضع «توصيل» (COD): المتبقّي يُحصَّل عند التسليم لا آجلاً؛ يغيّر نصوص المؤشّر والزرّ فقط. */
+  codMode?: boolean;
 }
 
 /** منطقة الفعل — خارج التمرير ولا تنكمش: الباقي/المتبقي + زرّا الدفع + تلميح الاختصارات. */
-export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay }: PaymentActionsProps) {
+export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
   return (
     <div style={{ flexShrink: 0, background: C.card }}>
 
     {/* Change / owing indicator */}
     <div style={{ borderTop: `1px solid ${C.border}`, padding: "4px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: ultra ? 28 : 36, flexShrink: 0 }}>
       {!cartLen && <span style={{ fontSize: 13, color: C.mutedFg }}>أضف منتجات للبدء</span>}
-      {cartLen > 0 && !payInput && <span style={{ fontSize: 12.5, color: C.mutedFg }}>أدخل المبلغ أو «إتمام» للدفع الكامل</span>}
+      {cartLen > 0 && !payInput && <span style={{ fontSize: 12.5, color: C.mutedFg }}>{codMode ? `يُحصَّل عند التسليم — ${fmt(total)} د.ع (لا قبضَ الآن)` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
       {cartLen > 0 && !!payInput && isChange && (
         <>
           <span style={{ fontSize: 13.5, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span>
@@ -46,7 +48,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
       )}
       {cartLen > 0 && !!payInput && isOwing && (
         <>
-          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>المتبقي للدفع</span>
+          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>{codMode ? "المتبقّي يُحصَّل عند التسليم" : "المتبقي للدفع"}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
@@ -101,7 +103,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
           method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
           !canPay ? "أكمل بيانات الدفع" :
-          `إتمام الدفع — ${fmt(total)} د.ع`
+          codMode ? `تثبيت الطلب وإسناده للتوصيل — ${fmt(total)} د.ع تُحصَّل عند التسليم` : `إتمام الدفع — ${fmt(total)} د.ع`
         }
         style={{
           ...(dense && showQuickPay ? { flex: 1, minWidth: 0 } : { width: "100%" }),
@@ -118,7 +120,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           ? "جارٍ…"
           : !cartLen
             ? "السلة فارغة"
-            : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع — {fmt(total)} د.ع</>}
+            : <><Check aria-hidden size={18} strokeWidth={3} /> {codMode ? "تثبيت الطلب وإسناده" : "إتمام الدفع"} — {fmt(total)} د.ع</>}
       </button>
     </div>
 

@@ -3,7 +3,8 @@
 // سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
 // ومقياس الاحتكاك D4، وتبقى كلّ الحالة المالية عند الأب (POS.tsx) وتصل عبر props.
 
-import { Printer, Check } from "lucide-react";
+import { Printer, Check, Truck } from "lucide-react";
+import { Link } from "wouter";
 import { paymentMethodClass } from "@/lib/paymentMethod";
 import { CopyButton } from "@/components/CopyButton";
 import { type Receipt, fmt, type PosColors as C } from "./posShared";
@@ -32,6 +33,15 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 24, display: "inline-flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
           <span>فاتورة: {receipt.invoiceNumber}</span>
           <CopyButton value={receipt.invoiceNumber} title="نسخ رقم الفاتورة" successMessage="تم نسخ رقم الفاتورة" />
+          {/* م١ PR-B: الطرد المُنشأ في معاملة البيع — رابطٌ مباشر إلى «قيد التوصيل». */}
+          {receipt.consignmentNumber && (
+            <>
+              <span>·</span>
+              <Link href="/delivery?tab=transit" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: C.primary, fontWeight: 800 }} title="متابعة الطرد من إدارة التوصيل">
+                <Truck aria-hidden size={14} /> طرد {receipt.consignmentNumber}
+              </Link>
+            </>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
@@ -60,6 +70,15 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
           </div>
         )}
 
+        {/* م١ PR-B: بيعٌ بتوصيل — المتبقّي يُحصَّل عند التسليم مع المندوب (COD)، لا آجلٌ على العميل. */}
+        {receipt.delivery && receipt.total > receipt.received && (
+          <div style={{ background: C.primarySoft, border: `1.5px solid ${C.primary}`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.primary, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Truck aria-hidden size={16} /> يُحصَّل عند التسليم ({receipt.delivery.partyName})
+            </span>
+            <span style={{ fontSize: 26, fontWeight: 900, color: C.primary, direction: "ltr" }}>{fmt(receipt.total - receipt.received)} <span style={{ fontSize: 12 }}>د.ع</span></span>
+          </div>
+        )}
         {receipt.isCredit && receipt.credit > 0 && (
           <div style={{ background: `color-mix(in oklch, ${C.amber} 10%, transparent)`, border: `1.5px solid color-mix(in oklch, ${C.amber} 30%, transparent)`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>آجل على {receipt.customerName ?? "العميل"}</span>
