@@ -23,6 +23,7 @@ import {
   SHORTFALL_OPTIONS,
   buildSettleDailyPayload,
   canSettle,
+  previewSignature,
   previewTotals,
   settleResultSummary,
   settlementVerdict,
@@ -51,6 +52,8 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
   const [pending, setPending] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [result, setResult] = useState<SettleDailyResult | null>(null);
+  // بصمةُ المعاينة التي رآها المستخدم وأدخل المعدودَ عليها (Codex #1012 P1) — تُلتقَط أوّلَ وصولٍ.
+  const [reviewedSig, setReviewedSig] = useState<string | null>(null);
   // مفتاح idempotency ثابتٌ لكلّ فتحةِ نافذة ⇒ النقر المزدوج/إعادة الشبكة لا تُكرّر التسوية.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
@@ -62,12 +65,16 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
     setServerError(null);
     setResult(null);
     setPending(false);
+    setReviewedSig(null);
     setClientRequestId(crypto.randomUUID());
   }, [open, party?.id]);
 
-  // المعدود يُملأ بالصافي المحسوب سلفاً أوّل ما تصل المعاينة — الكاشير يعدّل لا يبتدئ.
+  // المعدود يُملأ بالصافي المحسوب سلفاً أوّل ما تصل المعاينة — الكاشير يعدّل لا يبتدئ — وتُلتقَط بصمتُها.
   useEffect(() => {
-    if (open && preview && counted === "") setCounted(preview.net);
+    if (open && preview) {
+      if (counted === "") setCounted(preview.net);
+      setReviewedSig((prev) => prev ?? previewSignature(preview));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, preview?.net]);
 
@@ -77,6 +84,16 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
   const submit = async () => {
     if (!preview || !verdict) return;
+    // Codex #1012 P1 — لا تُقفِل على مجموعةٍ تغيّرت منذ راجعها المستخدم: طردٌ سُلِّم بعد المعاينة يُضخِّم
+    // العجزَ تحت السبب نفسه. نُعيد التقاط البصمة ونطلب مراجعةً بدل تسويةٍ لأرقامٍ لم يرها.
+    const liveSig = previewSignature(preview);
+    if (reviewedSig != null && liveSig !== reviewedSig) {
+      setReviewedSig(liveSig);
+      setCounted(preview.net);
+      setReason(null);
+      setServerError("تغيّرت المعاينة منذ فتحها (طرأ طردٌ أو تحرّك مبلغ) — راجِع الأرقام ثمّ أعد الإقفال.");
+      return;
+    }
     const payload = buildSettleDailyPayload(preview, verdict, reason, shiftType, clientRequestId, notes);
     if (!payload) return;
     setPending(true);

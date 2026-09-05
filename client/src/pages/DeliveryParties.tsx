@@ -57,7 +57,15 @@ export default function DeliveryParties() {
 
   if (list.isError) return <div className="p-6"><ErrorState onRetry={() => list.refetch()} /></div>;
   const allRows = list.data ?? [];
-  const activeFilterCount = f.outstandingOnly === "1" ? 1 : 0;
+  const outstandingOnly = f.outstandingOnly === "1";
+  const activeFilterCount = outstandingOnly ? 1 : 0;
+  // Codex #1012 P2 — التصدير والعدّاد يتبعان الفلتر: «ذمّة قائمة فقط» يُصدّر ما تعرضه اللوحة لا كلّ الجهات.
+  // نفس معيار `filterOutstanding`: طرودٌ مفتوحة أو عهدةٌ مخزَّنة (نقد+عجز) أو أجورٌ مستحقّة له.
+  const isPartyOutstanding = (p: Party): boolean =>
+    p.openConsignments > 0
+    || hasOpenBalance(p)
+    || Number((p as { feesOwedAmount?: string }).feesOwedAmount ?? "0") > 0;
+  const visibleRows = outstandingOnly ? allRows.filter(isPartyOutstanding) : allRows;
 
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
@@ -80,7 +88,7 @@ export default function DeliveryParties() {
 
       <ListToolbar
         title="الجهات"
-        count={allRows.length}
+        count={visibleRows.length}
         loading={list.isLoading}
         activeFilterCount={activeFilterCount}
         onResetFilters={resetF}
@@ -89,7 +97,7 @@ export default function DeliveryParties() {
         exportSpec={{
           filename: "جهات-التوصيل",
           sheetName: "الجهات",
-          rows: allRows,
+          rows: visibleRows,
           formats: ["xlsx", "csv"],
           columns: [
             { key: "name", header: "الجهة" },
@@ -120,7 +128,7 @@ export default function DeliveryParties() {
       {/* م١ PR-C: لوحة الخمسة أعمدة (delivery.partyBoard) بدل الجدول القديم — التسوية اليوميّة بتأكيدٍ واحد من الصفّ،
           وأفعال الجهات القائمة (العهدة السائبة · الشطب · واتساب) تبقى لمن يملكها؛ رأس اللوحة يُشتقّ من صفوفها المعروضة. */}
       <PartyBoardSection
-        outstandingOnly={f.outstandingOnly === "1"}
+        outstandingOnly={outstandingOnly}
         onOpenDetail={(row) => setF({ detail: String(row.partyId) })}
         // حوارا العهدة السائبة/الشطب يتطلّبان رصيداً مخزَّناً مفتوحاً — المسند المشترك (D2) لا فحصُ إشارةٍ بيد.
         onSettleLoose={canSettle ? (row) => { const p = allRows.find((x) => Number(x.id) === row.partyId); if (p && hasOpenBalance(p)) setSettleFor(p); } : undefined}

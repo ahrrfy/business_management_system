@@ -43,6 +43,19 @@ export function settlementVerdict(preview: Pick<SettlementPreview, "net">, count
   return { kind, diff: money2(Math.abs(diff) < 0.005 ? 0 : diff), net, counted };
 }
 
+/**
+ * بصمةُ المعاينة (Codex #1012 P1) — تُثبّت المجموعةَ التي بُني عليها المعدود: صافيها + متوقَّعها +
+ * مجموعةُ أرقام إرسالياتها بمتبقّي كلٍّ. `settleDailyTx` يُعيد تحميلَ الأسطر الحيّة لحظةَ الالتزام، فطردٌ
+ * سُلِّم بعد المعاينة قبل التأكيد يدخل صامتاً ويُضخِّم العجزَ المُصنَّف تحت السبب نفسه. تقارن الشاشةُ هذه
+ * البصمةَ عند الإقفال بما رآه المستخدم، وترفض إن تغيّرت — فيُعاد النظرُ بدل تسويةٍ لمجموعةٍ لم يرها.
+ */
+export function previewSignature(preview: Pick<SettlementPreview, "net" | "expectedCash" | "lines">): string {
+  const lines = preview.lines
+    .map((l) => `${l.consignmentId}:${money2(toNum(l.remaining))}`)
+    .sort();
+  return `${money2(toNum(preview.net))}|${money2(toNum(preview.expectedCash))}|${lines.join(",")}`;
+}
+
 /** هل يُقبل «إقفال» الآن؟ العجز يلزمه سبب؛ الزيادة تُرسَل والخادم يجيب. */
 export function canSettle(verdict: SettlementVerdict, reason: ShortfallReason | null): boolean {
   if (verdict.kind === "BALANCED" || verdict.kind === "OVER") return true;

@@ -22,6 +22,7 @@ import {
   boardFlags,
   boardTotals,
   bucketColumnLabel,
+  effectiveCashInHand,
   filterOutstanding,
   hubLinkFor,
   partyDetailLinkFor,
@@ -49,6 +50,11 @@ export interface PartyBoardProps {
   onRetry: () => void;
   /** «ذمّة قائمة فقط» — يُفلتر الصفوف ويُعيد حساب الرأس منها. */
   outstandingOnly: boolean;
+  /**
+   * علَمُ `courierLedgerDerived` (من `delivery.deliveryUiFlags`): ON ⇒ «نقد بيده» من الدفتر مع شارة انحراف؛
+   * OFF (الافتراض) ⇒ من المخزَّن (`currentBalance`) بلا انحراف — يطابق مصدرَ `net` الخادميّ (Codex #1012 P2).
+   */
+  ledgerDerived: boolean;
   /** غيابه = لا صلاحية تسوية (مرآة deliveryCashierProcedure) ⇒ الفعل مخفيّ. */
   onSettleToday?: (row: PartyBoardRow) => void;
   onOpenDetail: (row: PartyBoardRow) => void;
@@ -75,12 +81,12 @@ function BucketCell({ row, col }: { row: PartyBoardRow; col: BoardBucketColumn }
   );
 }
 
-export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetry, outstandingOnly, onSettleToday, onOpenDetail, onSettleLoose, onWriteOff, contactFor }: PartyBoardProps) {
+export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetry, outstandingOnly, ledgerDerived, onSettleToday, onOpenDetail, onSettleLoose, onWriteOff, contactFor }: PartyBoardProps) {
   const visible = useMemo(() => {
     const base = sortBoardRows(rows ?? []);
-    return outstandingOnly ? filterOutstanding(base) : base;
-  }, [rows, outstandingOnly]);
-  const totals = useMemo(() => boardTotals(visible), [visible]);
+    return outstandingOnly ? filterOutstanding(base, ledgerDerived) : base;
+  }, [rows, outstandingOnly, ledgerDerived]);
+  const totals = useMemo(() => boardTotals(visible, ledgerDerived), [visible, ledgerDerived]);
 
   const columns: ColumnDef<PartyBoardRow, unknown>[] = [
     {
@@ -89,7 +95,7 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
       accessorFn: (r) => r.partyName,
       meta: { width: "wide" },
       cell: ({ row }) => {
-        const f = boardFlags(row.original);
+        const f = boardFlags(row.original, ledgerDerived);
         return (
           <div className="flex flex-col gap-0.5">
             <button type="button" className="text-start font-bold text-primary hover:underline" onClick={() => onOpenDetail(row.original)}>
@@ -122,16 +128,17 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
     {
       id: BOARD_MONEY_LABEL.cashInHand,
       header: () => <span title={DELIVERY_TERMS.cashInHand.tooltip}>{BOARD_MONEY_LABEL.cashInHand}</span>,
-      accessorFn: (r) => fmt(r.cashInHandLedger),
+      accessorFn: (r) => fmt(effectiveCashInHand(r, ledgerDerived)),
       meta: { kind: "money" },
       sortDescFirst: true,
-      sortingFn: (a, b) => toNum(a.original.cashInHandLedger) - toNum(b.original.cashInHandLedger),
+      sortingFn: (a, b) => toNum(effectiveCashInHand(a.original, ledgerDerived)) - toNum(effectiveCashInHand(b.original, ledgerDerived)),
       cell: ({ row }) => {
         const r = row.original;
-        const f = boardFlags(r);
+        const f = boardFlags(r, ledgerDerived);
+        const cash = effectiveCashInHand(r, ledgerDerived);
         return (
           <span className="inline-flex items-center gap-1">
-            <span className={cn("font-bold tabular-nums", toNum(r.cashInHandLedger) > 0 ? "text-foreground" : "text-muted-foreground")} dir="ltr">{fmt(r.cashInHandLedger)}</span>
+            <span className={cn("font-bold tabular-nums", toNum(cash) > 0 ? "text-foreground" : "text-muted-foreground")} dir="ltr">{fmt(cash)}</span>
             {f.drift && (
               <span
                 className="inline-flex items-center gap-0.5 rounded bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-black text-[var(--sem-warn)]"
@@ -142,6 +149,21 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
             )}
           </span>
         );
+      },
+    },
+    {
+      // عمودٌ خامسٌ مستقلّ (Codex #1012 P2): عجزٌ محمَّل على الجهة — ذمّةٌ **غير نقديّة** لا تُخلَط بالنقد الماديّ.
+      id: BOARD_MONEY_LABEL.shortfallOwed,
+      header: () => <span title={`${BOARD_MONEY_LABEL.shortfallOwed} — نقدٌ لم تقبضه الجهة قطّ وحُمِّل عليها ذمّةً (لا يُخلَط بالنقد بيده)`}>{BOARD_MONEY_LABEL.shortfallOwed}</span>,
+      accessorFn: (r) => fmt(r.shortfallOwed),
+      meta: { kind: "money" },
+      sortDescFirst: true,
+      sortingFn: (a, b) => toNum(a.original.shortfallOwed) - toNum(b.original.shortfallOwed),
+      cell: ({ row }) => {
+        const s = row.original.shortfallOwed;
+        return toNum(s) > 0
+          ? <span className="font-bold tabular-nums text-[var(--sem-neg)]" dir="ltr">{fmt(s)}</span>
+          : <span className="text-muted-foreground">—</span>;
       },
     },
     {
@@ -169,7 +191,10 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
       enableSorting: false,
       cell: ({ row }) => {
         const r = row.original;
-        const f = boardFlags(r);
+        const f = boardFlags(r, ledgerDerived);
+        // العهدةُ المخزَّنةُ الكلّية (نقدٌ ماديّ + عجز) = مصدرُ حقّ فعلَي «العهدة السائبة» و«شطب العجز»:
+        // main يطرح العجزَ من `cashInHandStored` (العرض)، فاستعمالُه وحده كان يُعطّل شطبَ عجزٍ خالص (Codex #1012 P2).
+        const custodyStored = String(toNum(r.cashInHandStored) + toNum(r.shortfallOwed));
         return (
           <RowActions
             mode="menu"
@@ -181,7 +206,7 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
                 label: "سوِّ اليوم",
                 hidden: !onSettleToday,
                 disabled: !f.settleReady,
-                disabledReason: "لا نقد بيده ولا طرود سُلِّمت بلا توريد",
+                disabledReason: "لا طرودَ سُلِّمت ولم تُورَّد — الرصيدُ السائب يُسوَّى بـ«تسوية عهدة سائبة»",
                 onSelect: () => onSettleToday?.(r),
                 gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
               },
@@ -205,8 +230,8 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
                 kind: "pay",
                 label: "تسوية عهدة سائبة",
                 hidden: !onSettleLoose,
-                // المسند المشترك (D2): «مدينٌ لنا» على الرصيد المخزَّن — لا فحصَ إشارةٍ بيد.
-                disabled: balanceDirection({ currentBalance: r.cashInHandStored }, "deliveryParty") !== "receivable",
+                // المسند المشترك (D2): «مدينٌ لنا» على العهدة المخزَّنة الكلّية — لا فحصَ إشارةٍ بيد.
+                disabled: balanceDirection({ currentBalance: custodyStored }, "deliveryParty") !== "receivable",
                 disabledReason: "لا عهدة سائبة على الجهة",
                 onSelect: () => onSettleLoose?.(r),
                 gate: { roles: ["cashier", "manager"], module: "store", level: "FULL" },
@@ -217,7 +242,7 @@ export function PartyBoard({ rows, loading, isError, errorMessage = null, onRetr
                 label: "طلب شطب عجز",
                 variant: "destructive",
                 hidden: !onWriteOff,
-                disabled: balanceDirection({ currentBalance: r.cashInHandStored }, "deliveryParty") !== "receivable",
+                disabled: balanceDirection({ currentBalance: custodyStored }, "deliveryParty") !== "receivable",
                 disabledReason: "لا عجز قابل للشطب",
                 onSelect: () => onWriteOff?.(r),
                 gate: { roles: ["admin"] },

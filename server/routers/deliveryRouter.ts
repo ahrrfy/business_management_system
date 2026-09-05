@@ -57,6 +57,7 @@ import { appErrorMessage } from "@shared/errors";
 import { listPartyBoardTx, suggestPartyForZoneTx } from "../services/delivery/board";
 import { previewDailySettlementTx, settleDailyTx } from "../services/delivery/dailySettlement";
 import { withTx } from "../services/tx";
+import { rolloutMode } from "../config/rolloutFlags";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -494,6 +495,18 @@ export const deliveryRouter = router({
       if (!(branchId > 0)) return null;
       return withTx((tx) => suggestPartyForZoneTx(tx, { governorate: input.governorate, branchId }));
     }),
+
+  /**
+   * أعلامُ الطرح التدريجيّ التي تحكم واجهةَ التوصيل (Codex #1012 P1/P2) — تُشتقّ من البيئة على الخادم
+   * (`server/config/rolloutFlags`) فتصل العميلَ بدل أن يخمّنها: (١) `posDeliveryMode` — بلا ON لا يُعرَض
+   * مفتاحُ «توصيل» في الكاشير (الافتراض OFF = وضعٌ واحد كما وثّق السجلّ)؛ (٢) `courierLedgerDerived` —
+   * بلا ON تعرض لوحةُ الجهات «نقد بيده» من المخزَّن (`currentBalance`) لا من الدفتر، مطابقاً لمصدر `net`.
+   * بوّابةُ `store:READ` تكفي: يملكها كلُّ مشغّلي الكاشير/الاستقبال/التوصيل، فلا فِعلَ ولا رقمَ حسّاس هنا.
+   */
+  deliveryUiFlags: deliveryReadProcedure.query(() => ({
+    posDeliveryMode: rolloutMode("posDeliveryMode") === "ON",
+    courierLedgerDerived: rolloutMode("courierLedgerDerived") === "ON",
+  })),
 
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — store=FULL بكاشير/مدير أو منح صريح.

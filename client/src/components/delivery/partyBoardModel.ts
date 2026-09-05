@@ -38,12 +38,22 @@ export const BOARD_BUCKETS: readonly BoardBucketColumn[] = Object.freeze([
   { key: "cancelled", term: "cancelled", view: null, tone: "muted" },
 ]);
 
-/** الأعمدة الماليّة الثلاثة — تسمياتها من `partyExposure` (المصدر الوحيد). */
+/** الأعمدة الماليّة — تسمياتها من `partyExposure` (المصدر الوحيد). */
 export const BOARD_MONEY_LABEL = Object.freeze({
   cashInHand: PARTY_EXPOSURE_LABEL_AR.cashInHand,
+  shortfallOwed: PARTY_EXPOSURE_LABEL_AR.shortfallOwed,
   feesOwed: PARTY_EXPOSURE_LABEL_AR.feesOwedToThem,
   net: PARTY_EXPOSURE_LABEL_AR.netResponsibility,
 });
+
+/**
+ * «نقد بيده» بالمصدر الفعّال (Codex #1012 P2): الخادمُ يحسب `net` من الدفتر حين `courierLedgerDerived=ON`
+ * ومن المخزَّن (`currentBalance`) حين OFF (الافتراض). فالعمودُ المعروضُ يتبع العلَمَ نفسَه كي يطابق `net` —
+ * وإلّا ظهرت جهةٌ لها ٥٠٬٠٠٠ مخزَّنة بلا دفترٍ كاملٍ «صفراً» بينما صافيها يشملها. كلاهما بعد طرح العجز.
+ */
+export function effectiveCashInHand(row: Pick<PartyBoardRow, "cashInHandLedger" | "cashInHandStored">, ledgerDerived: boolean): string {
+  return ledgerDerived ? row.cashInHandLedger : row.cashInHandStored;
+}
 
 export const toNum = (v: string | number | null | undefined): number => {
   if (v == null) return 0;
@@ -58,29 +68,36 @@ export function bucketColumnLabel(col: BoardBucketColumn): { compact: string; to
 }
 
 export interface BoardFlags {
-  /** الدفتر ≠ المخزَّن — انحرافٌ يستحقّ تحقيقاً لا تسويةً صامتة. */
+  /** الدفتر ≠ المخزَّن — انحرافٌ يستحقّ تحقيقاً لا تسويةً صامتة. مُعتبَرٌ فقط حين الدفترُ مصدرُ الحقيقة. */
   drift: boolean;
   /** طرودٌ مفتوحة أقدم من عتبة الجهة (SLA) — الإسناد الجديد محجوبٌ خادمياً. */
   stale: boolean;
   /** طرودٌ لم تُغلق بعد (مُسنَد/بالطريق/سُلِّم لم يُورَّد). */
   hasOpenParcels: boolean;
-  /** يوجد ما يُسوّى اليوم: نقدٌ بيده أو طرودٌ سُلِّمت ولم تُورَّد. */
+  /**
+   * تسويةٌ يوميّة مُتاحة: طردٌ **سُلِّم ولم يُورَّد** واحدٌ فأكثر (Codex #1012 P2). `settleDailyTx` لا
+   * يُسوّي إلّا أسطرَ الطرود، فرصيدٌ سائبٌ (تاريخيّ/سالب) بلا طردٍ مُسلَّمٍ ينتج معاينةً فارغةً ورفضاً —
+   * يُسوَّى بفعل «تسوية عهدة سائبة» لا بهذا. الرصيدُ لم يعد شرطاً هنا.
+   */
   settleReady: boolean;
 }
 
-export function boardFlags(row: PartyBoardRow): BoardFlags {
+export function boardFlags(row: PartyBoardRow, ledgerDerived: boolean): BoardFlags {
   const open = row.assigned.count + row.inTransit.count + row.deliveredUnremitted.count;
   return {
-    drift: Math.abs(toNum(row.cashInHandDrift)) >= 0.005,
+    // الانحرافُ (دفتر ≠ مخزَّن) لا معنى له حين المخزَّنُ مصدرُ الحقيقة (OFF): الدفترُ قد يكون ناقصاً
+    // فيُنتج «انحرافاً» كاذباً على كلّ جهة. يُعرَض فقط حين الدفترُ هو الأساس (Codex #1012 P2).
+    drift: ledgerDerived && Math.abs(toNum(row.cashInHandDrift)) >= 0.005,
     stale: row.staleOpenParcels > 0,
     hasOpenParcels: open > 0,
-    settleReady: row.deliveredUnremitted.count > 0 || hasOpenBalance({ currentBalance: row.cashInHandLedger }),
+    settleReady: row.deliveredUnremitted.count > 0,
   };
 }
 
 export interface BoardTotals {
   parties: number;
   cashInHand: string;
+  shortfallOwed: string;
   feesOwed: string;
   net: string;
   staleParties: number;
@@ -88,25 +105,30 @@ export interface BoardTotals {
   buckets: Record<BoardBucketKey, PartyBoardBucket>;
 }
 
-/** مجاميع اللوحة — تُشتقّ من الصفوف المعروضة (المفلترة) لا من الأصل، كي يصدق الرأس مع الجدول. */
-export function boardTotals(rows: PartyBoardRow[]): BoardTotals {
+/**
+ * مجاميع اللوحة — تُشتقّ من الصفوف المعروضة (المفلترة) لا من الأصل، كي يصدق الرأس مع الجدول.
+ * «نقد بيده» يُجمَع بالمصدر الفعّال (`ledgerDerived`) كي يطابق مجموعُ الرأس أعمدةَ الصفوف (Codex #1012 P2).
+ */
+export function boardTotals(rows: PartyBoardRow[], ledgerDerived: boolean): BoardTotals {
   const buckets = Object.fromEntries(BOARD_BUCKETS.map((c) => [c.key, { count: 0, amount: 0 }])) as Record<BoardBucketKey, { count: number; amount: number }>;
-  let cashInHand = 0, feesOwed = 0, net = 0, staleParties = 0, driftParties = 0;
+  let cashInHand = 0, shortfallOwed = 0, feesOwed = 0, net = 0, staleParties = 0, driftParties = 0;
   for (const row of rows) {
     for (const c of BOARD_BUCKETS) {
       buckets[c.key].count += row[c.key].count;
       buckets[c.key].amount += toNum(row[c.key].amount);
     }
-    cashInHand += toNum(row.cashInHandLedger);
+    cashInHand += toNum(effectiveCashInHand(row, ledgerDerived));
+    shortfallOwed += toNum(row.shortfallOwed);
     feesOwed += toNum(row.feesOwed);
     net += toNum(row.net);
-    const f = boardFlags(row);
+    const f = boardFlags(row, ledgerDerived);
     if (f.stale) staleParties++;
     if (f.drift) driftParties++;
   }
   return {
     parties: rows.length,
     cashInHand: money2(cashInHand),
+    shortfallOwed: money2(shortfallOwed),
     feesOwed: money2(feesOwed),
     net: money2(net),
     staleParties,
@@ -145,10 +167,17 @@ export function sortBoardRows(rows: PartyBoardRow[]): PartyBoardRow[] {
   });
 }
 
-/** فلترة «ذمّة قائمة فقط» — صفٌّ له ما يُسوّى أو طرودٌ مفتوحة. */
-export function filterOutstanding(rows: PartyBoardRow[]): PartyBoardRow[] {
+/**
+ * فلترة «ذمّة قائمة فقط» — صفٌّ عليه التزامٌ حيّ: طرودٌ مفتوحة، أو نقدٌ بيده (بالمصدر الفعّال)، أو
+ * عجزٌ محمَّل، أو أجورٌ مستحقّة. النقدُ يبقى معياراً هنا (خلافاً لـ`settleReady`) لأنّ جهةً تمسك نقداً
+ * لم تُورَّده ذمّةٌ قائمة وإن أُغلقت طرودُها (Codex #1012 P2).
+ */
+export function filterOutstanding(rows: PartyBoardRow[], ledgerDerived: boolean): PartyBoardRow[] {
   return rows.filter((r) => {
-    const f = boardFlags(r);
-    return f.settleReady || f.hasOpenParcels || hasOpenBalance({ currentBalance: r.feesOwed });
+    const f = boardFlags(r, ledgerDerived);
+    return f.hasOpenParcels
+      || hasOpenBalance({ currentBalance: effectiveCashInHand(r, ledgerDerived) })
+      || toNum(r.shortfallOwed) > 0
+      || hasOpenBalance({ currentBalance: r.feesOwed });
   });
 }

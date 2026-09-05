@@ -1513,7 +1513,10 @@ function SettleTab() {
   const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 
-  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount) - Number((c as { counterSettledAmount?: string }).counterSettledAmount ?? "0"));
+  // note-I (م١): المتبقّي الحيّ للتوريد يطرح **العجزَ المُصنَّف** (`shortfallAssigned` من الخادم) — نقدٌ لم
+  // تقبضه الجهة قطّ وحُمِّل عليها ذمّةً. بدونه يحسب هذا أعلى من الحدّ الخادميّ (`recordDeliveryRemittanceInTx`)
+  // فيُرفَض كلُّ توريدٍ بعد عجز. مطابقٌ لصيغة `queries.ts`: cod − collected − counterSettled − shortfallAssigned.
+  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount) - Number(c.counterSettledAmount ?? "0") - Number(c.shortfallAssigned ?? "0"));
   const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
     && remainingOf(c) > 0;

@@ -4,6 +4,7 @@ import {
   SHORTFALL_OPTIONS,
   buildSettleDailyPayload,
   canSettle,
+  previewSignature,
   previewTotals,
   settleResultSummary,
   settlementVerdict,
@@ -55,6 +56,20 @@ describe("التسوية اليوميّة بتأكيدٍ واحد — الحكم
   it("أسباب العجز من المصدر المشترك حرفياً", () => {
     expect(SHORTFALL_OPTIONS.map((o) => o.value)).toEqual([...SHORTFALL_REASONS]);
     expect(SHORTFALL_OPTIONS[0].label).toBe(SHORTFALL_REASON_LABEL_AR[SHORTFALL_REASONS[0]]);
+  });
+
+  it("بصمةُ المعاينة: تتغيّر بتغيّر الصافي أو دخول/خروج طردٍ أو تحرّك متبقٍّ (Codex #1012 P1)", () => {
+    const base = previewSignature(preview);
+    // ثباتٌ على نفس المعاينة (لا تعتمد على ترتيب الأسطر).
+    expect(previewSignature({ ...preview, lines: [...preview.lines].reverse() })).toBe(base);
+    // تغيّرُ الصافي ⇒ بصمةٌ مختلفة.
+    expect(previewSignature({ ...preview, net: "9600.00" })).not.toBe(base);
+    // دخولُ طردٍ جديد ⇒ بصمةٌ مختلفة (المجموعة الحيّة تغيّرت بعد المعاينة).
+    const withExtra = { ...preview, lines: [...preview.lines, { consignmentId: 9, consignmentNumber: "CN-9", invoiceNumber: "10009", customerName: "ليلى", codAmount: "3000.00", collectedAmount: "0.00", remaining: "3000.00", parcelStatus: "DELIVERED" }] };
+    expect(previewSignature(withExtra)).not.toBe(base);
+    // تحرّكُ متبقّي طردٍ قائم ⇒ بصمةٌ مختلفة.
+    const moved = { ...preview, lines: preview.lines.map((l) => (l.consignmentId === 2 ? { ...l, remaining: "1000.00" } : l)) };
+    expect(previewSignature(moved)).not.toBe(base);
   });
 
   it("مجاميع المعاينة والنتيجة المُهيكَلة", () => {
