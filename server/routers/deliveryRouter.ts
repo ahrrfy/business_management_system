@@ -1,10 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
-import { consignmentReturnPreflight } from "../services/workOrder/refundPreflight";
-import { canCrossBranches } from "../lib/branchAuthority";
-import { hasModuleAccess, type PermissionMap } from "@shared/permissions";
-import { withTx } from "../services/tx";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
@@ -111,26 +107,6 @@ async function assertPartyInScope(partyId: number, scopedBranchId: number | null
   }
 }
 
-/**
- * أيحقّ لهذا الفاعل رؤيةُ **أرصدة الأدراج** بالأرقام؟ (مراجعة Codex P2)
- *
- * نقطتا التمهيد محروستان ببوّابة الفعل (`workorders`/`store`) عمداً — كي لا يُعطَّل فعلٌ
- * مصرَّحٌ به لمن لا يملك الخزينة. لكنّ ذلك **لا يمنحه سطحَ الخزينة**: الرقمُ الدقيق يبقى
- * خلف `treasury:READ`، ومن دونه يكفيه علَمُ `sufficient` لاختيارٍ صائب. (كان `sales_rep` —
- * بلا صندوق — يتلقّى أرصدةَ كلّ درجٍ مفتوحٍ بالفرع، وهو نقضٌ لعزل الأدراج المقرَّر في تدقيق ٢/٧.)
- */
-function maySeeDrawerCash(user: { role?: string | null; permissionsOverride?: unknown }): boolean {
-  // ⚠️ **لا تُمرّر قائمةَ أدوارٍ فارغة** (مراجعة Codex P2): `moduleAccessAllowed` عندئذٍ يتخطّى
-  // `hasModuleAccess` كلّياً ويسقط إلى الفحص الصريح وحده — فمديرٌ قالبُه `treasury: FULL` بلا
-  // تجاوزٍ يُحجَب رقمُه رغم امتلاكه الخزينة. `hasModuleAccess` يحترم القالبَ والتجاوزَ معاً.
-  if (String(user.role ?? "") === "admin") return true;
-  return hasModuleAccess(
-    String(user.role ?? ""),
-    (user.permissionsOverride ?? null) as PermissionMap | null,
-    "treasury",
-    "READ",
-  );
-}
 
 export const deliveryRouter = router({
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
@@ -736,23 +712,8 @@ export const deliveryRouter = router({
   //       الكاشير يملكه والمنح/التقييد الصريح يُطاع) + فرعٌ مُسنَد إلزاميّ ⇒ authz-guard أخضر.
   //   (٢) فحص ملكية الفرع **داخل** `returnConsignment` قبل الردّ الـidempotent وقبل المعاملة
   //       المدمِّرة (الجهة تُشتقّ من الإرسالية لا من المدخل، فلا يحميها حارسٌ راوتريّ).
-  /**
-   * **تمهيدُ إرجاع الإرسالية** — بنفس بوّابة الفعل (`storeFulfillProcedure`) لا بالخزينة.
-   * يُخبر الشاشةَ هل يخرج نقدٌ أصلاً: طردٌ غيرُ محصَّلٍ بلا أمانةِ أجرة **لا يحتاج درجاً**،
-   * وكان الحوارُ يفترض الحاجةَ دائماً فيُعطّل إرجاعاً روتينياً خارج الوردية (Codex P1 #920).
-   * والأدراجُ مُصفّاةٌ بفرع الإرسالية — فلا يُعرَض على الأدمن درجُ فرعٍ آخر يرفضه الخادم.
-   */
-  returnPreflight: storeFulfillProcedure
-    .input(z.object({ consignmentId: z.number().int().positive() }))
-    .query(async ({ input, ctx }) => withTx(async (tx) => {
-      const res = await consignmentReturnPreflight(tx, input.consignmentId, { exposeCash: maySeeDrawerCash(ctx.user) });
-      if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-      if (!canCrossBranches(ctx.user) && res.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية لا تخصّ فرعك" });
-      }
-      return res;
-    })),
-
+  // تمهيدُ إرجاع الإرسالية صار عبر المنتقي الموحَّد: `refundRails.preflight` بنوع `CONSIGNMENT_RETURN`
+  // (نفسُ `consignmentReturnPreflight` + بوّابةُ وحدةٍ لكلّ نوع) — حُذف الإجراءُ المكرَّر هنا (م٢ ق١٠ب).
   returnConsignment: storeFulfillProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
