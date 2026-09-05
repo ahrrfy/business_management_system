@@ -178,6 +178,21 @@ beforeEach(async () => {
 });
 
 describe.sequential("superApp approvals contract", () => {
+  it("does not list or open a reversed voucher whose approval status stayed pending", async () => {
+    const [cancelled] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "246000.00", paymentMethod: "CASH",
+      status: "REVERSED", approvalStatus: "PENDING_APPROVAL", voucherNumber: "RV-1-20260818-00001",
+      description: "سند ملغى", createdBy: 1,
+    }).$returningId();
+    const manager = await caller(2);
+
+    const inbox = await manager.superApp.approvalInbox({ limit: 10, offset: 0 });
+
+    expect(inbox.some((item) => item.kind === "voucher" && item.id === cancelled.id)).toBe(false);
+    await expect(manager.superApp.approvalDetail({ kind: "voucher", id: cancelled.id }))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("paginates a stable branch-scoped stream without overlap", async () => {
     const manager = await caller(2);
     const first = await manager.superApp.approvalInbox({ limit: 2, offset: 0 });
