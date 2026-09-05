@@ -61,7 +61,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
         عند ضيق الارتفاع يصطفّ الزرّان في **صفٍّ واحد** (نمط شاشة الطباعة نفسه) فيوفّران
         صفّاً كاملاً (~٥٨px) دون فقد ميزة «الدفع السريع» على الشاشات الصغيرة التي تحتاجها
         أكثر — والارتفاع يبقى ≥50px لكليهما. */}
-    <div style={{ padding: dense ? "4px 11px 9px" : "4px 11px 10px", flexShrink: 0, display: "flex", flexDirection: dense ? "row" : "column", gap: dense ? 7 : 0 }}>
+    <div style={{ padding: "4px 11px 8px", flexShrink: 0, display: "flex", flexDirection: "row", gap: 6 }}>
 
       {showQuickPay && (
         <button
@@ -78,17 +78,17 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
             `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
           }
           style={{
-            ...(dense ? { width: 128, flexShrink: 0 } : { width: "100%", marginBottom: 7 }),
-            height: fluid(50, 6.6, 58),
+            width: dense ? 110 : 124, flexShrink: 0,
+            height: fluid(44, 5.6, 52),
             background: canPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
             color: canPay && !isPending ? "#fff" : C.mutedFg,
-            border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 13.5 : 15, fontWeight: 900,
+            border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 12.5 : 13.5, fontWeight: 900,
             cursor: canPay && !isPending ? "pointer" : "not-allowed",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: dense ? 5 : 7,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
             boxShadow: canPay && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
             transition: "background .1s, color .1s, box-shadow .1s",
           }}>
-          <Zap aria-hidden size={18} />{dense ? "دفع سريع" : `دفع سريع وطباعة — ${paymentMethodLabel(method)}`}
+          <Zap aria-hidden size={16} />دفع سريع
         </button>
       )}
 
@@ -104,13 +104,13 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           `إتمام الدفع — ${fmt(total)} د.ع`
         }
         style={{
-          ...(dense && showQuickPay ? { flex: 1, minWidth: 0 } : { width: "100%" }),
-          height: fluid(50, 6.6, 58),
+          flex: 1, minWidth: 0,
+          height: fluid(44, 5.6, 52),
           background: canPay && !isPending ? C.success : C.muted,
           color: canPay && !isPending ? "#fff" : C.mutedFg,
-          border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900,
+          border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 13.5 : 14.5, fontWeight: 900,
           cursor: canPay && !isPending ? "pointer" : "not-allowed",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           boxShadow: canPay && !isPending ? `0 3px 12px color-mix(in oklch, ${C.success} 30%, transparent)` : "none",
           transition: "background .1s, color .1s, box-shadow .1s",
         }}>

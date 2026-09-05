@@ -97,7 +97,7 @@ ${CAIRO_FONT}
   *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
   *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   @page{size:80mm auto;margin:0}
-  body{font-family:'Cairo',monospace;width:80mm;background:#fff;color:#000;margin:0;padding:3mm;font-size:11px;line-height:1.5}
+  body{font-family:'Cairo',sans-serif;width:80mm;background:#fff;color:#000;margin:0;padding:3mm;font-size:11.5px;font-weight:700;line-height:1.5;-webkit-font-smoothing:antialiased}
 </style>
 </head>
 <body onload="window.print();setTimeout(function(){window.close()},400)">${bodyContent}</body></html>`;
