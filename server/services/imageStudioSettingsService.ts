@@ -17,8 +17,9 @@ import { eq } from "drizzle-orm";
 import {
   AI_STUDIO_PROVIDERS,
   DEFAULT_AI_STUDIO_PROMPT,
-  DEFAULT_GEMINI_IMAGE_MODEL,
   MAX_STUDIO_PROMPT_LEN,
+  normalizeGeminiModelName,
+  resolveGeminiImageModel,
   type AiStudioProvider,
 } from "@shared/imageStudio/aiPrompt";
 import { imageStudioSettings } from "../../drizzle/schema";
@@ -232,8 +233,8 @@ export async function getAiImageStudioSettings(): Promise<AiImageStudioSettingsD
     hasAiKey: !!key,
     aiKeyMasked: maskSecret(key),
     aiProvider: row?.aiProvider ?? "GEMINI",
-    aiModel: row?.aiModel ?? null,
-    aiModelEffective: row?.aiModel?.trim() || DEFAULT_GEMINI_IMAGE_MODEL,
+    aiModel: row?.aiModel ? normalizeGeminiModelName(row.aiModel) : null,
+    aiModelEffective: resolveGeminiImageModel(row?.aiModel),
     aiStudioPrompt: storedPrompt ?? DEFAULT_AI_STUDIO_PROMPT,
     aiStudioPromptIsDefault: !storedPrompt,
     aiLastVerifiedAt: row?.aiLastVerifiedAt ?? null,
@@ -266,7 +267,7 @@ export async function getAiStudioRuntime(): Promise<AiStudioRuntime | null> {
   return {
     apiKey,
     provider: row.aiProvider ?? "GEMINI",
-    model: row.aiModel?.trim() || DEFAULT_GEMINI_IMAGE_MODEL,
+    model: resolveGeminiImageModel(row.aiModel),
     basePrompt: row.aiStudioPrompt?.trim() || DEFAULT_AI_STUDIO_PROMPT,
   };
 }
@@ -324,7 +325,7 @@ export async function updateAiImageStudioSettings(
     if (input.aiEnabled !== undefined) patch.aiEnabled = input.aiEnabled;
     if (input.aiProvider !== undefined) patch.aiProvider = input.aiProvider;
     if (input.aiModel !== undefined) {
-      patch.aiModel = input.aiModel ? input.aiModel.trim().slice(0, 80) : null;
+      patch.aiModel = input.aiModel ? normalizeGeminiModelName(input.aiModel).slice(0, 80) : null;
       // تغيير النموذج ⇒ صفّر حالة الفحص (الفحص السابق قد يخصّ نموذجاً آخر، فلا يُطمأنّ إليه).
       patch.aiLastVerifiedAt = null;
       patch.aiLastError = null;
@@ -352,7 +353,7 @@ export async function verifyAiConnection(): Promise<{ ok: boolean; message: stri
   if (!key) {
     return { ok: false, message: "لا مفتاح ذكاء اصطناعي محفوظ." };
   }
-  const effectiveModel = row?.aiModel?.trim() || DEFAULT_GEMINI_IMAGE_MODEL;
+  const effectiveModel = resolveGeminiImageModel(row?.aiModel);
 
   let result: { ok: boolean; message: string };
   try {

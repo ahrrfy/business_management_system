@@ -3,9 +3,17 @@ import { decryptJsonWithKey, encryptJsonWithKey } from "@/lib/offline/crypto";
 import {
   createStudioDraftIdentityStore,
   createStudioDraftStore,
+  studioDraftWritesAllowed,
   type StudioDraftPersistence,
   type StudioDraftRecord,
 } from "./studioDrafts";
+
+it("يبقي التحرير والحفظ مغلقين حتى تملك الجلسة حق استئناف المسودة", () => {
+  expect(studioDraftWritesAllowed({ kind: "NONE" })).toBe(true);
+  expect(studioDraftWritesAllowed({ kind: "RESUME", draft: {} as never })).toBe(true);
+  expect(studioDraftWritesAllowed({ kind: "ALREADY_RESUMED", draft: {} as never, retryAt: 2_000 })).toBe(false);
+  expect(studioDraftWritesAllowed({ kind: "CONFLICT", draft: {} as never })).toBe(false);
+});
 
 function memoryPersistence(): StudioDraftPersistence & {
   rows: Map<string, StudioDraftRecord>;
@@ -191,8 +199,9 @@ describe("encrypted studio drafts", () => {
   });
 
   it("grants a resume lease to only one of two concurrent tabs", async () => {
-    const { create, store } = await makeHarness();
+    const { advance, create, store } = await makeHarness();
     await store.save(input);
+    advance(60_001);
     const context = {
       userId: input.userId,
       taskId: input.taskId,
@@ -228,6 +237,58 @@ describe("encrypted studio drafts", () => {
     expect((await create().reconcileAndClaimResume(context)).kind).toBe(
       "ALREADY_RESUMED",
     );
+  });
+
+  it("does not erase the owning tab's resume claim when an autosave changes content", async () => {
+    const { create, store } = await makeHarness();
+    await store.save(input);
+    const context = {
+      userId: input.userId,
+      taskId: input.taskId,
+      taskFound: true,
+      revision: input.revision,
+      editable: true,
+    };
+    await store.reconcileAndClaimResume(context);
+    await store.save({ ...input, proposedDescription: "وصف معدّل في التبويب المالك" });
+
+    expect((await create().reconcileAndClaimResume(context)).kind).toBe(
+      "ALREADY_RESUMED",
+    );
+  });
+
+  it("makes the first autosave own a new draft before another tab can resume it", async () => {
+    const { create, store } = await makeHarness();
+    await store.save(input);
+    const result = await create().reconcileAndClaimResume({
+      userId: input.userId,
+      taskId: input.taskId,
+      taskFound: true,
+      revision: input.revision,
+      editable: true,
+    });
+    expect(result.kind).toBe("ALREADY_RESUMED");
+  });
+
+  it("rejects a stale tab autosave after another tab owns the draft", async () => {
+    const { advance, create, store } = await makeHarness();
+    await store.save(input);
+    advance(60_001);
+    const otherTab = create();
+    const context = {
+      userId: input.userId,
+      taskId: input.taskId,
+      taskFound: true,
+      revision: input.revision,
+      editable: true,
+    };
+    expect((await otherTab.reconcileAndClaimResume(context)).kind).toBe("RESUME");
+    await otherTab.save({ ...input, proposedDescription: "تعديل التبويب المالك" });
+
+    await expect(store.save({ ...input, proposedDescription: "كتابة قديمة" })).rejects.toThrow("تبويب آخر");
+    expect(await otherTab.load(input.userId, input.taskId)).toMatchObject({
+      proposedDescription: "تعديل التبويب المالك",
+    });
   });
 
   it("discovers and restores an offline draft without an in-memory task query", async () => {

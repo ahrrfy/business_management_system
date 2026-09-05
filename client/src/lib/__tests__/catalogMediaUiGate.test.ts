@@ -57,4 +57,37 @@ describe("catalog media UI gate", () => {
     expect(text).toMatch(/setM\.mutate\(\{\s*productId:\s*target\.productId,\s*url:\s*null\s*\}\)/);
     expect(text).not.toMatch(/setM\.mutate\([\s\S]{0,120}url\s*\)/);
   });
+
+  it("campaign batches keep a distinct task, processing mode, and receipt for every image", () => {
+    const text = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
+    expect(text).toMatch(/slots\.map\(\(slot,[\s\S]*studioTaskId=\{slot\.taskId\}/);
+    expect(text).toContain("onStudioModeChange={(mode) => patch(slot.taskId, { mode })}");
+    expect(text).toContain("onProcessingReceiptChange={(receipt) => patch(slot.taskId, { receipt })}");
+    expect(text).toContain('mode: slot.mode === "AI" ? "FLATTEN" : slot.mode, processingReceipt: slot.receipt');
+  });
+
+  it("a workflow task can process one image only; batches use separate task IDs", () => {
+    const section = source("client/src/components/product/ProductMediaContentSection.tsx");
+    expect(section).toContain("maxItems={studioTaskId != null ? 1 : maxImages}");
+    const uploader = source("client/src/components/product/ImageStudioUploader.tsx");
+    expect(uploader.match(/workflowTaskId == null && value\.length > 1/g)).toHaveLength(2);
+  });
+
+  it("does not turn an unknown server refresh into a destructive draft conflict", () => {
+    const page = source("client/src/pages/ProductImageStudio.tsx");
+    expect(page).toMatch(/const refreshed = await tasks\.refetch\(\);[\s\S]{0,300}if \(refreshed\.isError\)/);
+  });
+
+  it("additional image slots claim local drafts and cannot replace an unknown server original", () => {
+    const batch = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
+    expect(batch).toContain("reconcileStudioDraftAfterReconnect");
+    expect(batch).toMatch(/disabled=\{[^}]*slot\.hasOriginal && !slot\.image[^}]*slot\.hasCandidate/);
+  });
+
+  it("revalidates each additional draft ownership immediately before its own submit", () => {
+    const batch = source("client/src/components/product-studio/StudioCampaignImageBatch.tsx");
+    expect(batch).toMatch(/for \(const slot of pending\)[\s\S]{0,700}await persistSlotDraft\(props\.userId, slot\)[\s\S]{0,900}await submit\.mutateAsync/);
+    expect(batch).toContain("patch(slot.taskId, { ownershipLost: true })");
+    expect(batch).toMatch(/pending\.some\(\(slot\) => slot\.conflict \|\| slot\.ownershipLost/);
+  });
 });

@@ -1,59 +1,29 @@
-/** حراس تكلفة/تحمل استوديو الصور: السقف اليومي محفوظ، والتزامن/المعدل يمنعان الإغراق. */
-import { sql } from "drizzle-orm";
+/** بوابة تنفيذ مزوّدي الاستوديو: لا حصص استخدام داخلية، مع إبقاء سقف التزامن التقني. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { imageStudioUsageDaily, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   __resetImageStudioUsageGuardForTests,
-  IMAGE_STUDIO_DAILY_LIMITS,
   runGuardedImageStudioCall,
 } from "../imageStudioUsageGuard";
 
-function db() {
-  const value = getDb();
-  if (!value) throw new Error("DATABASE_URL not set for tests");
-  return value;
-}
-
-async function reset() {
-  await db().execute(sql`TRUNCATE TABLE \`imageStudioUsageDaily\``);
-  await db().execute(sql`TRUNCATE TABLE \`imageStudioUserRateState\``);
-  await db().insert(users).values([1, 2, 3, 44, 70, 71].map((id) => ({
-    id,
-    openId: `image-studio-guard-${id}`,
-    name: `Guard ${id}`,
-  }))).onDuplicateKeyUpdate({ set: { openId: sql`${users.openId}` } });
-  __resetImageStudioUsageGuardForTests();
-}
-
 describe("imageStudioUsageGuard", () => {
-  beforeEach(reset);
+  beforeEach(() => {
+    if (!getDb()) throw new Error("DATABASE_URL not set for tests");
+    __resetImageStudioUsageGuardForTests();
+  });
   afterEach(() => __resetImageStudioUsageGuardForTests());
 
-  /**
-   * كان هذا الاختبار يستدعي `reserveDailyImageStudioUse` — دالّةً مُصدَّرةً بلا أيّ مستدعٍ
-   * إنتاجيّ. فكان يُثبت ذرّيّة مسارٍ لا يسلكه أحد، بينما مسار الإنتاج الحقيقيّ
-   * (`reserveSharedBudgets` داخل `runGuardedImageStudioCall`) بلا تغطيةٍ لسقفه اليوميّ.
-   * حُذفت الميتة ووُجّه الاختبار إلى الحيّ.
-   */
-  it("يرفض النداء الذي يتجاوز السقف اليومي على مسار الإنتاج", async () => {
-    const usageDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-    await db().insert(imageStudioUsageDaily).values({
-      usageDate,
-      service: "REMOVEBG",
-      requestCount: IMAGE_STUDIO_DAILY_LIMITS.REMOVEBG,
-      lastRequestedAt: new Date(),
-    });
-    await expect(runGuardedImageStudioCall({ service: "REMOVEBG", userId: 70, run: async () => "no" })).rejects.toMatchObject({ kind: "DAILY_BUDGET_EXHAUSTED" });
-    // وخدمةٌ أخرى لها ميزانيتها المستقلّة فلا تتأثّر.
-    await expect(runGuardedImageStudioCall({ service: "AI", userId: 71, run: async () => "ok" })).resolves.toBe("ok");
+  it("لا يرفض النداء بسبب عدّاد يومي داخلي؛ الميزانية يحكمها المزوّد", async () => {
+    for (let i = 0; i < 25; i += 1) {
+      await expect(runGuardedImageStudioCall({ service: i % 2 === 0 ? "REMOVEBG" : "AI", userId: 70, run: async () => "ok" }))
+        .resolves.toBe("ok");
+    }
   });
 
-  it("يمنع أكثر من ثلاث محاولات للمستخدم نفسه في الدقيقة", async () => {
-    for (let i = 0; i < 3; i += 1) {
+  it("يسمح بعدد غير محدود من المحاولات للمستخدم نفسه", async () => {
+    for (let i = 0; i < 10; i += 1) {
       await expect(runGuardedImageStudioCall({ service: "AI", userId: 44, run: async () => "ok" })).resolves.toBe("ok");
     }
-    await expect(runGuardedImageStudioCall({ service: "AI", userId: 44, run: async () => "no" })).rejects.toMatchObject({ kind: "RATE_LIMITED" });
   });
 
   it("لا يسمح بأكثر من اتصالين خارجيين عبر اتصالات MySQL المستقلة ويعيد الخانة بعد التحرير", async () => {

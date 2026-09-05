@@ -83,6 +83,11 @@ export type StudioDraftReconciliation =
   | { kind: "ALREADY_RESUMED"; draft: StudioDraft; retryAt: number }
   | { kind: "CONFLICT"; draft: StudioDraft };
 
+/** لا تفتح الكتابة إلا لجلسة لا توجد لها مسودة أو نجحت فعلياً في امتلاك استئنافها. */
+export function studioDraftWritesAllowed(result: StudioDraftReconciliation): boolean {
+  return result.kind === "NONE" || result.kind === "RESUME";
+}
+
 const STUDIO_DRAFT_INDEX_KEY = "studio-draft-index-hmac";
 
 async function studioDraftOpaqueId(
@@ -193,27 +198,36 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
   return {
     async save(input: StudioDraftInput): Promise<StudioDraft> {
       const id = await idFor(input.userId, input.taskId);
-      const existing = await load(input.userId, input.taskId);
-      const timestamp = now();
-      const unchanged =
-        existing != null &&
-        existing.revision === input.revision &&
-        existing.proposedName === input.proposedName &&
-        existing.proposedDescription === input.proposedDescription &&
-        existing.proposedMarketingCopy === input.proposedMarketingCopy &&
-        existing.imageDataUrl === input.imageDataUrl &&
-        existing.originalDataUrl === input.originalDataUrl &&
-        existing.processingReceipt === input.processingReceipt &&
-        existing.mode === input.mode;
-      const draft: StudioDraft = {
-        ...input,
-        createdAt: existing?.createdAt ?? timestamp,
-        updatedAt: timestamp,
-        expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
-        resumeLease: unchanged ? existing.resumeLease : null,
-      };
-      await options.persistence.put({ id, envelope: await encrypt(draft) });
-      return draft;
+      return options.persistence.readwrite(async () => {
+        const timestamp = now();
+        const row = await options.persistence.get(id);
+        const existing = row ? await readRow(row, timestamp) : null;
+        if (existing && (existing.userId !== input.userId || existing.taskId !== input.taskId)) {
+          await options.persistence.delete(id);
+          throw new Error("تعارضت هوية مسودة الاستوديو المحلية");
+        }
+        if (
+          existing?.resumeLease &&
+          existing.resumeLease.expiresAt > timestamp &&
+          existing.resumeLease.sessionId !== sessionId
+        ) {
+          throw new Error("مسودة الاستوديو مفتوحة في تبويب آخر");
+        }
+        const draft: StudioDraft = {
+          ...input,
+          createdAt: existing?.createdAt ?? timestamp,
+          updatedAt: timestamp,
+          expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
+          // أول حفظ يملك المسودة لهذه الجلسة، وكل حفظ لاحق يجدد ملكيتها. القراءة
+          // والتحقق والكتابة داخل معاملة واحدة كي لا يطمس تبويبٌ مسودة تبويب آخر.
+          resumeLease: {
+            sessionId,
+            expiresAt: timestamp + STUDIO_DRAFT_RESUME_LEASE_MS,
+          },
+        };
+        await options.persistence.put({ id, envelope: await encrypt(draft) });
+        return draft;
+      });
     },
 
     load,
@@ -292,12 +306,24 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
           draft.revision !== context.revision
         )
           return { kind: "CONFLICT", draft };
-        if (draft.resumeLease && draft.resumeLease.expiresAt > now())
-          return {
-            kind: "ALREADY_RESUMED",
-            draft,
-            retryAt: draft.resumeLease.expiresAt,
+        if (draft.resumeLease && draft.resumeLease.expiresAt > now()) {
+          if (draft.resumeLease.sessionId !== sessionId) {
+            return {
+              kind: "ALREADY_RESUMED",
+              draft,
+              retryAt: draft.resumeLease.expiresAt,
+            };
+          }
+          const renewed = {
+            ...draft,
+            resumeLease: {
+              sessionId,
+              expiresAt: now() + STUDIO_DRAFT_RESUME_LEASE_MS,
+            },
           };
+          await options.persistence.put({ id, envelope: await encrypt(renewed) });
+          return { kind: "RESUME", draft: renewed };
+        }
         const claimed = {
           ...draft,
           resumeLease: {

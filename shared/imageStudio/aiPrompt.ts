@@ -12,8 +12,22 @@
 export const AI_STUDIO_PROVIDERS = ["GEMINI"] as const;
 export type AiStudioProvider = (typeof AI_STUDIO_PROVIDERS)[number];
 
-/** النموذج الافتراضي (production) لمزوّد Gemini — قابل للتجاوز من الإعدادات بلا هجرة. */
-export const DEFAULT_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
+/** النموذج الافتراضي المستقر: توازن الجودة والسرعة والكلفة لمسار صور المنتجات. */
+export const DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-lite-image";
+export const DEPRECATED_GEMINI_IMAGE_MODEL = "gemini-2.5-flash-image";
+
+/** اسم Gemini المجرّد الذي تقبله واجهة `models/{id}`؛ يقبل أيضاً الصيغة الرسمية `models/...`. */
+export function normalizeGeminiModelName(model: string | null | undefined): string {
+  return (model ?? "").trim().replace(/^models\//i, "");
+}
+
+/** يرقّي الافتراضي القديم تلقائياً قبل موعد إيقافه، مع إبقاء أي نموذج مخصّص آخر. */
+export function resolveGeminiImageModel(model: string | null | undefined): string {
+  const normalized = normalizeGeminiModelName(model);
+  return !normalized || normalized === DEPRECATED_GEMINI_IMAGE_MODEL
+    ? DEFAULT_GEMINI_IMAGE_MODEL
+    : normalized;
+}
 
 /** الحدّ الأقصى لطول إضافة المستخدم على البرومت (حرف) — يمنع حمولةً ضخمة/إساءة. */
 export const MAX_USER_PROMPT_LEN = 2000;
