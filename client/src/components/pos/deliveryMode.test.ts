@@ -4,12 +4,14 @@ import {
   applyGovernorateSelection,
   applyPartySelection,
   buildDeliveryPayload,
+  deliveryBlocksOfflineCapture,
   deliveryModeUnavailableReason,
   deliveryReceiptAmounts,
   deliverySendsPayment,
   emptyDeliveryDraft,
   governorateOptions,
   normalizeFee,
+  OFFLINE_DELIVERY_BLOCK,
   saleReceiptAmounts,
   toE164Iraq,
   validateDeliveryDraft,
@@ -40,6 +42,26 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
   it("الأوفلاين يُعطّل الوضع بسببٍ ظاهر — لا إسناد بلا حرّاس حيّة", () => {
     expect(deliveryModeUnavailableReason(false)).toBeNull();
     expect(deliveryModeUnavailableReason(true)).toBe("التوصيل يحتاج اتصالاً بالخادم — لا إسناد بلا حرّاس حيّة");
+  });
+
+  it("سلّةُ توصيلٍ لا تُلتقَط أوفلاين — قاعدةٌ واحدةٌ لحارس الالتقاط وشرط الأهليّة (٥٠٣ · submitSale · quickPay)", () => {
+    // بلا توصيل ⇒ لا يُحجَب: البيعُ النقديُّ الصرف يُلتقَط أوفلاين كالمعتاد.
+    expect(deliveryBlocksOfflineCapture(null)).toBe(false);
+    expect(deliveryBlocksOfflineCapture(undefined)).toBe(false);
+    // مسوّدةُ توصيلٍ حاضرة ⇒ يُحجَب مهما بلغ اكتمالها (حتى مسوّدةٌ فارغة = نيّةُ توصيلٍ لم تكتمل بعد).
+    expect(deliveryBlocksOfflineCapture(emptyDeliveryDraft())).toBe(true);
+    expect(deliveryBlocksOfflineCapture(filled())).toBe(true);
+
+    // مرآةُ شرط أهليّة الالتقاط في POS.tsx (offlineCapturable): التوصيل وحده يُسقط أهليّةَ سلّةٍ
+    // نقديّةٍ كاملةٍ لولاه ⇒ لا تُلتقَط بيعاً نقدياً صرفاً بلا إسنادِ جهةٍ ولا تحصيلِ COD.
+    const eligibleGivenDelivery = (delivery: DeliveryDraft | null) => !deliveryBlocksOfflineCapture(delivery);
+    expect(eligibleGivenDelivery(null)).toBe(true);
+    expect(eligibleGivenDelivery(filled())).toBe(false);
+
+    // الرسالةُ تقول ماذا حدث · لماذا · ماذا تفعل الآن (لا رسالةً صمّاء)، ومجمَّدةٌ كمصدرٍ واحد.
+    expect(OFFLINE_DELIVERY_BLOCK.title).toContain("توصيل");
+    expect(OFFLINE_DELIVERY_BLOCK.body).toMatch(/الخادم|أزِل التوصيل/);
+    expect(Object.isFrozen(OFFLINE_DELIVERY_BLOCK)).toBe(true);
   });
 
   it("الحمولة الخادميّة تُبنى من مسوّدةٍ مكتملة بأجرةٍ مطبَّعة ومحافظةٍ ومستلم", () => {

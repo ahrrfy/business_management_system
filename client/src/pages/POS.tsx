@@ -33,7 +33,7 @@ import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefr
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
-import { applyCustomerIdentity, buildDeliveryPayload, deliveryModeUnavailableReason, deliverySendsPayment, saleReceiptAmounts } from "@/components/pos/deliveryMode";
+import { applyCustomerIdentity, buildDeliveryPayload, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
 import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
@@ -908,13 +908,12 @@ export default function POS() {
       // نقداً فقط» — وهي **تعليمةٌ خاطئة وخطِرة**: البطاقة تكون قد خُصمت فعلاً قبل
       // `sales.create` (يشترطها `externalPaymentConfirmed`)، فيُدفع الكاشير إلى تحصيلٍ مكرّر
       // أو ترك عمليةٍ مخصومة معلَّقة. ما لا يُلتقَط يسقط للمسار العاديّ برسالة الخادم كما هي.
-      const offlineCapturable =
-        !!shift &&
+      const offlineCapturable = !!shift &&
         cart.length > 0 &&
         !cart.some((c) => c.digital) &&
         activeTab.method === "CASH" &&
         !isCredit &&
-        !activeTab.couponCode;
+        !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
       if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
         saleCtxRef.current = null;
         void captureOfflineSale();
@@ -1089,6 +1088,9 @@ export default function POS() {
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
     if (!shift || !cart.length) return;
+    // م١ PR-B (سلامة ماليّة): الدفاعُ الأخير لكلّ مسارات الالتقاط (٥٠٣ · submitSale · quickPay) —
+    // سلّةُ توصيلٍ لا تُلتقَط نقداً صرفاً دون إسنادِ جهةٍ ولا تحصيلِ COD (الخادم يرفضها من الطابور).
+    if (deliveryBlocksOfflineCapture(activeTab.delivery)) { notify.errBig(OFFLINE_DELIVERY_BLOCK.title, OFFLINE_DELIVERY_BLOCK.body); return; }
     // البطاقات الرقمية ش٥: البيع الرقميّ **محظور أوفلاين** (مسألة مؤجَّلة صراحةً في §٢٤ من وثيقة
     // التصميم) — السعر والتنفيذ الخارجيّ واستهلاك المحفظة كلّها تحتاج الخادم لحظةَ البيع.
     if (cart.some((c) => c.digital)) {
@@ -1208,10 +1210,9 @@ export default function POS() {
       );
       return;
     }
-    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
+    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل. سلّةُ التوصيل تُرفض
+    // داخل captureOfflineSale نفسها (deliveryBlocksOfflineCapture) ⇒ حارسٌ واحدٌ يغطّي هذا المسار وquickPay.
     if (offline) {
-      // م١ PR-B: لا التقاطَ محلّيّاً لبيعٍ بتوصيل — الإسناد يحتاج حرّاس الخادم الحيّة (الخادم يرفضه من الطابور أصلاً).
-      if (codMode) { notify.err(deliveryModeUnavailableReason(true)!); return; }
       void captureOfflineSale();
       return;
     }
@@ -1322,6 +1323,10 @@ export default function POS() {
   });
 
 
+  // مرجعٌ حيٌّ لأحدث `submitSale`: مستمعُ F4 يُثبَّت مرّةً بتبعيّاتٍ لا تشمل `activeTab.delivery`
+  // (exhaustive-deps مُعطَّل)، فنداءُ الإغلاق المُثبَّت مباشرةً كان قد يبيع سلّةَ توصيلٍ بلا رؤيتها.
+  const submitSaleRef = useRef(submitSale); submitSaleRef.current = submitSale;
+
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1336,7 +1341,7 @@ export default function POS() {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
         // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
         case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
-        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
+        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSaleRef.current(); break;
         case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
           if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
         }).catch((error) => notify.err(error)); break;
