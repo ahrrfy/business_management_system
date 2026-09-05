@@ -47,9 +47,11 @@ export interface PaymentPanelProps {
   couponInput: string; couponCode: string | null; couponLabel: string | null;
   setCouponInput: (value: string) => void; onApplyCoupon: () => void; onClearCoupon: () => void;
   couponPending: boolean;
+  /** م١ PR-B — وضع «توصيل» (COD): يُمرَّر إلى منطقة الفعل لتبديل نصوص الزرّ/المؤشّر. */
+  codMode?: boolean;
 }
 
-export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
+export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending, codMode = false }: PaymentPanelProps) {
 
   // ── الاحتواء الديناميكي: تركيبٌ متكيّف قبل المقياس ───────────────────────────
   // شاشات الكاشير الفيزيائية صغيرة، والمطلوب وضوحٌ وكِبَرٌ لا انكماش. لذلك عند ضيق
@@ -369,6 +371,7 @@ export function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoic
         total={total} cartLen={cartLen} payInput={payInput}
         isChange={isChange} isOwing={isOwing} change={change} credit={credit}
         showQuickPay={showQuickPay}
+        codMode={codMode}
         canPay={canPay} isPending={isPending} hasCustomer={hasCustomer}
         method={method} externalPaymentConfirmed={externalPaymentConfirmed}
         onPay={onPay} onQuickPay={onQuickPay}
