@@ -7,6 +7,7 @@ import {
   couponReservations,
   coupons,
   customers,
+  documentEffects,
   invoices,
   promotions,
 } from "../../drizzle/schema";
@@ -491,6 +492,17 @@ export interface IssuedCouponDetail {
   lastInvoiceTotal: string | null;
   lastInvoiceStatus: string | null;
   lastRedeemedAt: Date | null;
+  /**
+   * تاريخُ الاستبدالات المُلغاة (Codex P2): إلغاءُ البيع بكوبونٍ يحذف صفَّ الاسترداد كي يتحرّر
+   * الكوبون لعميله، لكنّ محرّكَ العكس يحفظ حمولةَ الاسترداد كاملةً في صفّ `documentEffects` REVERSE.
+   * نقرؤها هنا فيرى الموظّف أنّ الكوبون **استُبدل ثمّ أُلغي** (لا «لم يُستبدل قطّ») ويتتبّع الإلغاء
+   * إلى فاتورته — وتبقى مُستبعَدةً من عدّ الأهليّة (`lockCouponForSale` يعدّ الصفوفَ الحيّة وحدها).
+   */
+  reversedRedemptionCount: number;
+  lastReversedInvoiceId: number | null;
+  lastReversedInvoiceNumber: string | null;
+  lastReversedInvoiceStatus: string | null;
+  lastReversedRedeemedAt: Date | null;
 }
 
 /** تفاصيل صفحة إصدار واحدة بلا N+1: أسماء المخصص لهم + أحدث فاتورة + مجموع الاستردادات. */
@@ -520,6 +532,29 @@ export async function loadIssuedCouponDetails(
     .where(inArray(couponRedemptions.couponId, couponIds))
     .orderBy(desc(couponRedemptions.redeemedAt), desc(couponRedemptions.id));
 
+  // تاريخُ الاستبدالات المُلغاة من سجلّ الأثر: صفوفُ REVERSE لتحرير الكوبون تحمل حمولةَ الاسترداد
+  // المحذوف (couponId · invoiceId · redeemedAt · discountAmount). أحدثُها أوّلاً (id تنازليّاً).
+  const couponIdList = sql.join(couponIds.map((id) => sql`${id}`), sql`, `);
+  const reversedRedemptions = await tx
+    .select({
+      couponId: sql<number>`CAST(JSON_UNQUOTE(JSON_EXTRACT(${documentEffects.payloadJson}, '$.couponId')) AS UNSIGNED)`,
+      invoiceId: documentEffects.documentId,
+      redeemedAt: sql<string | null>`JSON_UNQUOTE(JSON_EXTRACT(${documentEffects.payloadJson}, '$.redeemedAt'))`,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceStatus: invoices.status,
+    })
+    .from(documentEffects)
+    .innerJoin(invoices, eq(invoices.id, documentEffects.documentId))
+    .where(
+      and(
+        eq(documentEffects.documentType, "INVOICE"),
+        eq(documentEffects.effectKind, "COUPON"),
+        eq(documentEffects.phase, "REVERSE"),
+        sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${documentEffects.payloadJson}, '$.couponId')) AS UNSIGNED) IN (${couponIdList})`,
+      ),
+    )
+    .orderBy(desc(documentEffects.id));
+
   const result = new Map<number, IssuedCouponDetail>();
   for (const row of rows) {
     result.set(row.id, {
@@ -530,6 +565,11 @@ export async function loadIssuedCouponDetails(
       lastInvoiceTotal: null,
       lastInvoiceStatus: null,
       lastRedeemedAt: null,
+      reversedRedemptionCount: 0,
+      lastReversedInvoiceId: null,
+      lastReversedInvoiceNumber: null,
+      lastReversedInvoiceStatus: null,
+      lastReversedRedeemedAt: null,
     });
   }
   for (const redemption of redemptions) {
@@ -544,6 +584,20 @@ export async function loadIssuedCouponDetails(
       lastInvoiceTotal: first ? String(redemption.invoiceTotal) : current.lastInvoiceTotal,
       lastInvoiceStatus: first ? redemption.invoiceStatus : current.lastInvoiceStatus,
       lastRedeemedAt: first ? new Date(redemption.redeemedAt) : current.lastRedeemedAt,
+    });
+  }
+  for (const reversed of reversedRedemptions) {
+    const couponId = Number(reversed.couponId);
+    const current = result.get(couponId);
+    if (!current) continue; // كوبونٌ خارج الصفحة الحاليّة
+    const first = current.reversedRedemptionCount === 0; // أحدثُها أوّلاً (id تنازليّاً)
+    result.set(couponId, {
+      ...current,
+      reversedRedemptionCount: current.reversedRedemptionCount + 1,
+      lastReversedInvoiceId: first ? Number(reversed.invoiceId) : current.lastReversedInvoiceId,
+      lastReversedInvoiceNumber: first ? reversed.invoiceNumber : current.lastReversedInvoiceNumber,
+      lastReversedInvoiceStatus: first ? reversed.invoiceStatus : current.lastReversedInvoiceStatus,
+      lastReversedRedeemedAt: first && reversed.redeemedAt ? new Date(reversed.redeemedAt) : current.lastReversedRedeemedAt,
     });
   }
   return result;

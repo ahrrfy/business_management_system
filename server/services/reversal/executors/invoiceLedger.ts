@@ -61,7 +61,7 @@ export const invoiceConsignmentExecutor: EffectExecutor = async (tx, effects, ru
       outcomes.push({ status: "REVERSED", signedAmount: new Decimal(0), payloadJson: { supplierId, nothingToReverse: true } });
       continue;
     }
-    await postEntry(tx, {
+    const reversalEntryId = await postEntry(tx, {
       entryType: "PURCHASE",
       supplierId,
       invoiceId: run.documentId,
@@ -104,7 +104,14 @@ export const invoiceConsignmentExecutor: EffectExecutor = async (tx, effects, ru
         run.actor,
       );
     }
-    outcomes.push({ status: "REVERSED", signedAmount: share.neg(), payloadJson: { supplierId, paidShare: paidShare.toFixed(2), giftShare: giftShare.toFixed(2), damagedReaccrual: !readInventoryState(run).restock } });
+    outcomes.push({
+      status: "REVERSED",
+      signedAmount: share.neg(),
+      // مرجعُ التعويض = قيدُ PURCHASE السالب المُدرَج الآن، لا قيدُ الأمانة الأصليّ (Codex P2).
+      effectTable: "accountingEntries",
+      effectRowId: reversalEntryId,
+      payloadJson: { supplierId, paidShare: paidShare.toFixed(2), giftShare: giftShare.toFixed(2), damagedReaccrual: !readInventoryState(run).restock },
+    });
   }
   return outcomes;
 };
@@ -257,8 +264,9 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
     const returnPostingIntent = returnPostingLines.length ? createPostingIntent(returnProfile, "RETURN", returnPostingLines, returnPostingSource) : null;
     const reasonNote = (run.decisions.reasonNote ?? "").trim();
     // إلغاء فاتورة هدايا صِرفة لا يعكس SALE/AR؛ عكس GIFT_OUT هو أثره المالي.
+    let returnEntryId: number | null = null;
     if (returnPostingIntent) {
-      await postEntry(tx, {
+      returnEntryId = await postEntry(tx, {
         entryType: "RETURN",
         branchId: Number(inv.branchId),
         invoiceId: run.documentId,
@@ -282,6 +290,10 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
     outcomes.push({
       status: "REVERSED",
       signedAmount: remainingAmount.neg(),
+      // مرجعُ التعويض = قيدُ RETURN المُدرَج (Codex P2)؛ حين لا يُدرَج (فاتورةُ هدايا صِرفة)
+      // يعود صفُّ REVERSE إلى مرجع الأصل بلا ادّعاء قيدٍ معوِّضٍ غيرِ موجود.
+      effectTable: returnEntryId == null ? undefined : "accountingEntries",
+      effectRowId: returnEntryId == null ? undefined : returnEntryId,
       payloadJson: {
         entryType: "RETURN",
         revenue: remainingRevenue.neg().toFixed(2),
@@ -342,7 +354,7 @@ export const invoiceGiftExecutor: EffectExecutor = async (tx, effects, run) => {
     }
     const giftPosting = classifyGiftPosting(reversible, costs.ownedRestockedGiftCost, -1);
     const operatorName = await userNameSnapshot(tx, run.actor.userId);
-    await postEntry(tx, {
+    const giftEntryId = await postEntry(tx, {
       entryType: "GIFT_OUT",
       branchId: Number(inv.branchId),
       invoiceId: run.documentId,
@@ -360,13 +372,16 @@ export const invoiceGiftExecutor: EffectExecutor = async (tx, effects, run) => {
       postingSourceComponents: giftPosting.sourceComponents,
     });
     const full = reversible.eq(effect.outstandingAmount);
+    // مرجعُ التعويض = قيدُ GIFT_OUT السالب المُدرَج الآن (Codex P2).
     outcomes.push(
       full
-        ? { status: "REVERSED", signedAmount: reversible.neg(), payloadJson: { entryType: "GIFT_OUT" } }
+        ? { status: "REVERSED", signedAmount: reversible.neg(), effectTable: "accountingEntries", effectRowId: giftEntryId, payloadJson: { entryType: "GIFT_OUT" } }
         : {
             status: "PARTIAL",
             why: "جزءٌ من مصروف الهدايا يخصّ خدمةً استُهلكت أو أمانةً — لا يُعكَس بحكم السياسة",
             signedAmount: reversible.neg(),
+            effectTable: "accountingEntries",
+            effectRowId: giftEntryId,
             payloadJson: { entryType: "GIFT_OUT", reversed: reversible.toFixed(2), outstanding: effect.outstandingAmount.toFixed(2) },
           },
     );
@@ -386,7 +401,7 @@ export const invoiceRoundingExecutor: EffectExecutor = async (tx, effects, run) 
       outcomes.push({ status: "REVERSED", signedAmount: new Decimal(0) });
       continue;
     }
-    await postEntry(tx, {
+    const roundingEntryId = await postEntry(tx, {
       entryType: "ADJUST",
       dedupeKey: flavor === "CANCEL" ? `ADJUST:IQD:CANCEL:${run.documentId}` : `ADJUST:IQD:RETURN:${run.documentId}`,
       branchId: Number(inv.branchId),
@@ -398,7 +413,8 @@ export const invoiceRoundingExecutor: EffectExecutor = async (tx, effects, run) 
       notes: flavor === "CANCEL" ? "عكس تقريب نقدي IQD — إلغاء فاتورة" : "عكس تقريب نقدي IQD — مرتجع كامل",
       postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", amount.neg())),
     });
-    outcomes.push({ status: "REVERSED", signedAmount: amount.neg(), payloadJson: { entryType: "ADJUST" } });
+    // مرجعُ التعويض = قيدُ ADJUST السالب المُدرَج الآن (Codex P2).
+    outcomes.push({ status: "REVERSED", signedAmount: amount.neg(), effectTable: "accountingEntries", effectRowId: roundingEntryId, payloadJson: { entryType: "ADJUST" } });
   }
   return outcomes;
 };

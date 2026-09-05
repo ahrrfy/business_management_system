@@ -183,8 +183,10 @@ async function resolveEntryActor(
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
- *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen). */
-export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
+ *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen).
+ *  يُعيد **مُعرِّف القيد المُدرَج** كي يربطه العاكسُ بصفّ REVERSE بوصفه مرجعَ التعويض الحقيقيّ
+ *  (Codex P2: بلا هذا كان صفُّ REVERSE يعود إلى قيد APPLY الأصليّ فيبدو SALE قيدَه المعوِّض). */
+export async function postEntry(tx: Tx, e: EntryInput): Promise<number> {
   const entryDate = e.entryDate ?? new Date();
   // One company-wide lock order for branch and branchless postings:
   // close gate (shared writer) -> active period -> double-entry settings.
@@ -239,13 +241,15 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     createdBy: actorAttribution.createdBy,
     createdByNameSnapshot: actorAttribution.createdByNameSnapshot,
   });
+  const entryId = extractInsertId(res);
   // نقطة الحقن الوحيدة للدفتر المزدوج (P2). داخل **نفس المعاملة** ⇒ تراجعُ العملية يتراجع معه
   // القيد. في SHADOW يبقى النشر best-effort: الخلل يُوسَم فجوةً ولا يفشل عملية الأعمال؛
   // أمّا ACTIVE فيعمل fail-closed ويرمي كي لا تنجح عملية بلا يومية معتمدة.
-  await shadowPost(tx, extractInsertId(res), e, {
+  await shadowPost(tx, entryId, e, {
     runtime,
     postingValidationError,
   });
+  return entryId;
 }
 
 /** AR: positive = customer owes us. Applied atomically via SQL increment. */

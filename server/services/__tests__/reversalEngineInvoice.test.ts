@@ -19,8 +19,9 @@ import { getDb } from "../../db";
 import { cancelSale } from "../sale/cancel";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
-import { hashCouponCode } from "../couponService";
+import { hashCouponCode, loadIssuedCouponDetails } from "../couponService";
 import { createPromotion } from "../salesPromotionService";
+import { approveVoucher } from "../voucher/approval";
 import { withTx } from "../tx";
 import { reverse, summarizeEffects } from "../reversalEngine";
 import { money } from "../money";
@@ -28,6 +29,7 @@ import { truncateTables } from "./__testUtils__";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 const manager = { userId: 2, branchId: 1, role: "manager" as const };
+const owner = { userId: 3, branchId: 1, role: "admin" as const }; // مالكٌ نشطٌ يعتمد السندات (≠ المُنشئ).
 
 const TABLES = [
   "documentEffects", "idempotencyKeys", "couponRedemptions", "coupons", "couponPrograms",
@@ -48,6 +50,7 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" },
     { id: 2, openId: "mgr", name: "manager", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "owner", name: "owner", role: "admin", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
   ]);
   await d.insert(s.categories).values({ id: 1, name: "قرطاسية" });
   await d.insert(s.products).values({ id: 1, name: "دفتر", categoryId: 1 });
@@ -337,5 +340,130 @@ describe("reverse() منفِّذاً — إلغاءُ فاتورةٍ بكوبو�
     await expect(
       withTx((tx) => reverse(tx, "INVOICE", 424242, { kind: "ALL" }, "عكس بلا منفّذ", admin)),
     ).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+  });
+
+  it("⑥ صفوفُ REVERSE للقيود تشير إلى القيد المعوِّض (RETURN/ADJUST) لا إلى قيد SALE الأصليّ (Codex P2)", async () => {
+    await db().update(s.productPrices).set({ price: "1300.00" }).where(eq(s.productPrices.productUnitId, 1));
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "1300.00", method: "CASH" }, cashRoundIQD: true,
+      },
+      manager,
+    );
+    await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", reason: "خطأ إدخال" }, admin);
+
+    const allEntries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, sale.invoiceId));
+    const saleEntry = allEntries.find((e) => e.entryType === "SALE")!;
+    const returnEntry = allEntries.find((e) => e.entryType === "RETURN")!;
+    const adjustReversal = allEntries.find((e) => e.entryType === "ADJUST" && e.dedupeKey === `ADJUST:IQD:CANCEL:${sale.invoiceId}`)!;
+    expect(returnEntry).toBeDefined();
+    expect(adjustReversal).toBeDefined();
+
+    // صفُّ REVERSE لقيد البيع يشير إلى قيد RETURN المُدرَج — لا إلى قيد SALE الأصليّ.
+    const ledgerReverse = (await db().select().from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentId, sale.invoiceId), eq(s.documentEffects.effectKind, "LEDGER_ENTRY"), eq(s.documentEffects.phase, "REVERSE"),
+    )))[0]!;
+    expect(ledgerReverse.effectTable).toBe("accountingEntries");
+    expect(Number(ledgerReverse.effectRowId)).toBe(Number(returnEntry.id));
+    expect(Number(ledgerReverse.effectRowId)).not.toBe(Number(saleEntry.id));
+
+    // وصفُّ REVERSE للتقريب يشير إلى قيد ADJUST العكسيّ المُدرَج.
+    const roundingReverse = (await db().select().from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentId, sale.invoiceId), eq(s.documentEffects.effectKind, "ROUNDING"), eq(s.documentEffects.phase, "REVERSE"),
+    )))[0]!;
+    expect(Number(roundingReverse.effectRowId)).toBe(Number(adjustReversal.id));
+  });
+
+  it("⑦ مرتجعٌ جزئيّ مُعادٌ للمخزون ثمّ إلغاء: لا كمّيةَ مخزونٍ وهميّة (الملخّص بلا نطاق متوازن) (Codex P2)", async () => {
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] },
+      admin,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0]!;
+    await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }], refund: null, restock: true },
+      admin,
+    );
+    expect(await stockOf(1, 1)).toBe(7); // بيعُ ٥ ⇒ ٥، وإعادةُ ٢ للرفّ ⇒ ٧.
+
+    await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" }, admin);
+    expect(await stockOf(1, 1)).toBe(10); // الباقي (٣) يعود ⇒ خطُّ الأساس.
+
+    // الملخّصُ بلا نطاق: مجموعُ كمّية INVENTORY = 0 — لا +٢ وهميّةٌ من كاتبٍ ظلّيٍّ بنطاق "return".
+    const summary = await withTx((tx) => summarizeEffects(tx, "INVOICE", sale.invoiceId));
+    const invQty = summary.filter((r) => r.effectKind === "INVENTORY").reduce((t, r) => t + r.sumQuantity, 0);
+    expect(invQty).toBe(0);
+    // وكلُّ آثار المخزون في نطاق البيع وحده (لا نطاق "return" منتِجٌ للوهم).
+    const invScopes = await db().select({ scope: s.documentEffects.scope }).from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentId, sale.invoiceId), eq(s.documentEffects.effectKind, "INVENTORY")));
+    expect(new Set(invScopes.map((r) => r.scope))).toEqual(new Set(["sale"]));
+  });
+
+  it("⑧ ردٌّ مؤجَّل (TRANSFER) يُغلَق أثراه عند اعتماد السند: PAID_AMOUNT وrefund-pending إلى Σ=0 (Codex P2)", async () => {
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
+      admin,
+    );
+    await db().update(s.invoices).set({ paidAmount: "2000.00", status: "PAID" }).where(eq(s.invoices.id, sale.invoiceId));
+    await db().insert(s.receipts).values({
+      invoiceId: sale.invoiceId, branchId: 1, direction: "IN", amount: "2000.00", paymentMethod: "TRANSFER",
+      status: "COMPLETED", createdBy: 1,
+    });
+    await db().update(s.customers).set({ currentBalance: "0.00" }).where(eq(s.customers.id, 1));
+
+    const res = await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER" }, admin);
+    expect(res.pendingRefundAmount).toBe("2000.00");
+    // قبل الاعتماد: الأثران مفتوحان بقصد.
+    const before = await effectSums(sale.invoiceId, "sale");
+    expect(before.PAID_AMOUNT!.amount).toBe("2000.0000");
+    const beforePending = await effectSums(sale.invoiceId, "refund-pending");
+    expect(beforePending.CUSTOMER_BALANCE!.amount).toBe("-2000.0000");
+
+    const pendingReceipt = (await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.approvalStatus, "PENDING_APPROVAL"),
+    )))[0]!;
+    await approveVoucher(Number(pendingReceipt.id), owner); // مُعتمِدٌ مالكٌ نشط ≠ مُنشئ (SOD).
+
+    // المالُ خرج ⇒ الأثران أُغلقا: Σ كلٍّ منهما صفر، وصفُّ REVERSE يشير إلى إيصال الصرف.
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0]!;
+    expect(inv.paidAmount).toBe("0.00");
+    expect(await customerBalance(1)).toBe("0.00");
+    const afterSale = await effectSums(sale.invoiceId, "sale");
+    expect(afterSale.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(afterSale.PAID_AMOUNT!.rows).toBeGreaterThanOrEqual(2);
+    const afterPending = await effectSums(sale.invoiceId, "refund-pending");
+    expect(afterPending.CUSTOMER_BALANCE!.amount).toBe("0.0000");
+    const paidReverse = (await db().select().from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentId, sale.invoiceId), eq(s.documentEffects.effectKind, "PAID_AMOUNT"), eq(s.documentEffects.phase, "REVERSE"),
+    )))[0]!;
+    expect(paidReverse.effectTable).toBe("receipts");
+    expect(Number(paidReverse.effectRowId)).toBe(Number(pendingReceipt.id));
+  });
+
+  it("⑨ إلغاءُ بيعٍ بكوبون يحفظ تاريخَ الاستبدال في تفاصيل الكوبون رغم تحرّره (Codex P2)", async () => {
+    const fx = await couponFixture("CRM-REV-9");
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1, priceTier: "RETAIL", couponCode: fx.code,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPriceOverride: "1000.00", discountAmount: "200.00", promotionId: fx.promotionId }],
+        payment: { amount: "1800.00", method: "CASH" },
+      },
+      manager,
+    );
+    const coupon = (await db().select().from(s.coupons).where(eq(s.coupons.codeHash, hashCouponCode(fx.code))))[0]!;
+    await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", reason: "خطأ إدخال" }, admin);
+
+    // صفُّ الاسترداد حُذف (الكوبون تحرّر لعميله) — لا يُعدُّ في الأهليّة.
+    expect(await db().select().from(s.couponRedemptions).where(eq(s.couponRedemptions.invoiceId, sale.invoiceId))).toHaveLength(0);
+    // لكنّ تفاصيل الكوبون تُظهر الاستبدال الملغى من سجلّ الأثر — لا «لم يُستبدَل قطّ».
+    const details = await withTx((tx) => loadIssuedCouponDetails(tx, [{ id: Number(coupon.id), customerId: 1 }]));
+    const d = details.get(Number(coupon.id))!;
+    expect(d.reversedRedemptionCount).toBe(1);
+    expect(d.lastReversedInvoiceId).toBe(sale.invoiceId);
+    expect(d.lastReversedInvoiceStatus).toBe("CANCELLED");
+    expect(d.lastReversedRedeemedAt).not.toBeNull();
+    expect(d.lastInvoiceNumber).toBeNull(); // لا استبدالٌ حيّ.
   });
 });
