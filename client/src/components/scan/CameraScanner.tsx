@@ -167,6 +167,8 @@ export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpe
         streamRef.current = null;
         if (videoRef.current?.srcObject === ownedStream) videoRef.current.srcObject = null;
       }
+      setTorchAvailable(false);
+      setTorchOn(false);
     };
 
     const setTorchCapability = (stream: MediaStream | null) => {
