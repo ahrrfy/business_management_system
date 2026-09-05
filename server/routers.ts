@@ -94,6 +94,7 @@ import { purchaseIntegrityRouter } from "./routers/purchaseIntegrityRouter";
 import { goodsReceiptReversalRouter } from "./routers/goodsReceiptReversalRouter";
 import { supplierInvoiceApprovalRouter } from "./routers/supplierInvoiceApprovalRouter";
 import { sessionContextRouter } from "./routers/sessionContextRouter";
+import { decisionsRouter } from "./routers/decisionsRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -226,6 +227,8 @@ export const appRouter = router({
   selfApprovalAudit: selfApprovalAuditRouter,
   // سياقُ الجلسة المُشتَقّ خادمياً (م٤ ق١: الاستنتاج قبل السؤال) — تستهلكه `useSessionContext`.
   sessionContext: sessionContextRouter,
+  // صندوق «مطلوب مني الآن» من سجلّ القرارات (م٧ ق٢، ٥/٩/٢٦): سردٌ موحّد + حسمٌ في مكانه.
+  decisions: decisionsRouter,
 });
 
 export type AppRouter = typeof appRouter;

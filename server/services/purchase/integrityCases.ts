@@ -154,11 +154,15 @@ export async function decidePurchaseIntegrityResolution(input: DecideIntegrityRe
   });
 }
 
-export async function listPurchaseIntegrityCases(input: { branchId: number; status?: typeof purchaseIntegrityCases.$inferSelect["status"]; severity?: IntegritySeverity; limit?: number }, actor: Actor) {
+/** `order: "ASC"` = الأقدم اكتشافاً أوّلاً (صندوق القرارات) — القصّ بالأحدث يُسقط أكثر القضايا تأخّراً. */
+export async function listPurchaseIntegrityCases(input: { branchId: number; status?: typeof purchaseIntegrityCases.$inferSelect["status"]; severity?: IntegritySeverity; limit?: number; order?: "ASC" | "DESC" }, actor: Actor) {
   assertPurchaseBranch({ branchId: input.branchId }, actor);
   return withTx(async (tx) => {
     const filters = [eq(purchaseIntegrityCases.branchId, input.branchId)]; if (input.status) filters.push(eq(purchaseIntegrityCases.status, input.status)); if (input.severity) filters.push(eq(purchaseIntegrityCases.severity, input.severity));
-    return tx.select().from(purchaseIntegrityCases).where(and(...filters)).orderBy(desc(purchaseIntegrityCases.detectedAt), desc(purchaseIntegrityCases.id)).limit(Math.min(input.limit ?? 100, 200));
+    const ordering = input.order === "ASC"
+      ? [asc(purchaseIntegrityCases.detectedAt), asc(purchaseIntegrityCases.id)]
+      : [desc(purchaseIntegrityCases.detectedAt), desc(purchaseIntegrityCases.id)];
+    return tx.select().from(purchaseIntegrityCases).where(and(...filters)).orderBy(...ordering).limit(Math.min(input.limit ?? 100, 200));
   }, { gate: "NONE" });
 }
 

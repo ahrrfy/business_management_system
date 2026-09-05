@@ -10,6 +10,8 @@ import { getDb } from "../../db";
 import { getProductForVariantEdit, updateProductWithVariants } from "../productEditService";
 import { updateProduct } from "../catalog/productUpdate";
 import { createOnlineOrder } from "../onlineOrderService";
+import { loadProductForUpdateOrThrow } from "../catalog/productUpdateGuards";
+import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -654,6 +656,8 @@ describe("updateProductWithVariants — الكتابة", () => {
     await expect(
       updateProductWithVariants({ productId: 999999, unitTemplate: baseTemplate(), variants: [{ sku: "X-1", costPrice: "1", unitBarcodes: {} }] }, actor),
     ).rejects.toThrow(/المنتج غير موجود/);
+    // م٦ (D5): الرسالةُ صارت من الحارس المشترك — المساران (القالب والمعرّف) يرميانها منه لا كلٌّ بيده.
+    await expect(withTx((tx) => loadProductForUpdateOrThrow(tx, 999999))).rejects.toThrow(/المنتج غير موجود/);
   });
 
   it("رفض: بلا متغيّرات ⇒ BAD_REQUEST", async () => {

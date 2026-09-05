@@ -16,7 +16,7 @@
  *  ④ **المُعتمِد ≠ المُنشئ ومُنشئ الفاتورة** بلا استثناءٍ إداريّ؛ الصلاحية لا تلغي فصل المهام.
  */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { invoiceItems, invoices, returnRequests, salesControlRequests, users,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -200,6 +200,8 @@ export async function listReturnRequests(opts: {
   branchId: number | null;
   status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
   createdBy?: number | null;
+  /** `ASC` = الأقدم أوّلاً لصندوق القرارات — القصّ (200) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  order?: "ASC" | "DESC";
 }) {
   const d = db();
   const conds = [];
@@ -229,7 +231,7 @@ export async function listReturnRequests(opts: {
     .leftJoin(invoices, eq(invoices.id, returnRequests.invoiceId))
     .leftJoin(users, eq(users.id, returnRequests.createdBy))
     .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(returnRequests.id))
+    .orderBy(opts.order === "ASC" ? asc(returnRequests.id) : desc(returnRequests.id))
     .limit(200);
 }
 
