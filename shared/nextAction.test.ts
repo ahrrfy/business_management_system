@@ -35,6 +35,7 @@ import {
   type PurchaseOrderStatus,
   type SaleInvoiceNextActionFacts,
   type WorkOrderNextActionFacts,
+  nextActionHref,
 } from "./nextAction";
 import { WORK_ORDER_STATUSES, type WorkOrderStatus } from "./workOrderStatus";
 
@@ -99,10 +100,15 @@ function expectValidAction(next: NextAction, where: string): void {
     expect(href.startsWith("/"), `${where}.href ليس مسارا داخليا — «${href}»`).toBe(true);
     expect(href.includes("//"), `${where}.href فيه شرطتان — «${href}»`).toBe(false);
     expect(
-      KNOWN_ROUTE_PREFIXES.some((p) => href === p || href.startsWith(`${p}/`)),
+      KNOWN_ROUTE_PREFIXES.some((p) => href === p || href.startsWith(`${p}/`) || href.startsWith(`${p}?`)),
       `${where}.href خارج مسارات App.tsx — «${href}»`,
     ).toBe(true);
     expect(ARABIC_INDIC_DIGITS.test(href), `${where}.href بارقام هندية`).toBe(false);
+    // LC02: الرابطُ مشتقٌّ من الهدف المُهيكَل لا مكتوبٌ بيد — لا رابطَ بلا هدف ولا هدفَ يخالف رابطه.
+    expect(next.target, `${where}: href بلا target`).toBeDefined();
+    expect(nextActionHref(next.target!), `${where}: href لا يطابق target`).toBe(href);
+  } else {
+    expect(next.target, `${where}: target بلا href`).toBeUndefined();
   }
 
   if (next.slaHours != null) {
@@ -240,6 +246,11 @@ describe("عد الحالات: لا حالة صماء في اي نوع", () => {
 
         samples.forEach((doc, i) => {
           const next = deriveNextAction(doc);
+          // LC02: خطوةٌ هدفُها الإرسالية تحمل رقمَها حين تعرفه الحقائق — لا «/delivery» عامّة.
+          if (next?.target?.docType === "DELIVERY_CONSIGNMENT" && doc.kind === "WORK_ORDER" && doc.consignmentId != null) {
+            expect(next.target.docId, `${kind}/${status}[${i}]: الهدف بلا رقم الإرسالية`).toBe(doc.consignmentId);
+            expect(next.href, `${kind}/${status}[${i}]`).toContain(`consignment=${doc.consignmentId}`);
+          }
           if (next == null) {
             sawNull = true;
             const reason = nextActionTerminalReason(kind, status);
@@ -354,7 +365,14 @@ describe("فاتورة البيع", () => {
       sale({ status: "PENDING", hasLiveConsignment: true, deliveryPartyLabel: "مندوب الكرادة" }),
     );
     expect(next?.owner).toEqual({ kind: "COUNTERPARTY", label: "مندوب الكرادة" });
-    expect(next?.href).toBe("/delivery");
+    expect(next?.target).toEqual({ docType: "DELIVERY_CONSIGNMENT", docId: null, action: "COLLECT_ON_DELIVERY" });
+    expect(next?.href).toBe("/delivery?tab=transit");
+  });
+
+  it("طرد حي برقم ارسالية معروف: الهدف يحمل الرقم والرابط يفتح الطرد بعينه (LC02)", () => {
+    const next = deriveNextAction(sale({ status: "PENDING", hasLiveConsignment: true, consignmentId: 33 }));
+    expect(next?.target).toEqual({ docType: "DELIVERY_CONSIGNMENT", docId: 33, action: "COLLECT_ON_DELIVERY" });
+    expect(next?.href).toBe("/delivery?tab=transit&consignment=33");
   });
 
   it("جهة توصيل بلا اسم: تسمية عامة لا نص فارغ", () => {
@@ -489,7 +507,9 @@ describe("امر الشغل", () => {
       workOrder({ status: "READY", hasDelivery: true, consignmentId: 33 }),
     );
     expect(next?.owner.kind).toBe("COUNTERPARTY");
-    expect(next?.href).toBe("/delivery");
+    // LC02: رقمُ الإرسالية محمولٌ في الهدف وفي الرابط — لا شاشةَ توصيلٍ عامّة.
+    expect(next?.target).toEqual({ docType: "DELIVERY_CONSIGNMENT", docId: 33, action: "TRACK" });
+    expect(next?.href).toBe("/delivery?tab=transit&consignment=33");
   });
 
   it("مسلم وطرده بالطريق: الخطوة عند جهة التوصيل لا نهاية", () => {

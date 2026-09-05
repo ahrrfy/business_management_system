@@ -16,6 +16,7 @@ import {
   DOCUMENT_EDIT_SCOPE,
   DOCUMENT_KINDS,
   DOCUMENT_KIND_AR,
+  EXIT_DOCUMENTS,
   documentActionBar,
   documentActionVerdict,
   isDocumentDeadEnd,
@@ -310,14 +311,20 @@ describe("احكام فاتورة البيع", () => {
     }
   });
 
-  it("فاتورة بلا بنود تمنع الالغاء والمرتجع والتصحيح بثلاثة مخارج مختلفة", () => {
+  /**
+   * ⭐ LC01: كان هذا الاختبار يطلب «ثلاثة مخارج مختلفة» فرضي عن ثلاثة نصوص كل منها يحيل الى فعل
+   * ممنوع على الفاتورة نفسها (الالغاء ⇒ المرتجع/التصحيح، المرتجع ⇒ الالغاء، التصحيح ⇒ الالغاء).
+   * المطلوب الان **قابلية التنفيذ**: لا حكم يحيل الى فعل ممنوع على المستند نفسه، والمخرج اداري معلن.
+   */
+  it("فاتورة بلا بنود: الثلاثة ممنوعة ولا واحد يحيل الى الاخر — المخرج اداري معلن (LC01)", () => {
     const bar = documentActionBar(sale({ hasItems: false }));
-    const outs = (["CANCEL", "REVERSE", "CORRECT"] as DocumentAction[]).map((a) => {
+    for (const a of ["CANCEL", "REVERSE", "CORRECT"] as DocumentAction[]) {
       const v = bar[a];
       expect(v.allowed, a).toBe(false);
-      return v.allowed === false ? v.doThis : "";
-    });
-    expect(new Set(outs).size).toBe(3);
+      if (v.allowed) continue;
+      expect(v.exit.kind, a).toBe("ADMIN");
+      expect(v.doThis, a).toContain("الادمن");
+    }
   });
 });
 
@@ -407,6 +414,64 @@ describe("احكام امر الشراء واذن الاستلام والمرت�
       const verdict = bar[action];
       expect(verdict.allowed, action).toBe(false);
       if (verdict.allowed === false) expect(verdict.doThis).toContain("لا مخرج اليوم");
+    }
+  });
+});
+
+// ═══════════════ ٣ب) المخرج قابل للتنفيذ — لا احالة دائرية (LC01) ═══════════════
+
+describe("المخرج المهيكل قابل للتنفيذ (LC01)", () => {
+  const SAMPLES: DocumentFacts[] = [...ALL_SAMPLES, ...DOCUMENT_DEAD_ENDS.map((e) => e.sample)];
+
+  it("كل حكم منع يحمل مخرجا مهيكلا، والاحالة الى فعل على المستند نفسه تشير الى فعل مسموح فعلا", () => {
+    for (const doc of SAMPLES) {
+      const bar = documentActionBar(doc);
+      for (const action of DOCUMENT_ACTIONS) {
+        const v = bar[action];
+        if (v.allowed) continue;
+        expect(v.exit, `${JSON.stringify(doc)}/${action}: بلا مخرج مهيكل`).toBeDefined();
+        if (v.exit.kind !== "ACTION") continue;
+        expect(v.exit.action, `${JSON.stringify(doc)}/${action}: يحيل الى نفسه`).not.toBe(action);
+        expect(
+          bar[v.exit.action].allowed,
+          `${JSON.stringify(doc)}: ${action} يحيل الى ${v.exit.action} وهو ممنوع ايضا — احالة دائرية`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("النهاية المسدودة لا تحيل الى فعل على المستند نفسه (الاربعة ممنوعة) الا الى الفعل الاجوف المعلن", () => {
+    for (const entry of DOCUMENT_DEAD_ENDS) {
+      const bar = documentActionBar(entry.sample);
+      for (const action of DOCUMENT_ACTIONS) {
+        const v = bar[action];
+        if (v.allowed) continue;
+        if (v.exit.kind === "ACTION") {
+          expect(entry.residualAction?.action, `${entry.id}/${action}`).toBe(v.exit.action);
+        }
+      }
+    }
+  });
+
+  it("الانسداد الصريح (BLOCKED) يعترف بذلك في نصه ولا يعد بمخرج", () => {
+    for (const doc of SAMPLES) {
+      const bar = documentActionBar(doc);
+      for (const action of DOCUMENT_ACTIONS) {
+        const v = bar[action];
+        if (v.allowed || v.exit.kind !== "BLOCKED") continue;
+        expect(v.doThis, `${JSON.stringify(doc)}/${action}`).toContain("لا مخرج اليوم");
+      }
+    }
+  });
+
+  it("المخرج على مستند اخر يسمي مستندا من القاموس المغلق", () => {
+    for (const doc of SAMPLES) {
+      const bar = documentActionBar(doc);
+      for (const action of DOCUMENT_ACTIONS) {
+        const v = bar[action];
+        if (v.allowed || v.exit.kind !== "OTHER_DOCUMENT") continue;
+        expect(EXIT_DOCUMENTS, `${JSON.stringify(doc)}/${action}`).toContain(v.exit.document);
+      }
     }
   });
 });

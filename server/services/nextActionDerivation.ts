@@ -76,6 +76,8 @@ export interface SaleInvoiceNextActionRow {
   status: InvoiceStatus;
   hasLiveConsignment: boolean;
   deliveryPartyLabel: string | null;
+  /** رقمُ الإرسالية الحيّة حين يعرفه المستدعي — يُحمَل في هدف الخطوة كي يفتح الطردَ بعينه (LC02). */
+  consignmentId?: number | null;
   replacementInvoiceId: number | null;
   /** `invoices.dueDate` — `null` مسموحٌ (فواتير كثيرة بلا استحقاق مسجَّل). */
   dueDate: Date | string | null;
@@ -132,6 +134,7 @@ export function deriveInvoiceNextAction(
     status: row.status,
     hasLiveConsignment: row.hasLiveConsignment,
     deliveryPartyLabel: row.deliveryPartyLabel,
+    consignmentId: row.consignmentId ?? null,
     replacementInvoiceId: row.replacementInvoiceId,
     hoursUntilDue: hoursFromNowUntil(now, row.dueDate),
   };

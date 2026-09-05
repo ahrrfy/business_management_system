@@ -90,23 +90,93 @@ export const DOCUMENT_ACTION_AR: Record<DocumentAction, string> = {
  * صامتٍ لا يعرف لِمَ لا يفعل شيئاً. نفس عقد [`shared/errors.ts`] (`what`/`why`/`doThis`)،
  * بلا `what` لأنّ الشاشة تعرفه (اسمُ المستند أمامها).
  */
+/**
+ * المستنداتُ/الشاشاتُ التي قد يحيل إليها مخرجُ حكمٍ ممنوع — قاموسٌ مغلق كي لا يُخترَع مخرجٌ نصّيّ
+ * لشاشةٍ لا وجود لها.
+ */
+export const EXIT_DOCUMENTS = [
+  "SALE_INVOICE",
+  "WORK_ORDER",
+  "PURCHASE_ORDER",
+  "GOODS_RECEIPT",
+  "PURCHASE_RETURN",
+  "DELIVERY_CONSIGNMENT",
+  "INSTALLMENT_PLAN",
+  "DIGITAL_CARDS",
+  "EXCHANGE_VOUCHER",
+  "STOCKTAKE",
+  "SUPPLIER_LEDGER",
+  "APPROVAL_REQUEST",
+] as const;
+
+export type ExitDocument = (typeof EXIT_DOCUMENTS)[number];
+
+/**
+ * **مخرجُ الحكم مُهيكَلاً** (LC01 — م٢ ذيل): إلى أين يحيل «ماذا تفعل الآن» بالضبط.
+ *
+ * النصُّ وحده كان يكذب بصمت: فاتورةٌ بلا بنود كان إلغاؤها يحيل إلى المرتجع، ومرتجعُها يحيل إلى
+ * الإلغاء، وتصحيحُها يحيل إلى الإلغاء — **ثلاثتُها ممنوعة**، فيدور الموظّف بين ثلاثة أزرار معطَّلة
+ * كلٌّ يشير إلى الآخر. المخرجُ المُهيكَل يُثبته الاختبار: إحالةٌ إلى فعلٍ على المستند نفسه يجب أن
+ * تكون إلى فعلٍ **مسموحٍ فعلاً** على هذا المستند بعينه — وإلّا أُعلن المخرجُ على مستندٍ آخر، أو
+ * تدخّلاً إدارياً، أو انسداداً صريحاً. لا إحالةَ دائرية.
+ *
+ *  · `ACTION`         — فعلٌ آخر على **المستند نفسه**؛ الاختبار يُثبت أنّه مسموح.
+ *  · `OTHER_DOCUMENT` — المخرج على مستندٍ/شاشةٍ أخرى مسمّاة من `EXIT_DOCUMENTS`.
+ *  · `NONE`           — لا إجراء يبقى (نهايةٌ مقصودة).
+ *  · `ADMIN`          — يلزم تدخّلٌ إداريّ خارج شريط الأفعال (فتحُ فترة، سجلٌّ بلا بنود…).
+ *  · `BLOCKED`        — لا مخرج اليوم: انسدادٌ معلَنٌ (دينٌ على النظام، لا وعدٌ بحلٍّ قائم).
+ */
+export type ActionExit =
+  | { kind: "ACTION"; action: DocumentAction }
+  | { kind: "OTHER_DOCUMENT"; document: ExitDocument }
+  | { kind: "NONE" }
+  | { kind: "ADMIN" }
+  | { kind: "BLOCKED" };
+
 export type ActionVerdict =
   | { allowed: true }
-  | { allowed: false; why: string; doThis: string };
+  | { allowed: false; why: string; doThis: string; exit: ActionExit };
 
 const ALLOWED: ActionVerdict = { allowed: true };
+
+const NONE_EXIT: ActionExit = { kind: "NONE" };
+const ADMIN_EXIT: ActionExit = { kind: "ADMIN" };
+const BLOCKED_EXIT: ActionExit = { kind: "BLOCKED" };
+const toAction = (action: DocumentAction): ActionExit => ({ kind: "ACTION", action });
+const onDocument = (document: ExitDocument): ActionExit => ({ kind: "OTHER_DOCUMENT", document });
+
+/**
+ * مخرجٌ **يرث** حكمَ الفعل المُحال إليه: إن كان مسموحاً فالإحالةُ إليه، وإلّا فمخرجُه هو المخرج.
+ * (أمرٌ مسلَّم لا يُعدَّل: المخرجُ «اطلب عكس التسليم» — لكن إن كان العكسُ نفسُه ممنوعاً لإرساليةٍ
+ * حيّة فالمخرجُ الصادق هو إرساليتُه، لا زرٌّ معطَّلٌ آخر.)
+ */
+function inherit(target: ActionVerdict, action: DocumentAction): ActionExit {
+  return target.allowed ? toAction(action) : target.exit;
+}
+
+/**
+ * منعٌ **يحيل إلى فعلٍ آخر على المستند نفسه**: إن كان مسموحاً فالإحالةُ إليه بنصّها؛ وإن كان
+ * ممنوعاً بدوره فالمخرجُ **نصّاً ومخرجاً** هو مخرجُ ذلك الفعل — فلا يقرأ الموظّف «اطلب العكس»
+ * والعكسُ نفسه معطَّل (LC01: النصُّ والمخرجُ المُهيكَل لا يفترقان).
+ */
+function denyVia(why: string, doThisIfAllowed: string, target: ActionVerdict, action: DocumentAction): ActionVerdict {
+  return target.allowed
+    ? deny(why, doThisIfAllowed, toAction(action))
+    : deny(why, target.doThis, target.exit);
+}
 
 /**
  * يبني حكمَ منعٍ ويرفض — بلا تسامح — ما أنتج رسائلَ ميتةً في المستودع فعلاً: جزءاً فارغاً،
  * أو `doThis` يكرّر `why`. نفس فحص `appError` في [`shared/errors.ts`]، ولنفس السبب:
  * الجزءُ المنسيُّ دائماً هو المخرج، وكاتبُ الحارس يظنّ أنّ السبب يكفي.
+ * والمخرجُ المُهيكَل إلزاميّ: لا منعَ بلا إجابةٍ قابلةٍ للفحص عن «إلى أين».
  */
-function deny(why: string, doThis: string): ActionVerdict {
+function deny(why: string, doThis: string, exit: ActionExit): ActionVerdict {
   const w = why.trim();
   const d = doThis.trim();
   if (!w || !d) throw new Error("documentActionVerdict: المنع يلزمه سببٌ ومخرجٌ غير فارغين");
   if (w === d) throw new Error("documentActionVerdict: المخرج يكرر السبب — الحكم بلا مخرج عملي");
-  return { allowed: false, why: w, doThis: d };
+  return { allowed: false, why: w, doThis: d, exit };
 }
 
 // ═════════════════════════ ٢) حقائق المستندات ═════════════════════════
@@ -298,6 +368,14 @@ const PERIOD_EXIT =
 const CONSIGNMENT_EXIT =
   "استرجع الارسالية اولا من ادارة التوصيل — وهي تعكس البيع والمخزون والعربون معا";
 
+/**
+ * مخرجُ الفاتورة بلا بنود — **اداريٌّ صريح** (LC01): الالغاء والمرتجع والتصحيح ثلاثتها ترفضها
+ * (`sale/cancel.ts:268` · `returnService.ts:575` · `correct.ts:383`)، وكان كل حكم يحيل الى الاخر
+ * فيدور الموظف بين ثلاثة ازرار معطلة. لا زر على الشاشة يعالج مستندا بلا بنود.
+ */
+const NO_ITEMS_EXIT =
+  "ابلغ الادمن ليعالج الفاتورة بلا بنود (يستعيد بنودها الضائعة او يقفلها بقيد يدوي موثق) — لا يلغى ولا يرجع ولا يصحح مستند بلا بنود من الشاشة";
+
 // ═════════════════════════ ٥) أحكامُ فاتورة البيع ═════════════════════════
 
 const DEAD_SALE_STATUSES: readonly InvoiceStatus[] = ["CANCELLED", "RETURNED", "SUPERSEDED"];
@@ -316,17 +394,20 @@ function deadSaleVerdict(status: InvoiceStatus, actionAr: string): ActionVerdict
     return deny(
       "الفاتورة استبدلت بفاتورة مصححة، والالتزام كله انتقل الى البديلة",
       `افتح الفاتورة المصححة البديلة ونفذ ${actionAr} عليها — الاصل مغلق بحكم الاستبدال`,
+      onDocument("SALE_INVOICE"),
     );
   }
   if (status === "CANCELLED") {
     return deny(
       "الفاتورة ملغاة بعكس كامل: الايراد والمخزون والذمة صفرت والمبلغ رد بسند",
       "لا اجراء يبقى على هذا المستند — اصدر فاتورة بيع جديدة ان عاد الزبون يشتري",
+      NONE_EXIT,
     );
   }
   return deny(
     "الفاتورة مرتجعة بالكامل: البضاعة عادت والمبلغ سوي، فلا يبقى فيها شيء يعالج",
     "لا اجراء يبقى على هذا المستند — اصدر فاتورة بيع جديدة ان عاد الزبون يشتري",
+    NONE_EXIT,
   );
 }
 
@@ -348,6 +429,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "هذه فاتورة امر شغل، والغاؤها من هنا يعيد مواد استهلكت عند بدء التنفيذ فيخلق مخزونا وهميا لمنتج مخصص",
         WORK_ORDER_INVOICE_EXIT,
+        onDocument("WORK_ORDER"),
       );
     }
     // sale/controlRequests.ts:186 — «الفاتورة نهائية ولا تقبل طلب تحكم جديدا».
@@ -358,6 +440,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "للفاتورة ارسالية حية عند المندوب: الطرد بيده وعهدة التحصيل قائمة، فالغاؤها الان يترك نقدا بلا مالك",
         CONSIGNMENT_EXIT,
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     // sale/cancel.ts:212 — حارس الفترة على تاريخ الفاتورة الاصلي لا على اليوم.
@@ -365,6 +448,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "شهر الفاتورة مقفل ماليا، والالغاء يحذفها رجعيا من تقارير شهر اصدارها فتتغير ارقام شهر اغلق",
         PERIOD_EXIT,
+        ADMIN_EXIT,
       );
     }
     // sale/cancel.ts:239 — الخطة النشطة تبقى قابلة للتحصيل بعد الالغاء (payLine يكتب
@@ -373,6 +457,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "الفاتورة مرتبطة بخطة اقساط نشطة، وخطة كهذه تبقى قابلة للتحصيل بعد الالغاء فيطالب الزبون بالتزام سبق الغاؤه",
         "الغ خطة الاقساط اولا من شاشة الاقساط ثم اعد طلب الالغاء",
+        onDocument("INSTALLMENT_PLAN"),
       );
     }
     // sale/cancel.ts:261 — الكرت صدر من جهاز المزود وقد يكون استهلك.
@@ -380,13 +465,17 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "الفاتورة تحوي بطاقات رقمية صدرت من جهاز المزود وقد تكون استهلكت، فالغاء الفاتورة لا يستعيدها",
         "استعمل «عكس بيع الكروت» في شاشة البطاقات الرقمية — وهو المسار الوحيد الذي يخاطب المزود",
+        onDocument("DIGITAL_CARDS"),
       );
     }
     // sale/cancel.ts:268 — «الفاتورة بلا بنود — تعذر الالغاء».
     if (!d.hasItems) {
+      // ⚠️ كان المخرج هنا يحيل الى المرتجع والتصحيح — وكلاهما ممنوع على فاتورة بلا بنود (احالة دائرية
+      // امسكها LC01). المخرج الصادق اداري: لا زر على الشاشة يعالج مستندا بلا بنود.
       return deny(
         "الفاتورة بلا بنود، والالغاء يعمل باعادة كل بند متبق الى المخزون فلا يجد ما يعكسه",
-        "راجع الفاتورة: ان كانت خدمة خالصة فمعالجتها بمرتجع او بتصحيح، وان كانت بنودها ضاعت فابلغ الادمن قبل اي اجراء",
+        NO_ITEMS_EXIT,
+        ADMIN_EXIT,
       );
     }
     return ALLOWED;
@@ -398,6 +487,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "مرتجع فاتورة امر الشغل يسم الفاتورة مرتجعة بينما حالة الامر تبقى مسلمة وقيمة العمل الجاري والتكلفة بلا عكس والعربون مقفل",
         WORK_ORDER_INVOICE_EXIT,
+        onDocument("WORK_ORDER"),
       );
     }
     // returnService.ts:395 — رسالة المستبدلة هنا صريحة: «ارجع من الفاتورة المصححة».
@@ -407,6 +497,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "شهر الفاتورة مقفل ماليا، والمرتجع يغير الفاتورة وبنودها والمخزون والذمم تاريخيا",
         PERIOD_EXIT,
+        ADMIN_EXIT,
       );
     }
     // returnService.ts:575 — assertNoActiveInstallmentPlanAfterInvoiceLockTx.
@@ -414,6 +505,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "الفاتورة مرتبطة بخطة اقساط نشطة، والمرتجع يغير اساس الخطة تحتها",
         "الغ خطة الاقساط اولا من شاشة الاقساط ثم اعد تسجيل المرتجع",
+        onDocument("INSTALLMENT_PLAN"),
       );
     }
     // returnService.ts:1325 — «اعد الارسالية اولا او ورد تحصيلها».
@@ -421,13 +513,16 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
       return deny(
         "للفاتورة ارسالية مفتوحة عند المندوب، فالبضاعة لم تعد الى المحل بعد ليسجل عليها مرتجع",
         "اعد الارسالية اولا او ورد تحصيلها من ادارة التوصيل ثم سجل المرتجع",
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     // returnService.ts:575 — «لا اصناف للارجاع»: المرتجع يلزمه بند.
     if (!d.hasItems) {
+      // ⚠️ كان يحيل الى الالغاء — والالغاء ممنوع على فاتورة بلا بنود (LC01). فاتورة امر الشغل عولجت اعلاه.
       return deny(
         "المرتجع يلزمه بند واحد على الاقل، وهذه الفاتورة بلا بنود",
-        "عالج الفاتورة بالالغاء ان كانت خدمة خالصة، او بعكس التسليم من شاشة امر الشغل ان كانت منشؤها امر شغل",
+        NO_ITEMS_EXIT,
+        ADMIN_EXIT,
       );
     }
     return ALLOWED;
@@ -439,6 +534,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
     return deny(
       "فاتورة امر الشغل تبيع متغيرا اساس لم يدخل المخزون فعلا، فاعادة اصدارها تعيد ترحيل مخزون لا وجود له",
       WORK_ORDER_INVOICE_EXIT,
+      onDocument("WORK_ORDER"),
     );
   }
   // correct.ts:304 — «لا تصحح فاتورة ملغاة او مرتجعة او مستبدلة سلفا».
@@ -448,6 +544,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
     return deny(
       "شهر الفاتورة مقفل ماليا، والتصحيح يعكس قيود الشهر المقفل ثم يعيد اصدارها",
       PERIOD_EXIT,
+      ADMIN_EXIT,
     );
   }
   // correct.ts:298 — assertNoActiveInstallmentPlanAfterInvoiceLockTx.
@@ -455,13 +552,17 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
     return deny(
       "الفاتورة مرتبطة بخطة اقساط نشطة، والتصحيح يقتل الفاتورة الاصل التي بنيت عليها الخطة",
       "الغ خطة الاقساط اولا من شاشة الاقساط ثم اعد التصحيح",
+      onDocument("INSTALLMENT_PLAN"),
     );
   }
   // correct.ts:317 — «لا تصحح فاتورة عليها مرتجع سابق — عالجها عبر المرتجعات».
   if (d.hasPriorReturn) {
-    return deny(
+    // المخرج «المرتجع» يرث حكمه: ان كان المرتجع نفسه ممنوعا (ارسالية حية مثلا) فمخرجه هو المخرج.
+    return denyVia(
       "على الفاتورة مرتجع سابق، والتصحيح يعكسها كلها فيعكس المرتجع مرة ثانية",
       "اكمل المعالجة من شاشة المرتجعات: ارجع ما تبقى من البنود بدل اعادة اصدار الفاتورة",
+      saleInvoiceVerdict("REVERSE", d),
+      "REVERSE",
     );
   }
   // correct.ts:323 — البطاقات الرقمية.
@@ -469,13 +570,16 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
     return deny(
       "الفاتورة فيها بطاقات رقمية صدرت من جهاز المزود، ولا تستعاد باعادة اصدار الفاتورة",
       "استعمل «عكس بيع الكروت» في شاشة البطاقات الرقمية اولا",
+      onDocument("DIGITAL_CARDS"),
     );
   }
   // correct.ts:383 — «الفاتورة بلا بنود لتصحيحها».
   if (!d.hasItems) {
+    // ⚠️ كان يحيل الى الالغاء — والالغاء ممنوع على فاتورة بلا بنود (LC01).
     return deny(
       "الفاتورة بلا بنود، والتصحيح يعيد اصدار البنود مصححة فلا يجد ما يصححه",
-      "عالج الفاتورة بالالغاء واصدار فاتورة جديدة بدل التصحيح",
+      NO_ITEMS_EXIT,
+      ADMIN_EXIT,
     );
   }
   // correct.ts (assertInvoiceReversalDeliverySafeTx) — نفس حارس الالغاء على العكس.
@@ -483,6 +587,7 @@ function saleInvoiceVerdict(action: DocumentAction, d: SaleInvoiceFacts): Action
     return deny(
       "للفاتورة ارسالية حية عند المندوب، والتصحيح يعكس البيع بينما الطرد وعهدة التحصيل قائمان",
       CONSIGNMENT_EXIT,
+      onDocument("DELIVERY_CONSIGNMENT"),
     );
   }
   return ALLOWED;
@@ -499,11 +604,23 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "الامر ملغى: خرج من دورة العمل ولا يحمل التزاما ولا حملا على منفذ",
         "لا اجراء يبقى على هذا الامر — انشئ امر شغل جديدا ان عاد الزبون يطلب",
+        NONE_EXIT,
       );
     }
-    return deny(
+    // المخرج «عكس التسليم» يرث حكمه (ارسالية حية · سند صيرفة · فترة مقفلة ⇒ مخرجه هو المخرج)؛
+    // ومسلم بلا فاتورة شذوذ بيانات لا زر له — تدخل اداري.
+    if (!d.invoiceIssued) {
+      return deny(
+        "الامر سلم للزبون بلا فاتورة مسجلة، فلا مستند بيع يعكس ولا زر على الشاشة يعالجه",
+        "ابلغ الادمن: امر مسلم بلا فاتورة شذوذ بيانات يعالج من قاعدة البيانات لا من شريط الافعال",
+        ADMIN_EXIT,
+      );
+    }
+    return denyVia(
       "الامر سلم للزبون وصدرت فاتورته، فلم يعد مستندا قيد التنفيذ",
       "المسار الوحيد لامر مسلم هو طلب عكس التسليم — وهو يعكس البيع والذمة والعربون وقيمة العمل الجاري معا",
+      workOrderVerdict("REVERSE", d),
+      "REVERSE",
     );
   };
 
@@ -515,6 +632,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "صدرت فاتورة لهذا الامر (ارسل مع مندوب)، وتعديل الامر تحت فاتورة قائمة يجعل المستندين متناقضين",
         "اكمل مسار التوصيل اولا: اثبت التسليم فيصير الامر مسلما وتفتح له معالجة كاملة، او استرجع الارسالية فيلغى الامر ويعكس بيعه",
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     return ALLOWED;
@@ -528,6 +646,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "الامر خرج مع مندوب والارسالية ما زالت حية، فالالغاء يعيد المواد ويرد العربون بينما البيع والعهدة قائمان",
         CONSIGNMENT_EXIT,
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     // workOrder/cancel.ts:242 — الحارس الذي اضيف بعد اكتشاف ان invoiceId يكتب ولا يقرا.
@@ -535,6 +654,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "صدرت فاتورة لهذا الطلب، والالغاء يعيد المواد ويرد العربون وفاتورته وقيد بيعها قائمان: ايراد بلا بضاعة وذمة على زبون لطلب ملغى",
         "اكمل التسليم ثم اطلب عكس التسليم، او استرجع الارسالية من ادارة التوصيل فيلغى الامر ويعكس بيعه معها",
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     return ALLOWED;
@@ -547,11 +667,22 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
         return deny(
           "الامر ملغى، ولا يعكس تسليم لم يقع",
           "لا اجراء يبقى على هذا الامر — انشئ امر شغل جديدا ان عاد الزبون يطلب",
+          NONE_EXIT,
         );
       }
-      return deny(
+      // المخرج «الالغاء» يرث حكمه (فوتر مع مندوب ⇒ مخرجه الارسالية)؛ ومسلم بلا فاتورة شذوذ اداري.
+      if (d.status === "DELIVERED") {
+        return deny(
+          "الامر مسلم بلا فاتورة مسجلة، وعكس التسليم يعكس فاتورة لا وجود لها",
+          "ابلغ الادمن: امر مسلم بلا فاتورة شذوذ بيانات يعالج من قاعدة البيانات لا من شريط الافعال",
+          ADMIN_EXIT,
+        );
+      }
+      return denyVia(
         "عكس التسليم لا يفتح الا لامر مسلم صدرت له فاتورة، وهذا الامر لم يبلغ التسليم بعد",
         "اكمل مسار الامر حتى التسليم، وان اردت ايقافه قبل ذلك فاستعمل الالغاء لا العكس",
+        workOrderVerdict("CANCEL", d),
+        "CANCEL",
       );
     }
     // workOrder/reverseDelivery.ts:501 — assertSettledConsignmentOrNone، و helpers.ts:104.
@@ -559,6 +690,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "الارسالية ما زالت حية عند المندوب، والعكس يسقط الذمة بينما عهدته وتحصيله قائمان فينشا نقد بلا مالك",
         CONSIGNMENT_EXIT,
+        onDocument("DELIVERY_CONSIGNMENT"),
       );
     }
     // workOrder/reverseDelivery.ts:404 — preflight.unsupportedMethods.
@@ -566,6 +698,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "المقبوض على هذا الامر يتضمن سند صيرفة لا يملك قناة رد موثقة الى الزبون، فلا يعرف النظام من اين يرد المال",
         "سو سند الصيرفة اولا من شاشة الصيرفة ثم اعد طلب عكس التسليم",
+        onDocument("EXCHANGE_VOUCHER"),
       );
     }
     // workOrder/reverseDelivery.ts:570-571 — الفترة على تاريخ الفاتورة وتاريخ التسليم معا.
@@ -573,6 +706,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
       return deny(
         "شهر الفاتورة او التسليم مقفل ماليا، والعكس يكتب قيودا في شهر اغلق",
         PERIOD_EXIT,
+        ADMIN_EXIT,
       );
     }
     return ALLOWED;
@@ -586,6 +720,7 @@ function workOrderVerdict(action: DocumentAction, d: WorkOrderFacts): ActionVerd
     return deny(
       "صدرت فاتورة لهذا الامر، وتصحيح الخامة بعد الفوترة يغير التكلفة تحت قيد بيع مرحل",
       "اكمل التسليم ثم اطلب عكس التسليم لتعالج الامر كاملا، او استرجع الارسالية فيلغى الامر ويعكس بيعه",
+      onDocument("DELIVERY_CONSIGNMENT"),
     );
   }
   return ALLOWED;
@@ -606,6 +741,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "امر الشراء ملغى، ولا يعدل مستند اغلق",
         "انشئ امر شراء جديدا بالبيانات الصحيحة — الملغى يبقى للتدقيق",
+        NONE_EXIT,
       );
     }
     if (d.status === "RECEIVED" || d.hasReceivedQuantity) {
@@ -613,12 +749,16 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "استلمت بضاعة من هذا الامر، وتعديل بنوده بعد الاستلام يغير اساس تكلفة مخزون دخل فعلا",
         receivedExit,
+        onDocument("GOODS_RECEIPT"),
       );
     }
     if (d.status === "CONFIRMED") {
-      return deny(
+      // المخرج «الالغاء» يرث حكمه: ان منعته دفعة او استلام فمخرجهما هو المخرج.
+      return denyVia(
         "الامر معتمد ومرسل للمورد، ولا يعاد الى منطقة التعديل بعد الاعتماد",
         "الغ الامر بطلب الغاء يعتمده مستخدم مستقل ثم انشئ امرا جديدا بالبيانات الصحيحة",
+        purchaseOrderVerdict("CANCEL", d),
+        "CANCEL",
       );
     }
     if (d.status === "SENT") {
@@ -627,6 +767,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "الامر مرسل بانتظار الاعتماد، ولا يعدل تحت مراجعة معتمد",
         "اطلب من المعتمد رفض طلب اعتماد المراجعة — الرفض يعيد الامر مسودة فيفتح للتعديل واعادة الارسال",
+        onDocument("APPROVAL_REQUEST"),
       );
     }
     // order.ts:591 — دفاع متعمق: الدفع لا يقع الا مع الاستلام، فوجوده اثر مالي قائم.
@@ -634,6 +775,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "على امر الشراء دفعة مسجلة، وتعديل بنوده يغير الذمة التي سدد جزء منها",
         receivedExit,
+        onDocument("GOODS_RECEIPT"),
       );
     }
     return ALLOWED;
@@ -644,6 +786,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "امر الشراء ملغى سلفا ولا يحمل التزاما ولا كمية منتظرة من المورد",
         "لا اجراء يبقى على هذا المستند — انشئ امر شراء جديدا ان عادت الحاجة",
+        NONE_EXIT,
       );
     }
     // purchase/controls.ts:221 و :679 — الحالات المقبولة هي المسودة والمرسل والمعتمد وحدها.
@@ -651,6 +794,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "الامر في حالة استلام، والالغاء قلب حالة خالص لا يعكس مخزونا دخل ولا ذمة قامت",
         receivedExit,
+        onDocument("GOODS_RECEIPT"),
       );
     }
     // purchase/controls.ts:411 — assertCancellationSafeTx يقرا الكمية المستلمة لا الحالة.
@@ -658,6 +802,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "استلمت بضاعة من هذا الامر ولو لم تتغير حالته، فالالغاء يترك مخزونا داخلا بلا مستند",
         receivedExit,
+        onDocument("GOODS_RECEIPT"),
       );
     }
     // purchase/controls.ts:685 — «امر الشراء عليه دفعة مسجلة؛ لا يمكن الغاؤه».
@@ -665,6 +810,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
       return deny(
         "على الامر دفعة مسجلة للمورد، والالغاء يمحو مستند دين سدد جزء منه",
         "سو الدفعة مع المورد اولا (مرتجع شراء او تسوية ذمة) ثم اعد طلب الالغاء",
+        onDocument("SUPPLIER_LEDGER"),
       );
     }
     return ALLOWED;
@@ -674,6 +820,7 @@ function purchaseOrderVerdict(action: DocumentAction, d: PurchaseOrderFacts): Ac
   return deny(
     "لا عكس على امر الشراء نفسه: الامر لا يكتب قيدا ولا مخزونا، وكل الاثر المالي والمخزني يقع عند اذن الاستلام",
     "افتح اذن الاستلام المعني واطلب عكسه، او سجل مرتجع شراء على المورد ان عادت البضاعة اليه",
+    onDocument("GOODS_RECEIPT"),
   );
 }
 
@@ -695,11 +842,15 @@ function goodsReceiptVerdict(action: DocumentAction, d: GoodsReceiptFacts): Acti
       return deny(
         "اذن الاستلام لا يعدل ولا يلغى ولا يصحح في مكانه، وهذا الاذن تاريخي مجمع فلا يعكس ايضا",
         legacyExit,
+        onDocument("STOCKTAKE"),
       );
     }
-    return deny(
+    // المخرج «العكس» يرث حكمه (معكوس بالكامل ⇒ امر الشراء؛ فترة مقفلة ⇒ اداري).
+    return denyVia(
       "اذن الاستلام لا يعدل ولا يلغى ولا يصحح في مكانه: قيده وحركة مخزونه وقعا فعلا، وتغيير المستند تحتهما يفصل الرقم عن مستنده",
       "اطلب عكس الاذن على البنود الخاطئة، وحين يعتمد العكس تتحرر الكمية على امر الشراء فتنشئ اذن استلام جديدا بالبيانات الصحيحة",
+      goodsReceiptVerdict("REVERSE", d),
+      "REVERSE",
     );
   }
 
@@ -708,6 +859,7 @@ function goodsReceiptVerdict(action: DocumentAction, d: GoodsReceiptFacts): Acti
     return deny(
       "الاذن تاريخي مجمع (رحل من قبل النظام) ولا يحمل مستندا اصليا واحدا يعكس عليه",
       legacyExit,
+      onDocument("STOCKTAKE"),
     );
   }
   // goodsReceipts.ts:977 — «الاذن معكوس بالكامل سلفا».
@@ -715,6 +867,7 @@ function goodsReceiptVerdict(action: DocumentAction, d: GoodsReceiptFacts): Acti
     return deny(
       "لم يبق في الاذن كمية مقبولة تعكس: ما فيه اما عكس سلفا واما رد الى المورد",
       "افتح امر الشراء وراجع الكميات المتبقية عليه، ولاخراج بضاعة عادت للمورد بعد استلامها استعمل مرتجع الشراء",
+      onDocument("PURCHASE_ORDER"),
     );
   }
   // goodsReceipts.ts:1217 — assertPeriodOpen على receivedAt عند اعتماد العكس.
@@ -722,6 +875,7 @@ function goodsReceiptVerdict(action: DocumentAction, d: GoodsReceiptFacts): Acti
     return deny(
       "شهر الاستلام مقفل ماليا، وعكس الاذن يكتب قيدا وحركة مخزون في شهر اغلق",
       PERIOD_EXIT,
+      ADMIN_EXIT,
     );
   }
   return ALLOWED;
@@ -737,15 +891,18 @@ function salesReturnVerdict(): ActionVerdict {
   return deny(
     "مرتجع البيع ليس مستندا في هذا النظام: لا جدول له ولا رقم يشار اليه، بل قيود وايصالات كتبت لحظة تسجيله",
     "لا مخرج اليوم على المرتجع نفسه — راجع الفاتورة الاصل لترى اثره، واي تصحيح لمرتجع خاطئ يحتاج قرار مالك ومسارا يبنى (لا تعد بحل قائم)",
+    BLOCKED_EXIT,
   );
 }
 
 function purchaseReturnVerdict(action: DocumentAction, d: PurchaseReturnFacts): ActionVerdict {
   if (action !== "REVERSE") {
     // لا مسار في النظام: purchaseReturnGovernanceRouter لا يحمل تعديلا ولا الغاء ولا تصحيحا.
-    return deny(
+    return denyVia(
       "مرتجع الشراء لا يعدل ولا يلغى ولا يصحح: هو نفسه مستند تصحيح، وتصحيح المصحح يفقد اثر ما جرى",
       "اطلب عكس المرتجع على البنود الخاطئة ليعتمده مستخدم مستقل، ثم سجل مرتجعا جديدا بالكميات الصحيحة",
+      purchaseReturnVerdict("REVERSE", d),
+      "REVERSE",
     );
   }
   // purchase/returnGovernance.ts:685 — «المرتجع غير قابل للعكس» للارثي وللمعكوس معا.
@@ -753,12 +910,14 @@ function purchaseReturnVerdict(action: DocumentAction, d: PurchaseReturnFacts): 
     return deny(
       "المرتجع ارثي (رحل من نظام سابق) ولا يحمل مستندا اصليا يعكس عليه",
       "لا مخرج اليوم على هذا المرتجع — عالج الفرق بتسوية مخزون معتمدة او بتسوية ذمة مع المورد",
+      BLOCKED_EXIT,
     );
   }
   if (d.status === "REVERSED") {
     return deny(
       "المرتجع معكوس بالكامل سلفا، فلا تبقى فيه كمية تعكس",
       "راجع امر الشراء وفاتورة المورد لترى الوضع بعد العكس، وسجل مرتجعا جديدا ان عادت بضاعة الى المورد",
+      onDocument("PURCHASE_ORDER"),
     );
   }
   return ALLOWED;
