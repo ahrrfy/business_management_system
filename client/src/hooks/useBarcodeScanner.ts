@@ -9,7 +9,7 @@
  *
  * @param onScan  — callback يُستدعى بالنص الكامل عند اكتمال المسح
  * @param enabled — يُعطَّل عند فتح نوافذ مودال لتجنّب التعارض
- * @param minLength — الحد الأدنى لطول الباركود (افتراضي 4)
+ * @param minLength — الحد الأدنى لطول الباركود (افتراضي 3؛ بعض رموز الموردين الداخلية قصيرة)
  * @param thresholdMs — الفاصل الزمني الأقصى بين أحرف الماسح (افتراضي 80ms)
  */
 import { useEffect, useCallback } from "react";
@@ -21,7 +21,7 @@ export function useBarcodeScanner(
   onScan: (raw: string) => void,
   {
     enabled = true,
-    minLength = 4,
+  minLength = 2,
     thresholdMs = 80,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ): void {

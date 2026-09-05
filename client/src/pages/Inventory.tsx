@@ -2,6 +2,7 @@ import { RowActions } from "@/components/list";
 import { FilterField, FilterShell, SearchField } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
+import { CameraScanner } from "@/components/scan/CameraScanner";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { FILTER_LABELS } from "@shared/uiContracts";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
+import { Camera, CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 
@@ -76,6 +77,7 @@ export default function Inventory() {
   const [f, setF, resetF] = useUrlFilters({ q: "", cat: "all", low: "", neg: "", branch: "" });
   const [page, setPage] = useState(0);
   const [lastScannedBarcode, setLastScannedBarcode] = useState<string | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const patchF = (patch: Partial<typeof f>) => {
     setLastScannedBarcode(null);
     setF(patch);
@@ -362,7 +364,8 @@ export default function Inventory() {
       rejectTarget == null &&
       revalFor == null &&
       revalRejectTarget == null &&
-      attachmentPreviewId == null,
+      attachmentPreviewId == null &&
+      !cameraOpen,
   });
 
   const rows = onHand.data ?? [];
@@ -372,7 +375,9 @@ export default function Inventory() {
     scannedSearchActive &&
     (dq.trim() !== lastScannedBarcode || onHand.isLoading || onHand.isFetching);
   const scannedRow =
-    scannedSearchActive && !scannedLookupLoading ? rows[0] ?? null : null;
+    scannedSearchActive && !scannedLookupLoading
+      ? rows.find((row) => row.scanMatch != null) ?? null
+      : null;
   useEffect(() => {
     if (!scannedSearchActive) return;
     const frame = window.requestAnimationFrame(() => {
@@ -632,16 +637,30 @@ export default function Inventory() {
           </FilterField>
         )}
         <FilterField label="بحث (اسم/SKU/متغيّر/باركود)" wide>
-          <SearchField
-            value={f.q}
-            barcode
-            placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
-            onChange={(value) => {
-              setLastScannedBarcode(null);
-              patchF({ q: value });
-            }}
-            onScan={handleInventoryBarcode}
-          />
+          <div className="flex items-center gap-2">
+            <SearchField
+              className="min-w-0 flex-1"
+              value={f.q}
+              barcode
+              placeholder="اكتب الاسم أو SKU أو امسح أي باركود"
+              onChange={(value) => {
+                setLastScannedBarcode(null);
+                patchF({ q: value });
+              }}
+              onScan={handleInventoryBarcode}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-10 shrink-0"
+              onClick={() => setCameraOpen(true)}
+              aria-label="مسح باركود المخزون بالكاميرا"
+              title="مسح بالكاميرا"
+            >
+              <Camera aria-hidden className="size-4" />
+            </Button>
+          </div>
         </FilterField>
         <FilterField label="الفئة">
           <AppSelect id="inv-category" value={f.cat} onValueChange={(v) => patchF({ cat: v })}>
@@ -1194,6 +1213,15 @@ export default function Inventory() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CameraScanner
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onDetect={(barcode) => {
+          setCameraOpen(false);
+          handleInventoryBarcode(barcode);
+        }}
+      />
     </div>
   );
 }
