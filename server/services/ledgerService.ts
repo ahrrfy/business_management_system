@@ -293,7 +293,15 @@ export async function adjustSupplierBalanceUsd(
     .where(eq(suppliers.id, supplierId));
 }
 
-/** عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية. */
+/**
+ * عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية.
+ *
+ * م١ (PR-3، العيب أ): **الكاتبُ الوحيد** لـ`deliveryParties.version` — يرفعه ذرّياً مع كلّ حركة
+ * عهدة تحت قفل الصفّ (`FOR UPDATE`). كان العمود يُقرأ في طلبات شطب العهدة
+ * (`writeoffRequests.ts`: `basePartyVersion` مقابل `party.version` ⇒ `STALE`) **ولا يكتبه أحد**،
+ * فحارسُ التقادم كان خاملاً: طلبٌ فُتح على عهدة 2000 يُعتمَد بعد أن صارت 5000 بلا إنذار.
+ * الزيادةُ النسبيّة تبقى (لا قراءة-ثمّ-كتابة)، والقفلُ يُسلسِل الكتّاب المتزامنين على الجهة.
+ */
 export async function adjustDeliveryBalance(
   tx: Tx,
   partyId: number,
@@ -301,9 +309,16 @@ export async function adjustDeliveryBalance(
 ): Promise<void> {
   if (delta.isZero()) return;
   await tx
+    .select({ id: deliveryParties.id })
+    .from(deliveryParties)
+    .where(eq(deliveryParties.id, partyId))
+    .for("update")
+    .limit(1);
+  await tx
     .update(deliveryParties)
     .set({
       currentBalance: sql`${deliveryParties.currentBalance} + ${toDbMoney(delta)}`,
+      version: sql`${deliveryParties.version} + 1`,
     })
     .where(eq(deliveryParties.id, partyId));
 }

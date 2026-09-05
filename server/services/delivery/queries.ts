@@ -6,8 +6,11 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { money } from "../money";
+import { money, round2 } from "../money";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { computePartyExposure } from "@shared/partyExposure";
+import { deliveryCashSource } from "./cashSource";
+import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { getDeliveryFinancialSummary } from "./lifecycle";
 
 /**
@@ -734,19 +737,8 @@ export async function listPartyObligations(branchId: number | null) {
        * DELIVERED بحالة إغلاق PARTIAL يقع في «سُلِّم لم يُحصَّل»، وطردٌ ASSIGNED بحالة إغلاق DISPATCHED
        * في «بالطريق». نبقي codDueTotal كما هو (لا كسر واجهةٍ عبر ٢٠+ مستهلك).
        */
-      parcelsInTransitAmount: sql<string>`(SELECT COALESCE(SUM(CAST(dc.codAmount AS DECIMAL(15,2))), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus IN ('ASSIGNED', 'OUT_FOR_DELIVERY'))`,
-      deliveredUncollectedAmount: sql<string>`(SELECT COALESCE(SUM(GREATEST(
-          CAST(dc.codAmount AS DECIMAL(15,2))
-          - CAST(dc.collectedAmount AS DECIMAL(15,2))
-          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0)
-        FROM deliveryConsignments dc
-        WHERE dc.partyId = ${deliveryParties.id}${cnBranch}
-          AND dc.parcelStatus = 'DELIVERED'
-          AND dc.moneyStatus IN ('UNSETTLED', 'PARTIAL')
-          AND dc.returnDeclaredAt IS NULL)`,
+      // م١ (PR-3): عمودا التعرّض (٢ و٣) لم يعودا SQL هنا — يُحسبان بعد الجلب بالدالّة النقيّة
+      // `computePartyExposure` من `loadPartyExposureInputsTx` (نفس الفرع `cnBranch`) — انظر أسفل الدالّة.
       lastRemittanceAt: sql<Date | null>`(SELECT MAX(dr.receivedAt) FROM deliveryRemittances dr
         WHERE dr.partyId = ${deliveryParties.id}${rmBranch})`,
       hasPortal: sql<number>`(
@@ -776,14 +768,30 @@ export async function listPartyObligations(branchId: number | null) {
     ));
   // «عليها التزام» = إرسالية مفتوحة أو أجرة مستحقّة أو عهدة قائمة. الفلترة والفرز في الذاكرة
   // عمداً: جهات التوصيل بالعشرات، وHAVING كان سيكرّر الاستعلامات المترابطة الثلاثة حرفياً.
-  return rows
+  const kept = rows
     .filter((r) =>
       Number(r.openCount) > 0
       || money(r.feeDueTotal ?? "0").gt(0)
       || money(r.currentBalance ?? "0").gt(0),
     )
-    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1))
-    .map((r) => ({
+    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1));
+  // م١ (PR-3): أعمدة التعرّض من **الدالّة النقيّة** (كانت SQL موازيةً لـ`parties.ts` انحرفت عنها).
+  const exposureInputs = await loadPartyExposureInputsTx(
+    db as unknown as Parameters<typeof loadPartyExposureInputsTx>[0],
+    kept.map((r) => Number(r.partyId)),
+    branchId,
+  );
+  const cashSource = deliveryCashSource();
+  return kept.map((r) => {
+    const inputs = exposureInputs.get(Number(r.partyId));
+    const cashInHandStored = round2(money(r.currentBalance ?? "0")).toFixed(2);
+    const cashInHandLedger = inputs?.cashInHandLedger ?? "0.00";
+    const exposure = computePartyExposure({
+      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
+      parcels: inputs?.parcels ?? [],
+      ledger: inputs?.ledger ?? [],
+    });
+    return {
       partyId: Number(r.partyId),
       name: r.name,
       partyType: r.partyType,
@@ -795,10 +803,15 @@ export async function listPartyObligations(branchId: number | null) {
       feeDueTotal: String(r.feeDueTotal ?? "0.00"),
       lastRemittanceAt: r.lastRemittanceAt ?? null,
       hasPortal: Number(r.hasPortal ?? 0) > 0,
-      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة الأربعة الجديدة (٢ و٣ من partyExposure).
-      parcelsInTransitAmount: String(r.parcelsInTransitAmount ?? "0.00"),
-      deliveredUncollectedAmount: String(r.deliveredUncollectedAmount ?? "0.00"),
-    }));
+      // Slice DFP1 (٣٠/٨/٢٦) — أعمدة المسؤوليّة (٢ و٣ من partyExposure) — م١: من الدالّة النقيّة.
+      parcelsInTransitAmount: exposure.parcelsInTransit,
+      deliveredUncollectedAmount: exposure.deliveredUncollected,
+      // م١ (PR-3) — الطرح الظلّيّ: المصدران معاً وفرقهما.
+      cashInHandLedger,
+      cashInHandStored,
+      cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),
+    };
+  });
 }
 
 /**

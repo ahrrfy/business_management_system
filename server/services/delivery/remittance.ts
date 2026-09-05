@@ -44,6 +44,7 @@ import {
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { nextRemittanceNumber } from "./numbering";
+import { partyCashInHandTx } from "./cashSource";
 import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import {
   deliveryCustomerCollectionIntent,
@@ -434,7 +435,8 @@ export async function recordDeliveryRemittanceInTx(
       });
     }
     collectedTotal = round2(collectedTotal);
-    const custodyBalance = round2(money(party.currentBalance));
+    // م١ (PR-3): سقفُ التوريد يقرأ «النقد بيد الجهة» من المصدر الذي يقرّره العلَم (`cashSource.ts`).
+    const custodyBalance = (await partyCashInHandTx(tx, party)).effective;
     if (collectedTotal.gt(custodyBalance)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

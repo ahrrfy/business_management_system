@@ -690,6 +690,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
   // أو تحوّل أحدها إلى OUT يفشل الجرد حتى يُربط بالحارس/تصنيف غير نقدي صريح.
   const receiptInOnlyWriters = [
     "assets/dispose.ts", // متحصل بيع أصل
+    "delivery/feeHeld.ts", // أمانة أجرة توصيل مقبوضة مع البيع (IN نقديّ في الدرج)
     "delivery/settle.ts", // قبض تسوية من المندوب
     "exchange/withdraw.ts", // نقد عائد من محفظة الصيرفة
     "printSaleService.ts", // قبض بيع
