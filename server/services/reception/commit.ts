@@ -27,7 +27,7 @@ import {
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { mixedAwarePaymentMethod } from "../sale/payment";
-import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "./deposits";
+import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "../deposits";
 
 /**
  * صدق طريقة الدفع (١٨/٨) — يختم على كل فاتورة **مموَّلة من عربونٍ محتجَز** طريقةَ قبضها

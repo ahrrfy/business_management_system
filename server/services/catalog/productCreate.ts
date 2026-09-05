@@ -12,7 +12,7 @@ import {
   productionRecipes,
   suppliers,
 } from "../../../drizzle/schema";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -123,8 +123,9 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
   }
   const seenCode = new Set<string>();
   for (const c of codes) {
-    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
-    seenCode.add(c);
+    const identities = barcodeIdentityCandidates(c).map(barcodeComparisonKey);
+    if (identities.some((identity) => seenCode.has(identity))) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
+    identities.forEach((identity) => seenCode.add(identity));
   }
   if (seenCode.size) {
     // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).

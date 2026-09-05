@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_PRICE_DECIMALS } from "../../shared/moneyPrecision";
-import { canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
+import { canonicalizeBarcodeInput, hasUnsupportedBarcodeCharacters } from "../../shared/barcodeNormalize";
 
 /** سلسلة مالية بـ٢ خانات عشرية على الأكثر، تَقبل السالب (للمرتجعات/التعديلات).
  *  متّسق مع toDbMoney(string) في server/services/money.ts.
@@ -73,14 +73,16 @@ export const barcodeString = z
   .string()
   .transform(canonicalizeBarcodeInput)
   .refine((s) => s.length > 0, "الباركود فارغ")
-  .refine((s) => s.length <= 64, "الباركود أطول من ٦٤ خانة");
+  .refine((s) => s.length <= 64, "الباركود أطول من ٦٤ خانة")
+  .refine((s) => !hasUnsupportedBarcodeCharacters(s), "الباركود يحوي محارف تحكّم أو فراغات غير مدعومة");
 
 /** حقل باركود اختياريّ (وحدةٌ قد تُنشأ بلا باركود ويُضاف لاحقاً) — نفس التطبيع؛ الفارغ بعده ⇒ `null`. */
 export const optionalBarcodeString = z
   .string()
   .nullish()
   .transform((s) => (s == null ? null : canonicalizeBarcodeInput(s) || null))
-  .refine((s) => s == null || s.length <= 64, "الباركود أطول من ٦٤ خانة");
+  .refine((s) => s == null || s.length <= 64, "الباركود أطول من ٦٤ خانة")
+  .refine((s) => s == null || !hasUnsupportedBarcodeCharacters(s), "الباركود يحوي محارف تحكّم أو فراغات غير مدعومة");
 
 /** تاريخ بصيغة YYYY-MM-DD (متّسق مع toDateStr() في money.ts و dueDate في invoices). */
 export const ymdDate = z
