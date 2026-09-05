@@ -4,12 +4,8 @@
  * يُركَّب من قائد التكامل تحت المسار trpc.leaves.
  * ========================================================================== */
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { LEAVE_TYPES } from "@shared/hr";
-import { employees } from "../../drizzle/schema";
-import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
-import { requireDb } from "../services/tx";
 import * as svc from "../services/leaveService";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
 
@@ -185,32 +181,14 @@ export const leaveRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const lv = await svc.decideLeave(input.id, input.decision, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId });
+      // البتّ + إشعارُ الموظّف مسارٌ خدميّ واحد يشاركه صندوق القرارات (Codex على #1004).
+      const lv = await svc.decideLeaveAndNotify(input.id, input.decision, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId });
       await logAudit(ctx, {
         action: "leave.decide",
         entityType: "leaveRequest",
         entityId: input.id,
         newValue: { decision: input.decision },
       });
-      if (lv?.employeeId) {
-        const [employee] = await requireDb()
-          .select({ userId: employees.userId })
-          .from(employees)
-          .where(eq(employees.id, Number(lv.employeeId)))
-          .limit(1);
-        if (employee?.userId) {
-          await createAppNotification({
-            userId: employee.userId,
-            kind: "LEAVE_STATUS",
-            title: input.decision === "approved" ? "تمت الموافقة على الإجازة" : "تم تحديث طلب الإجازة",
-            body: `${lv.leaveType} · ${lv.fromDate} — ${lv.toDate}`,
-            route: "/hr?tab=leaves",
-            eventKey: `leave:${input.id}:${input.decision}`,
-            entityType: "leaveRequest",
-            entityId: input.id,
-          }).catch(() => undefined);
-        }
-      }
       return lv;
     }),
 

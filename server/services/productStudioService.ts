@@ -909,6 +909,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
   const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
   // اسمُ العرض للرسائل يجمع المنتج والبديل (إن وُجد).
   const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
+  const eligibleQueueCampaign = sql`exists (select 1 from ${productStudioCampaigns} c
+    where c.id = ${productImageJobs.campaignId} and c.status = 'ACTIVE'
+    ${canCrossBranches(actor) ? sql`` : sql`and c.branchId = ${actor.branchId}`}
+    ${isManager(actor) ? sql`` : sql`and exists (select 1 from ${productStudioCampaignAssignees} ca where ca.campaignId = c.id and ca.userId = ${actor.userId})`})`;
   return withStudioTx(async (tx) => {
     // البحثُ عن مهمّةٍ نشطة يُقيَّد بـ **البديل نفسه**، مع سماحٍ باستهداف مهمّة الطابور
     // المستوى-الأمّ (`variantId IS NULL`) إن كان الماسحُ يمسح بديلاً ولا مهمّةَ خاصّةً بذلك
@@ -924,7 +928,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
           await tx
             .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
-            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), eq(productImageJobs.variantId, variantId)))
+            .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -934,7 +939,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
           await tx
             .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
-            .where(and(eq(productImageJobs.productId, productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
+            .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -1821,7 +1827,7 @@ function missingStudioProductConditions(requiredImages = 1, imagesPolicy: "ONLY_
     eq(products.isService, false),
     missingCountCondition,
     anyJobInThisCampaign,
-    sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
+    sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} is not null)`,
   );
 }
 
@@ -3386,7 +3392,7 @@ export async function assignStudioTask(
         .from(productImageJobs)
         // إسنادُ المدير الفرديّ **مستوى-الأمّ فقط** (`variantId IS NULL`): مهامّ البدائل
         // من مسح المصوّر لها دورتها ولا يُسنِدها المدير هنا (الجذر: مراجعة Codex P2 على PR #807).
-        .where(and(eq(productImageJobs.productId, input.productId), eq(productImageJobs.activeSlot, 1), isNull(productImageJobs.variantId)))
+        .where(and(eq(productImageJobs.productId, input.productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
         .limit(1)
         .for("update")
     )[0];
@@ -3606,7 +3612,7 @@ export async function bulkAssignStudioTasks(
       .where(
         and(
           inArray(productImageJobs.productId, productIds),
-          eq(productImageJobs.activeSlot, 1),
+          isNotNull(productImageJobs.activeSlot),
           isNull(productImageJobs.variantId),
         ),
       )
@@ -3628,11 +3634,9 @@ export async function bulkAssignStudioTasks(
       });
     }
     const productById = new Map(selectedProducts.map((product) => [Number(product.id), product]));
-    const unassignedByProduct = new Map(
-      active.map((task) => [Number(task.productId), Number(task.id)]),
-    );
+    const unassignedProducts = new Set(active.map((task) => Number(task.productId)));
     const newProductIds = productIds.filter(
-      (productId) => !unassignedByProduct.has(productId),
+      (productId) => !unassignedProducts.has(productId),
     );
     try {
       if (newProductIds.length > 0) {
@@ -3655,14 +3659,15 @@ export async function bulkAssignStudioTasks(
           })),
         );
       }
-      const unassignedIds = Array.from(unassignedByProduct.values());
+      const unassignedIds = active.map((task) => Number(task.id));
       if (unassignedIds.length > 0) {
         // إعادةُ الإسناد لطابورٍ قائم: `sourceProductHash` يُحدَّث ليطابق محتوى المنتج
         // اللحظة، وإلّا رُفض الاعتماد لاحقاً بـ«عُدّل محتوى المنتج بعد بدء المهمة» بينما
         // المصوّر عمل على المحتوى الراهن منذ لحظة الإسناد. مُسنَدٌ بمعنيَين: بيدٍ جديدة
         // ومقابل محتوى راهن. الجذر أمسكه تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
-        for (const [productId, jobId] of Array.from(unassignedByProduct.entries())) {
-          const product = productById.get(productId);
+        for (const queuedTask of active) {
+          const jobId = Number(queuedTask.id);
+          const product = productById.get(Number(queuedTask.productId));
           if (!product) continue;
           await tx
             .update(productImageJobs)
@@ -3705,9 +3710,9 @@ export async function bulkAssignStudioTasks(
     const assignedRows = await tx
       .select({ id: productImageJobs.id, revision: productImageJobs.revision })
       .from(productImageJobs)
-      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), eq(productImageJobs.activeSlot, 1)));
+      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)));
     return {
-      createdCount: productIds.length,
+      createdCount: assignedRows.length,
       taskIds: assignedRows.map((row) => ({ id: Number(row.id), revision: Number(row.revision) })),
       assigneeRole: assignee.role,
     };
@@ -4045,7 +4050,7 @@ export async function saveStudioDraft(
         proposedDescription: input.proposedDescription?.trim() || null,
         proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
         status: "IN_PROGRESS",
-        activeSlot: 1,
+        activeSlot: task.activeSlot,
         // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
         // من الالتزام بعد حفظ هذه المسودة الأحدث.
         uploadLeaseToken: null,
@@ -4365,6 +4370,82 @@ function classifyStudioSubmitError(err: unknown, taskId: number, userId: number)
   return err;
 }
 
+/**
+ * A campaign may reserve up to ten independent review jobs for one product.
+ * activeSlot is the unique image slot (1..10), NULL only after closure.
+ * Lock the product before counting capacity so different tabs/variants cannot
+ * reserve the same remaining allowance. Repeating a reservation reuses jobs.
+ */
+export async function reserveStudioImageTasks(actor: ProductStudioActor, input: {
+  taskId: number;
+  count: number;
+  adminOverrideReason?: string | null;
+}) {
+  return withStudioTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    if (!task.productId || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status) ||
+        !Number.isInteger(input.count) || input.count < 1 || input.count > MAX_REQUIRED_IMAGES) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+        what: "تعذّر فتح صور إضافية", why: "المهمة أو عدد الصور لا يقبل الإضافة",
+        doThis: "حدّث المهمة واختر من 1 إلى 10 صور ضمن سماح الحملة",
+      }) });
+    }
+    await tx.select({ id: products.id }).from(products).where(eq(products.id, task.productId)).for("update");
+    const campaign = task.campaignId == null ? null : (await tx.select().from(productStudioCampaigns)
+      .where(eq(productStudioCampaigns.id, task.campaignId)).limit(1).for("update"))[0];
+    const live = await tx.select().from(productImageJobs)
+      .where(and(eq(productImageJobs.productId, task.productId), isNotNull(productImageJobs.activeSlot)));
+    const editable = live.filter((row) => Number(row.id) !== Number(task.id) &&
+      row.campaignId === task.campaignId && row.variantId === task.variantId &&
+      row.assignedTo === task.assignedTo && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(row.status));
+    const slots = [task, ...editable.sort((a, b) => Number(a.id) - Number(b.id))];
+    const [completed] = campaign?.imagesPolicy === "ANY_REGARDLESS"
+      ? await tx.select({ n: sql<number>`count(*)` }).from(productImageJobs).where(and(
+          eq(productImageJobs.productId, task.productId), eq(productImageJobs.campaignId, campaign.id),
+          eq(productImageJobs.status, "APPROVED")))
+      : await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
+          eq(productImages.productId, task.productId), eq(productImages.reviewStatus, "APPROVED")));
+    const capacityJobs = campaign?.imagesPolicy === "ANY_REGARDLESS"
+      ? live.filter((row) => row.campaignId === task.campaignId)
+      : live.filter((row) => row.sourceImageId == null);
+    const remaining = campaign?.status === "ACTIVE"
+      ? Math.max(0, Number(campaign.requiredImages) - Number(completed?.n ?? 0) - capacityJobs.length) : 0;
+    const maxImages = Math.min(MAX_REQUIRED_IMAGES, slots.length + remaining);
+    if (input.count > maxImages) {
+      throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
+        what: "تعذّر إضافة الصور", why: "عدد الصور يتجاوز سماح الحملة أو الحملة غير نشطة",
+        doThis: "استخدم الصور المتاحة أو اطلب من المدير زيادة العدد المسموح وتفعيل الحملة",
+      }) });
+    }
+    const used = new Set(live.filter((row) => row.variantId === task.variantId).map((row) => row.activeSlot));
+    if (slots.length < input.count) assertStoragePolicy();
+    while (slots.length < input.count) {
+      const activeSlot = Array.from({ length: MAX_REQUIRED_IMAGES }, (_, i) => i + 1).find((slot) => !used.has(slot));
+      if (!activeSlot) throw new TRPCError({ code: "CONFLICT" });
+      const [created] = await tx.insert(productImageJobs).values({
+        productId: task.productId, variantId: task.variantId, campaignId: task.campaignId,
+        branchId: task.branchId, assignedTo: task.assignedTo, assignedBy: actor.userId,
+        assignedAt: new Date(), createdBy: actor.userId, mode: "FLATTEN", status: "ASSIGNED",
+        priority: task.priority, dueAt: task.dueAt, sourceProductHash: task.sourceProductHash,
+        templateVersion: task.templateVersion, revision: 1, activeSlot,
+      }).$returningId();
+      used.add(activeSlot);
+      const added = await lockTask(tx, Number(created.id));
+      slots.push(added);
+      await tx.insert(auditLogs).values(auditValues(actor, "productStudio.reserveImage", Number(created.id), {
+        sourceTaskId: task.id, campaignId: task.campaignId, activeSlot,
+      }));
+      await recordAdminOverride(tx, actor, Number(created.id), "reserveImage", overrideReason, task.assignedTo);
+    }
+    return { maxImages, tasks: slots.map((row) => ({
+      taskId: Number(row.id), revision: Number(row.revision), status: row.status,
+      hasOriginal: Boolean(row.originalObjectKey), hasCandidate: Boolean(row.processedObjectKey),
+      updatedAt: row.updatedAt,
+    })) };
+  });
+}
+
 export async function submitStudioCandidate(
   actor: ProductStudioActor,
   input: {
@@ -4528,7 +4609,7 @@ export async function submitStudioCandidate(
           reviewedBy: null,
           reviewedAt: null,
           rejectionReason: null,
-          activeSlot: 1,
+          activeSlot: task.activeSlot,
           uploadLeaseToken: null,
           uploadLeaseExpiresAt: null,
           processingProofTokenHash: null,
@@ -4929,7 +5010,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
         reviewedBy: actor.userId,
         reviewedAt: new Date(),
         rejectionReason: cleanReason,
-        activeSlot: 1,
+        activeSlot: task.activeSlot,
         revision: sql`${productImageJobs.revision} + 1`,
       })
       .where(eq(productImageJobs.id, taskId));
@@ -5093,8 +5174,8 @@ async function cancelCampaignQueuedTasksInTx(
   const scope = cascadeAssigned
     // كل مهمّةٍ حيّةٍ على الحملة — بمُنفّذٍ أو بلا — تُلغى. PENDING_REVIEW تُلغى أيضاً لأنّها
     // ما زالت مفتوحةً على منتجٍ ينتظر قراراً؛ عدم إلغائها يترك تناقضاً مع «الحملة ملغاة».
-    ? and(eq(productImageJobs.campaignId, campaignId), inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), eq(productImageJobs.activeSlot, 1))
-    : and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
+    ? and(eq(productImageJobs.campaignId, campaignId), inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), isNotNull(productImageJobs.activeSlot))
+    : and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), isNotNull(productImageJobs.activeSlot));
   const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
   if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
   const ids = rows.map((row) => Number(row.id));

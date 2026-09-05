@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, asc, desc, eq, lt } from "drizzle-orm";
 import {
   branches,
   purchaseOrderControlRequests,
@@ -814,7 +814,11 @@ export async function decidePurchaseOrderControl(
 
 export async function listPendingPurchaseOrderControls(
   actor: Actor,
-  page: { limit: number; cursor?: number | null },
+  /**
+   * `order: "ASC"` = الأقدم أوّلاً (صندوق القرارات): القصّ بالأحدث يُسقط أكثر الطلبات
+   * تأخّراً بالضبط حين يكثر المعلَّق (Codex على #1004). المؤشّر `cursor` يخصّ النزول فقط.
+   */
+  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC" },
 ) {
   const db = requireDb();
   const branchCondition =
@@ -858,7 +862,7 @@ export async function listPendingPurchaseOrderControls(
           : lt(purchaseOrderControlRequests.id, page.cursor),
       ),
     )
-    .orderBy(desc(purchaseOrderControlRequests.id))
+    .orderBy(page.order === "ASC" ? asc(purchaseOrderControlRequests.id) : desc(purchaseOrderControlRequests.id))
     .limit(page.limit + 1);
 }
 
