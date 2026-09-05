@@ -10,7 +10,6 @@
   "client/src/lib/printing/printTemplates.ts": 1,
   "client/src/lib/printing/shiftRaster.ts": 1,
   "client/src/lib/terminationSettlement.ts": 1,
-  "client/src/pages/_VoucherFormShared.tsx": 1,
   "client/src/pages/Payroll.tsx": 1,
   "client/src/pages/WorkOrders.tsx": 1
 }

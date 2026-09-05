@@ -14,12 +14,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TransferCart, computeLineStates, type TransferCartLine } from "@/components/transfer/TransferCart";
+import { InferredBranchField, InferredField } from "@/components/form/InferredField";
+import { useSessionContext } from "@/hooks/useSessionContext";
 import { confirm } from "@/lib/confirm";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { ArrowRightLeft, Inbox, PackagePlus } from "lucide-react";
+import { ArrowRightLeft, Inbox, PackagePlus, UserRound } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import TransfersLog from "@/pages/TransfersLog";
@@ -62,8 +64,12 @@ export default function Transfers() {
   const [tab, setTab] = useState<"new" | "log">("new");
   const pending = trpc.inventory.transfersPendingIncoming.useQuery(undefined, { refetchInterval: 60_000 });
 
-  const [fromBranchId, setFromBranchId] = useState<number | "">("");
+  // المصدرُ استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان يسقط
+  // على «فرع المستخدم أو الأوّل في القائمة» صامتاً، والأدمن/المالك يتجاوزه بقصدٍ من قائمةٍ خادميّة.
+  const [fromBranchId, setFromBranchId] = useState<number | null>(null);
   const [toBranchId, setToBranchId] = useState<number | "">("");
+  const session = useSessionContext();
+  const canCrossBranches = session.context?.canCrossBranches === true;
   const [reason, setReason] = useState<string>("REBALANCE");
   const [notes, setNotes] = useState("");
   const [cart, setCart] = useState<TransferCartLine[]>([]);
@@ -75,13 +81,13 @@ export default function Transfers() {
   // الشبكة يُعاد كـreplay على الخادم بدل نقل المخزون بين الفروع مرّتين.
   const [reqId, setReqId] = useState(() => crypto.randomUUID());
 
-  // فروع افتراضية بعد التحميل: المصدر = فرع المستخدم أو الأول، الوجهة = أول فرع مختلف.
-  const effectiveFrom =
-    fromBranchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 0);
+  // المصدرُ لا يُفترَض (لا «فرع المستخدم أو الأوّل في القائمة»)؛ الوجهةُ وحدها تُقترَح: أوّلُ فرعٍ
+  // مختلفٍ عنه — قرارٌ للمستخدم لا للجلسة، ومع فرعَين يكون محسوماً.
+  const effectiveFrom: number | null = fromBranchId;
   const effectiveTo =
     toBranchId ||
-    (branches.data?.find((b) => Number(b.id) !== Number(effectiveFrom))
-      ? Number(branches.data.find((b) => Number(b.id) !== Number(effectiveFrom))!.id)
+    (effectiveFrom != null && branches.data?.find((b) => Number(b.id) !== effectiveFrom)
+      ? Number(branches.data.find((b) => Number(b.id) !== effectiveFrom)!.id)
       : 0);
 
   // F2 يركّز حقل بحث السلة (اختصار الكاشير — ProductSearchBar يعرض الشارة ويترك التركيز للأب).
@@ -96,9 +102,12 @@ export default function Transfers() {
   }, [tab]);
 
   // تبديل فرع المصدر يُفرغ السلة (الأرصدة تختلف بين الفروع ⇒ stockBase المخزَّن يصير كاذباً).
-  function changeFrom(v: number | "") { setFromBranchId(v); setCart([]); }
+  function changeFrom(v: number | null) { setFromBranchId(v); setCart([]); }
+  // العكسُ يجعل المصدرَ فرعاً غيرَ المستنتَج ⇒ يظهر في `<InferredBranchField>` منتقًى صريحاً (لا
+  // يُغطّيه عرضُ الفرع المستنتَج)، ويُتاح لعابر الفروع وحده — غيرُه لا يُرسِل مصدراً غيرَ فرعه.
   function swap() {
-    const f = Number(effectiveFrom), t = Number(effectiveTo);
+    if (effectiveFrom == null || !effectiveTo) return;
+    const f = effectiveFrom, t = Number(effectiveTo);
     setFromBranchId(t); setToBranchId(f); setCart([]);
   }
 
@@ -208,17 +217,21 @@ export default function Transfers() {
         <CardHeader><CardTitle className="text-base">الفروع</CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-3 items-end">
-            <div className="space-y-1">
-              <Label>من فرع *</Label>
-              <AppSelect className="h-9" value={String(effectiveFrom || "")} onValueChange={(next) => changeFrom(next ? Number(next) : "")}>
-                <option value="">— اختر —</option>
-                {(branches.data ?? []).map(branchOption)}
-              </AppSelect>
-            </div>
+            {/* المصدرُ استنتاجٌ خادميّ (م٤ ق١): «فرعك المسند» للمخزن قراءةً (الخادم يُلزمه به)،
+                وزرُّ «تغيير» للأدمن/المالك — ولا «الفرع الأوّل في القائمة» صامتاً. */}
+            <InferredBranchField
+              id="transfer-from-branch"
+              label="من فرع *"
+              value={fromBranchId}
+              onChange={changeFrom}
+              disabled={transfer.isPending}
+            />
             <div className="flex justify-center pb-1">
-              <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
-                <ArrowRightLeft aria-hidden className="h-4 w-4" />
-              </Button>
+              {canCrossBranches && (
+                <Button type="button" variant="outline" size="icon" title="عكس الاتجاه" onClick={swap} className="rounded-full">
+                  <ArrowRightLeft aria-hidden className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             <div className="space-y-1">
               <Label>إلى فرع *</Label>
@@ -246,10 +259,14 @@ export default function Transfers() {
               {REASONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </AppSelect>
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="trf-owner">المسؤول عن التحويل</Label>
-            <Input id="trf-owner" value={me.data?.name ?? "—"} readOnly dir="rtl" className="bg-muted/40" />
-          </div>
+          {/* الفاعلُ يعرفه الخادم من الجلسة — يُعرَض لا يُدخَل (كان `readOnly` يوهم بحقل إدخال). */}
+          <InferredField
+            id="trf-owner"
+            label="المسؤول عن التحويل"
+            value={me.data?.name ?? "—"}
+            sourceLabel="حسابك المسجل"
+            icon={<UserRound aria-hidden className="size-4 shrink-0 text-muted-foreground" />}
+          />
           <div className="space-y-1">
             <Label htmlFor="trf-notes">ملاحظات</Label>
             <Input id="trf-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري" />
@@ -259,14 +276,23 @@ export default function Transfers() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
         {/* سلة الأصناف — جدول الفاتورة المتقدمة (بحث حيّ + ماسح + إضافة متعددة) */}
-        <TransferCart
-          lines={cart}
-          setLines={setCart}
-          branchId={Number(effectiveFrom)}
-          bulkOpen={bulkOpen}
-          setBulkOpen={setBulkOpen}
-          onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.ok(msg))}
-        />
+        {effectiveFrom != null ? (
+          <TransferCart
+            lines={cart}
+            setLines={setCart}
+            branchId={effectiveFrom}
+            bulkOpen={bulkOpen}
+            setBulkOpen={setBulkOpen}
+            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.ok(msg))}
+          />
+        ) : (
+          // لا سلّةَ بلا مصدر: البحثُ والأرصدة تُقرأ بفرعٍ محدَّد، ولا فرعَ يُخترَع.
+          <Card>
+            <CardContent className="p-6 text-center text-sm text-muted-foreground">
+              يُحدَّد فرعُ المصدر أوّلاً — تُفتَح سلّةُ الأصناف بعده.
+            </CardContent>
+          </Card>
+        )}
 
         {/* ملخّص التحويل (لاصق) */}
         <Card className="lg:sticky lg:top-4">

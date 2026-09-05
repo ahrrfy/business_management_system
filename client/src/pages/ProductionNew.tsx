@@ -1,4 +1,6 @@
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { InferredBranchField } from "@/components/form/InferredField";
+import { useSessionBranchInference } from "@/hooks/useSessionContext";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -26,31 +28,8 @@ const WO_OPEN_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** منتقي الفرع — إن لزم اختياراً صريحاً (needsBranchChoice) يعرض «— اختر الفرع —» إلزامياً،
- *  وإلا يعرض فرع المستخدم/المُختار مباشرةً. مشترك بين وضعَي وصفة/يدوي كي لا يتكرّر. */
-function BranchPicker({
-  needsChoice, value, branches, onChange,
-}: {
-  needsChoice: boolean;
-  value: number;
-  branches: Array<{ id: number | string; name: string | null }>;
-  onChange: (v: number | "") => void;
-}) {
-  return (
-    <div className="space-y-1">
-      <Label>الفرع {needsChoice && <span className="text-destructive">*</span>}</Label>
-      <AppSelect
-        className="h-9"
-        value={String(needsChoice ? "" : value)}
-        onValueChange={(next) => onChange(next ? Number(next) : "")}
-      >
-        {needsChoice && <option value="">— اختر الفرع —</option>}
-        {branches.map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-      </AppSelect>
-      {needsChoice && <p className="text-xs text-destructive">يلزم اختيار الفرع قبل الترحيل.</p>}
-    </div>
-  );
-}
+// منتقي الفرع المحلّيّ (BranchPicker) أُزيل: الفرعُ استنتاجٌ خادميّ عبر `<InferredBranchField>`
+// (م٤ ق١) في الوضعين معاً — عرضٌ لغير عابر الفروع، وقائمةٌ خادميّة للأدمن/المالك بلا فرعٍ مُسنَد.
 
 /** شريط مقياس (مخزون متاح / إنتاجية). */
 function Meter({ value, max, tone, right, label }: { value: number; max: number; tone: "ok" | "warn" | "bad"; right?: string; label?: string }) {
@@ -86,7 +65,6 @@ function lineValid(l: Line) { const b = lineBase(l); return b.gt(0) && b.isInteg
 export default function ProductionNew() {
   const [, navigate] = useLocation();
   const search = useSearch();
-  const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const utils = trpc.useUtils();
 
@@ -96,15 +74,14 @@ export default function ProductionNew() {
   }, [search]);
 
   const [mode, setMode] = useState<"recipe" | "manual">("recipe");
-  // منتقي فرع صريح (نمط PR #288 في Reception.tsx): فرع المستخدم المُسنَد يُستعمَل صامتاً؛ الأدمن/
-  // المدير بلا فرع مُسنَد يلزمه اختيارٌ صريح قبل الترحيل — بدل فرعٍ أوّل في القائمة يُختار صامتاً
-  // (كان يُنتِج/يستهلك من فرعٍ قد لا يقصده المستخدم إطلاقاً).
-  const [branchId, setBranchId] = useState<number | "">("");
-  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
-  const noAssignedBranch = me.data != null && me.data.branchId == null;
-  const needsBranchChoice = noAssignedBranch && isElevatedRole && branchId === "";
-  const effectiveBranch = Number(me.data?.branchId ?? (branchId || null) ?? 1);
-  const branchName = (branches.data ?? []).find((b) => Number(b.id) === effectiveBranch)?.name ?? "";
+  // الفرعُ استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان
+  // `Number(me.data?.branchId ?? (branchId || null) ?? 1)` يسقط على الفرع ١ صامتاً لمن بلا فرعٍ
+  // مُسنَد (بابُ IDOR الذي يحرسه `check:branch`)؛ الآن الأدمن/المالك يختار من قائمةٍ خادميّة قبل
+  // الترحيل، وغيرُه يرى فرعَه قراءةً — والخادم يُلزمه به على كلّ حال.
+  const [branchId, setBranchId] = useState<number | null>(null);
+  const branchInference = useSessionBranchInference();
+  const needsBranchChoice = branchInference.status === "unassigned" && branchId == null;
+  const branchName = (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? "";
 
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
@@ -122,8 +99,8 @@ export default function ProductionNew() {
   const [workOrderId, setWorkOrderId] = useState<number | null>(null);
   const [woQuery, setWoQuery] = useState("");
   const openWOs = trpc.workOrders.list.useQuery(
-    { statuses: [...WO_OPEN_STATUSES], branchId: effectiveBranch || undefined, limit: 200 },
-    { enabled: !needsBranchChoice },
+    { statuses: [...WO_OPEN_STATUSES], branchId: branchId ?? undefined, limit: 200 },
+    { enabled: branchId != null },
   );
   const selectedWO = (openWOs.data ?? []).find((o) => Number(o.id) === workOrderId) ?? null;
   const woMatches = useMemo(() => {
@@ -150,8 +127,8 @@ export default function ProductionNew() {
   const dLabor = useDebouncedValue(labor, 300);
   const previewEnabled = mode === "recipe" && !!recipeId && Number(dBatch) > 0;
   const preview = trpc.production.runPreview.useQuery(
-    { recipeId: Number(recipeId), batchQty: Math.trunc(Number(dBatch) || 0), scrapQty: Math.trunc(Number(dScrap) || 0), laborPerUnit: D(dLabor || "0").toFixed(2), branchId: effectiveBranch },
-    { enabled: previewEnabled }
+    { recipeId: Number(recipeId), batchQty: Math.trunc(Number(dBatch) || 0), scrapQty: Math.trunc(Number(dScrap) || 0), laborPerUnit: D(dLabor || "0").toFixed(2), branchId },
+    { enabled: previewEnabled && branchId != null }
   );
   const pv = preview.data;
   /*
@@ -173,8 +150,8 @@ export default function ProductionNew() {
    * ولا يتبع `dBatch` عمداً — لا يُعاد جلبُه مع كل ضغطة حرف.
    */
   const capacity = trpc.production.recipeCapacity.useQuery(
-    { recipeId: Number(recipeId), branchId: effectiveBranch },
-    { enabled: mode === "recipe" && !!recipeId && !needsBranchChoice },
+    { recipeId: Number(recipeId), branchId: branchId ?? undefined },
+    { enabled: mode === "recipe" && !!recipeId && branchId != null },
   );
   /*
    * **لا يُعلَن سقفٌ لوصفةٍ معطّلة.** `runPreview` ومسارُ الترحيل يرفضان المعطّلة صراحةً،
@@ -213,7 +190,7 @@ export default function ProductionNew() {
   }
 
   async function submitRecipe() {
-    if (needsBranchChoice) return setError("اختر الفرع أولاً.");
+    if (branchId == null) return setError("اختر الفرع أولاً.");
     if (!recipeId) return setError("اختر وصفة أولاً.");
     if (!(Number(batch) > 0)) return setError("أدخل عدد الدفعة (عدد موجب).");
     // Ctrl+S يتجاوز الزرّ المعطَّل ⇒ الرسالة هنا يجب أن تقول السبب الحقيقيّ لا «انتظر».
@@ -229,7 +206,7 @@ export default function ProductionNew() {
     });
     if (!ok) return;
     create.mutate({
-      branchId: effectiveBranch,
+      branchId,
       run: { recipeId: Number(recipeId), batchQty: Math.trunc(Number(batch)), scrapQty: Math.trunc(Number(scrap) || 0), laborPerUnit: D(labor || "0").toFixed(2) },
       notes: noteParts.join(" · ") || null,
       linkedWorkOrderId: workOrderId ?? undefined,
@@ -250,7 +227,7 @@ export default function ProductionNew() {
     setList(list.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
   async function submitManual() {
-    if (needsBranchChoice) return setError("اختر الفرع أولاً.");
+    if (branchId == null) return setError("اختر الفرع أولاً.");
     if (inputs.length === 0) return setError("أضِف مدخلاً واحداً على الأقل.");
     if (outputs.length === 0) return setError("أضِف مخرجاً واحداً على الأقل.");
     for (const l of inputs) if (!lineValid(l)) return setError(`كمية المدخل «${l.productName}» يجب أن تنتج عدداً صحيحاً موجباً.`);
@@ -265,7 +242,7 @@ export default function ProductionNew() {
     if (!ok) return;
     const toPayload = (l: Line) => ({ variantId: l.variantId, productUnitId: l.productUnitId!, quantity: D(l.qty).toFixed(4) });
     create.mutate({
-      branchId: effectiveBranch,
+      branchId,
       inputs: inputs.map(toPayload), outputs: outputs.map(toPayload),
       laborCost: D(mLabor).toFixed(2), notes: notes.trim() || null, clientRequestId,
     });
@@ -348,7 +325,7 @@ export default function ProductionNew() {
                   </AppSelect>
                   {(recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
                 </div>
-                <BranchPicker needsChoice={needsBranchChoice} value={effectiveBranch} branches={branches.data ?? []} onChange={setBranchId} />
+                <InferredBranchField label="الفرع" value={branchId} onChange={setBranchId} disabled={create.isPending} />
               </CardContent>
             </Card>
 
@@ -577,7 +554,7 @@ export default function ProductionNew() {
             <Card>
               <CardHeader><CardTitle className="text-base">الفرع</CardTitle></CardHeader>
               <CardContent>
-                <BranchPicker needsChoice={needsBranchChoice} value={effectiveBranch} branches={branches.data ?? []} onChange={setBranchId} />
+                <InferredBranchField label="الفرع" value={branchId} onChange={setBranchId} disabled={create.isPending} />
               </CardContent>
             </Card>
             <Card>
@@ -594,14 +571,14 @@ export default function ProductionNew() {
             <Card>
               <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />
+                {branchId != null && <ProductSearchPicker branchId={branchId} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />}
                 {inputs.length > 0 ? renderLines(inputs, setInputs, "in") : <p className="text-xs text-muted-foreground">لم تُضف مدخلات بعد.</p>}
               </CardContent>
             </Card>
             <Card>
               <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />
+                {branchId != null && <ProductSearchPicker branchId={branchId} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />}
                 {outputs.length > 0 ? renderLines(outputs, setOutputs, "out") : <p className="text-xs text-muted-foreground">لم تُضف مخرجات بعد.</p>}
               </CardContent>
             </Card>
