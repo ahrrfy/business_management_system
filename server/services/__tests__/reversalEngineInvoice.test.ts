@@ -305,7 +305,7 @@ describe("reverse() منفِّذاً — إلغاءُ فاتورةٍ بكوبو�
       {
         invoiceId: sale.invoiceId,
         lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
-        resolution: { kind: "IMMEDIATE_REFUND", method: "CASH", amount: "1250.00", shiftId: 1, reason: "إرجاع كامل", disposition: "RESTOCK" },
+        resolution: { kind: "IMMEDIATE_REFUND", method: "CASH", amount: "1250.00", shiftId: 1, reason: "زبون عابر اعاد الطلب كله", disposition: "RESTOCK" },
       },
       admin,
     );
@@ -325,7 +325,8 @@ describe("reverse() منفِّذاً — إلغاءُ فاتورةٍ بكوبو�
     expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
     const out = (await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))[0]!;
     expect(out.amount).toBe("1250.00");
-    expect(out.description).toContain("إرجاع كامل");
+    // وصفُ إيصال الردّ يحمل سببَ الزبون العابر (descriptionNote) — لا نصَّ الإلغاء.
+    expect(out.description).toContain("زبون عابر اعاد الطلب كله");
   });
 
   it("نوعٌ بلا منفّذ في وضع التنفيذ يرمي NOT_IMPLEMENTED صراحةً — لا مرآة صامتة", async () => {
