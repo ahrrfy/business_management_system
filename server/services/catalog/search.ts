@@ -2,6 +2,7 @@
 import { and, asc, eq, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { productUnitBarcodes, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { barcodeIdentityCandidates } from "../../../shared/barcodeNormalize";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText, tokenizeSearchQuery } from "../../../shared/searchNormalize";
 import { escLike } from "../../lib/sqlLike";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
@@ -89,15 +90,40 @@ function unitAliasMatches(pattern: string): SQL {
   )`;
 }
 
-/** تطابق بديل تام للوحدة الحالية، لا لكل المتغيّر، كي يبقى ترتيب صفوف POS/الشراء صحيحاً. */
-function unitAliasEquals(normalizedCode: string): SQL {
-  const foldedAlias = foldedExpr(sql`catalog_order_alias.barcode`);
-  return sql`EXISTS (
+/**
+ * هوية الباركود الكاملة للاستعلام، مستقلة عن تقطيع بحث الأسماء.
+ *
+ * التقسيم إلى كلمات يضغط `1  0095` إلى `1 0095`؛ وهذا صحيح للأسماء لكنه يغيّر Code39.
+ * لذلك نختبر العبارة الكاملة عبر المرشّحات المركزية (ومنها UPC-A/EAN-13) بمساواة مفهرسة،
+ * مرةً واحدة للاستعلام لا مرةً لكل كلمة. البديل مرتبط بالوحدة نفسها كي يعيد POS/الشراء
+ * معامل الوحدة الصحيح، لا وحدةً أخرى من المنتج.
+ */
+function catalogBarcodeIdentity(query: string | undefined): { forUnit: SQL; anywhere: SQL } | null {
+  const candidates = barcodeIdentityCandidates(query ?? "");
+  if (!candidates.length) return null;
+  const normalizedCandidates = Array.from(new Set(candidates.map((candidate) => candidate.toLowerCase())));
+  const candidateList = sql.join(normalizedCandidates.map((candidate) => sql`${candidate}`), sql`, `);
+
+  const aliasForUnit = sql`EXISTS (
     SELECT 1
-    FROM ${productUnitBarcodes} AS catalog_order_alias
-    WHERE catalog_order_alias.productUnitId = ${productUnits.id}
-      AND ${foldedAlias} = ${normalizedCode}
+    FROM ${productUnitBarcodes} AS catalog_identity_alias
+    WHERE catalog_identity_alias.productUnitId = ${productUnits.id}
+      AND catalog_identity_alias.barcodeNormalized IN (${candidateList})
   )`;
+  const forUnit = or(sql`productUnits.barcodeNormalized IN (${candidateList})`, aliasForUnit)!;
+  const anywhere = sql`(
+    EXISTS (
+      SELECT 1
+      FROM ${productUnits} AS catalog_any_identity_unit
+      WHERE catalog_any_identity_unit.barcodeNormalized IN (${candidateList})
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM ${productUnitBarcodes} AS catalog_any_identity_alias
+      WHERE catalog_any_identity_alias.barcodeNormalized IN (${candidateList})
+    )
+  )`;
+  return { forUnit, anywhere };
 }
 
 /**
@@ -113,7 +139,13 @@ function buildCatalogSearchWhere(query: string | undefined): SQL | null {
     const pat = `%${escLike(t)}%`;
     return or(...cols.map((c) => sql`${c} LIKE ${pat} ESCAPE '!'`), unitAliasMatches(pat));
   });
-  return and(...perToken) ?? null;
+  const fuzzyMatch = and(...perToken);
+  if (!fuzzyMatch) return null;
+  const identity = catalogBarcodeIdentity(query);
+  if (!identity) return fuzzyMatch;
+  // وجود هوية تامّة يجعل البحث نقطياً: لا تدخل موجةَ أسعار أو نتيجةَ limit سلعةٌ أخرى
+  // لمجرّد أن اسمها يحتوي أرقام الباركود. عند غيابها يبقى بحث الأسماء القديم حرفياً.
+  return sql`CASE WHEN ${identity.anywhere} THEN ${identity.forUnit} ELSE ${fuzzyMatch} END`;
 }
 
 /**
@@ -212,10 +244,11 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
   if (!tokens.length) return [];
   const whole = tokens.join(" ");
   const wholePrefix = `${escLike(whole)}%`;
+  const identity = catalogBarcodeIdentity(query);
   // D2 (٣٠/٦): products.searchNorm المُولَّد ⇒ LIKE 'prefix%' يَستفيد من فهرس B-tree O(log n).
   const name = sql`coalesce(${products.searchNorm}, '')`;
   const rank = sql`case
-    when ${foldedCol(productUnits.barcode)} = ${whole} OR ${unitAliasEquals(whole)} then 0
+    when ${identity?.forUnit ?? sql`false`} then 0
     when ${foldedCol(productVariants.sku)} = ${whole} then 1
     when ${name} LIKE ${wholePrefix} ESCAPE '!' then 2
     else 3

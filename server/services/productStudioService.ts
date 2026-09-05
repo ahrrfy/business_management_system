@@ -8,7 +8,8 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { normalizedStoredBarcodeSql } from "./catalog/barcodeAliases";
+import { normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
@@ -579,6 +580,7 @@ function normalizedStudioVariantNameSql() {
 export async function listStudioProducts(actor: ProductStudioActor, input: StudioProductSearchInput = {}) {
   const db = requireDb();
   const q = normalizeSearchText(input.search ?? "").slice(0, 80);
+  const barcodeQuery = canonicalizeBarcodeInput(input.search ?? "");
   const showInactive = input.includeInactive === true && isManager(actor);
   const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q, showInactive) : null;
   const numericId = /^\d+$/.test(q) ? Number(q) : 0;
@@ -592,8 +594,8 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   // (المُطبَّع منذ #912)، فيصل الماسحَ «الرمز لا يطابق» على منتجٍ موجود. هذا الاستعلام مسحٌ متعدّد
   // الشروط أصلاً (LIKE على الأسماء المُطبَّعة) لا مسارَ نقطيّ على فهرس الباركود، فالتغليف لا يغيّر كلفته.
   // وهو مرآةُ `contextFor` أدناه بالضبط: ما يُطابقه SQL يُصنّفه JS باركوداً، لا أقلّ.
-  const exactBarcode = q
-    ? or(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${q}`, sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${q}`)
+  const exactBarcode = barcodeQuery
+    ? or(normalizedMatchAny(productUnits.barcode, [barcodeQuery]), normalizedMatchAny(productUnitBarcodes.barcode, [barcodeQuery]))
     : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
@@ -662,9 +664,9 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
     // MySQL (`utf8mb4_0900_ai_ci`) لا يُميّز الحالة فيجد صفّه في SQL. النتيجة: صفٌّ يُطابقه
     // الاستعلامُ لكنّ التصنيف يسقط إلى NAME_CONTAINS، فيعيد `resolveStudioBarcode` (بلا
     // BARCODE_PRIMARY/ALIAS) خطأ «الباركود غير معروف» على منتجٍ موجود فعلاً.
-    if (q && row.primaryBarcode != null && normalizeSearchText(row.primaryBarcode) === q)
+    if (barcodeQuery && row.primaryBarcode != null && barcodesEquivalent(row.primaryBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: row.primaryBarcode };
-    if (q && row.aliasBarcode != null && normalizeSearchText(row.aliasBarcode) === q)
+    if (barcodeQuery && row.aliasBarcode != null && barcodesEquivalent(row.aliasBarcode, barcodeQuery))
       return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: row.aliasBarcode };
     if (q && normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
     if (q && numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
@@ -1023,57 +1025,36 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
 }
 
 export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
-  // بحثٌ أوّليّ باحترام صلاحيّة المستخدم — يعطي المنتج النشط إن وُجد.
-  const activeOnly = await listStudioProducts(actor, {
-    search: barcode,
-    includeInactive: isManager(actor),
-  });
-  const barcodeMatches = activeOnly.rows.filter((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
-  // (٤/٩، مراجعة Codex P1) المطابقةُ على العمود المُطبَّع قد تُرجع أكثرَ من منتجٍ حين يتطبّع باركودان
-  // إرثيّان ملوّثان على منتجين مختلفين إلى القيمة نفسها بلا مطابقةٍ خامّةٍ صريحة. أخذُ الأوّل يجعل
-  // الاختيارَ رهنَ ترتيب الاسم فيَفتح عملَ تصويرٍ لمنتجٍ خاطئ — نظير خطر التسعير الخاطئ عند الكاشير.
-  // كالحلّال النقديّ (`resolveNormalizedOwner`): عند تعدّد المالك لا نحسم صامتاً بل نرفع غموضاً.
-  const distinctOwners = new Set(barcodeMatches.map((row) => `${row.productId}:${row.variantId ?? ""}:${row.unitId ?? ""}`));
-  if (distinctOwners.size > 1) {
+  // مسح الباركود له محلّل واحد في النظام كلّه. استعمال بحث الاستوديو النصي هنا كان يضغط
+  // المسافات الداخلية، يفسّر الرقم القصير كمعرّف منتج، ولا يعرف تكافؤ UPC-A/EAN-13.
+  const resolution = await resolveBarcodeOwnerResult(requireDb(), barcode);
+  if (resolution.status === "AMBIGUOUS") {
     throw new TRPCError({
       code: "CONFLICT",
       message: appErrorMessage({
         what: "الرمز الممسوح يخصّ أكثر من منتج",
         why: "باركوداتٌ مخزّنةٌ قديمةٌ لعدّة منتجاتٍ تتطابق بعد التطبيع مع هذا الرمز، فلا يُحسَم لأيّها آلياً",
-        doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، واطلب من المدير تصحيح باركودات المنتجات المتضاربة",
+        doThis: "ابحث عن المنتج بالاسم، واطلب من المدير تصحيح باركودات المنتجات المتضاربة",
       }),
     });
   }
-  const activeMatch = barcodeMatches[0];
-  if (activeMatch) {
-    return {
-      productId: activeMatch.productId,
-      productName: activeMatch.productName,
-      variantId: activeMatch.variantId,
-      variantName: activeMatch.variantName,
-      unitId: activeMatch.unitId,
-      unitName: activeMatch.unitName,
-      isActive: activeMatch.isActive,
-      isBundle: activeMatch.isBundle,
-      matchKind: activeMatch.matchKind,
-    };
-  }
-  // بحثٌ ثانٍ يشمل المُعطَّل — إن وُجد، فرّق الرسالة كي لا يظنّ المصوّر أنّ الماسح مكسور
-  // أو الباركود مطبوعٌ خطأ. قبل هذا: كل الحالات ⇒ «الباركود غير معروف» رسالةً واحدة.
-  // تمريرُ دور «admin» هنا آمن: `listStudioProducts` يقصر `includeInactive` على المدير
-  // فقط، والكتالوج نفسه ليس مُفرَّعاً (المنتجات مشتركة بين الفروع) ⇒ لا تسريبَ عبر فروع
-  // من إظهار اسم منتجٍ معطَّل — نفس الاسم يظهر لكل مدير في النظام.
-  if (!isManager(actor)) {
-    const withInactive = await listStudioProducts({ ...actor, role: "admin" }, {
-      search: barcode,
-      includeInactive: true,
-    });
-    const inactiveMatch = withInactive.rows.find(
-      (row) => (row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS") && row.isActive === false,
-    );
-    if (inactiveMatch) {
-      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${inactiveMatch.productName}» لا يُفتح له عمل تصوير`, why: "المنتج معطَّل في الكتالوج، والمعطَّل لا تُنشأ له مهمّة تصوير", doThis: "اطلب من المدير تفعيل المنتج من صفحة المنتجات، ثمّ أعد مسح الباركود" }) });
+  const owner = resolution.status === "FOUND" ? resolution.owner : null;
+  if (owner && !owner.isService) {
+    const isActive = owner.productActive && owner.variantActive && owner.unitActive;
+    if (!isActive && !isManager(actor)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: `«${owner.productName}» لا يُفتح له عمل تصوير`, why: "المنتج أو بديله أو وحدته معطّل في الكتالوج، والمعطّل لا تُنشأ له مهمّة تصوير", doThis: "اطلب من المدير تفعيل المنتج ووحدته من صفحة المنتجات، ثمّ أعد مسح الباركود" }) });
     }
+    return {
+      productId: owner.productId,
+      productName: owner.productName,
+      variantId: owner.variantId,
+      variantName: owner.variantName,
+      unitId: owner.productUnitId,
+      unitName: owner.unitName,
+      isActive,
+      isBundle: owner.isBundle,
+      matchKind: owner.matchKind === "PRIMARY" ? "BARCODE_PRIMARY" as const : "BARCODE_ALIAS" as const,
+    };
   }
   throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر فتح عملٍ بهذا الباركود", why: "الرمز الممسوح لا يطابق باركود أيّ منتجٍ أو بديلٍ في الكتالوج", doThis: "ابحث عن المنتج بالاسم من حقل البحث في الاستوديو، أو اطلب من المدير إضافة هذا الباركود إلى المنتج" }) });
 }

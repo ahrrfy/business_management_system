@@ -84,6 +84,16 @@ export function buildProductSnapshot(doc: ProductForVariantEdit): ProductSnapsho
       minStock: v.minStock,
       isActive: v.isActive,
       unitBarcodes: { ...v.unitBarcodes },
+      // وحداتُ المتغيّر كاملةً — لقطةٌ لا تفقد فروقَ الوحدات/الأسعار بين المتغيّرات (Codex #1008 P1).
+      units: v.units.map((u) => ({
+        unitName: u.unitName,
+        conversionFactor: u.conversionFactor,
+        isBaseUnit: u.isBaseUnit,
+        isStoreSaleUnit: u.isStoreSaleUnit,
+        retail: u.retail,
+        wholesale: u.wholesale,
+        government: u.government,
+      })),
       imageRef: imageContentRef(v.image),
     })),
     images,

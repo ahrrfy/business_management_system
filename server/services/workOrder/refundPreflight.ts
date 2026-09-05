@@ -4,7 +4,7 @@
  * العقدُ ودواعيه في [`shared/refundPreflight.ts`](../../../shared/refundPreflight.ts).
  *
  * ⚠️ **قاعدةُ هذا الملفّ:** كلُّ مبلغٍ هنا يُحسَب **بنفس المُرشِّح الذي ستستعمله العملية**،
- * ومن نفس المساعدين ([`appliedCollectionsForWorkOrder`](../reception/deposits.ts)،
+ * ومن نفس المساعدين ([`appliedCollectionsForWorkOrder`](../deposits/orderPayments.ts)،
  * [`workOrderFeeHeldNet`](./deliveryFeeRefund.ts)) — فأيُّ تغييرٍ في قواعد الردّ ينعكس هنا
  * تلقائياً. تكرارُ المنطق نسخاً كان سيُنتج تمهيداً يشيخ بصمتٍ ويكذب على الشاشة.
  */
@@ -13,7 +13,7 @@ import { deliveryConsignments, invoices, receipts, shifts, users, workOrders } f
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { MATERIALIZED_RECEIPT_STATUSES, computeDrawerCashBalance, computeTreasuryCashBalance } from "../cash/cashAvailability";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import type { RefundDrawerCandidate, RefundPreflight, WorkOrderRefundOperation } from "@shared/refundPreflight";
 

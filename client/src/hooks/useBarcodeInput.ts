@@ -4,11 +4,18 @@ import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 type SetInputValue = (value: string) => void;
 
+export const DEFAULT_BARCODE_INPUT_MIN_LENGTH = 3;
+export function barcodeInputAcceptsScan(raw: string, minLength = DEFAULT_BARCODE_INPUT_MIN_LENGTH): boolean {
+  return raw.length >= minLength;
+}
+
 export function useBarcodeInput(
   onScan: (code: string) => void,
   {
     enabled = true,
-    minLength = 4,
+    // باركودات الموردين الداخلية قد تكون من 3 محارف (مثل B1X). أقلّ من ذلك يبقى
+    // كتابةً بشرية لتجنّب سرقة Enter من حقول البحث والنماذج.
+    minLength = DEFAULT_BARCODE_INPUT_MIN_LENGTH,
     thresholdMs = 80,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ) {
@@ -31,7 +38,7 @@ export function useBarcodeInput(
     clearTimeout(timerRef.current);
     const raw = bufferRef.current;
     reset();
-    if (raw.length >= minLength) {
+    if (barcodeInputAcceptsScan(raw, minLength)) {
       setValue("");
       onScanRef.current(normalizeBarcodeScannerInput(raw));
     } else if (raw) {
@@ -45,7 +52,7 @@ export function useBarcodeInput(
     const now = Date.now();
 
     if (event.key === "Enter") {
-      if (scanningRef.current && bufferRef.current.length >= minLength) {
+      if (scanningRef.current && barcodeInputAcceptsScan(bufferRef.current, minLength)) {
         event.preventDefault();
         flush(setValue);
       } else {
@@ -70,17 +77,18 @@ export function useBarcodeInput(
       return;
     }
 
-    if (firstKeyRef.current && gap < thresholdMs) {
-      event.preventDefault();
-      bufferRef.current = firstKeyRef.current + event.key;
-      scanningRef.current = true;
-      setValue("");
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
-      return;
-    }
-
-    firstKeyRef.current = event.key;
+    const candidate = firstKeyRef.current && gap < thresholdMs
+      ? firstKeyRef.current + event.key
+      : event.key;
+    firstKeyRef.current = candidate;
+    // لا نبتلع محرفين سريعين في حقل بحث مختلط؛ ندخل وضع الماسح فقط بعد بلوغ الحد.
+    if (!barcodeInputAcceptsScan(candidate, minLength)) return;
+    event.preventDefault();
+    bufferRef.current = candidate;
+    scanningRef.current = true;
+    setValue("");
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
   }, [enabled, flush, minLength, reset, thresholdMs]);
 
   useEffect(() => reset, [reset]);

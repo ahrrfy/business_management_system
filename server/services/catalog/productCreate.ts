@@ -12,7 +12,8 @@ import {
   productionRecipes,
   suppliers,
 } from "../../../drizzle/schema";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { appErrorMessage } from "@shared/errors";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -132,8 +133,9 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
   }
   const seenCode = new Set<string>();
   for (const c of codes) {
-    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
-    seenCode.add(c);
+    const identities = barcodeIdentityCandidates(c).map(barcodeComparisonKey);
+    if (identities.some((identity) => seenCode.has(identity))) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
+    identities.forEach((identity) => seenCode.add(identity));
   }
   if (seenCode.size) {
     // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).
@@ -215,6 +217,20 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (isBundle) {
     if (input.isService || input.printService) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن أن يكون المنتج بكجاً وخدمةً في آنٍ معاً" });
+    }
+    // Codex #1008 P2: البكج المُوجَّه لشبكة الطباعة (`showInPrintPos`) يُسمَّى `productType='PRINT_SERVICE'`
+    // (السطر أدناه) فيظهر في `listPrintServices`، ثمّ يسقط `createPrintSale` على `applyMovement` — البكج
+    // بلا مخزونٍ ذاتيّ (رصيدُه رصيدُ مكوّناته) فلا يقبل حركةً مباشرة. نرفض التركيبة عند الإنشاء كـ`printService`
+    // (المرفوض أعلاه) بدل ولادة بندٍ يَعِد بمخرَجٍ عاجزٍ عنه. الإصلاح النظير في مسار التعديل عبر حارس شكل البكج.
+    if (input.showInPrintPos) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "البكج لا يُعرَض في شبكة الطباعة",
+          why: "شبكةُ الطباعة تبيع خدماتٍ تُركَّب من وصفة، والبكج بلا مخزونٍ ذاتيّ يفشل بيعُه هناك عند تسجيل الحركة",
+          doThis: "أزل «العرض في شبكة الطباعة» عن البكج، أو أنشئه خدمةً بدل بكجٍ إن كان يُباع بالطباعة",
+        }),
+      });
     }
     if (input.variants.length !== 1) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحوي متغيّراً واحداً — احذف المتغيّرات الإضافية" });

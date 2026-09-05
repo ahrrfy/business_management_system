@@ -19,10 +19,11 @@ import type {
   OfflineVersions,
 } from "@shared/offlineCatalog";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { trpc } from "@/lib/trpc";
 import { connectivity } from "./connectivity";
 import { getMeta, offlineDb, requestPersistentStorage, setMeta } from "./db";
+import { resolveOfflineBarcodeRows } from "./barcodeResolution";
 
 const META_CATALOG_VERSION = "catalogVersion";
 const META_CUSTOMERS_VERSION = "customersVersion";
@@ -275,10 +276,16 @@ export async function offlineFindByBarcode(
   // فإدخالٌ يدويّ بأرقامٍ عربية أونلاين يُحلّ وأوفلاين كان يفشل — تناقضٌ يُغلَق هنا بلا تغيير اللقطة.
   const canonical = canonicalizeBarcodeInput(code);
   if (!canonical) return null;
-  const row = await offlineDb.catalog.where("allBarcodes").equals(canonical).first();
-  if (!row) return null;
+  // نجلب كلّ صور UPC-A/EAN-13 المكافئة وكلّ الصفوف المالكة، ثم نفشل مغلقاً عند الغموض؛
+  // `.first()` كان يجعل ترتيب IndexedDB يختار سلعةً عشوائيةً عند إرثٍ متعارض.
+  const rows = await offlineDb.catalog
+    .where("allBarcodes")
+    .anyOfIgnoreCase(barcodeIdentityCandidates(canonical))
+    .toArray();
+  const resolution = resolveOfflineBarcodeRows(rows, canonical);
+  if (resolution.status !== "FOUND") return null;
   const cachedBranch = await getCachedStockBranchId();
-  return toPosRow(row, tier, branchId, cachedBranch);
+  return toPosRow(resolution.row, tier, branchId, cachedBranch);
 }
 
 /** آخر مزامنة ناجحة (ISO) — لصمّام «عمر الكاش» في الشريحة ٣ ولشاشة الحالة. */

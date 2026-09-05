@@ -80,4 +80,11 @@ describe("computeBarcodeCoverage (م٢)", () => {
     expect(cov).toMatchObject({ total: 2, withBarcode: 2, missing: 0, coveragePct: 100 });
     expect(cov.missingUnitIds).toEqual([]);
   });
+
+  it("لا يحسب إرثاً من محارف framing/فراغ فقط كأنه باركود قابل للمسح", async () => {
+    await db().update(s.productUnits).set({ barcode: "\t \n" }).where(sql`${s.productUnits.id} = 31`);
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 31, barcode: "\t" });
+    const cov = await computeBarcodeCoverage([3]);
+    expect(cov).toMatchObject({ total: 1, withBarcode: 0, missing: 1, coveragePct: 0 });
+  });
 });
