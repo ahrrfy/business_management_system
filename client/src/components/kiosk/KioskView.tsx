@@ -13,6 +13,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { X, Maximize } from "lucide-react";
 
 export type KProduct = {
@@ -315,7 +317,7 @@ export default function KioskView({
   const utils = trpc.useUtils();
   const [scan, setScan] = useState<ScanState>({ mode: "idle", token: 0 });
   const handleScan = useCallback(async (code: string) => {
-    const clean = String(code).trim();
+    const clean = normalizeBarcodeScannerInput(String(code));
     if (!clean) return;
     if (!isDevice && staffBranchId == null) return;
     try {
@@ -328,27 +330,9 @@ export default function KioskView({
     }
   }, [isDevice, staffBranchId, utils]);
 
-  // الماسح يكتب بسرعة وينهي بـEnter — مع تجاهل حقول الإدخال (لوحة الإعدادات).
-  const scanRef = useRef(handleScan);
-  scanRef.current = handleScan;
-  useEffect(() => {
-    const buf = { s: "", last: 0 };
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName || "";
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement | null)?.isContentEditable) return;
-      const now = Date.now();
-      if (now - buf.last > 120) buf.s = "";
-      buf.last = now;
-      if (e.key === "Enter") {
-        if (buf.s.length >= 3) scanRef.current(buf.s);
-        buf.s = "";
-        return;
-      }
-      if (e.key.length === 1 && /[\w\-]/.test(e.key)) buf.s += e.key;
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
+  // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.
+  useBarcodeScanner(handleScan, { minLength: 2, thresholdMs: 120 });
 
   // الإغلاق التلقائي لنتيجة المسح.
   useEffect(() => {

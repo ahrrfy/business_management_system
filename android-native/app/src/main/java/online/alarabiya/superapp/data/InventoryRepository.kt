@@ -1,5 +1,7 @@
 package online.alarabiya.superapp.data
 
+import java.time.Instant
+import online.alarabiya.superapp.core.network.ApiException
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
 import online.alarabiya.superapp.model.inventory.AdjustmentRequest
@@ -22,6 +24,11 @@ import online.alarabiya.superapp.model.inventory.TransferDetail
 import online.alarabiya.superapp.model.inventory.TransferDraft
 import online.alarabiya.superapp.model.inventory.TransferPage
 import online.alarabiya.superapp.model.inventory.TransferStatus
+import online.alarabiya.superapp.model.warehouseTools.CountSubmission
+import online.alarabiya.superapp.model.warehouseTools.CountSubmitOutcome
+import online.alarabiya.superapp.model.warehouseTools.WarehouseQueueRules
+import online.alarabiya.superapp.model.warehouseTools.WarehouseRetryPolicy
+import online.alarabiya.superapp.model.warehouseTools.WarehouseToolsMappers
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -49,13 +56,15 @@ interface InventoryDataSource {
     suspend fun cancelStocktake(sessionId: Long, reason: String)
     suspend fun countAssignments(): List<CountAssignment>
     suspend fun countSession(sessionCode: String): CountSession
-    suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String)
+    suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String, entryMethod: String, scannedBarcode: String?): CountSubmitOutcome
     suspend fun finishCount(sessionCode: String)
 }
 
 class InventoryRepository(
     private val api: TrpcClient,
     private val capabilities: InventoryCapabilities,
+    private val warehouseStore: EncryptedWarehouseStore,
+    private val now: () -> String = { Instant.now().toString() },
 ) : InventoryDataSource {
     private fun branchId(): Long = requireNotNull(capabilities.branchId) {
         "لا يوجد فرع مرتبط بالجلسة — راجع مسؤول النظام"
@@ -245,18 +254,46 @@ class InventoryRepository(
         api.query("count.state", JSONObject().put("sessionCode", sessionCode)),
     )
 
-    override suspend fun submitCount(sessionCode: String, variantId: Long, quantity: Int, clientRequestId: String) {
-        api.mutate(
-            "count.submit",
-            JSONObject()
-                .put("sessionCode", sessionCode)
-                .put("variantId", variantId)
-                .put("qty", quantity)
-                .put("clientRequestId", clientRequestId),
+    override suspend fun submitCount(
+        sessionCode: String,
+        variantId: Long,
+        quantity: Int,
+        clientRequestId: String,
+        entryMethod: String,
+        scannedBarcode: String?,
+    ): CountSubmitOutcome {
+        val submission = CountSubmission(
+            sessionCode = sessionCode,
+            variantId = variantId,
+            quantityBase = quantity,
+            unitBreakdown = "[]",
+            clientRequestId = clientRequestId,
+            entryMethod = entryMethod,
+            scannedBarcode = scannedBarcode,
         )
+        if (WarehouseQueueRules.mustSerialize(warehouseStore.pending(), sessionCode, variantId)) {
+            return queueInventoryCount(submission)
+        }
+        return try {
+            CountSubmitOutcome.Submitted(
+                WarehouseToolsMappers.countReceipt(api.mutate("count.submit", submission.inputJson())),
+            )
+        } catch (error: ApiException) {
+            if (!WarehouseRetryPolicy.canQueue(error.status)) throw error
+            queueInventoryCount(submission)
+        }
     }
 
     override suspend fun finishCount(sessionCode: String) {
+        check(warehouseStore.pending(sessionCode).isEmpty()) {
+            "زامن العدّات المحلية من أدوات المستودع قبل تسليم الجرد"
+        }
         api.mutate("count.finish", JSONObject().put("sessionCode", sessionCode))
+    }
+
+    private fun queueInventoryCount(submission: CountSubmission): CountSubmitOutcome.Queued {
+        val pending = submission.toPendingCount(now())
+        warehouseStore.enqueue(pending)
+        return CountSubmitOutcome.Queued(pending)
     }
 }

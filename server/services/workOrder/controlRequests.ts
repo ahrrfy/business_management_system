@@ -37,7 +37,7 @@ import { cancelWorkOrderInTx, type WorkOrderCancelMaterialDecision } from "./can
 import { setWorkOrderMaterialsInTx } from "./materials";
 import { updateWorkOrderInTx, type UpdateWorkOrderInput } from "./update";
 import type { WorkOrderMaterialInput } from "./types";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import {
   getWorkOrderReverseDeliveryPreflightInTx,
   lockReverseDeliveryApprovalResourcesInTx,

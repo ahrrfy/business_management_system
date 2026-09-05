@@ -26,10 +26,7 @@ import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/Bar
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
-import {
-  resolveProductBarcodeMatch,
-  type ProductBarcodeMatch,
-} from "@shared/productScan";
+import { resolveProductBarcodeItem, resolveProductBarcodeMatch, type ProductBarcodeMatch } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { CameraScanner } from "@/components/scan/CameraScanner";
@@ -82,18 +79,6 @@ function baseUnitName(item: CountItem): string {
 function displayBarcode(item: CountItem): string | null {
   const base = item.units.find((u) => u.factor === 1 && u.barcode);
   return base?.barcode ?? item.units.find((u) => u.barcode)?.barcode ?? null;
-}
-
-/** يحلّ الباركود عبر العقد المشترك ويعيد الصنف والوحدة المطابقين معاً. */
-function findBarcodeMatch(
-  items: readonly CountItem[],
-  raw: string,
-): { item: CountItem; match: ProductBarcodeMatch } | null {
-  for (const item of items) {
-    const match = resolveProductBarcodeMatch(item.units, raw);
-    if (match) return { item, match };
-  }
-  return null;
 }
 
 function CenterScreen({ children }: { children: ReactNode }) {
@@ -433,16 +418,22 @@ export default function CountPortal() {
     },
     [canCount, dupBlocked, scanRequired],
   );
-
   const handleBarcode = useCallback(
-    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" | "SEARCH_PICK" = "SCAN_HID") => {
       const scanned = raw.trim();
       if (!scanned) return;
-      const resolved = findBarcodeMatch(items, scanned);
-      if (!resolved) {
+      const resolved = resolveProductBarcodeItem(items, scanned);
+      if (resolved.status !== "FOUND") {
+        if (resolved.status === "AMBIGUOUS") {
+          notify.err(
+            "الباركود يطابق أكثر من مادة في جلسة الجرد — لم تُفتح أيّ بطاقة",
+            "اطلب من المشرف تصحيح الباركودات المتعارضة قبل متابعة العدّ.",
+          );
+          return;
+        }
         // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُوضَع في طابورٍ يُزامَن (كالعدّات) فيصمد الانقطاع
         // (مراجعة Codex #2: الإرسال-وانسَ كان يفقده أوفلاين رغم إبلاغ العامل بأنّه سُجّل).
-        if (canCount) {
+        if (source !== "SEARCH_PICK" && canCount) {
           const queued = enqueueUnknown(code, {
             clientRequestId: newClientRequestId(),
             barcode: scanned,
@@ -461,7 +452,7 @@ export default function CountPortal() {
             );
           }
         } else {
-          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
+          notify.warn(source === "SEARCH_PICK" ? "الرمز المُدخل يدوياً غير موجود ضمن منتجات هذه الجلسة" : "الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         }
         return;
       }
@@ -481,7 +472,7 @@ export default function CountPortal() {
       }
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
-      openCard(hit, { method: source, scannedBarcode: scanned });
+      openCard(hit, { method: source, scannedBarcode: source === "SEARCH_PICK" ? null : scanned });
       // فتحُ بطاقةٍ في وضع التجميع يبدأ الوحدة الممسوحة عند ١ (عدٌّ طازج بالمسح).
       if (tallyMode) setBump({ unit: unitName, token: 1 });
     },
@@ -490,7 +481,7 @@ export default function CountPortal() {
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
     handleBarcode(code, "SCAN_HID");
-  });
+  }, { minLength: scanRequired ? 2 : 3 });
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.
@@ -504,9 +495,14 @@ export default function CountPortal() {
   const tryOpenByQuery = useCallback(() => {
     const exact = q.trim();
     if (!exact) return;
-    const hit =
-      findBarcodeMatch(items, exact)?.item ??
-      items.find((i) => (i.sku ?? "") === exact);
+    const barcodeResolution = resolveProductBarcodeItem(items, exact);
+    if (barcodeResolution.status === "AMBIGUOUS") {
+      notify.err("الباركود يطابق أكثر من مادة — صحّح التعارض قبل الاختيار.");
+      return;
+    }
+    const hit = barcodeResolution.status === "FOUND"
+      ? barcodeResolution.item
+      : items.find((i) => (i.sku ?? "") === exact);
     if (hit) {
       setQ("");
       setFlashId(hit.variantId);
@@ -1284,7 +1280,7 @@ export default function CountPortal() {
         onDetect={(raw) => {
           setCameraOpen(false);
           handleBarcode(raw, "SCAN_CAMERA");
-        }}
+        }} onManualDetect={(raw) => { setCameraOpen(false); handleBarcode(raw, "SEARCH_PICK"); }}
       />
     </>,
   );
