@@ -19,11 +19,15 @@ import { PRODUCT_SNAPSHOT_KIND, type ProductSnapshotDocument } from "../../../sh
 import { getDb } from "../../db";
 import { updateProduct } from "../catalog/productUpdate";
 import {
+  assertRestoreTemplateFaithful,
   getProductVersionDiff,
   listProductVersions,
   restoreProductVersion,
 } from "../catalog/productVersioning";
 import { getProductForVariantEdit, updateProductWithVariants } from "../productEditService";
+// م٦ D5: مصدرُ الرسائل المتعاقَد عليها «البكج لا يقبل إلّا متغيّراً واحداً» و«المنتج غير موجود» انتقل إلى
+// الحرّاس المشتركة؛ نستوردها هنا صراحةً لأنّ الاختبارات تفحص نصَّها عبر مسارَي التعديل (حارس message-drift).
+import { assertBundleEditShape, productNotFoundError } from "../catalog/productUpdateGuards";
 
 const actor = { userId: 1, branchId: 1, role: "admin", isOwner: true };
 
@@ -270,5 +274,122 @@ describe("الاستعادة = تعديلٌ جديد بحمولةٍ قديمة �
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("دفتر 100 ورقة");
     expect(await versionsOf(1)).toHaveLength(1);
+  });
+});
+
+// ═══ مراجعة Codex على م٦ (#1008): لقطةٌ لا تفقد + استعادةٌ آمنة ═══
+describe("Codex #1008 — استعادةٌ لا تفسد وحداتٍ/أسعاراً خاصّةً بمتغيّر (P1)", () => {
+  const baseU = (retail = "1000", wholesale = "900", government = "") =>
+    ({ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail, wholesale, government });
+  const dozenU = (retail = "11000", wholesale = "", government = "") =>
+    ({ unitName: "درزن", conversionFactor: "12", isBaseUnit: false, isStoreSaleUnit: false, retail, wholesale, government });
+  const snapDoc = (unitTemplate: Array<ReturnType<typeof baseU>>, variants: Array<Record<string, unknown>>): ProductSnapshotDocument =>
+    ({ kind: PRODUCT_SNAPSHOT_KIND, id: 1, name: "x", unitTemplate, variants, images: [] }) as unknown as ProductSnapshotDocument;
+
+  it("الحارسُ النقيّ: يمرّ الموحّد ويرفض ما يخصّ متغيّراً — وسعرُ مفرد الأساس مُستثنى", () => {
+    const tpl = [baseU(), dozenU()];
+    // موحّدٌ تماماً ⇒ يمرّ.
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ units: [baseU(), dozenU()] }, { units: [baseU(), dozenU()] }]))).not.toThrow();
+    // سعرُ مفرد الأساس مختلفٌ لمتغيّر ⇒ يمرّ (يُنقَل عبر baseRetail).
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ units: [baseU("1500"), dozenU()] }]))).not.toThrow();
+    // سعرُ جملة الأساس مختلف ⇒ يُرفَض (لا يُعبَّر عنه بـbaseRetail).
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ color: "أخضر", units: [baseU("1000", "800"), dozenU()] }]))).toThrow(/تخصّ متغيّراً/);
+    // وحدةٌ ناقصة ⇒ يُرفَض.
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ color: "أزرق", units: [baseU()] }]))).toThrow(/عددُ وحداته/);
+    // سعرُ مفرد وحدةٍ غيرِ الأساس مختلف ⇒ يُرفَض.
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ color: "أحمر", units: [baseU(), dozenU("12000")] }]))).toThrow(/تخصّ متغيّراً/);
+    // لقطةٌ أقدم بلا `units` لكلّ متغيّر ⇒ تُعامَل موحّدةً (لا كشفَ ممكن) ⇒ تمرّ.
+    expect(() => assertRestoreTemplateFaithful(snapDoc(tpl, [{ color: "أزرق" }, { color: "أحمر" }]))).not.toThrow();
+  });
+
+  it("اللقطةُ تحفظ وحدات كلّ متغيّرٍ على حدة، والاستعادةُ ترفض ما لا يُمثّله القالب (لا تُفسِد)", async () => {
+    const d = db();
+    // منتجٌ بمتغيّرَين مختلفَي البنية: A له {قطعة+درزن}، B له {قطعة} فقط — انحرافٌ يُنشأ بمسار المعرّف.
+    await d.insert(s.products).values({ id: 3, name: "منتج مختلف الوحدات", productType: "قرطاسية" });
+    await d.insert(s.productVariants).values([
+      { id: 10, productId: 3, sku: "DV-A", color: "أحمر", costPrice: "500" },
+      { id: 11, productId: 3, sku: "DV-B", color: "أخضر", costPrice: "500" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 200, variantId: 10, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, barcode: "BC-DVA-P" },
+      { id: 201, variantId: 10, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-DVA-D" },
+      { id: 202, variantId: 11, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, barcode: "BC-DVB-P" },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 200, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 200, priceTier: "WHOLESALE", price: "900.00" },
+      { productUnitId: 201, priceTier: "RETAIL", price: "11000.00" },
+      { productUnitId: 202, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 202, priceTier: "WHOLESALE", price: "900.00" },
+    ]);
+    // تعديلٌ يوحّد الوحدات — يكتب لقطةَ الحالة المنحرفة **قبل** التوحيد.
+    await updateProductWithVariants(
+      {
+        productId: 3, productType: "قرطاسية",
+        unitTemplate: [
+          { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, prices: [{ priceTier: "RETAIL", price: "1000.00" }, { priceTier: "WHOLESALE", price: "900.00" }] },
+          { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "11000.00" }] },
+        ],
+        variants: [
+          { id: 10, sku: "DV-A", color: "أحمر", costPrice: "500", unitBarcodes: { قطعة: "BC-DVA-P", درزن: "BC-DVA-D" } },
+          { id: 11, sku: "DV-B", color: "أخضر", costPrice: "500", unitBarcodes: { قطعة: "BC-DVB-P", درزن: "BC-DVB-D" } },
+        ],
+        updateReason: "توحيد الوحدات",
+      },
+      actor,
+    );
+    // اللقطةُ التقطت الانحراف بلا فقدان: A بوحدتين، B بوحدةٍ واحدة.
+    const rows = await versionsOf(3);
+    expect(rows).toHaveLength(1);
+    const snap = rows[0].payloadJson as ProductSnapshotDocument;
+    const va = snap.variants.find((v) => v.id === 10)!;
+    const vb = snap.variants.find((v) => v.id === 11)!;
+    expect([...va.units.map((u) => u.unitName)].sort()).toEqual(["درزن", "قطعة"]);
+    expect(vb.units.map((u) => u.unitName)).toEqual(["قطعة"]);
+    // الاستعادةُ ترفض (لا تُفسِد) — ولا نسخةَ جديدة (ROLLBACK).
+    await expect(restoreProductVersion({ productId: 3, versionNumber: 1 }, actor)).rejects.toThrow(/تخصّ متغيّراً/);
+    expect(await versionsOf(3)).toHaveLength(1);
+  });
+
+  it("الاستعادةُ تُعطّل متغيّراً حيّاً أُضيف بعد النسخة (P2 — تصالُح المجموعة)", async () => {
+    // خطوة ١: تعديلٌ ⇒ نسخة ١ (لقطةُ الأصل: أزرق وحده).
+    await updateProductWithVariants({ ...header1, name: "دفتر معدّل", unitTemplate: template(), variants: [variant1], updateReason: "خطوة 1" }, actor);
+    // خطوة ٢: أضِف متغيّراً أخضر ⇒ نسخة ٢ (لقطةٌ ما زالت بأزرق وحده).
+    await updateProductWithVariants(
+      {
+        ...header1, name: "دفتر معدّل", unitTemplate: template(),
+        variants: [variant1, { sku: "NB-100-GREEN", color: "أخضر", costPrice: "500", unitBarcodes: { قطعة: "BC-GREEN-P", درزن: "BC-GREEN-D" } }],
+        updateReason: "أضفت الأخضر",
+      },
+      actor,
+    );
+    const green = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "NB-100-GREEN")))[0];
+    expect(green.isActive).toBe(true);
+    // استعادةُ نسخة ٢ (بلا الأخضر) ⇒ الأخضر يُعطَّل صراحةً كي تُطابِق الحالةُ اللقطة.
+    await restoreProductVersion({ productId: 1, versionNumber: 2 }, actor);
+    const greenAfter = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, green.id)))[0];
+    expect(greenAfter.isActive).toBe(false);
+    const blueAfter = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    expect(blueAfter.isActive).toBe(true);
+  });
+
+  it("comparedToLive: الأحدثُ مُعلَّمٌ أنّ فرقَه مقابل الحالة الحيّة (لا يُنسَب لفاعلٍ خاطئ)", async () => {
+    await updateProductWithVariants({ ...header1, name: "دفتر معدّل", unitTemplate: template("1250.00"), variants: [variant1], updateReason: "رفع السعر" }, actor);
+    const list = await listProductVersions(1);
+    expect(list[0]).toMatchObject({ comparedTo: "current", comparedToLive: true });
+    const diff = await getProductVersionDiff(1, 1);
+    expect(diff).toMatchObject({ comparedToLive: true });
+  });
+});
+
+// الحرّاس المشتركة (م٦ D5): مصدرُ النصوص المتعاقَد عليها التي تفحصها اختبارات مسارَي التعديل أعلاه.
+describe("حرّاس التعديل المشتركة — نصوصٌ متعاقَدٌ عليها", () => {
+  it("assertBundleEditShape يرفض متغيّراً ثانياً أو وحدةَ أساسٍ ثانية للبكج", () => {
+    expect(() => assertBundleEditShape({ isBundle: true }, 2, 1)).toThrow(/البكج لا يقبل إلّا متغيّراً واحداً/);
+    expect(() => assertBundleEditShape({ isBundle: true }, 1, 2)).toThrow(/وحدة أساس واحدة/);
+    expect(() => assertBundleEditShape({ isBundle: false }, 5, 3)).not.toThrow();
+  });
+  it("productNotFoundError رسالتُه الموحّدة «المنتج غير موجود»", () => {
+    expect(productNotFoundError(999).message).toMatch(/المنتج غير موجود/);
   });
 });

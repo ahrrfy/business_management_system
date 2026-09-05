@@ -45,6 +45,12 @@ export interface VariantEditRow {
   isActive: boolean;
   /** باركود مستقل لكل وحدة, مفتاحه اسم الوحدة. */
   unitBarcodes: Record<string, string>;
+  /**
+   * وحداتُ هذا المتغيّر وأسعارُها كاملةً (الأساس أوّلاً) — مصدرُ اللقطة اللاقِطة لكلّ متغيّرٍ على حدة
+   * (Codex #1008 P1). `unitTemplate` أدناه قالبٌ مشترَكٌ من أوّل متغيّر؛ هذا الحقلُ يحفظ ما يخصّ كلَّ
+   * متغيّرٍ فعلاً كي لا تُطمَس فروقُ الوحدات/الأسعار عند الاستعادة. لا تستهلكه الشاشةُ (القالبُ المشترك يكفيها).
+   */
+  units: VariantEditUnit[];
   /** رصيد الفرع الحالي لكل فرع (قراءة فقط في التعديل). */
   stockByBranch: Record<number, number>;
   /** صورة هذا اللون (data URL) أو null. */
@@ -198,6 +204,18 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
     for (const u of myUnits) if (u.barcode) unitBarcodes[u.unitName] = u.barcode;
     const baseUnit = myUnits.find((u) => u.isBaseUnit);
     const baseRetail = baseUnit ? priceOf(Number(baseUnit.id), "RETAIL") : "";
+    // وحداتُ هذا المتغيّر كاملةً (الأساس أوّلاً) — لقطةٌ لا تفقد وحداتٍ/أسعاراً خاصّةً بمتغيّر (Codex #1008 P1).
+    const ownUnits: VariantEditUnit[] = [...myUnits]
+      .sort((a, b) => Number(b.isBaseUnit) - Number(a.isBaseUnit))
+      .map((u) => ({
+        unitName: u.unitName,
+        conversionFactor: normalizeFactor(u.conversionFactor),
+        isBaseUnit: !!u.isBaseUnit,
+        isStoreSaleUnit: !!u.isStoreSaleUnit,
+        retail: priceOf(Number(u.id), "RETAIL"),
+        wholesale: priceOf(Number(u.id), "WHOLESALE"),
+        government: priceOf(Number(u.id), "GOVERNMENT"),
+      }));
     const stockByBranch: Record<number, number> = {};
     for (const s of stocks.filter((s) => Number(s.variantId) === Number(v.id))) stockByBranch[Number(s.branchId)] = s.quantity;
     const image = vImages.find((im) => Number(im.variantId) === Number(v.id))?.url ?? null;
@@ -215,6 +233,7 @@ export async function getProductForVariantEdit(productId: number, exec?: ReadDb)
       minStock: v.minStock ?? 0,
       isActive: !!v.isActive,
       unitBarcodes,
+      units: ownUnits,
       stockByBranch,
       image,
     };
