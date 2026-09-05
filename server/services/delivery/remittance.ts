@@ -103,25 +103,39 @@ export async function recordDeliveryRemittance(
 }
 
 /**
- * يوزّع مبلغاً على أسطرٍ بنسبة قيمتها (منزلتان)، والسطرُ الأخير يمتصّ باقي التقريب —
- * نفس عقيدة `distributeToSubtotal` في مطابقة فاتورة المورّد: لا امتصاصَ خفيّ، والمجموعُ يساوي الهدف.
+ * يوزّع مبلغاً (≥ 0) على أسطرٍ بنسبة قيمتها بمنهج **largest-remainder** على السنتّات الصحيحة:
+ * لا حصّةَ سالبة، والمجموعُ يساوي الهدف تماماً، وكلُّ حصّةٍ ضمن سنتٍّ واحدٍ من نسبتها المثاليّة.
+ *
+ * ⚠️ Codex #1012 P1 — الصيغةُ القديمة («الأخير يمتصّ الباقي» بتقريب كلّ حصّةٍ مستقلّةً) كانت
+ * تُنتج حصّةً أخيرةً **سالبة** حين يتجاوز مجموعُ الحصص السابقة الهدفَ (مثال: توزيع 0.02 على
+ * أربعة أسطرٍ متساوية ⇒ ‎0.01×3 ثمّ ‎−0.01): يُخزَّن `cashReceived` سالباً وتتجاوز قيودُ
+ * `DELIVERY_REMIT` الموجبة الإيصالَ الفعليّ. largest-remainder يمنع ذلك بنيوياً.
  */
-function allocateProportionally(target: Decimal, weights: Decimal[]): Decimal[] {
+export function allocateProportionally(target: Decimal, weights: Decimal[]): Decimal[] {
+  const n = weights.length;
+  if (n === 0) return [];
   const total = weights.reduce((s, w) => s.plus(w), new Decimal(0));
-  if (weights.length === 0) return [];
-  if (total.lte(0)) return weights.map((_, i) => (i === weights.length - 1 ? round2(target) : new Decimal(0)));
-  const out: Decimal[] = [];
+  const targetCents = round2(target).times(100);
+  // بلا أوزانٍ موجبة: الأخير يحمل الهدف كلّه (كما كان) — لا سالبَ لأنّ الهدف ≥ 0.
+  if (total.lte(0)) return weights.map((_, i) => (i === n - 1 ? targetCents.div(100) : new Decimal(0)));
+  const floors: Decimal[] = [];
+  const remainders: { idx: number; frac: Decimal }[] = [];
   let allocated = new Decimal(0);
-  for (let i = 0; i < weights.length; i += 1) {
-    if (i === weights.length - 1) {
-      out.push(round2(target.minus(allocated)));
-      break;
-    }
-    const share = round2(target.times(weights[i]).div(total));
-    out.push(share);
-    allocated = allocated.plus(share);
+  for (let i = 0; i < n; i += 1) {
+    const ideal = targetCents.times(weights[i]).div(total); // سنتّاتٌ كسريّة ≥ 0
+    const floor = ideal.floor();
+    floors.push(floor);
+    remainders.push({ idx: i, frac: ideal.minus(floor) });
+    allocated = allocated.plus(floor);
   }
-  return out;
+  // الباقي سنتّاتٌ صحيحةٌ (0..n−1) يوزَّع على أكبر الكسور أوّلاً، وعند التساوي على الأصغر فهرساً (حسمٌ ثابت).
+  const leftover = targetCents.minus(allocated).toNumber();
+  remainders.sort((a, b) => (b.frac.eq(a.frac) ? a.idx - b.idx : b.frac.gt(a.frac) ? 1 : -1));
+  for (let k = 0; k < leftover; k += 1) {
+    const t = remainders[k];
+    if (t) floors[t.idx] = floors[t.idx].plus(1);
+  }
+  return floors.map((c) => c.div(100));
 }
 
 /**

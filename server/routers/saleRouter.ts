@@ -13,6 +13,8 @@ import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus,
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { isOpenConsignmentStatus } from "@shared/deliveryOpenParcel";
 import { nextActionTerminalReason } from "@shared/nextAction";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
+import { appErrorMessage } from "@shared/errors";
 import { deriveInvoiceNextAction } from "../services/nextActionDerivation";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
@@ -587,6 +589,22 @@ export const saleRouter = router({
       // role إلزامي: خدمة البيع تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager — بدونه يُحجب الجميع.
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role,
       };
+      // ⚠️ Codex #1006 P1 — حمولةُ `delivery` تُنشئ إرساليّةً وقيودَ عهدةٍ عبر `dispatchInvoiceInTx`،
+      // متجاوزةً بوّابةَ وحدة المتجر (`storeFulfillProcedure`) التي يمرّ بها `deliveryRouter.dispatchInvoice`.
+      // نفرض نفسَ القدرة خادمياً حين تكون `delivery` حاضرة: مَن مُنِع store:FULL لا يُنشئ إرساليّاتٍ من هذا الباب.
+      if (input.delivery != null) {
+        const override = (ctx.user as { permissionsOverride?: PermissionMap | null }).permissionsOverride ?? null;
+        if (!moduleAccessAllowed(ctx.user.role, override, "store", "FULL", ["manager", "cashier", "sales_rep"])) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "لا صلاحية لإسناد البيع لجهة توصيل",
+              why: "إسنادُ الفاتورة للتوصيل يُنشئ إرساليّةً وقيودَ عهدةٍ على المندوب، ويلزمه صلاحيّةُ وحدة «المتجر الإلكتروني» (كاملة) التي لا يملكها حسابك",
+              doThis: "أتمم البيع بلا توصيل، أو اطلب من المدير منحك صلاحيّة «المتجر الإلكتروني» (كاملة) من شاشة المستخدمين",
+            }),
+          });
+        }
+      }
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId,

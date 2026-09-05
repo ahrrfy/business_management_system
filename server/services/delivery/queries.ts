@@ -12,6 +12,7 @@ import { computePartyExposure } from "@shared/partyExposure";
 import { deliveryCashSource } from "./cashSource";
 import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { getDeliveryFinancialSummary } from "./lifecycle";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 
 /**
  * ⭐ Tier-2 #1 (٢٥/٨): ترقيمُ الصفحات لقوائم التوصيل — كانت الدوال أدناه تُحمّل الصفوف كلّها
@@ -175,6 +176,10 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      // Codex #1012 P1 — عجزُ التسليم المُقيَّد على الطرد (Slice DFP1): نقدٌ لم تقبضه الجهة قطّ،
+      // فالمتبقّي الحيّ للتوريد = codAmount − collectedAmount − counterSettledAmount − shortfallAssigned.
+      // بدونه تحسب شاشة التسوية اليدويّة المتبقّي أعلى من الحدّ الخادميّ فيُرفَض كلُّ توريد.
+      shortfallAssigned: consignmentShortfallAssignedSql,
       /** المقبوضُ على المستند — تقديرُ ما يخرج من الدرج عند الإرجاع (انظر `listInTransitConsignments`). */
       invoicePaidAmount: invoices.paidAmount,
       deliveryFee: deliveryConsignments.deliveryFee,

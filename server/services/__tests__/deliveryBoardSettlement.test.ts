@@ -20,6 +20,7 @@ import { createSale } from "../sale/create";
 import { recordStaffDeliveryConfirmation } from "../delivery/companyStatement";
 import { listPartyBoardTx, suggestPartyForZoneTx } from "../delivery/board";
 import { previewDailySettlementTx, settleDailyTx } from "../delivery/dailySettlement";
+import { listOpenConsignments } from "../delivery/queries";
 import { reconcileDeliveryFloat } from "../reconcileService";
 import { openShift } from "../shiftService";
 import { withTx } from "../tx";
@@ -205,9 +206,14 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect(shortfall?.shortfallReason).toBe("CUSTOMER_REQUESTED_DISCOUNT");
     expect(Number(shortfall?.remittanceId)).toBe(res.remittanceId);
     // الدفتر = المخزَّن، وصيغة المطابقة (DISPATCH − REMIT − WRITEOFF = currentBalance) بلا انحراف.
+    // Codex #1012 P2 — العجزُ ذمّةٌ لا نقدٌ ماديّ: «نقد بيده» صفر (وُرِّد كلُّ المقبوض فعلاً)، والعجزُ
+    // عمودٌ مستقلّ (كان يُعرَض خطأً 500 «نقداً بيده»). الانحرافُ صفر لأنّ الماديَّين متساويان.
     const row = (await board())[0];
-    expect(row.cashInHandLedger).toBe("500.00");
+    expect(row.cashInHandLedger).toBe("0.00");
+    expect(row.cashInHandStored).toBe("0.00");
+    expect(row.shortfallOwed).toBe("500.00");
     expect(row.cashInHandDrift).toBe("0.00");
+    expect(row.net).toBe("500.00"); // الجهةُ ما زالت مدينةً بالعجز (net لم يتغيّر بالفصل)
     expect(await reconcileDeliveryFloat()).toEqual([]);
   });
 
@@ -241,6 +247,56 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     await expect(settle("2500")).rejects.toThrow(/النقد المعدود يزيد/);
     expect(await partyBalance()).toBe("2000.00");
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(0);
+  });
+
+  // Codex #1012 P1 (3940317882) — إعادةُ التسوية بعد التزامها لا ترتدّ «لا شيء يُسوَّى»
+  it("⭐ إعادةُ التسوية اليوميّة بنفس المفتاح بعد التزامها ⇒ replay (لا «لا شيء يُسوَّى»)", async () => {
+    await openReception();
+    const a = await saleWithDelivery("g-1", "2"); // 2000
+    await confirmDelivered(a.consignmentId, "2000");
+    const first = await settle("2000", undefined, "daily-replay-key");
+    expect(first.status).toBe("BALANCED");
+    // بعد الالتزام صارت الطرودُ SETTLED فتعود loadSettlementLines فارغةً؛ إعادةُ نفس المفتاح تُعيد النتيجة نفسها.
+    const replay = await settle("2000", undefined, "daily-replay-key");
+    expect(replay.remittanceId).toBe(first.remittanceId);
+    expect(replay.status).toBe("BALANCED");
+    expect(replay.receiptId).toBe(first.receiptId);
+    // ولا توريدٌ ثانٍ ولا إيصالٌ ثانٍ.
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
+  });
+
+  it("إعادةُ تسويةٍ بعجزٍ بنفس المفتاح ⇒ replay بنفس العجز (لا تكرار)", async () => {
+    await openReception();
+    const a = await saleWithDelivery("gs-1", "3"); // 3000
+    await confirmDelivered(a.consignmentId, "3000");
+    const first = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", "daily-short-key");
+    expect(first.status).toBe("SHORT");
+    const replay = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", "daily-short-key");
+    expect(replay.remittanceId).toBe(first.remittanceId);
+    expect(replay.status).toBe("SHORT");
+    expect(replay.shortfallTotal).toBe("500.00");
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
+    // العجزُ لم يُقيَّد مرّتين على الجهة.
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
+  });
+});
+
+// Codex #1012 P1 (3940317891) — كشفُ العجز في openConsignments كي تحسب الشاشةُ المتبقّي الحيّ صحيحاً
+describe("listOpenConsignments — يكشف shortfallAssigned للمتبقّي الحيّ", () => {
+  it("طردٌ خُتم بعجزٍ (قُبض 2500 من 3000) ⇒ shortfallAssigned=500 والمتبقّي الحيّ=2500", async () => {
+    await openReception();
+    const a = await saleWithDelivery("i-1", "3"); // 3000
+    await confirmDelivered(a.consignmentId, "2500", "MERCHANT_REFUSED_COMMISSION"); // عجز 500 مُقيَّد على الطرد
+    const open = await listOpenConsignments(PARTY, 1);
+    const row = open.rows.find((r: { id: number }) => Number(r.id) === a.consignmentId) as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(String(row.shortfallAssigned)).toBe("500.00");
+    expect(String(row.codAmount)).toBe("3000.00");
+    expect(String(row.collectedAmount)).toBe("0.00");
+    // ما يجب أن تحسبه شاشةُ التسوية: cod − collected − counter − shortfall = 2500 (يطابق حدَّ الخادم).
+    const liveRemaining =
+      Number(row.codAmount) - Number(row.collectedAmount) - Number(row.counterSettledAmount ?? 0) - Number(row.shortfallAssigned);
+    expect(liveRemaining).toBe(2500);
   });
 });
 

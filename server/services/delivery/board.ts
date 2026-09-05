@@ -142,14 +142,20 @@ export async function listPartyBoardTx(
       b ? { count: Number(c ?? 0), amount: fmt(a) } : ZERO_BUCKET;
     const inputs = exposureInputs.get(id);
     const ledger = inputs?.ledger ?? [];
-    const cashInHandLedger = inputs?.cashInHandLedger ?? "0.00";
-    const cashInHandStored = fmt(p.currentBalance);
-    const cashInHandDrift = round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2);
+    // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
+    const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
+    const custodyStored = fmt(p.currentBalance);
     const exposure = computePartyExposure({
-      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
+      cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
       parcels: inputs?.parcels ?? [],
       ledger,
     });
+    // Codex #1012 P2 — العمود «نقد بيده» ماديٌّ وحده: نطرح العجزَ (ذمّةٌ غير نقديّة) من العهدة
+    // الكلّية بمصدرَيها، ويظهر العجزُ عموداً مستقلّاً. الانحرافُ يبقى بين الماديَّين (فرقٌ واحد).
+    const shortfallOwed = exposure.shortfallOwed;
+    const cashInHandLedger = round2(money(custodyLedger).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandDrift = round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2);
     const row: PartyBoardRow = {
       partyId: id,
       partyName: p.name,
@@ -162,16 +168,18 @@ export async function listPartyBoardTx(
       cashInHandLedger,
       cashInHandStored,
       cashInHandDrift,
+      shortfallOwed,
       feesOwed: exposure.feesOwedToThem,
       net: exposure.netResponsibility,
       staleOpenParcels: staleMap.get(id) ?? 0,
     };
-    // جهةٌ معطَّلة بلا أثرٍ حيّ تختفي؛ وما عليها التزامٌ (طرود/نقد/أجور) يبقى ظاهراً — الواجهةُ
+    // جهةٌ معطَّلة بلا أثرٍ حيّ تختفي؛ وما عليها التزامٌ (طرود/نقد/عجز/أجور) يبقى ظاهراً — الواجهةُ
     // الوحيدة التي تُسوَّى منها (نفس درس `listPartyObligations`، Codex P2 #5).
     const hasLiveObligation =
       row.assigned.count + row.inTransit.count + row.deliveredUnremitted.count > 0
       || !money(row.cashInHandStored).isZero()
       || !money(row.cashInHandLedger).isZero()
+      || !money(row.shortfallOwed).isZero()
       || money(row.feesOwed).gt(0)
       || row.staleOpenParcels > 0;
     if (p.isActive || hasLiveObligation) rows.push(row);

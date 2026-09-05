@@ -517,13 +517,18 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
 
   return parties.map((p) => {
     const inputs = exposureInputs.get(Number(p.id));
-    const cashInHandStored = round2(money(p.currentBalance ?? "0")).toFixed(2);
-    const cashInHandLedger = inputs?.cashInHandLedger ?? "0.00";
+    // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
+    const custodyStored = round2(money(p.currentBalance ?? "0")).toFixed(2);
+    const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
     const exposure = computePartyExposure({
-      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
+      cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
       parcels: inputs?.parcels ?? [],
       ledger: inputs?.ledger ?? [],
     });
+    // Codex #1012 P2 — «نقد بيده» ماديٌّ وحده: العجزُ (ذمّةٌ غير نقديّة) يُطرح ويُعرَض مستقلّاً.
+    const shortfallOwed = exposure.shortfallOwed;
+    const cashInHandLedger = round2(money(custodyLedger).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
     return {
       ...p,
       drivers: driversByParty.get(Number(p.id)) ?? [],
@@ -534,7 +539,9 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
       parcelsInTransitAmount: exposure.parcelsInTransit,
       deliveredUncollectedAmount: exposure.deliveredUncollected,
       feesOwedAmount: exposure.feesOwedToThem,
-      // م١ (PR-3) — الطرح الظلّيّ: المصدران معاً وفرقهما (شارة الانحراف في الواجهة).
+      // Codex #1012 P2 — العجزُ المحمَّل على الجهة عمودٌ مستقلّ (ذمّةٌ غير نقديّة).
+      shortfallOwedAmount: shortfallOwed,
+      // م١ (PR-3) — الطرح الظلّيّ: المصدران الماديّان معاً وفرقهما (شارة الانحراف في الواجهة).
       cashInHandLedger,
       cashInHandStored,
       cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),

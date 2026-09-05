@@ -20,9 +20,11 @@ import {
   deliveryConsignments,
   deliveryLedgerEntries,
   deliveryParties,
+  deliveryRemittances,
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { findIdempotentRefId } from "../idempotency";
 import { money, round2 } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
@@ -178,6 +180,35 @@ export async function settleDailyTx(
   actor: DeliveryTxActor,
 ): Promise<SettleDailyResult> {
   const party = await loadPartyOrThrow(tx, input.partyId, "تعذّر تسجيل التسوية اليوميّة");
+  // Codex #1012 P1 — إعادةُ تسويةٍ سبق التزامها (ضاعت استجابتُها عبر النشر/الانقطاع): بعد التزام
+  // الأولى تصير طرودُها SETTLED فتعود `loadSettlementLines` فارغةً، فكان الرمي «لا شيء يُسوَّى»
+  // يسبق فحصَ idempotency في `recordDeliveryRemittanceInTx` ⇒ يُبلَّغ فشلاً عن عمليةٍ نجح مالُها،
+  // فيُعيد الموظّف التسويةَ بمفتاحٍ جديد (تكرار). نفحص السجلّ القائم أوّلاً ونُعيد نتيجته حرفياً.
+  if (input.clientRequestId) {
+    const existingId = await findIdempotentRefId(tx, "delivery.remit", input.clientRequestId);
+    if (existingId != null) {
+      const rm = (
+        await tx
+          .select({
+            id: deliveryRemittances.id,
+            status: deliveryRemittances.status,
+            shortfallTotal: deliveryRemittances.shortfallTotal,
+            receiptInId: deliveryRemittances.receiptInId,
+          })
+          .from(deliveryRemittances)
+          .where(eq(deliveryRemittances.id, existingId))
+          .limit(1)
+      )[0];
+      if (rm) {
+        return {
+          remittanceId: Number(rm.id),
+          status: rm.status === "SHORT" ? "SHORT" : "BALANCED",
+          shortfallTotal: String(rm.shortfallTotal),
+          receiptId: rm.receiptInId != null ? Number(rm.receiptInId) : null,
+        };
+      }
+    }
+  }
   const lines = await loadSettlementLines(tx, input);
   if (!lines.length) {
     throw new TRPCError({

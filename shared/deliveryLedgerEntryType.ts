@@ -91,10 +91,17 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
   });
 
 /**
- * م١ (PR-2/3) — **النقد بيد الجهة (العهدة النقديّة) مشتقّاً من الدفتر**: الأنواعُ التي تحرّكه
- * وإشارتُها، وهي عينُها إشارة `DELIVERY_LEDGER_ENTRY_SIGN` مقصورةً على أحداث النقد:
+ * م١ (PR-2/3) — **العهدةُ الكلّية للجهة مشتقّةً من الدفتر** (نقدٌ ماديّ + عجزٌ محمَّل): الأنواعُ
+ * التي تحرّكها وإشارتُها، وهي عينُها إشارة `DELIVERY_LEDGER_ENTRY_SIGN` مقصورةً على أحداث العهدة:
  *
- *   cashInHand = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ *   custody = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ *
+ * ⚠️ **العجزُ داخل العهدة عمداً — لا داخل «نقد بيده»** (Codex #1012 P2): `SHORTFALL_ASSIGNED` ذمّةٌ
+ * غير نقديّة، لكنّه يرفع `deliveryParties.currentBalance` بـ`adjustDeliveryBalance` تماماً كالنقد،
+ * و`reconcileService` يطابق هذا المجموع بالعمود المخزَّن حرفياً — فإسقاطُه من هنا يُنتج انحرافاً
+ * كاذباً على كلّ جهةٍ لها عجز. لذلك يبقى في «العهدة الكلّية»، و**الفصلُ في العرض**: تطرحه
+ * `computePartyExposure` (عبر `deriveShortfallOwedFromLedger`) فيُعرَض العمود «نقد بيده» ماديّاً
+ * وحده، والعجزُ عمودٌ خامسٌ مستقلّ — فلا تُبنى قراراتُ الدرج على دَينٍ يظهر نقداً.
  *
  * لماذا هذه الأربعة وحدها (قُرئ كلُّ كاتبٍ لـ`adjustDeliveryBalance` قبل تثبيتها —
  * [[read-every-writer-before-you-rely-on-a-field]]):
@@ -106,7 +113,7 @@ export const DELIVERY_LEDGER_ENTRY_SIGN: Readonly<Record<DeliveryLedgerEntryType
  *
  * ⛔ مصدرٌ واحد: `shared/partyExposure.deriveCashInHandFromLedger` (نقيّة) و
  * `server/services/delivery/board.ts` (SQL مبنيٌّ من هذا الثابت) يقرآن هذه الخريطة — لا صيغةَ
- * ثالثة مكتوبةً بيد.
+ * ثالثة مكتوبةً بيد. والعرضُ الماديّ للعمود ١ يطرح العجزَ في `board.ts`/`parties.ts` معاً.
  */
 export const DELIVERY_CASH_CUSTODY_SIGN = Object.freeze({
   COD_COLLECTED: 1,
