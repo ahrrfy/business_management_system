@@ -10,7 +10,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest, openCashDrawer } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
@@ -38,7 +38,7 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt, computeInvoiceDiscount,
 } from "@/components/pos/posShared";
 import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 import { POSHeader } from "@/components/pos/POSHeader";
@@ -384,15 +384,6 @@ export default function POS() {
     const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
     return s.plus(refUnit.times(c.qty));
   }, D(0));
-  const rawInvoiceDiscountPctD = D(activeTab.invoiceDiscountPct || 0);
-  const clampedByFieldD = rawInvoiceDiscountPctD.lt(0)
-    ? D(0)
-    : rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : rawInvoiceDiscountPctD;
-  // **السقف الفعّال المتبقّي**: عتبةُ الخادم ١٥٪ تُقاس على المرجع، فإن كان في السلّة انحرافٌ سطريّ
-  // مسبق (`refGross − subtotal`)، فسلطةُ الكاشير على الرأس = ١٥٪ − (نسبةُ الانحراف المسبقة)،
-  // مقيسةً على الصافي الحاليّ (subtotal). قيمةٌ سالبةٌ ⇒ صفرٌ (لا سلطة).
   const priorDeviationRatioD = referenceGrossD.gt(0)
     ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
     : D(0);
@@ -405,11 +396,12 @@ export default function POS() {
     : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const invoiceDiscountPctD = invoiceDiscountAllowed
-    ? (clampedByFieldD.gt(effectiveHeaderCapPctD) ? effectiveHeaderCapPctD : clampedByFieldD)
-    : D(0);
-  const invoiceDiscountAmountD = round2(subtotalD.times(invoiceDiscountPctD).div(100));
-  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const discountCalc = computeInvoiceDiscount({
+    subtotalD, effectiveHeaderCapPctD, invoiceDiscountAllowed,
+    type: activeTab.invoiceDiscountType ?? "percent",
+    value: activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || ""),
+  });
+  const { discountAmountD: invoiceDiscountAmountD, discountAmount: invoiceDiscountAmount, discountPctD: invoiceDiscountPctD, maxDiscountAmount } = discountCalc;
   const subtotal = round2(subtotalD).toNumber();
   // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
   // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
@@ -1345,6 +1337,7 @@ export default function POS() {
         case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
           if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
         }).catch((error) => notify.err(error)); break;
+        case "F10": e.preventDefault(); void openCashDrawer().then((res) => { if (res.ok) notify.ok("تم فتح درج النقود"); else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها"); }); break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -1496,16 +1489,11 @@ export default function POS() {
 
       {headerActionsNode && createPortal(
         <RetailPosHeaderActions
-          C={C}
-          shift={shift}
-          userRole={me.data?.role}
-          onCloseShift={() => setShifting(true)}
-          onCashDrop={() => setCashDropping(true)}
-          printerReady={printerReady}
-          onConnectPrinter={connectPrinter}
-          bridgeEnabled={bridge.enabled}
-          bridgeDesc={bridge.description}
-          onTestPrint={testServerPrint}
+          placement="inline"
+          C={C} shift={shift} userRole={me.data?.role}
+          onCloseShift={() => setShifting(true)} onCashDrop={() => setCashDropping(true)}
+          printerReady={printerReady} onConnectPrinter={connectPrinter}
+          bridgeEnabled={bridge.enabled} bridgeDesc={bridge.description} onTestPrint={testServerPrint}
         />,
         headerActionsNode,
       )}
@@ -1646,7 +1634,11 @@ export default function POS() {
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
           invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
-          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v })}
+          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v, invoiceDiscountValue: v, invoiceDiscountType: "percent" })}
+          invoiceDiscountType={activeTab.invoiceDiscountType ?? "percent"}
+          invoiceDiscountValue={activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || "")}
+          onInvoiceDiscountChange={(val, typ) => patchActive({ invoiceDiscountValue: val, invoiceDiscountType: typ, invoiceDiscountPct: typ === "percent" ? val : (discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : "") })}
+          maxDiscountAmount={maxDiscountAmount}
           invoiceDiscountAllowed={invoiceDiscountAllowed}
           effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
           cashRoundingDelta={cashRoundingDelta}
@@ -1743,23 +1735,16 @@ export default function POS() {
           C={C} shift={shift} branchId={branchId}
           onClose={() => setShifting(false)}
           onClosed={() => { setShifting(false); shiftQ.refetch(); }}
-          me={me.data}
-          branches={branches.data}
+          me={me.data} branches={branches.data}
         />
       )}
       {cashDropping && shift && (
-        <CashDropDialog
-          C={C}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
-        />
+        <CashDropDialog C={C} shiftId={shift.id} onClose={() => setCashDropping(false)} />
       )}
       {creditPrompt && (
         <CreditApprovalDialog
-          C={C} message={creditPrompt}
-          mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
-          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending}
+          C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
+          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd} isPending={sale.isPending}
           onApprove={() => submitSale({ email: mgrEmail, password: mgrPwd })}
           onCancel={() => setCreditPrompt(null)}
         />
@@ -1767,5 +1752,3 @@ export default function POS() {
     </div>
   );
 }
-
-

@@ -20,9 +20,9 @@ export interface NumpadProps {
 export function Numpad({ C, fluid, blockPad, ultra, numMode, numpadOpen, setNumModeAndReveal, numPress }: NumpadProps) {
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
-    height: fluid(44, 6.6, 58), minWidth: 70, padding: "0 8px",
-    fontSize: 13.5, fontWeight: 800, cursor: "pointer",
-    fontFamily: "inherit", borderRadius: 9,
+    height: fluid(28, 3.8, 36), minWidth: 50, padding: "0 4px",
+    fontSize: 12, fontWeight: 800, cursor: "pointer",
+    fontFamily: "inherit", borderRadius: 7,
     border: active ? `1.5px solid ${C.modeBord}` : `1.5px solid ${C.border}`,
     background: active ? C.modeActive : C.numKey,
     color: active ? C.modeFg : C.mutedFg,
@@ -33,11 +33,11 @@ export function Numpad({ C, fluid, blockPad, ultra, numMode, numpadOpen, setNumM
 
   const numKeyStyle = (del?: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
-    height: fluid(44, 6.6, 58), fontSize: fluid(19, 2.7, 24), fontWeight: 800,
+    height: fluid(28, 3.8, 36), fontSize: fluid(15, 2.0, 19), fontWeight: 800,
     background: del ? C.delKey : C.numKey,
     color: del ? C.delFg : C.fg,
     border: `1.5px solid ${C.border}`,
-    borderRadius: 9, cursor: "pointer",
+    borderRadius: 7, cursor: "pointer",
     fontFamily: "inherit", direction: "ltr" as const,
     transition: "background .07s, transform .06s",
     userSelect: "none" as const, touchAction: "manipulation" as const,
@@ -45,7 +45,7 @@ export function Numpad({ C, fluid, blockPad, ultra, numMode, numpadOpen, setNumM
 
   return numpadOpen ? (
     <div style={{ padding: blockPad, flexShrink: 0 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: ultra ? 3 : 4, direction: "rtl" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: ultra ? 2 : 3, direction: "rtl" }}>
         <button style={modeStyle(numMode === "QTY")}  onClick={() => setNumModeAndReveal("QTY")}>الكمية</button>
         <button style={numKeyStyle()} onClick={() => numPress("3")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>3</button>
         <button style={numKeyStyle()} onClick={() => numPress("2")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>2</button>

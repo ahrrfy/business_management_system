@@ -7,6 +7,7 @@ import { variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useRef } from "react";
 import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-react";
+import { motion } from "framer-motion";
 import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
 import { type Tier, type NumMode, type CartItem, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
 import { CartCustomerButton } from "./CartCustomerButton";
@@ -238,7 +239,10 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
               const rowBg  = selected ? C.primarySoft : openingSellable ? C.amberSoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
               const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
-                <tr key={lineId}
+                <motion.tr key={lineId}
+                  initial={{ opacity: 0, x: 12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.15 }}
                   ref={selected ? selectedRowRef : undefined}
                   onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
                   style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
@@ -358,7 +362,7 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                       aria-label="حذف السطر"
                       style={{ width: 44, height: 44, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
                   </td>
-                </tr>
+                </motion.tr>
               );
             })}
           </tbody>
