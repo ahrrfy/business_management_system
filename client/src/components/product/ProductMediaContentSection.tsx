@@ -104,7 +104,7 @@ export function ProductMediaContentSection({
           <ImageStudioUploader
             value={images}
             onChange={handleImages}
-            maxItems={maxImages}
+            maxItems={studioTaskId != null ? 1 : maxImages}
             hint={hint}
             onStudioModeChange={onStudioModeChange}
             studioTaskId={studioTaskId}
