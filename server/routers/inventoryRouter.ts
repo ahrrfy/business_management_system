@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import type { ProductBarcodeMatch } from "@shared/productScan";
+import { appErrorMessage } from "@shared/errors";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
@@ -166,7 +167,9 @@ export const inventoryRouter = router({
   transferBatch: inventoryWarehouseProcedure
     .input(
       z.object({
-        fromBranchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): المصدرُ اختياريّ — يُشتقّ من فرع الفاعل حين يغيب؛ الأدمن
+        // يمرّره لفرعٍ آخر بقصدٍ صريح، وغيرُه لا يُقبَل منه إلّا فرعُه.
+        fromBranchId: z.number().int().positive().optional(),
         toBranchId: z.number().int().positive(),
         reason: z.enum(TRANSFER_REASON_KEYS).optional(),
         notes: z.string().max(500).optional(),
@@ -186,15 +189,30 @@ export const inventoryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
-      let fromBranchId = input.fromBranchId;
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      let fromBranchId: number;
       if (!elevated) {
-        if (ctx.user.branchId == null) {
+        if (assignedBranchId == null) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
-        if (Number(ctx.user.branchId) !== input.fromBranchId) {
+        if (input.fromBranchId != null && input.fromBranchId !== assignedBranchId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل بضاعة من فرع ليس فرعك" });
         }
-        fromBranchId = Number(ctx.user.branchId);
+        fromBranchId = assignedBranchId;
+      } else {
+        const chosen = input.fromBranchId ?? assignedBranchId;
+        if (chosen == null) {
+          // أدمنٌ بلا فرعٍ مُسنَد لم يُرسل مصدراً: لا فرعَ افتراضيّ (حارس check:branch) — اختيارٌ صريح.
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر تحديد الفرع المصدر",
+              why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً مصدراً",
+              doThis: "اختر الفرع المصدر من القائمة في شاشة التحويل ثم أعِد الإرسال",
+            }),
+          });
+        }
+        fromBranchId = chosen;
       }
       // منذ ١٤/٧ (تحويل بخطوتين): الإنشاء يخصم المصدر ويضع السند «بالطريق»؛ الوجهة تستلم
       // بمطابقة عبر transferReceive. الذرّية والقفل الحتمي وidempotency داخل الخدمة.

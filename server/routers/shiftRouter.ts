@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "driz
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { z } from "zod";
+import { appErrorMessage } from "@shared/errors";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -505,14 +506,28 @@ export const shiftRouter = router({
   current: treasuryReadProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): اختياريّ — الخادم يشتقّه من نطاق الفاعل حين يغيب؛
+        // المرتفعون يمرّرونه لفرعٍ آخر بقصدٍ صريح، والشاشاتُ القائمة تمرّره كما كانت.
+        branchId: z.number().int().positive().optional(),
         // كل شاشة تستعلم عن نوع ورديتها صراحةً (RECEPTION للاستقبال، PRINT_SERVICES للطباعة)؛
         // بدونه يُرجَع أيّ وردية مفتوحة.
         shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).optional(),
       }),
     )
     .query(({ input, ctx }) => {
-      const effective = ctx.scopedBranchId ?? input.branchId;
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      const effective = ctx.scopedBranchId ?? input.branchId ?? assignedBranchId;
+      if (effective == null) {
+        // عابرُ الفروع بلا فرعٍ مُسنَد ولم يُرسل فرعاً: لا فرعَ افتراضيّ (حارس check:branch).
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تحديد فرع الوردية",
+            why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+            doThis: "اختر الفرع من القائمة في الشاشة أو اطلب من المدير إسناد فرعٍ إلى حسابك",
+          }),
+        });
+      }
       return getOpenShift(ctx.user.id, effective, input.shiftType);
     }),
 });

@@ -14,6 +14,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { FormError } from "@/components/form/FormError";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { InferredBranchField } from "@/components/form/InferredField";
+import { useSessionContext } from "@/hooks/useSessionContext";
 import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -37,7 +39,12 @@ import {
 import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
-import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
+import {
+  INBOUND_ENABLED_PAYMENT_METHODS,
+  isInboundPaymentMethodEnabled,
+  type InboundEnabledPaymentMethod,
+} from "@shared/inboundPaymentPolicy";
+import { paymentMethodCompact } from "@shared/terms";
 import type { PrintOpenResult } from "@shared/printAudit";
 import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -59,9 +66,6 @@ import {
 } from "@shared/permissions";
 import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategoryQuickCreate";
 
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
 /** صفُّ معاينة قَيد الدفتر (مَدين/دائن + الحساب + المبلغ) — معاينةٌ ساكنة، بلا فرز. */
 type LedgerPreviewRow = { side: string; account: string; amount: string };
 
@@ -71,21 +75,9 @@ const ledgerPreviewColumns: ColumnDef<LedgerPreviewRow, unknown>[] = [
   { id: "amount", header: "المبلغ", accessorFn: (r) => r.amount, enableSorting: false, meta: { kind: "money" }, cell: ({ row }) => row.original.amount },
 ];
 
-// قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء (يبقى بالمخطط للسجلات التاريخية).
-const METHODS = [
-  { value: "CASH", label: "نقدي" },
-  { value: "CARD", label: "بطاقة" },
-  { value: "TRANSFER", label: "تحويل" },
-  { value: "WALLET", label: "محفظة" },
-] as const;
-type MethodValue = typeof METHODS[number]["value"];
-
-const METHOD_LABEL_MAP: Record<MethodValue, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-};
+// طرقُ الإنشاء = سياسةُ القبض الحاكمة (لا CHECK: قرار المالك ٢٢/٧) والتسميةُ من shared/terms — لا قاموسَ محلّياً.
+type MethodValue = InboundEnabledPaymentMethod;
+const METHODS = INBOUND_ENABLED_PAYMENT_METHODS.map((value) => ({ value, label: paymentMethodCompact(value) }));
 
 export interface VoucherFormProps {
   voucherType: "RECEIPT" | "PAYMENT";
@@ -108,11 +100,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
 
-  // الفرع: افتراضي = فرع الموظف لا 1 (P2-12).
-  const [branchId, setBranchId] = useState<number>(1);
-  useEffect(() => {
-    if (me.data?.branchId != null) setBranchId(Number(me.data.branchId));
-  }, [me.data?.branchId]);
+  // الفرع: استنتاجٌ خادميّ عبر `<InferredBranchField>` (م٤ ق١) — تبدأ `null` عمداً: كان
+  // `useState<number>(1)` «الفرع ١ مكتوباً بيد» (بابُ IDOR الذي يحرسه `check:branch`).
+  const [branchId, setBranchId] = useState<number | null>(null);
+  const session = useSessionContext();
+  const businessDay = session.context?.businessDay ?? null;
 
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<MethodValue>("CASH");
@@ -134,7 +126,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   // vouchers-pro:
   const [voucherCategoryId, setVoucherCategoryId] = useState<number | "">("");
   const [counterpartyName, setCounterpartyName] = useState("");
-  const [voucherDate, setVoucherDate] = useState<string>(todayYmd());
+  // تاريخُ السند: يُقترَح من اليوم التشغيليّ الخادميّ (لا ساعة الجهاز) ويبقى قابلاً للتعديل.
+  const [voucherDate, setVoucherDate] = useState<string>("");
+  const [voucherDateTouched, setVoucherDateTouched] = useState(false);
+  useEffect(() => {
+    if (!voucherDateTouched && businessDay) setVoucherDate(businessDay);
+  }, [businessDay, voucherDateTouched]);
   const [attachmentImages, setAttachmentImages] = useState<ImageItem[]>([]);
   const attachmentUrl = attachmentImages[0]?.dataUrl ?? "";
   const [internalNote, setInternalNote] = useState("");
@@ -250,8 +247,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   // وردية النقد + شارة الخزينة الإدارية.
   // OUT لا يمس درج المُنشئ أصلاً؛ مصدر التنفيذ النقدي الثابت هو خزينة المالك.
   const openShift = trpc.shifts.current.useQuery(
-    { branchId },
-    { enabled: isReceipt && !!branchId },
+    { branchId: branchId ?? undefined },
+    { enabled: isReceipt && branchId != null },
   );
   const { hardBlock, treasuryNotice } = voucherCashUiPolicy({
     direction,
@@ -369,7 +366,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         amount: fmt(v.amount),
         paymentMethod: v.paymentMethod,
         paymentMethodLabel:
-          METHOD_LABEL_MAP[v.paymentMethod as MethodValue] ?? v.paymentMethod,
+          paymentMethodCompact(v.paymentMethod),
         referenceNumber: v.referenceNumber,
         checkNumber: v.checkNumber,
         cardLastFour: v.cardLastFour,
@@ -399,7 +396,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       const result = await printAudit.run({
         documentType: "VOUCHER",
         documentId: receiptId,
-        branchId: v.branchId == null ? branchId : Number(v.branchId),
+        branchId: Number(v.branchId ?? branchId),
         channel: printMode === "a4" ? "BROWSER" : "THERMAL",
         open: (audit): Promise<PrintOpenResult> => {
           const auditedPayload = {
@@ -433,6 +430,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     : "bg-[var(--sem-neg)] text-background hover:bg-[var(--sem-neg-hover)]";
 
   function validate(): string {
+    if (branchId == null) return "الفرع غير محدَّد — اختر الفرع من القائمة قبل الحفظ (لا فرعَ افتراضيّ).";
+    if (!voucherDate) return "تاريخ السند مطلوب.";
     if (
       !amount.trim() ||
       !/^\d+(\.\d{1,2})?$/.test(amount.trim()) ||
@@ -469,7 +468,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           : null;
     return {
       voucherType,
-      branchId,
+      // `validate()` يرفض الحفظَ بلا فرع؛ الشاشةُ تُرسل ما عرضته حرفياً — لا انزلاق بين المعروض والمُرسَل.
+      branchId: branchId ?? undefined,
       amount: amount.trim(),
       paymentMethod: method,
       partyType,
@@ -674,20 +674,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             <CardTitle className="text-base">البيانات الرئيسية</CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>الفرع *</Label>
-              <AppSelect
-                className="h-9"
-                value={String(branchId)}
-                onValueChange={(value) => setBranchId(Number(value))}
-              >
-                {(branches.data ?? []).map((b) => (
-                  <option key={Number(b.id)} value={Number(b.id)}>
-                    {b.name}
-                  </option>
-                ))}
-              </AppSelect>
-            </div>
+            {/* الفرعُ استنتاجٌ خادميّ لا سؤالٌ للشاشة (م٤ ق١): «فرعك المسند» + «تغيير» للأدمن/المالك فقط. */}
+            <InferredBranchField
+              label="الفرع *"
+              value={branchId}
+              onChange={setBranchId}
+              disabled={create.isPending}
+            />
             <div className="space-y-1">
               <Label>المبلغ * (IQD)</Label>
               <MoneyInput
@@ -713,9 +706,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 type="date"
                 dir="ltr"
                 value={voucherDate}
-                onChange={(e) => setVoucherDate(e.target.value)}
+                onChange={(e) => {
+                  setVoucherDateTouched(true);
+                  setVoucherDate(e.target.value);
+                }}
               />
               <p className="text-[11px] text-muted-foreground">
+                {businessDay ? `افتراضه اليوم التشغيلي بتوقيت بغداد (${businessDay}) كما حسبه الخادم. ` : ""}
                 التاريخ الفعلي للمُعاملة (قد يَختلف عن تاريخ الإدخال — مَثلاً
                 دَفع إيجار مايو في ٥ يونيو).
               </p>

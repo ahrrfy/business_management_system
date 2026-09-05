@@ -324,6 +324,10 @@ export default defineConfig({
       "shared/terms.test.ts",
       // FP-05 — حارس فقدان البيانات يعترض تنقّل SPA بحوارٍ عربيّ موحّد.
       "client/src/hooks/__tests__/useUnsavedGuard.test.ts",
+      // تدقيق Codex (م٤) — مسند «إعادة المحاولة» يُعيد جلبَ الاستعلام الساقط فعلاً (me مقابل السياق).
+      "client/src/hooks/__tests__/useSessionContext.test.ts",
+      // تدقيق Codex (م٤) — عقدُ مصدرٍ: logAudit لإنشاء السند يُمرَّر فرعُ السند صراحةً (بلا قاعدة).
+      "server/routers/__tests__/voucherAuditBranchContract.test.ts",
       // م٦ ق٤+ق٨ — النموذج الواحد (نتيجة الحفظ المُهيكَلة) واللقطة («ما الذي تغيّر» النقيّ) وتناظر زوج المنتج.
       "shared/productVersionDiff.test.ts",
       "client/src/components/form/__tests__/saveOutcome.test.ts",
