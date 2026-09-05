@@ -195,6 +195,9 @@ const PURCHASING: Record<string, DecisionSpec> = {
    * [`purchaseReturnGovernanceRouter.ts:21`](../server/routers/purchaseReturnGovernanceRouter.ts#L21)
    * ⇐ [`purchase/returnGovernance.ts:499`](../server/services/purchase/returnGovernance.ts#L499).
    * مصنَّفٌ `ERASE_EFFECT`: `applyMovement` باتّجاه `OUT` + `postEntry` + إنقاصُ ذمّة المورّد.
+   * `href` ⇐ **طابور الحوكمة** لا `/purchase-returns/:id`: المعرّفُ هنا معرّفُ **الطلب**
+   * (`purchaseReturnRequests.id`) والمرتجعُ نفسه (`purchaseReturns`) لا يُنشأ إلّا عند
+   * الاعتماد — فرابطٌ بمعرّف الطلب كان يفتح صفحةَ مرتجعٍ لا وجودَ له (Codex على #1004).
    */
   "purchase.return.decide": spec({
     kind: "purchase.return.decide",
@@ -211,7 +214,7 @@ const PURCHASING: Record<string, DecisionSpec> = {
     approver: "INDEPENDENT_REVIEWER",
     withdrawable: false,
     procedure: { router: "purchaseReturnGovernance", name: "decideReturn" },
-    href: (id) => `/purchase-returns/${id}`,
+    href: () => "/purchases?tab=returns-governance",
   }),
 
   /**
@@ -282,6 +285,58 @@ const PURCHASING: Record<string, DecisionSpec> = {
     withdrawable: false,
     procedure: { router: "supplierPayments", name: "decideRefund" },
     href: () => "/purchases?tab=supplier-payments",
+  }),
+
+  /**
+   * [`goodsReceiptReversalRouter.ts:51`](../server/routers/goodsReceiptReversalRouter.ts#L51) ⇐
+   * [`purchase/goodsReceipts.ts:1077`](../server/services/purchase/goodsReceipts.ts#L1077).
+   * كان **آخر موضعٍ في المشتريات خارج السجلّ** (D3 = 1 على هذا الراوتر وحده). الاعتماد
+   * يُخرج البضاعة من المخزون ويعكس GRNI ويُعيد الاستلام إلى ما قبل التوريد — محوُ أثرٍ
+   * مخزنيّ قائم. `href` ⇐ تبويب **عكس الاستلامات** في `PurchasesHub` (`goods-receipt-reversals`
+   * حرفياً — تبويبٌ غيرُ مُسجَّل يُسقط `PageTabs` إلى أوّل تبويبٍ مرئيّ بصمت؛ Codex على #1004).
+   * المعرّف معرّفُ طلب العكس وليس له مسارٌ مستقلّ.
+   */
+  "purchase.goodsReceipt.reversal": spec({
+    kind: "purchase.goodsReceipt.reversal",
+    title: "اعتماد عكس استلام بضاعة",
+    why: "الاعتماد يخرج البضاعة من المخزون ويعكس التزام الاستلام غير المفوتر: توريد سجل ثم اختفى بلا عين يترك رصيدا كاذبا وتكلفة مرجحة مسمومة.",
+    decidesOn: [
+      "اسم المورد",
+      "رقم الاستلام وتاريخه وقيمته",
+      "الاصناف والكميات المعكوسة",
+      "سبب العكس",
+      "من طلب",
+    ],
+    approver: "INDEPENDENT_REVIEWER",
+    withdrawable: false,
+    procedure: { router: "goodsReceiptReversal", name: "decideReversal" },
+    href: () => "/purchases?tab=goods-receipt-reversals",
+  }),
+
+  /**
+   * [`supplierInvoiceApprovalRouter.ts:60`](../server/routers/supplierInvoiceApprovalRouter.ts#L60) ⇐
+   * [`purchase/supplierInvoices.ts:827`](../server/services/purchase/supplierInvoices.ts#L827).
+   * الراوتر يقبل `REVERSE_INVOICE` وحده عمداً (مراجعة Codex على #1001) — الترحيلُ الاعتياديّ
+   * يقع آلياً داخل سلسلة `purchases.decideControl`. الاعتماد يعكس قيد AP ويُنقص ذمة المورد
+   * ويعيد فاتورة مرحلة إلى ما قبل الترحيل. `href` ⇐ تبويب **اعتمادات فواتير الموردين**
+   * (`supplier-invoice-approvals` حرفياً كما في `PurchasesHub`).
+   */
+  "purchase.supplierInvoice.reversal": spec({
+    kind: "purchase.supplierInvoice.reversal",
+    title: "اعتماد عكس فاتورة مورد",
+    why: "الاعتماد يعكس قيد الذمة الدائنة ويسحب الفاتورة من كشف المورد: فاتورة رحلت ثم محيت بلا عين تخفي دينا حقيقيا او تبرر دفعة بلا مستند.",
+    decidesOn: [
+      "اسم المورد",
+      "رقم الفاتورة الخارجي وقيمتها وعملتها",
+      "الدفعات المرتبطة بها",
+      "نوع الدليل ومرجعه",
+      "سبب العكس",
+      "من طلب",
+    ],
+    approver: "INDEPENDENT_REVIEWER",
+    withdrawable: false,
+    procedure: { router: "supplierInvoiceApproval", name: "decideApproval" },
+    href: () => "/purchases?tab=supplier-invoice-approvals",
   }),
 };
 
@@ -1583,4 +1638,224 @@ export function allDecisions(): DecisionSpec[] {
  */
 export function decisionsForApprover(approver: DecisionApprover): DecisionSpec[] {
   return allDecisions().filter((d) => d.approver === approver);
+}
+
+
+// ═══════════════════════ صندوق القرار الموحّد — نموذج الصفّ ═══════════════════════
+//
+// هذا القسم هو **عقد الصفّ** بين الخادم (`server/services/decisions/**` يبنيه من مصادره
+// الفعلية) والشاشة (`client/src/components/decision/DecisionRow.tsx` تعرضه وتحسم فيه).
+// كلُّ ما هنا نقيٌّ: بلا I/O وبلا `Date.now()` مخفيّة — «الآن» يصل في المدخل صراحةً.
+
+/** ما يستطيع المُقرِّر فعله على صفٍّ. `WITHDRAW` للطالب وحده على القرارات القابلة للسحب. */
+export const DECISION_ACTIONS = ["APPROVE", "REJECT", "WITHDRAW"] as const;
+export type DecisionAction = (typeof DECISION_ACTIONS)[number];
+
+export const DECISION_ACTION_LABEL_AR: Record<DecisionAction, string> = {
+  APPROVE: "اعتماد",
+  REJECT: "رفض",
+  WITHDRAW: "سحب الطلب",
+};
+
+/**
+ * نتيجةُ الحسم — **مُهيكَلة لا «نجاح» عارٍ** (عيب Codex SALE-04: اعتمادٌ على طلبٍ صار
+ * `STALE` كان يُبلَّغ نجاحاً). الشاشةُ تعرض كلَّ نتيجةٍ بلونها ونصّها لا بتوست «تم».
+ *  · `EXECUTED`  الاعتماد وقع وأثرُه كُتب (مخزون/قيد/حالة).
+ *  · `REQUESTED` الاعتماد لم يُنفَّذ بعد بل أنشأ طلباً ينتظر جهةً أعلى (مثل ايصال ردٍّ
+ *                 معلَّق ينتظر المالك) — ليس نجاحاً كاملاً وليس فشلاً.
+ *  · `STALE`     الطلب لم يعد معلَّقاً (حُسم من غيرك، أو تغيّر مستندُه بعد الطلب).
+ *  · `REJECTED`  الرفض وقع وسُجّل سببه.
+ *  · `WITHDRAWN` الطالبُ سحب طلبه.
+ */
+export const DECISION_OUTCOMES = ["EXECUTED", "REQUESTED", "STALE", "REJECTED", "WITHDRAWN"] as const;
+export type DecisionOutcome = (typeof DECISION_OUTCOMES)[number];
+
+export const DECISION_OUTCOME_LABEL_AR: Record<DecisionOutcome, string> = {
+  EXECUTED: "اعتمد ونفذ",
+  REQUESTED: "اعتمد وينتظر جهة اعلى",
+  STALE: "لم يعد معلقا",
+  REJECTED: "رفض",
+  WITHDRAWN: "سحب",
+};
+
+/** لحظةُ الخطر التي تفتح البوّابة — من `shared/approvalPolicy.ts` (تُكرَّر هنا نصّاً كي يبقى الملفّ بلا استيراد). */
+export type DecisionTrigger = "MONEY_OUT" | "ERASE_EFFECT";
+
+/** بندٌ ممّا يُقرَّر عليه فعلاً: صنفٌ بكمّيته وسعره، أو فاتورةٌ بمبلغها. */
+export interface DecisionSummaryItem {
+  label: string;
+  qty?: number | string | null;
+  unit?: string | null;
+  unitPrice?: string | null;
+}
+
+/** حالةُ الطلب كما يقرؤها الصندوق قبل الحسم — لا ثالثَ للمعلَّق إلّا «حُسم» أو «زال». */
+export type DecisionFreshness = "PENDING" | "DECIDED" | "GONE";
+
+export interface DecisionSla {
+  hours: number;
+  remainingHours: number;
+  breached: boolean;
+}
+
+/**
+ * صفُّ الصندوق الموحّد — **يعرض ما يُقرَّر عليه** لا معرّفاً قاعدياً.
+ *
+ * ⛔ لا حقلَ هنا يُملأ «إن أمكن»: `party` و`amount` قد يكونان `null` لقرارٍ لا طرفَ له ولا
+ * مبلغ (إجازة، إقفال شهر)، لكنّ `summaryItems` و`reason` يملؤهما كلُّ مصدرٍ بما يملك.
+ */
+export interface DecisionRowModel {
+  /** مفتاحُ السجلّ (للأزواج approve/reject يُستعمل مفتاحُ الاعتماد). */
+  kind: DecisionKind;
+  /** معرّفُ الطلب الذي يستقبله الحسم — ليس بالضرورة معرّفَ المستند. */
+  id: number;
+  title: string;
+  /** تسميةُ النوع الفرعيّ داخل النوع (مثل «إلغاء أمر» داخل ضبط أمر الشراء). */
+  subkind: string | null;
+  /** الطرف: مورّد/عميل/موظّف/جهة توصيل. */
+  party: string | null;
+  /** المبلغ نصّاً عشرياً بالعملة المذكورة، أو `null` لقرارٍ بلا مبلغ. */
+  amount: string | null;
+  currency: "IQD" | "USD";
+  branchId: number | null;
+  branchName: string | null;
+  requestedBy: number | null;
+  requestedByName: string | null;
+  /** ISO-8601. */
+  requestedAt: string;
+  ageHours: number;
+  sla: DecisionSla | null;
+  summaryItems: DecisionSummaryItem[];
+  reason: string | null;
+  allowedActions: DecisionAction[];
+  href: string;
+  /** قفلٌ تفاؤليّ يُعاد إلى الخادم مع الحسم حيث تشترطه الخدمة. */
+  expectedVersion: number | null;
+  /** إقراراتٌ يلزم أن يوافق عليها المُقرِّر قبل الاعتماد (مثل «وصلت البضاعة كاملة»). */
+  confirmations: Array<{ key: string; label: string }>;
+  /** مرجعٌ نصّيّ يلزم الاعتماد (مثل مرجع تنفيذ الاسترداد على جهاز الدفع). */
+  requiredReference: { key: string; label: string; minLength: number } | null;
+  rejectReason: "REQUIRED" | "OPTIONAL" | "NOT_SUPPORTED";
+  /** هل يلزم الاعتمادَ سببٌ مكتوب؟ (حوكمة المشتريات تشترطه على القرارين معاً). */
+  approveReason: "REQUIRED" | "OPTIONAL";
+  /** الحدُّ الأدنى لطول السبب حيث يلزم — تشترطه بعض الخدمات (5 أو 10 محارف). */
+  reasonMinLength: number;
+  /**
+   * الاعتمادُ في مكانه غيرُ ممكن لسببٍ مكتوب (مثل: يلزم اختيارُ رافد الردّ من شاشة المستند).
+   * حين لا يكون `null` يُخفي الصفُّ زرَّ الاعتماد ويعرض السبب مع رابط الشاشة.
+   */
+  approveBlockedReason: string | null;
+  /**
+   * صيغُ الاعتماد حين يكون للاعتماد **أكثرُ من نتيجةٍ واحدة** (قضيةُ السلامة: «حُلّت» أو
+   * «تُصرَف»). فارغةٌ = اعتمادٌ واحد. حين لا تكون فارغةً يلزم المُقرِّرَ اختيارُ واحدةٍ صراحةً
+   * وتُرسَل `variant` مع الحسم — ⛔ لا افتراضَ صامتٌ لأولاها: كان الصندوق يحوّل كلَّ اعتمادٍ
+   * إلى «حُلّت» فيُمحى «تُصرَف» من الشيفرة (Codex على #1004).
+   */
+  approveVariants: Array<{ key: string; label: string }>;
+  trigger: DecisionTrigger | null;
+}
+
+/**
+ * تسمياتُ الأنواع الفرعية داخل القرار — قاموسٌ واحد لكلّ ما يعرضه الصندوق كنوعٍ فرعيّ
+ * (نوعُ طلب ضبط أمر الشراء، نوعُ التحويل، ...). `subkind` في الصفّ يحمل التسمية لا المفتاح.
+ */
+export const DECISION_SUBKIND_LABEL_AR: Record<string, string> = {
+  // ضبط أمر الشراء
+  APPROVE_REVISION: "اعتماد المراجعة",
+  CANCEL_ORDER: "الغاء الامر",
+  EMERGENCY_ORDER: "امر طارئ",
+  // طلب الشراء الداخلي
+  APPROVE: "اعتماد",
+  CANCEL: "الغاء",
+  // مصروف الشراء
+  POST: "ترحيل",
+  REVERSE: "عكس",
+  // فاتورة المورد
+  POST_INVOICE: "ترحيل الفاتورة",
+  REVERSE_INVOICE: "عكس الفاتورة",
+  // ضبط امر الشغل
+  COMMERCIAL_EDIT: "تعديل تجاري",
+  MATERIAL_ADJUST: "تعديل خامات",
+  REVERSE_DELIVERY: "عكس تسليم",
+  // تحويلات الرواتب
+  INCOME_TAX: "ضريبة الدخل",
+  SOCIAL_SECURITY: "الضمان الاجتماعي",
+  // سداد السلف
+  REPAYMENT: "تقسيط سلفة",
+  RETURN: "ارجاع تقسيط",
+  // اعادة تقييم التكلفة
+  CORRECTION: "تصحيح تكلفة",
+  IMPAIRMENT: "انخفاض قيمة",
+  // اتجاه السند
+  IN: "سند قبض",
+  OUT: "سند صرف",
+};
+
+export function decisionSubkindLabel(key: string | null | undefined): string | null {
+  if (!key) return null;
+  return DECISION_SUBKIND_LABEL_AR[key] ?? key;
+}
+
+export interface DecisionDecideResult {
+  kind: DecisionKind;
+  id: number;
+  action: DecisionAction;
+  outcome: DecisionOutcome;
+  /** نصٌّ عربيّ يُعرَض كما هو — من الخدمة الأصلية حين تُرجع رسالة. */
+  message: string;
+}
+
+/**
+ * سقفُ ساعات القرار — **افتراضٌ تشغيليّ لا عقد**: يرتّب الصندوق ويلوّن المتأخّر. ما يُخرج
+ * مالاً يُنتظر أقلّ لأنّ الطرف الآخر ينتظر ماله؛ والباقي يومان.
+ */
+export const DEFAULT_DECISION_SLA_HOURS = 48;
+export const MONEY_OUT_DECISION_SLA_HOURS = 24;
+
+/** الساعات بين لحظتين — لا تقلّ عن صفر، بمنزلةٍ عشرية واحدة. */
+export function decisionAgeHours(requestedAt: string | Date, now: Date): number {
+  const at = typeof requestedAt === "string" ? new Date(requestedAt) : requestedAt;
+  const ms = now.getTime() - at.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.round((ms / 3_600_000) * 10) / 10;
+}
+
+/** يبني SLA الصفّ من عمره ولحظة خطره. */
+export function decisionSla(ageHours: number, trigger: DecisionTrigger | null): DecisionSla {
+  const hours = trigger === "MONEY_OUT" ? MONEY_OUT_DECISION_SLA_HOURS : DEFAULT_DECISION_SLA_HOURS;
+  const remaining = Math.round((hours - ageHours) * 10) / 10;
+  return { hours, remainingHours: remaining, breached: remaining < 0 };
+}
+
+/**
+ * ترتيبُ الصندوق: المتأخّرُ عن سقفه أوّلاً (الأكثرُ تأخّراً فالأقلّ)، ثمّ الأقربُ إلى سقفه،
+ * ثمّ الأقدم. صفٌّ بلا SLA يُعامَل كأنّ سقفه الافتراضيّ.
+ */
+export function sortDecisionRows<T extends Pick<DecisionRowModel, "ageHours" | "sla">>(rows: T[]): T[] {
+  const remaining = (r: T) => r.sla?.remainingHours ?? DEFAULT_DECISION_SLA_HOURS - r.ageHours;
+  return [...rows].sort((a, b) => {
+    const ra = remaining(a);
+    const rb = remaining(b);
+    if (ra !== rb) return ra - rb;
+    return b.ageHours - a.ageHours;
+  });
+}
+
+export interface DecisionInboxFilter {
+  kind?: string | null;
+  branchId?: number | null;
+  minAgeHours?: number | null;
+}
+
+/** ترشيحٌ نقيّ للعرض — الإنفاذُ (من يرى ماذا) خادميٌّ قبل هذا بمراحل. */
+export function filterDecisionRows<T extends Pick<DecisionRowModel, "kind" | "branchId" | "ageHours">>(
+  rows: T[],
+  filter: DecisionInboxFilter,
+): T[] {
+  return rows.filter((r) => {
+    if (filter.kind && r.kind !== filter.kind) return false;
+    if (filter.branchId != null && r.branchId !== filter.branchId) return false;
+    if (filter.minAgeHours != null && r.ageHours < filter.minAgeHours) return false;
+    return true;
+  });
 }

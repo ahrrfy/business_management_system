@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString } from "../lib/schemas";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
@@ -274,6 +275,9 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), input)),
+  reserveImages: productStudioWriteProcedure
+    .input(z.object({ taskId, count: z.number().int().min(1).max(10), adminOverrideReason }))
+    .mutation(({ ctx, input }) => reserveStudioImageTasks(actor(ctx), input)),
   submitCandidate: productStudioWriteProcedure
     .input(
       z.object({

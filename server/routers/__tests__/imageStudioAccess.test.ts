@@ -5,7 +5,7 @@ import { __resetImageStoreForTest } from "../../lib/imageStore";
 
 const providerMocks = vi.hoisted(() => ({
   callRemovebg: vi.fn(async () => ({ cutout: Buffer.from("cutout"), creditsCharged: 1, isPreview: false })),
-  generateStudioImage: vi.fn(async () => ({ imageBase64: "QUJD", mimeType: "image/png" })),
+  generateStudioImage: vi.fn<typeof import("../../services/aiImageStudioService").generateStudioImage>(async () => ({ imageBase64: "QUJD", mimeType: "image/png" })),
 }));
 
 vi.mock("../../services/imageStudioSettingsService", async (importOriginal) => ({
@@ -98,6 +98,28 @@ beforeEach(async () => {
 });
 
 describe("image studio worker permission", () => {
+  it("guards both AI attempts and issues a receipt only after an image succeeds", async () => {
+    const actual = await vi.importActual<typeof import("../../services/aiImageStudioService")>("../../services/aiImageStudioService");
+    const { runGuardedImageStudioCall } = await import("../../services/imageStudioUsageGuard");
+    vi.mocked(runGuardedImageStudioCall).mockClear();
+    const fakeFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { data: "QUJD", mimeType: "image/png" } }] } }] })));
+    providerMocks.generateStudioImage.mockImplementationOnce((params, opts) => actual.generateStudioImage(params, { ...opts, fetchImpl: fakeFetch }));
+    await expect(caller("print_operator").aiStudioTransform({ imageDataUrl: PNG_1X1, taskId: 920 }))
+      .resolves.toMatchObject({ imageDataUrl: "data:image/png;base64,QUJD", processingReceipt: expect.any(String) });
+    expect(runGuardedImageStudioCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a concise provider failure after IMAGE_OTHER retries are exhausted", async () => {
+    const { AiImageError } = await import("../../services/aiImageStudioService");
+    providerMocks.generateStudioImage.mockRejectedValueOnce(new AiImageError("IMAGE_OTHER", 200, "finishReason=IMAGE_OTHER"));
+    await expect(caller("print_operator").aiStudioTransform({ imageDataUrl: PNG_1X1, taskId: 920 })).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "تعذّر على المزوّد إنشاء الصورة حالياً؛ أعد المحاولة لاحقاً.",
+    });
+  });
+
   it("blocks a user without productStudio FULL before calling the provider", async () => {
     await expect(caller("cashier").proCutout({ imageDataUrl: PNG_1X1, taskId: 920 }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });

@@ -7,6 +7,7 @@
 import { TRPCError } from "@trpc/server";
 import {
   and,
+  asc,
   desc,
   eq,
   gte,
@@ -1321,6 +1322,8 @@ export async function listYearEndReopenRequests(
     year?: number;
     snapshotId?: number;
     pendingOnly?: boolean;
+    /** الأقدم أوّلاً لصندوق القرارات — القصّ (200) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+    order?: "ASC" | "DESC";
   } = {},
 ) {
   const where = [];
@@ -1334,7 +1337,7 @@ export async function listYearEndReopenRequests(
     .select()
     .from(yearEndReopenRequests)
     .where(where.length ? and(...where) : sql`1=1`)
-    .orderBy(desc(yearEndReopenRequests.id))
+    .orderBy(filters.order === "ASC" ? asc(yearEndReopenRequests.id) : desc(yearEndReopenRequests.id))
     .limit(200);
   const userIds = Array.from(
     new Set(
