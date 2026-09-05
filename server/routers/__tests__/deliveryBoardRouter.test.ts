@@ -191,7 +191,10 @@ describe("deliveryRouter — لوحة الخمسة أعمدة والتسوية �
 
     const rows = await cashier().partyBoard();
     expect(rows[0].deliveredUnremitted.count).toBe(0);
-    expect(rows[0].cashInHandLedger).toBe("50.00");
+    // note-J (Codex #1012 P2): العجزُ ذمّةٌ **غير نقديّة** — يُطرَح من «نقد بيده» (يبقى ماديّاً وحده)
+    // ويظهر في عموده الخامس المستقلّ `shortfallOwed`. العهدةُ الكلّية (نقد 0 + عجز 50) تطابق المخزَّن.
+    expect(rows[0].cashInHandLedger).toBe("0.00");
+    expect(rows[0].shortfallOwed).toBe("50.00");
     expect(rows[0].cashInHandDrift).toBe("0.00");
   });
 
