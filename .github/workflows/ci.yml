@@ -122,12 +122,11 @@ jobs:
           # المتعقَّبة فتمرّ المقارنة الصارمة كاذبةً.
           test "$((ran * 10))" -lt "$((total * 4))"
 
-  check-test-build:
-    needs: test-shards
-    # يبقى اسم الفحص المطلوب ثابتاً، ويصدر فشلاً صريحاً بدل skipped إن فشلت/أُلغيت شريحة.
-    if: ${{ always() }}
+  # يعمل بالتوازي مع شرائح الاختبار: كان وضعه بعدها يضيف ٥-٧ دقائق كاملة إلى المسار
+  # الحرج لكل PR ناجح، مع أن عمله مستقل تماماً عن نتائج Vitest.
+  quality-build:
     runs-on: ubuntu-latest
-    # الاختبارات أصبحت في وظيفتَي الشطر أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
+    # الاختبارات في شرائحها أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
     timeout-minutes: 45
     services:
       mysql:
@@ -150,15 +149,13 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
     steps:
-      - name: تأكيد نجاح جميع شرائح الاختبار
-        run: test '${{ needs.test-shards.result }}' = 'success'
       # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
       # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
       # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4  # نسخة pnpm من packageManager في package.json
+      - uses: pnpm/action-setup@v4 # نسخة pnpm من packageManager في package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -205,7 +202,7 @@ jobs:
       - name: فحص الأنواع
         run: pnpm check
       - name: حارس تشخيص فشل CI الآمن
-        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts
+        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts scripts/__tests__/ciCriticalPathWorkflow.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
@@ -251,7 +248,7 @@ jobs:
       - name: حارِس متغيّرات CSS غير المعرَّفة (typos في التوكنز)
         run: pnpm check:css-vars
       # PR #795 (٢٥/٨): حرّاس شريحة UX S1-S3 — يجب استدعاؤها **بالاسم** لا عبر aggregate.
-      # ملاحظة Codex الصائبة: `check-test-build` يستدعي كلّ حارس صراحةً، ولا يشغّل `pnpm check:guards`
+      # ملاحظة Codex الصائبة: `quality-build` يستدعي كلّ حارس صراحةً، ولا يشغّل `pnpm check:guards`
       # ⇒ حارس مُدرَج فقط في aggregate لا يعمل في CI ويسمح للـPR بتخطّي pre-commit.
       - name: حارِس عقد PageHeader (يمنع h1 خامّ + ← رجوع يدويّ)
         run: pnpm check:page-header
@@ -327,6 +324,22 @@ jobs:
         run: pnpm test:nginx-contract
       - name: بناء الإنتاج
         run: pnpm build
+
+  # اسم الفحص محميّ في إعدادات main؛ يبقى ثابتاً كبوابة تجميع سريعة تصدر فشلاً صريحاً
+  # بدل skipped إذا فشلت أو أُلغيت أي شريحة أو وظيفة الجودة.
+  check-test-build:
+    needs: [test-shards, quality-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: تأكيد نجاح الاختبارات والجودة والبناء
+        env:
+          TEST_SHARDS_RESULT: ${{ needs.test-shards.result }}
+          QUALITY_BUILD_RESULT: ${{ needs.quality-build.result }}
+        run: |
+          test "$TEST_SHARDS_RESULT" = "success"
+          test "$QUALITY_BUILD_RESULT" = "success"
 
   # حارس الصلاحيات (T-12) — **مقارنة قاعدة الدمج (merge-base)**، وظيفةٌ مستقلّة سريعة (node فقط، بلا
   # قاعدة/تثبيت). يمسح شجرة الأساس (origin/<base>) وشجرة الـhead ويفشل فقط على انتهاكٍ **يُدخِله الـPR**
