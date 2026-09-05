@@ -162,7 +162,7 @@ async function simulateCounterPayment(invoiceId: number, customerId: number, amo
 }
 
 /** يحاكي عهدةً معترفاً بها على الجهة (نمط تجهيزة deliveryFlow): قيد DISPATCH + رصيد. */
-async function simulateCustody(partyId: number, amount: string, note: string) {
+async function simulateCustody(partyId: number, amount: string, note: string, collectedLedger = true) {
   await db().insert(s.accountingEntries).values({
     entryType: "DELIVERY_DISPATCH", branchId: 1, deliveryPartyId: partyId,
     amount, entryDate: sql`CURDATE()` as unknown as Date,
@@ -171,6 +171,30 @@ async function simulateCustody(partyId: number, amount: string, note: string) {
   await db().update(s.deliveryParties)
     .set({ currentBalance: sql`${s.deliveryParties.currentBalance} + ${amount}` })
     .where(eq(s.deliveryParties.id, partyId));
+  // م١ (حارس reconcileDeliveryFloat/deliveryPartyLedger، PR-3): العهدةُ المُسجَّلة نقداً يلزمها قيدُ
+  // دفترٍ (COD_COLLECTED) كي يطابق `deriveCashInHandFromLedger` العمودَ المخزَّن. الافتراض `true` هو
+  // المحاكاةُ الواقعيّة (عهدةٌ من تحصيلٍ فعليّ). ⛔ يُستثنى سيناريو العهدة الموروثة **المنفوخة** (ج١)
+  // بـ`collectedLedger=false`: العهدةُ أكبرُ من التحصيل الحقيقيّ عمداً (خطأُ بياناتٍ موروث يُنظَّف بالشطب)،
+  // فانحرافُ دفترها متوقَّعٌ ويُقاس بـ`reconcileCleanExceptLegacyLedger` لا يُساوى صفراً.
+  if (collectedLedger) {
+    await db().insert(s.deliveryLedgerEntries).values({
+      eventKey: `SIM-CUSTODY-COD_COLLECTED:${partyId}:${note}`,
+      partyId, branchId: 1, entryType: "COD_COLLECTED", amount, occurredAt: new Date(),
+    });
+  }
+}
+
+/**
+ * م١ — reconcile نظيفٌ عدا انحرافِ الدفتر المتوقَّع لعهدةٍ موروثة منفوخة (ج١): `currentBalance` رُفع
+ * فوق التحصيل الحقيقيّ بلا `COD_COLLECTED`، والشطبُ كتب `COD_WRITTEN_OFF` بكامل المبلغ (يتطلبه ثابتُ
+ * DISPATCH−REMIT−WRITEOFF المحاسبيّ) ⇒ `deliveryPartyLedger` ينحرف حتماً. الحارسُ المحاسبيّ
+ * (`deliveryParty`) والعميلُ والربحُ تبقى نظيفةً — وهو ما يهمّ.
+ */
+async function reconcileCleanExceptLegacyLedger() {
+  const floatIssues = await reconcileDeliveryFloat();
+  expect(floatIssues.every((i) => i.entity === "deliveryPartyLedger")).toBe(true);
+  expect(await reconcileCustomerBalances()).toEqual([]);
+  expect(await reconcileLedgerProfit()).toEqual([]);
 }
 
 describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
@@ -190,7 +214,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await db().update(s.deliveryConsignments)
       .set({ parcelStatus: "DELIVERED", custodyRecognizedAt: new Date() })
       .where(eq(s.deliveryConsignments.id, disp.consignmentId));
-    await simulateCustody(partyId, "8000.00", "عهدة موروثة (تجهيزة اختبار)");
+    await simulateCustody(partyId, "8000.00", "عهدة موروثة (تجهيزة اختبار)", false); // منفوخة: بلا COD_COLLECTED (custodyHeld=0 ⇒ realLoss=realPart)
     // تسديد كاونتري لاحق 3000 ⇒ متبقّي الفاتورة الحيّ 5000 < متبقّي الإرسالية 8000.
     await simulateCounterPayment(disp.invoiceId, 1, "3000.00");
 
@@ -211,7 +235,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     expect(await customerBalance(1)).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("0.00");
     expect((await consignment(disp.consignmentId)).status).toBe("WRITTEN_OFF");
-    await allReconcileClean();
+    await reconcileCleanExceptLegacyLedger(); // عهدةٌ منفوخة موروثة ⇒ انحرافُ دفترٍ متوقَّع، والمحاسبيّ نظيف
 
     // السقف = الخسارة الحقيقية (5000) لا كامل المبلغ (8000): الوهمي لم يكن خسارةً فلا يُستردّ.
     await expect(
@@ -222,7 +246,7 @@ describe("delivery surgical fixes — settle/remittance/queries/fees", () => {
     await expect(
       recoverDeliveryWriteOff({ branchId: 1, partyId, amount: "1" }, MANAGER),
     ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
-    await allReconcileClean();
+    await reconcileCleanExceptLegacyLedger(); // كما أعلاه: العهدة الموروثة المنفوخة تُبقي انحرافَ دفترٍ متوقَّعاً
   });
 
   it("ج٢: branchId غير موجب يُرفض في التسوية والشطب والاسترداد قبل أي كتابة", async () => {
