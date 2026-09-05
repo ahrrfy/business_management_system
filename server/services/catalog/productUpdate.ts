@@ -1,22 +1,29 @@
 // تحديث منتج قائم: ترويسة + متغيّر(ات) + وحدات + أسعار في معاملة واحدة.
+//
+// م٦ (D5): الحرّاس السبعة مصدرُها الواحد `./productUpdateGuards` — يتشاركها هذا المسار (الحامل
+// لمعرّف الوحدة) ومسارُ القالب المشترك في `productEditService.ts`. لا حارسَ يُكتب هنا بيدٍ بعد اليوم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { findBarcodeClashes } from "./barcodeAliases";
-import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
-import { assertBaseUnitStable } from "./baseUnitGuard";
+import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
-import { postCostRevaluation } from "../costRevaluation";
-import { lockInventoryVariants } from "../inventory/stockLock";
 import type { PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
 import {
-  assertNoActiveOnlineOrderUnitChanges,
-  lockProductUnitsForOnlineAllocation,
-} from "./variantAvailability";
+  assertBaseUnitStableAndRevalueCost,
+  assertBundleEditShape,
+  assertHasVariants,
+  loadProductForUpdateOrThrow,
+  lockUnitsAndAssertNoActiveOnlineOrderChanges,
+  lockVariantsForUpdate,
+  logUnitPriceChanges,
+  snapshotProductBeforeUpdate,
+} from "./productUpdateGuards";
 
 export interface UpdateProductUnitInput {
   id?: number; // existing unit id (omit for new)
@@ -53,6 +60,8 @@ export interface UpdateProductInput {
   categoryId?: number | null;
   isCustomizable?: boolean;
   isActive?: boolean;
+  /** سببُ التعديل — يُلحق بلقطة `recordVersions` (م٦ ق٨). اختياريّ؛ الافتراض في الحرّاس المشتركة. */
+  updateReason?: string | null;
   variants: UpdateProductVariantInput[];
 }
 
@@ -61,25 +70,18 @@ export interface UpdateProductInput {
  *  - New units (no id) are INSERTed with their prices.
  *  - Units present in DB but absent from input are soft-deactivated (isActive=false). */
 export async function updateProduct(input: UpdateProductInput, actor: Actor) {
-  return withTx(async (tx) => {
+  return withTx((tx) => updateProductTx(tx, input, actor));
+}
+
+/** الجسم داخل معاملةٍ يملكها المستدعي — كي يستطيع مسارٌ أعلى (الاستعادة) ضمّه إلى معاملته. */
+export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: Actor) {
     if (!input.name.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
-    if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
+    assertHasVariants(input.variants.length);
 
-    const p = (await tx.select().from(products).where(eq(products.id, input.productId)).limit(1))[0];
-    if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    const p = await loadProductForUpdateOrThrow(tx, input.productId);
 
-    // gstack B12 (٧/٧/٢٦): مرآة قيود إنشاء البكج على مسار التعديل — كانت غائبة فيسمح تعديل بكج بإضافة
-    // متغيّر ثانٍ (متغيّر «شبح» بلا وصفة، مصنَّف BUNDLE، يفشل عند البيع بـPRECONDITION_FAILED) أو
-    // بتعطيل وحدة الأساس. نفرض هنا: بكج = متغيّر واحد فقط + وحدة أساس واحدة فقط.
-    if (p.isBundle) {
-      if (input.variants.length !== 1) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يقبل إلّا متغيّراً واحداً — احذف المتغيّرات الإضافية" });
-      }
-      const baseUnitsCount = input.variants[0].units.filter((u) => u.isBaseUnit).length;
-      if (baseUnitsCount !== 1) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يقبل إلّا وحدة أساس واحدة" });
-      }
-    }
+    // gstack B12 (٧/٧/٢٦): بكج = متغيّر واحد فقط + وحدة أساس واحدة فقط (حارسٌ مشترك — كان هنا وحده).
+    assertBundleEditShape(p, input.variants.length, input.variants[0].units.filter((u) => u.isBaseUnit).length);
 
     // productUnit هو mutex معنى الكمية: نقفل كل وحدات المتغيّرات القائمة قبل أي
     // قفل variant/كتابة، ثم نحدد التغييرات من القراءة المقفلة ونفحص الطلبات النشطة.
@@ -91,20 +93,18 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
           .where(inArray(productUnits.variantId, input.variants.map((variant) => variant.id))))
           .map((unit) => Number(unit.id))
       : [];
-    const lockedUnits = await lockProductUnitsForOnlineAllocation(tx, existingUnitIds);
     const desiredByVariant = new Map(input.variants.map((variant) => [
       variant.id,
       new Map(variant.units.filter((unit) => unit.id != null).map((unit) => [Number(unit.id), unit] as const)),
     ] as const));
-    const protectedUnitIds = lockedUnits
-      .filter((unit) => {
-        const desired = desiredByVariant.get(unit.variantId)?.get(unit.id);
-        return !desired || Number(desired.conversionFactor) !== Number(unit.conversionFactor);
-      })
-      .map((unit) => unit.id);
-    await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
+    await lockUnitsAndAssertNoActiveOnlineOrderChanges(tx, existingUnitIds, (unit) => {
+      const desired = desiredByVariant.get(unit.variantId)?.get(unit.id);
+      return !desired || Number(desired.conversionFactor) !== Number(unit.conversionFactor);
+    });
 
-    await lockInventoryVariants(tx, input.variants.map((variant) => variant.id));
+    await lockVariantsForUpdate(tx, input.variants.map((variant) => variant.id));
+    // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
+    await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
     await tx
       .update(products)
       .set({
@@ -188,9 +188,10 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       // طمس WAVG متزامن ولا يعكس ترتيب أقفال الشراء/الإنتاج.
       const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
       // المتغيّرات كلّها مقفولة أعلاه، لذا نحافظ على أولوية تشخيص وحدة الأساس بلا
-      // إنشاء ترتيب أقفال موازٍ لمسارات WAVG.
-      await assertBaseUnitStable(tx, v.id, { by: "id", unitId: baseU?.id ?? null });
-      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason);
+      // إنشاء ترتيب أقفال موازٍ لمسارات WAVG. (الترتيب «الأساس ثمّ التكلفة» مُثبَّت في الحارس المشترك.)
+      await assertBaseUnitStableAndRevalueCost(
+        tx, v.id, { by: "id", unitId: baseU?.id ?? null }, oldV?.costPrice, toDbMoney(v.costPrice), actor, v.costChangeReason,
+      );
       await tx
         .update(productVariants)
         .set({
@@ -230,21 +231,8 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
             .where(eq(productUnits.id, u.id));
           // Replace prices for this unit.
           await tx.delete(productPrices).where(eq(productPrices.productUnitId, u.id));
-          for (const pr of u.prices ?? []) {
-            const oldPrice = previousByTier.get(pr.priceTier) ?? null;
-            const newPrice = toDbMoney(pr.price);
-            if (oldPrice == null || oldPrice !== newPrice) {
-              await tx.insert(priceChangeLog).values({
-                productUnitId,
-                priceTier: pr.priceTier,
-                oldPrice,
-                newPrice,
-                reason: "تعديل يدوي من شاشة المنتج",
-                waveId: null,
-                actorUserId: actor.userId,
-              });
-            }
-          }
+          // سجلّ تغيّر السعر (حارسٌ مشترك — صار يُكتب في مسار القالب أيضاً، Codex INV-05).
+          await logUnitPriceChanges(tx, { productUnitId, previousByTier, next: u.prices ?? [], actor });
         } else {
           const uRes = await tx.insert(productUnits).values({
             variantId: v.id,
@@ -273,5 +261,4 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
     }
 
     return { productId: input.productId };
-  });
 }

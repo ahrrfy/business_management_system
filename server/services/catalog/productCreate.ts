@@ -52,6 +52,15 @@ export interface CreateProductInput {
   printService?: boolean;
   // توجيه الخدمة لكاشير خدمة العملاء (الاستقبال) أيضاً — يَظهر هناك ويُباع عبر createPrintSale.
   showInReception?: boolean;
+  /**
+   * م٦ (تناظر الإنشاء/التعديل — قرار المالك «شاشةُ التعديل تُظهر شاشة الإنشاء مطابقة»): الظهورُ في شبكة
+   * الطباعة قرارٌ مستقلّ عن `printService` كما في مسار التعديل — يُزامن `productType='PRINT_SERVICE'`
+   * (Codex P1 على #757) ولا يجعل البند خدمةً بلا مخزون. و«التوصيات الآلية» و«حالة المنتج» كانتا في
+   * شاشة التعديل وحدها فيُولَد المنتج بقيمٍ لا يستطيع إعلانها عند ولادته.
+   */
+  showInPrintPos?: boolean;
+  allowAutoCartRecommendations?: boolean;
+  isActive?: boolean;
   // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب: متغيّر واحد، وحدة أساس واحدة، ومكوّنات في `bundleComponents`.
   // التكلفة لن تُقرأ من costPrice (تُحسب لحظة البيع من مجموع مكوّناته)، والمخزون الافتتاحي يُتجاهَل (لا branchStock للبكج).
   isBundle?: boolean;
@@ -245,9 +254,12 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       if (input.isConsignment)
         throw new TRPCError({ code: "BAD_REQUEST", message: "«يُباع بالطلب» ممنوع على بضاعة الأمانة — بيعُ ما لم يُودَع يُنشئ التزاماً كاذباً للمودِع" });
     }
+    // م٦: الظهورُ في شبكة الطباعة من `printService` (الإرث) أو من `showInPrintPos` الصريح (تناظر التعديل)؛
+    // كلاهما يُزامن `productType='PRINT_SERVICE'` كي لا يظهر بندٌ في الشبكة ثمّ يرفضه `createPrintSale`.
+    const showInPrintPos = !!input.printService || !!input.showInPrintPos;
     const pRes = await tx.insert(products).values({
       name: composedName,
-      productType: input.printService ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
+      productType: showInPrintPos ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
       brand: input.brand?.trim() || null,
       modelName: input.modelName?.trim() || null,
       description: input.description?.trim() || null,
@@ -266,7 +278,10 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       // 0262 (٢٤/٨): الرؤية في شبكة الطباعة صارت قراراً مستقلاً — يظلّ `printService` يوسم
       // `productType='PRINT_SERVICE'` (لبقاء التوافق مع مسارات البيع/التصنيف الأخرى)، وفي
       // الوقتِ نفسه يُشعل `showInPrintPos=TRUE` كي تظهر الخدمةُ فوراً في الشبكة.
-      showInPrintPos: !!input.printService,
+      showInPrintPos,
+      // م٦: غيابُهما يُبقي افتراض المخطّط (التوصيات مفعَّلة، المنتج فعّال) — نمط PATCH كمسار التعديل.
+      ...(input.allowAutoCartRecommendations !== undefined ? { allowAutoCartRecommendations: input.allowAutoCartRecommendations } : {}),
+      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
       isBundle,
       isConsignment: !!input.isConsignment,
       consignorId: input.isConsignment ? (input.consignorId ?? null) : null,

@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { UnitPriceHistory } from "@/components/product/UnitPriceHistory";
+import { ProductVersionHistory } from "@/components/product/ProductVersionHistory";
 import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
@@ -674,6 +675,17 @@ export default function SimpleProductEditForm({
         images={images}
         onImagesChange={setImages}
         productExists
+      />
+
+      {/* م٦ ق٨ — السجلّ والاستعادة: بعد استعادةٍ ناجحة نُعيد التعبئة من الخادم (كما بعد الحفظ). */}
+      <ProductVersionHistory
+        productId={productId}
+        onRestored={() => {
+          setError("");
+          setDone("");
+          baseline.current = null;
+          setHydrated(false);
+        }}
       />
 
       {error && (
