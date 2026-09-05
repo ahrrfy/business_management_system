@@ -426,6 +426,11 @@ export default function ProductImageStudio() {
       getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     },
   );
+  // A scanned task can be outside every loaded page or list filter.
+  const selectedTaskQuery = trpc.productStudio.tasks.useQuery(
+    { scope, taskId: selectedId ?? 0, limit: 1, hideClosedCampaigns: false },
+    { enabled: !offline && Boolean(selectedId) },
+  );
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
     {
@@ -475,6 +480,7 @@ export default function ProductImageStudio() {
     [
       [dashboard, "لوحة المؤشرات"],
       [tasks, "قائمة المهام"],
+      [selectedTaskQuery, "المهمة المحددة"],
       [campaigns, "الحملات"],
       [assignees, "قائمة الموظفين"],
       [campaignPreview, "معاينة المهام الناقصة"],
@@ -496,6 +502,7 @@ export default function ProductImageStudio() {
   const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedTaskIds));
 
   const onlineSelected =
+    selectedTaskQuery.data?.items.find((task) => Number(task.id) === selectedId) ??
     taskItems.find((task) => Number(task.id) === selectedId) ??
     (scannedTask && Number(scannedTask.id) === selectedId ? scannedTask : null);
   const selected =
@@ -924,12 +931,12 @@ export default function ProductImageStudio() {
           allowDraftWrites = true;
           return;
         }
-        const refreshed = await tasks.refetch();
+        const refreshed = await selectedTaskQuery.refetch();
         if (refreshed.isError) {
           retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
           return;
         }
-        const task = refreshed.data?.pages.flatMap((page) => page.items).find((item) => Number(item.id) === taskId);
+        const task = refreshed.data?.items.find((item) => Number(item.id) === taskId);
         if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
           userId: authenticatedUserId,
@@ -960,10 +967,8 @@ export default function ProductImageStudio() {
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-    // ⚠️ لا تُضِف editOverrideReason إلى المصفوفة: هذا الأثر يُعيد جلب **كل** صفحات قائمة
-    // المهام المحمَّلة، فكان كلّ حرفٍ يُكتب في سبب التصحيح الإداري يُطلق جولة جلبٍ كاملة.
-    // القيمة الحيّة تُقرأ من الref أعلاه فلا تُفقَد الصحّة.
-  }, [authenticatedUserId, offline, selectedId, selectedRevision, resumeRetry]);
+    // Read the administrative reason from its ref; typing must not refetch the task.
+  }, [authenticatedUserId, offline, scope, selectedId, selectedRevision, resumeRetry]);
 
   useEffect(() => {
     if (!selected || !authenticatedUserId || !editable || !draftReady || draftConflict) return;
@@ -2635,8 +2640,7 @@ export default function ProductImageStudio() {
           </Button>
           {taskScannerOpen && (
             <Suspense fallback={null}>
-              {/* keepOpen: نفس مبرّرات محطّة التصوير — دورةٌ متكرّرة بلا احتكاك إعادة الفتح. */}
-              <CameraScanner open keepOpen onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
+              <CameraScanner open onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
             </Suspense>
           )}
         </>
