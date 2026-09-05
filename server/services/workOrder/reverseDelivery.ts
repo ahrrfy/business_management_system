@@ -17,21 +17,14 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { extractInsertId } from "../../lib/insertId";
-import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { logAuditTx } from "../auditService";
-import {
-  assertCashOutAvailable,
-  assertNonPhysicalOutReceipt,
-  lockMaterializedCashReceiptSourceForWrite,
-} from "../cash/cashAvailability";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { appendDeliveryEvent } from "../delivery/lifecycle";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
-import { paymentAssetRole } from "../sale/paymentPosting";
+import { reverseWorkOrderDeliveryEffectsInTx } from "../reversal/workOrderDeliveryReversal";
 import { type Actor, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -78,6 +71,8 @@ interface OutgoingEvidence {
 
 interface ReverseEvidence {
   sources: CollectionSource[];
+  /** المصادرُ التي بقي فيها ما يُردّ بعد الردود السابقة — أساسُ تجسيد `PAID_AMOUNT` لكلّ مصدر. */
+  remaining: CollectionSource[];
   completedOut: ReturnType<typeof money>;
   pendingOut: ReturnType<typeof money>;
   netPaid: ReturnType<typeof money>;
@@ -332,6 +327,7 @@ async function reverseEvidence(
   }
   return {
     sources,
+    remaining,
     completedOut,
     pendingOut,
     netPaid: round2(totalIn.minus(completedOut)),
@@ -595,105 +591,31 @@ export async function reverseWorkOrderDeliveryInTx(
     throw new TRPCError({ code: "FORBIDDEN", message: "منشئ الأمر أو الفنّي المسند إليه لا يعتمد عكس تسليمه" });
   }
 
-  const total = round2(money(inv.total));
-  const materialsCost = round2(money(wo.materialsCost ?? "0"));
-  const rawDeposit = money(wo.deposit ?? "0");
-  const depositClosed = round2(rawDeposit.lt(total) ? rawDeposit : total);
-  // رصيد العميل المخزّن يعكس أصل المقبوض قبل ردوده، لا paidAmount الصافي بعدها. طرحُ
-  // `total - netPaid` كان يطرح OUT السابق مرّةً ثانية ويقلب الرصيد سالباً عند رد جزئي سابق.
-  const grossPaidBeforeRefunds = round2(evidence.netPaid.plus(evidence.completedOut));
-  const unpaid = round2(total.minus(grossPaidBeforeRefunds));
-  const safeUnpaid = unpaid.lt(0) ? money(0) : unpaid;
-  const reverseLines = [debitLine("SALES_FLEX", total), creditLine("AR", total)];
-  const roleDebits: Record<string, ReturnType<typeof money>> = { SALES_FLEX: total };
-  const roleCredits: Record<string, ReturnType<typeof money>> = { AR: total };
-  if (materialsCost.gt(0)) {
-    reverseLines.push(debitLine("WORK_IN_PROGRESS", materialsCost), creditLine("COGS", materialsCost));
-    roleDebits.WORK_IN_PROGRESS = materialsCost;
-    roleCredits.COGS = materialsCost;
-  }
-  if (depositClosed.gt(0)) {
-    reverseLines.push(debitLine("AR", depositClosed), creditLine("OTHER_LIABILITY", depositClosed));
-    roleDebits.AR = depositClosed;
-    roleCredits.OTHER_LIABILITY = depositClosed;
-  }
-  const reverseSource = { roleDebits, roleCredits };
-  await postEntry(tx, {
-    entryType: "RETURN",
-    dedupeKey: `WO-REVERSE:${workOrderId}:${invoiceId}`,
-    branchId: Number(wo.branchId), invoiceId, customerId: wo.customerId ?? null,
-    revenue: total.neg(), cost: materialsCost.neg(),
-    profit: round2(total.minus(materialsCost)).neg(), amount: total.neg(),
-    notes: `عكس تسليم أمر الشغل ${wo.orderNumber} — ${reason}`,
-    postingIntent: createPostingIntent("RETURN_SALE_FLEX_WORKORDER", "RETURN", reverseLines, reverseSource),
-    postingSourceComponents: reverseSource,
-  });
-  if (input.reopen !== true && materialsCost.gt(0)) {
-    const wasteSource = { roleDebits: { LOSSES: materialsCost }, roleCredits: { WORK_IN_PROGRESS: materialsCost } };
-    await postEntry(tx, {
-      entryType: "ADJUST", dedupeKey: `WO-REVERSE-WASTE:${workOrderId}:${invoiceId}`,
-      branchId: Number(wo.branchId), invoiceId, cost: materialsCost, amount: materialsCost,
-      notes: `هدر خامة أمر الشغل المسترجَع ${wo.orderNumber} — ${reason}`,
-      postingIntent: createPostingIntent("ADJUST_WIP_WASTE", "ADJUST", [debitLine("LOSSES", materialsCost), creditLine("WORK_IN_PROGRESS", materialsCost)], wasteSource),
-      postingSourceComponents: wasteSource,
-    });
-  }
-  if (wo.customerId != null && safeUnpaid.gt(0)) {
-    await adjustCustomerBalance(tx, Number(wo.customerId), safeUnpaid.neg());
-  }
-
-  const pendingRefundReceiptIds: number[] = [];
-  let immediateCashRefund = money(0);
-  for (const plan of requestedPlans) {
-    const amount = money(plan.amount);
-    const cash = plan.refundMethod === "CASH";
-    if (cash) {
-      if (cashShiftId == null) throw new TRPCError({ code: "CONFLICT", message: "مصدر درج الرد النقدي غير مقفل" });
-      await assertCashOutAvailable(tx, {
-        branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId: cashShiftId,
-        amount, operation: "رد مقبوضات عكس تسليم أمر شغل",
-      });
-    } else {
-      if (wo.customerId == null) {
-        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الرد غير النقدي يحتاج عميلاً مرتبطاً للاعتماد الخارجي" });
-      }
-      assertNonPhysicalOutReceipt({
-        classification: "DEFERRED_APPROVAL", paymentMethod: plan.refundMethod,
-        cashBucket: null, approvalStatus: "PENDING_APPROVAL",
-        operation: "طلب رد غير نقدي لعكس تسليم أمر شغل",
-      });
-    }
-    const inserted = await tx.insert(receipts).values({
-      branchId: Number(wo.branchId), shiftId: cash ? cashShiftId : null,
-      workOrderId, invoiceId, direction: "OUT", amount: toDbMoney(amount),
-      paymentMethod: plan.refundMethod, cashBucket: cash ? "DRAWER" : null,
-      status: cash ? "COMPLETED" : "PENDING",
-      approvalStatus: cash ? "APPROVED" : "PENDING_APPROVAL",
-      referenceNumber: cash ? `WO-REV-${invoiceId}-${plan.sourceReceiptId}-${plan.counterRole === "AR" ? "A" : "L"}` : null,
-      description: cash ? `رد مقبوض — عكس تسليم ${wo.orderNumber}` : `طلب رد غير نقدي — عكس تسليم ${wo.orderNumber}`,
-      partyType: wo.customerId != null ? "CUSTOMER" : "OTHER",
-      partyId: wo.customerId ?? null,
-      internalNote: `WORK_ORDER_CUSTOMER_REFUND:${plan.counterRole === "AR" ? "REVERSE_AR" : "REVERSE_LIABILITY"}:${workOrderId}:${plan.sourceReceiptId}:${control.approvedControlRequestId}`,
-      createdBy: actor.userId,
-    });
-    const refundReceiptId = extractInsertId(inserted);
-    if (!cash) {
-      pendingRefundReceiptIds.push(refundReceiptId);
-      continue;
-    }
-    immediateCashRefund = immediateCashRefund.plus(amount);
-    const assetRole = paymentAssetRole("CASH", "DRAWER", "OUT");
-    const profile = plan.counterRole === "AR" ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
-    const source = { roleDebits: { [plan.counterRole]: amount }, roleCredits: { [assetRole]: amount } };
-    await postEntry(tx, {
-      entryType: "PAYMENT_OUT", dedupeKey: `WO-REVERSE-REFUND:${invoiceId}:${refundReceiptId}`,
-      branchId: Number(wo.branchId), invoiceId, receiptId: refundReceiptId,
-      customerId: wo.customerId ?? null, amount, paymentMethod: "CASH",
-      notes: `رد عكس تسليم ${wo.orderNumber} — ${plan.counterRole === "AR" ? "حصّة دفعة التسليم" : "حصّة العربون"}`,
-      postingIntent: createPostingIntent(profile, "PAYMENT_OUT", [debitLine(plan.counterRole, amount), creditLine(assetRole, amount)], source),
-      postingSourceComponents: source,
-    });
-  }
+  /**
+   * ═══ ق٧ — الأثرُ الماليّ كلُّه عبر محرّك العكس (م٢) ═══
+   * قيدُ العكس (RETURN_SALE_FLEX_WORKORDER + هدرُ الخامة عند الإقفال) · إسقاطُ غير المسدَّد من
+   * الذمّة · ردُّ المقبوضات مصدراً مصدراً (نقدٌ فوريّ / سندٌ معلَّق) — كلُّها منفّذون في
+   * `server/services/reversal/executors/workOrderDelivery.ts`، والسجلُّ يُصالَح من الحقيقة أوّلاً
+   * ويُفرض عليه Σ = 0 لما عُكس كاملاً. هنا تبقى حالةُ الفاتورة والأمر والإرسالية والأحداث.
+   */
+  const effects = await reverseWorkOrderDeliveryEffectsInTx(tx, {
+    wo, inv,
+    netPaid: evidence.netPaid, completedOut: evidence.completedOut,
+    sources: evidence.remaining.map((source) => ({
+      receiptId: source.receiptId,
+      amount: evidence.sources.find((s) => s.receiptId === source.receiptId)?.amount ?? source.amount,
+      method: source.method,
+      remaining: source.amount,
+    })),
+    plans: requestedPlans,
+    cashShiftId,
+    approvedControlRequestId: control.approvedControlRequestId,
+    reopen: input.reopen === true,
+    reason,
+  }, actor);
+  const total = effects.total;
+  const immediateCashRefund = effects.immediateCashRefund;
+  const pendingRefundReceiptIds = effects.pendingRefundReceiptIds;
 
   const paidAfterImmediate = round2(evidence.netPaid.minus(immediateCashRefund));
   if (paidAfterImmediate.lt(0)) throw new TRPCError({ code: "CONFLICT", message: "الرد النقدي يتجاوز صافي المقبوض المثبت" });

@@ -19,10 +19,11 @@ import {
   type AccountRole,
   type PostingProfile,
 } from "../../accounting/postingEngine";
-import { postEntry } from "../../ledgerService";
+import { adjustSupplierBalance, postEntry } from "../../ledgerService";
 import { money, round2, toDbMoney } from "../../money";
 import { classifyGiftPosting } from "../../sale/giftPosting";
 import { userNameSnapshot } from "../../userSnapshot";
+import { recordEffect } from "../effectLedger";
 import type { EffectExecutor, ExecutionOutcome, PendingEffect, ReversalRun } from "../types";
 import { invoiceContext, readInventoryState, writeLedgerState, type InvoiceContext } from "./invoiceState";
 
@@ -74,7 +75,36 @@ export const invoiceConsignmentExecutor: EffectExecutor = async (tx, effects, ru
       postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare.neg()), ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare.neg())], { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } }),
       postingSourceComponents: { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } },
     });
-    outcomes.push({ status: "REVERSED", signedAmount: share.neg(), payloadJson: { supplierId, paidShare: paidShare.toFixed(2), giftShare: giftShare.toFixed(2) } });
+    if (!readInventoryState(run).restock) {
+      // تالفٌ (لا يعود للرفّ): إعادةُ استحقاقٍ **يتيمة** (بلا invoiceId) ⇒ AP صافٍ = 0 (يبقى مستحقاً
+      // للمودِع) والمكتبةُ تتحمّل الخسارة؛ القيدُ اليتيم خارج فلتر العمولة فلا يمسّ البائع. ويُسجَّل
+      // أثراً مفتوحاً بقصد (scope return-damaged) — التزامٌ جديدٌ لا عكسٌ.
+      await postEntry(tx, {
+        entryType: "PURCHASE", supplierId, invoiceId: null, branchId: Number(ctx.invoice.branchId),
+        amount: share, cost: paidShare, profit: paidShare.neg(),
+        notes: `استحقاق تلف مرتجع أمانة؛ COGS مبسّط=${toDbMoney(paidShare)}`,
+        postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare), ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare)], { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: share } }),
+        postingSourceComponents: { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: share } },
+      });
+      await adjustSupplierBalance(tx, supplierId, share);
+      await recordEffect(
+        tx,
+        {
+          documentType: run.documentType,
+          documentId: run.documentId,
+          effectKind: "CONSIGNMENT",
+          effectTable: "suppliers",
+          effectRowId: supplierId,
+          signedAmount: share,
+          branchId: Number(ctx.invoice.branchId),
+          reason: run.reason,
+          scope: "return-damaged",
+          payloadJson: { supplierId, paidShare: paidShare.toFixed(2), giftShare: giftShare.toFixed(2), orphanReaccrual: true },
+        },
+        run.actor,
+      );
+    }
+    outcomes.push({ status: "REVERSED", signedAmount: share.neg(), payloadJson: { supplierId, paidShare: paidShare.toFixed(2), giftShare: giftShare.toFixed(2), damagedReaccrual: !readInventoryState(run).restock } });
   }
   return outcomes;
 };
@@ -119,6 +149,8 @@ function reversedCosts(ctx: InvoiceContext, run: ReversalRun) {
     : new Decimal(0);
   return {
     restockedCost,
+    /** ما يظهر في نصّ القيد «عكس كلفة تحليلية»: صفرٌ حين لا تعود البضاعة (نصُّ المرتجع القائم). */
+    analyticalReversedCost: state.restock ? restockedCost : new Decimal(0),
     ownedRestockedCost,
     ownedRestockedGiftCost,
     financiallyRestockedGiftCost,
@@ -241,7 +273,7 @@ export const invoiceSaleLedgerExecutor: EffectExecutor = async (tx, effects, run
         createdByNameSnapshot: cancelOperatorName,
         notes: flavor === "CANCEL"
           ? `${reasonNote ? `إلغاء فاتورة — ${reasonNote.slice(0, 200)}؛ ` : "إلغاء فاتورة؛ "}عكس كلفة تحليلية=${toDbMoney(costs.restockedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedRestockedCost)}؛ خدمة غير معادة=${toDbMoney(costs.serviceRestockedCost)}؛ أمانة مستقلة=${toDbMoney(costs.consignmentRestockedCost)}`
-          : `عكس كلفة تحليلية=${toDbMoney(costs.restockedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedRestockedCost)}؛ خدمة غير معادة=${toDbMoney(costs.serviceRestockedCost)}؛ أمانة مستقلة=${toDbMoney(costs.consignmentRestockedCost)}${reasonNote ? `؛ سبب المرتجع=${reasonNote}؛ مصير البضاعة=${readInventoryState(run).restock ? "إعادة للرف" : "تالف"}` : ""}`,
+          : `عكس كلفة تحليلية=${toDbMoney(costs.analyticalReversedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedRestockedCost)}؛ خدمة غير معادة=${toDbMoney(costs.serviceRestockedCost)}؛ أمانة مستقلة=${toDbMoney(costs.consignmentRestockedCost)}${reasonNote ? `؛ سبب المرتجع=${reasonNote}؛ مصير البضاعة=${readInventoryState(run).restock ? "إعادة للرف" : "تالف"}` : ""}`,
         postingIntent: returnPostingIntent,
         postingSourceComponents: returnPostingSource,
       });

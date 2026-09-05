@@ -19,148 +19,56 @@
  *  · `PAID_AMOUNT` على **الفاتورة**: Σ المقبوض المتجسِّد (إيصالات IN + حصص العربون المطبَّقة)
  *    − Σ المستردّ — نفسُ حسبة `cancelSaleInTx` السابقة حرفاً بحرف (Codex P1 ١٢/٨: السند
  *    الخارجيّ المرتبط بالفاتورة يدخل الوعاء).
- *  · `CUSTOMER_BALANCE` = مساهمةُ الفاتورة الحاليّة في ذمّة العميل: المتبقّي الدفتريّ − ما يُردّ.
+ *  · `CUSTOMER_BALANCE` = مساهمةُ الفاتورة الحاليّة في ذمّة العميل **من المستند**:
+ *    `total − returnedTotal − الوعاء` — لا من قيد SALE: الذمّةُ أُنشئت بالإجماليّ **المقرَّب** (نقد
+ *    IQD) فحسابُها من قيد SALE الخامّ كان يترك فارقَ التقريب على العميل بعد الإلغاء (عطبٌ قديم
+ *    في `cancelSaleInTx` أُغلق هنا).
  *  · `COUPON` = صفُّ الاسترداد إن وُجد.
  *
  * ⛔ الاستهلاكُ الماديّ لموادّ الخدمة (حركاتُ OUT على متغيّراتٍ ليست بنوداً) **ليس أثراً يُعكَس**
  * بالإلغاء — المادّةُ استُهلكت في الطباعة؛ لذلك لا يُجسَّد (وهو سلوكُ الإلغاء القائم).
  */
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
-import type { DocumentEffectKind } from "@shared/documentEffects";
-
-import { accountingEntries, couponRedemptions, receipts } from "../../../../drizzle/schema";
+import { accountingEntries, couponRedemptions } from "../../../../drizzle/schema";
 import type { Tx } from "../../../db";
-import { MATERIALIZED_RECEIPT_STATUSES } from "../../cash/cashAvailability";
 import { money, round2 } from "../../money";
-import { loadApplyEffects, recordEffect, recordReverseRow } from "../effectLedger";
+import { loadRefundCaps } from "../../returns/refundCaps";
 import { invoiceContext } from "../executors/invoiceState";
-import type { PendingEffect, ReversalRun } from "../types";
+import type { ReversalRun } from "../types";
+import { loadExistingEffects, reconcile as reconcileEffect, type EffectKey, type TruthEffect } from "./reconcile";
+import type { PendingEffect } from "../types";
 
 export const INVOICE_SALE_SCOPE = "sale";
-const MATERIALIZE_REASON = "تجسيدٌ من الحقيقة قبل العكس";
 
-type EffectKey = string;
-function keyOf(kind: DocumentEffectKind, table: string, rowId: number): EffectKey {
-  return `${kind}|${table}|${rowId}`;
-}
-
-interface TruthEffect {
-  kind: DocumentEffectKind;
-  table: string;
-  rowId: number;
-  /** قيمةُ APPLY حين يُنشأ الصفُّ لأوّل مرّة. */
-  applyAmount: Decimal;
-  applyQuantity: number;
-  /** ما يجب أن يكون متبقّياً الآن بحسب الحقيقة. */
-  targetAmount: Decimal;
-  targetQuantity: number;
-  payload: unknown;
-}
-
-/** يُصالح أثراً واحداً: يُنشئ APPLY إن غاب، ثمّ ابنَ فرقٍ إن خالف المتبقّي الحقيقةَ. */
+/** غلافُ المُصالِح المشترك بنطاق الفاتورة وفرعها — القاعدةُ نفسها لكلّ المستندات (`./reconcile.ts`). */
 async function reconcile(
   tx: Tx,
   run: ReversalRun,
   existing: Map<EffectKey, PendingEffect>,
   truth: TruthEffect,
 ): Promise<void> {
-  const key = keyOf(truth.kind, truth.table, truth.rowId);
-  let current = existing.get(key);
   const branchId = Number((await invoiceContext(tx, run)).invoice.branchId);
-  // أثرٌ صفريٌّ بلا صفٍّ سابق (مثل مساهمةٍ صفريّة في الذمّة لفاتورةٍ مسدَّدة) لا يُمثَّل: صفٌّ بلا معنى.
-  if (!current && truth.applyAmount.isZero() && truth.applyQuantity === 0 && truth.targetAmount.isZero() && truth.targetQuantity === 0) return;
-  if (!current) {
-    const id = await recordEffect(
-      tx,
-      {
-        documentType: "INVOICE",
-        documentId: run.documentId,
-        effectKind: truth.kind,
-        effectTable: truth.table,
-        effectRowId: truth.rowId,
-        signedAmount: truth.applyAmount,
-        signedQuantity: truth.applyQuantity,
-        branchId,
-        reason: MATERIALIZE_REASON,
-        scope: INVOICE_SALE_SCOPE,
-        payloadJson: truth.payload,
-      },
-      run.actor,
-    );
-    current = {
-      id,
-      documentType: "INVOICE",
-      documentId: run.documentId,
-      effectKind: truth.kind,
-      effectTable: truth.table,
-      effectRowId: truth.rowId,
-      branchId,
-      scope: INVOICE_SALE_SCOPE,
-      payloadJson: truth.payload,
-      signedAmount: truth.applyAmount,
-      signedQuantity: truth.applyQuantity,
-      outstandingAmount: truth.applyAmount,
-      outstandingQuantity: truth.applyQuantity,
-    };
-    existing.set(key, current);
-  }
-  const deltaAmount = truth.targetAmount.minus(current.outstandingAmount);
-  const deltaQuantity = truth.targetQuantity - current.outstandingQuantity;
-  if (deltaAmount.isZero() && deltaQuantity === 0) return;
-  await recordReverseRow(
-    tx,
-    current,
-    {
-      signedAmount: deltaAmount,
-      signedQuantity: deltaQuantity,
-      reason: MATERIALIZE_REASON,
-      payloadJson: { reconciled: true, from: current.outstandingAmount.toFixed(4), to: truth.targetAmount.toFixed(4), fromQty: current.outstandingQuantity, toQty: truth.targetQuantity },
-    },
-    run.actor,
-  );
-  current.outstandingAmount = truth.targetAmount;
-  current.outstandingQuantity = truth.targetQuantity;
+  await reconcileEffect(tx, run, { scope: INVOICE_SALE_SCOPE, branchId, existing }, truth);
 }
 
-/** المقبوضُ والمستردّ المتجسِّدان على الفاتورة — تحت قفل (current read بعد انتظار المصدر). */
-export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{ totalIn: Decimal; outPrior: Decimal; directIn: Decimal; appliedIn: Decimal }> {
-  const materialReceipts = await tx
-    .select({ direction: receipts.direction, amount: receipts.amount })
-    .from(receipts)
-    .where(and(
-      eq(receipts.invoiceId, invoiceId),
-      inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-      eq(receipts.approvalStatus, "APPROVED"),
-    ))
-    .for("update");
-  const directIn = materialReceipts.reduce(
-    (sum, receipt) => (receipt.direction === "IN" ? sum.plus(money(receipt.amount)) : sum),
-    money(0),
-  );
-  const outPrior = materialReceipts.reduce(
-    (sum, receipt) => (receipt.direction === "OUT" ? sum.plus(money(receipt.amount)) : sum),
-    money(0),
-  );
-  // حصصُ عربون مسوّدة الاستقبال المطبَّقة على هذه الفاتورة بلا ختم إيصالها بها (Codex على #988):
-  // نفسُ استعلام `returns/refundCaps.ts` الخطوة ②، مقتصراً على appliedKind='INVOICE'، مع استثناء
-  // الهدف الوحيد المختوم (حصّتُه إيصالٌ مباشر مُحتسَبٌ في directIn سلفاً).
-  const appliedPoolRows = await tx.execute(sql`
-    SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
-    FROM orderPayments app
-    JOIN orderPayments coll ON coll.id = app.parentPaymentId
-    LEFT JOIN receipts pr ON pr.id = coll.receiptId
-    WHERE app.orderPayKind = 'APPLICATION'
-      AND app.orderPayAppliedKind = 'INVOICE'
-      AND app.appliedId = ${invoiceId}
-      AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${invoiceId})
-    FOR UPDATE
-  `);
-  const appliedPoolData = (appliedPoolRows as unknown as [Array<{ amount: string }>])[0] ?? appliedPoolRows;
-  const appliedPoolRow = Array.isArray(appliedPoolData) ? appliedPoolData[0] : undefined;
-  const appliedIn = money(appliedPoolRow?.amount ?? "0");
-  return { totalIn: round2(directIn.plus(appliedIn)), outPrior: round2(outPrior), directIn: round2(directIn), appliedIn: round2(appliedIn) };
+/**
+ * المقبوضُ والمستردّ المتجسِّدان على الفاتورة — **من مصدر سقوف الردّ نفسه** (`loadRefundCaps`)،
+ * تحت قفل (current read بعد انتظار المصدر).
+ *
+ * ⭐ لا استعلامَ موازياً هنا: كان لهذا الملفّ استعلامُه الخاصّ (إيصالاتُ IN المختومة + حصصُ
+ * العربون على الفاتورة وحدها) فيغفل ما يُجيزه `returns/refundCaps.ts` — حصصَ العربون المطبَّقة
+ * على **أمر الشغل** الذي أصدر الفاتورة، وتحصيلَ المندوب المورَّد — ويحتسب أمانةَ أجرة التوصيل
+ * مقبوضاً. النتيجة: فاتورةُ تسليمٍ عربونُها ١٥٬٠٠٠ تُجسَّد بمقبوضٍ صفر، فلا يعمل منفّذُ الردّ ولا
+ * يخرج دينارٌ من الدرج بينما الخدمة تقبل الطلب (R1 في `receptionDeposits.test.ts`: عجز −15,000).
+ * مصدرٌ واحد للوعاء ⇒ ما يقبله السقف هو ما يُردّ فعلاً.
+ */
+export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{ totalIn: Decimal; outPrior: Decimal; byMethod: Record<string, string> }> {
+  const caps = await loadRefundCaps(tx, invoiceId, { lock: true });
+  const byMethod: Record<string, string> = {};
+  caps.netByMethod.forEach((v, m) => { if (v.gt(0)) byMethod[m] = v.toFixed(2); });
+  return { totalIn: round2(caps.grossIn), outPrior: round2(caps.grossOut), byMethod };
 }
 
 /**
@@ -169,10 +77,7 @@ export async function invoicePaidPool(tx: Tx, invoiceId: number): Promise<{ tota
 export async function materializeInvoiceEffects(tx: Tx, run: ReversalRun): Promise<void> {
   const ctx = await invoiceContext(tx, run);
   const invoiceId = run.documentId;
-  const existing = new Map<EffectKey, PendingEffect>();
-  for (const row of await loadApplyEffects(tx, "INVOICE", invoiceId, { kind: "ALL", operationScopes: [INVOICE_SALE_SCOPE] }, { onlyOutstanding: false })) {
-    if (row.effectTable && row.effectRowId != null) existing.set(keyOf(row.effectKind, row.effectTable, row.effectRowId), row);
-  }
+  const existing = await loadExistingEffects(tx, "INVOICE", invoiceId, INVOICE_SALE_SCOPE);
 
   // ═══ INVENTORY — بنداً بند ═══
   for (const item of ctx.items) {
@@ -296,12 +201,13 @@ export async function materializeInvoiceEffects(tx: Tx, run: ReversalRun): Promi
     applyQuantity: 0,
     targetAmount: refundable,
     targetQuantity: 0,
-    payload: { directIn: pool.directIn.toFixed(2), appliedIn: pool.appliedIn.toFixed(2), outPrior: pool.outPrior.toFixed(2) },
+    payload: { totalIn: pool.totalIn.toFixed(2), outPrior: pool.outPrior.toFixed(2), byMethod: pool.byMethod },
   });
 
   // ═══ ذمّة العميل — مساهمةُ الفاتورة الحاليّة ═══
   if (ctx.invoice.customerId != null) {
-    const contribution = round2(remainingAmount.minus(refundable));
+    const documentRemaining = round2(money(ctx.invoice.total).minus(money(ctx.invoice.returnedTotal ?? "0")));
+    const contribution = round2(documentRemaining.minus(refundable));
     await reconcile(tx, run, existing, {
       kind: "CUSTOMER_BALANCE",
       table: "customers",
@@ -310,7 +216,7 @@ export async function materializeInvoiceEffects(tx: Tx, run: ReversalRun): Promi
       applyQuantity: 0,
       targetAmount: contribution,
       targetQuantity: 0,
-      payload: { customerId: Number(ctx.invoice.customerId), remainingAmount: remainingAmount.toFixed(2), refundable: refundable.toFixed(2) },
+      payload: { customerId: Number(ctx.invoice.customerId), documentRemaining: documentRemaining.toFixed(2), ledgerRemaining: remainingAmount.toFixed(2), refundable: refundable.toFixed(2) },
     });
   }
 

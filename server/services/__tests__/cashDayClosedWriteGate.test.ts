@@ -56,7 +56,10 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "reception/deposits.ts": 3,
   "receptionCheckoutService.ts": 1,
   "returnService.ts": 1,
-  "sale/cancel.ts": 1,
+  // م٢ ق٧: ردُّ إلغاء البيع/المرتجع الكامل وردُّ عكس تسليم أمر الشغل يكتبهما منفّذا محرّك العكس —
+  // `sale/cancel.ts` و`workOrder/reverseDelivery.ts` لم يعودا يكتبان إيصالاً (يقفلان المصدر وحسب).
+  "reversal/executors/invoiceRefund.ts": 1,
+  "reversal/executors/workOrderDelivery.ts": 1,
   "sale/correct.ts": 1,
   "sale/create.ts": 1,
   "sale/payment.ts": 1,
@@ -69,7 +72,6 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "workOrder/create.ts": 2,
   "workOrder/deliver.ts": 1,
   "workOrder/deliveryFeeRefund.ts": 1,
-  "workOrder/reverseDelivery.ts": 1,
 };
 
 const NON_PHYSICAL_ONLY_WRITERS = new Set([

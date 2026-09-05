@@ -25,7 +25,7 @@ import {
   invoiceSaleLedgerExecutor,
 } from "./executors/invoiceLedger";
 import { invoiceRefundExecutor } from "./executors/invoiceRefund";
-import { readLedgerState } from "./executors/invoiceState";
+import { invoiceContext, readLedgerState } from "./executors/invoiceState";
 import { readRefundState } from "./executors/refundState";
 import { INVOICE_SALE_SCOPE, materializeInvoiceEffects } from "./materialize/invoice";
 import type { ExecutorRegistry, RefundDecision, ReversalRun } from "./types";
@@ -58,8 +58,10 @@ export interface ReverseInvoiceSaleInput {
 }
 
 export interface ReverseInvoiceSaleSummary {
-  /** المتبقّي الدفتريّ الذي عُكس الآن (أساسُ `returnedTotal`). */
+  /** المتبقّي الدفتريّ الذي عُكس الآن (قيد SALE − Σ RETURN — أساسٌ خامٌّ قبل تقريب IQD). */
   remainingAmount: Decimal;
+  /** المتبقّي **المستنديّ** (`total − returnedTotal` قبل العكس) — أساسُ `returnedTotal` والذمّة. */
+  remainingDocumentTotal: Decimal;
   remainingRevenue: Decimal;
   remainingTax: Decimal;
   /** ما خرج فعلاً الآن للزبون. */
@@ -92,6 +94,8 @@ export async function reverseInvoiceSaleInTx(
     decisions,
     state,
   };
+  const before = (await invoiceContext(tx, run)).invoice;
+  const remainingDocumentTotal = money(before.total).minus(money(before.returnedTotal ?? "0"));
   await materializeInvoiceEffects(tx, run);
   const result = await reverse(tx, "INVOICE", input.invoiceId, INVOICE_SALE_REVERSAL_SCOPE, input.reason, actor, {
     mode: "EXECUTE",
@@ -103,6 +107,7 @@ export async function reverseInvoiceSaleInTx(
   const refund = readRefundState(result.run);
   return {
     remainingAmount: ledger?.remainingAmount ?? money(0),
+    remainingDocumentTotal,
     remainingRevenue: ledger?.remainingRevenue ?? money(0),
     remainingTax: ledger?.remainingTax ?? money(0),
     refundAmount: refund.materialized,

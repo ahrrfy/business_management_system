@@ -12,7 +12,7 @@
  *  ③ مرتجعٌ جزئيٌّ تالفٌ يدويّ ثمّ إلغاء: المُجسِّد يُصالح السجلَّ مع الحقيقة (ابنُ فرقٍ) فلا
  *    يُعاد التالفُ إلى الرفّ ولا تُعكَس كلفتُه مرّتين.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -245,6 +245,87 @@ describe("reverse() منفِّذاً — إلغاءُ فاتورةٍ بكوبو�
       sql`JSON_EXTRACT(${s.documentEffects.payloadJson}, '$.reconciled') = true`,
     ));
     expect(reconciled.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("④ مرتجعٌ كامل (returnService) لعميلٍ مسجَّل بردٍّ جزئيّ: نفس المحرّك، والباقي رصيدٌ دائن بأثرٍ مُسمّى", async () => {
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId: 1, sourceType: "POS", customerId: 1,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "2000.00", method: "CASH" },
+      },
+      manager,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0]!;
+    const res = await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+        refund: { amount: "1500.00", method: "CASH", shiftId: 1 },
+        restock: true,
+        operatorReason: "عيب في المنتج",
+      },
+      admin,
+    );
+    expect(res.fullyReturned).toBe(true);
+    expect(res.returnedTotal).toBe("2000.00");
+    expect(await stockOf(1, 1)).toBe(10);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0]!;
+    expect(inv.status).toBe("RETURNED");
+    expect(inv.returnedTotal).toBe("2000.00");
+    expect(inv.paidAmount).toBe("500.00"); // ٥٠٠ لم تُردّ بعد
+    expect(await customerBalance(1)).toBe("-500.00"); // فصارت رصيداً دائناً مُسمّى
+    expect(await sumCol(sale.invoiceId, "revenue")).toBe("0.00");
+    expect(await sumCol(sale.invoiceId, "cost")).toBe("0.00");
+    const ret = (await db().select().from(s.accountingEntries).where(and(eq(s.accountingEntries.invoiceId, sale.invoiceId), eq(s.accountingEntries.entryType, "RETURN"))))[0]!;
+    expect(ret.notes).toContain("سبب المرتجع=عيب في المنتج");
+    expect(ret.notes).toContain("مصير البضاعة=إعادة للرف");
+    const sums = await effectSums(sale.invoiceId);
+    expect(sums.INVENTORY!.quantity).toBe(0);
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.amount).toBe("500.0000"); // جزئيٌّ بإعلان
+    const credit = await effectSums(sale.invoiceId, "credit");
+    expect(credit.CUSTOMER_BALANCE!.amount).toBe("-500.0000");
+  });
+
+  it("⑤ مرتجعٌ كامل لبيعٍ نقديّ مقرَّب IQD (زبون عابر): Σ(revenue)=Σ(profit)=Σ(amount)=0 والتقريب يُعكَس مرّة", async () => {
+    await db().update(s.productPrices).set({ price: "1300.00" }).where(eq(s.productPrices.productUnitId, 1));
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "1300.00", method: "CASH" }, cashRoundIQD: true,
+      },
+      manager,
+    );
+    const inv0 = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0]!;
+    expect(inv0.total).toBe("1250.00");
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0]!;
+    const res = await returnSale(
+      {
+        invoiceId: sale.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }],
+        resolution: { kind: "IMMEDIATE_REFUND", method: "CASH", amount: "1250.00", shiftId: 1, reason: "إرجاع كامل", disposition: "RESTOCK" },
+      },
+      admin,
+    );
+    expect(res.fullyReturned).toBe(true);
+    expect(res.returnedTotal).toBe("1250.00");
+    expect(await sumCol(sale.invoiceId, "revenue")).toBe("0.00");
+    expect(await sumCol(sale.invoiceId, "profit")).toBe("0.00");
+    // ⭐ Σ(amount) على قيود البيع/المرتجع/التقريب = 0 — كان المسار القديم يترك −50 (فارق التقريب).
+    const nonCash = await db().select().from(s.accountingEntries).where(and(
+      eq(s.accountingEntries.invoiceId, sale.invoiceId),
+      inArray(s.accountingEntries.entryType, ["SALE", "RETURN", "ADJUST"]),
+    ));
+    expect(nonCash.reduce((t, e) => t.plus(money(e.amount)), money(0)).toFixed(2)).toBe("0.00");
+    expect(nonCash.filter((e) => e.entryType === "ADJUST")).toHaveLength(2);
+    const sums = await effectSums(sale.invoiceId);
+    expect(sums.ROUNDING!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    const out = (await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "OUT"))))[0]!;
+    expect(out.amount).toBe("1250.00");
+    expect(out.description).toContain("إرجاع كامل");
   });
 
   it("نوعٌ بلا منفّذ في وضع التنفيذ يرمي NOT_IMPLEMENTED صراحةً — لا مرآة صامتة", async () => {

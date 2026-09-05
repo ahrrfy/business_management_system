@@ -313,7 +313,9 @@ export async function cancelSaleInTx(
     }
 
     // ═══ ٤) وسم CANCELLED مع لقطة تدقيق — المدفوع أنقصه منفّذُ الردّ بما خرج فعلاً ═══
-    const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(summary.remainingAmount);
+    // الأساسُ المستنديّ (total − returnedTotal) لا قيد SALE الخامّ: الأوّل يشمل تقريب IQD فيساوي
+    // returnedTotal بعده الإجماليَّ بالضبط — كان الأساسُ الخامّ يترك فارقَ التقريب في العمود.
+    const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(summary.remainingDocumentTotal);
     const cancelledAt = new Date();
     await tx
       .update(invoices)
