@@ -157,6 +157,14 @@ export function sanitizeCreditLimitInput(raw: string): string {
   return raw.replace(/[^\d.]/g, "");
 }
 
+/**
+ * حدّ الائتمان مدخلٌ لهويّة الهاتف الحاليّة (تدقيق Codex P1، ٥/٩/٢٦): تبدّلُ الرقم — أو تفريغُه —
+ * يُصفّره كي لا يرثه العميلُ التالي صامتاً (ائتمانٌ غير مقصود)؛ وثباتُ الرقم يُبقيه كما هو.
+ */
+export function creditLimitAfterPhoneChange(prevPhone: string, nextPhone: string, currentLimit: string): string {
+  return nextPhone !== prevPhone ? "" : currentLimit;
+}
+
 /** نصّ الحالة تحت حقل الهاتف ولونه الدلاليّ. */
 export function resolutionNotice(state: CustomerByPhoneState): { tone: "muted" | "warn" | "info" | "positive" | "destructive"; text: string } {
   switch (state.resolution) {

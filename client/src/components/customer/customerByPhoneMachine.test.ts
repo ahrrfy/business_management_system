@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canSubmitNewCustomer,
+  creditLimitAfterPhoneChange,
   creditLimitPayload,
   initialCustomerByPhoneState,
   onNameTyped,
@@ -101,5 +102,16 @@ describe("آلة «العميل بالهاتف» — الهاتف مفتاح ا�
     expect(creditLimitPayload("0")).toBe("0");
     expect(creditLimitPayload(" 250000 ")).toBe("250000");
     expect(sanitizeCreditLimitInput("25,000.5 دينار")).toBe("25000.5");
+  });
+
+  it("حدّ الائتمان يتبع هويّة الهاتف: يُصفَّر عند تبدّل الرقم أو تفريغه، ويثبت مع ثباته", () => {
+    // تبدّلُ الرقم يُصفّر حدّاً أُدخل لعميلٍ سابق (وإلّا ورثه التالي صامتاً).
+    expect(creditLimitAfterPhoneChange("07701234567", "07809999999", "250000")).toBe("");
+    // تفريغُ الرقم كذلك يُصفّره.
+    expect(creditLimitAfterPhoneChange("07701234567", "", "250000")).toBe("");
+    // ثباتُ الرقم يُبقي ما كُتب (لا يُمحى أثناء إكمال الاسم/الحدّ).
+    expect(creditLimitAfterPhoneChange("07701234567", "07701234567", "250000")).toBe("250000");
+    // بلا حدٍّ سابق يبقى فارغاً.
+    expect(creditLimitAfterPhoneChange("0770", "07701234567", "")).toBe("");
   });
 });

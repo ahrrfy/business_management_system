@@ -21,6 +21,9 @@ export interface DeliveryDraft {
   partyName: string;
   /** نصّ مالٍ (MoneyInput) — يُطبَّع عند البناء. */
   fee: string;
+  /** هل حرّر الكاشير الأجرة بيده؟ الأجرةُ المشتقّة تلقائياً (افتراضُ الجهة أو تقديرُ المحافظة) تتبع
+   *  تغيّر الجهة/المحافظة؛ أمّا ما كتبه الكاشير فلا يُطمَس (تدقيق Codex P1، ٥/٩/٢٦). */
+  feeManual: boolean;
   feeCollection: DeliveryFeeCollection;
   recipientName: string;
   recipientPhone: string;
@@ -62,7 +65,7 @@ export function deliveryModeUnavailableReason(offline: boolean): string | null {
 }
 
 export function emptyDeliveryDraft(): DeliveryDraft {
-  return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
+  return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeManual: false, feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
 }
 
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
@@ -103,19 +106,18 @@ export function buildDeliveryPayload(d: DeliveryDraft): DeliveryPayload | null {
 }
 
 /**
- * وضع التوصيل — قرارُ إرسال `payment` (تدقيق Codex #1012 P1): يُحجَب الدفعُ **فقط** لبيعٍ نقديٍّ بلا
- * قبضٍ الآن (COD كامل يقبضه المندوب لاحقاً). غيرُ النقد (بطاقة/تحويل/محفظة) مؤكَّدٌ سلفاً بمحاولةٍ
- * خارجيّة ناجحة يشترطها البيع، فيُرسَل **دائماً**؛ حجبُه كان يُهمِل قبضاً خارجياً وقع فعلاً ويُسنِد
- * الطلبَ COD خطأً (نقدٌ يُطالَب به مرّتين).
+ * وضع التوصيل — قرارُ إرسال `payment` (تدقيق Codex P1، ٥/٩/٢٦): يُحجَب الدفعُ فقط لبيعٍ نقديٍّ بلا
+ * قبضٍ الآن (COD كامل يقبضه المندوب). غيرُ النقد مؤكَّدٌ سلفاً (محاولةٌ خارجيّة ناجحة) ⇒ يُرسَل
+ * دائماً؛ حجبُه كان يُهمِل قبضاً خارجياً وقع فعلاً ويُسنِد الطلبَ COD خطأً.
  */
 export function deliverySendsPayment(method: string, paidNow: Decimal): boolean {
   return !(method === "CASH" && paidNow.lte(0));
 }
 
 /**
- * وضع التوصيل — مبالغُ الإيصال (تدقيق Codex #1012 P1/P2): «المقبوض الآن» = ما يُسجَّل على الفاتورة (صفرٌ
- * لِـCOD الكامل · المدفوعُ لقبضٍ جزئيّ · الإجماليُّ لدفعٍ كامل/بطاقة)، والفكّةُ تبقى صفراً لتحصيل COD
- * الجزئيّ وتُحسب كبيعٍ عاديّ حين قُبض نقدٌ ≥ الإجماليّ (فائضٌ يُردّ) — «COD يمنع الآجل لا الفكّة».
+ * وضع التوصيل — مبالغُ الإيصال (تدقيق Codex P1/P2، ٥/٩/٢٦): «المقبوض الآن» = ما يُسجَّل على الفاتورة
+ * (صفرٌ لِـCOD الكامل · المدفوعُ لقبضٍ جزئيّ · الإجماليُّ لدفعٍ كامل/بطاقة)، والفكّةُ تبقى صفراً لتحصيل
+ * COD الجزئيّ وتُحسب كبيعٍ عاديّ حين قُبض نقدٌ ≥ الإجماليّ (فائضٌ يُردّ للزبون).
  */
 export function deliveryReceiptAmounts(args: {
   method: string;
@@ -130,7 +132,7 @@ export function deliveryReceiptAmounts(args: {
 }
 
 /**
- * مبالغُ إيصال بيع الكاشير (تدقيق Codex #1012 P1/P2) — مصدرٌ واحدٌ للوضعين: في التوصيل تُشتقّ من
+ * مبالغُ إيصال بيع الكاشير (تدقيق Codex P1/P2، ٥/٩/٢٦) — مصدرٌ واحدٌ للوضعين: في التوصيل تُشتقّ من
  * `deliveryReceiptAmounts` (وعهدةُ COD ليست ذمّةً على العميل ⇒ credit=0)؛ وفي البيع العاديّ الآجلُ
  * الجزئيُّ يُظهر المدفوعَ، الفكّةَ صفراً، وذمّةً بالباقي (السلوكُ القائم بلا تغيير).
  */
@@ -154,12 +156,12 @@ export function saleReceiptAmounts(args: {
 }
 
 /**
- * اختيار الجهة: تُملأ الأجرة من `defaultFee` الجهة **إن كانت فارغة** (المستخدم يعدّل لا يبتدئ)؛
- * أجرةٌ كتبها الكاشير بيده لا تُطمس.
+ * اختيار الجهة: الأجرةُ المشتقّة تلقائياً تتبع الجهةَ المختارة، وأجرةٌ كتبها الكاشير بيده (feeManual)
+ * لا تُطمَس. قبل تدقيق Codex P1 كانت أوّلُ جهةٍ تُثبّت الأجرة فيبقى مبلغُ الجهة السابقة عند تبديلها.
  */
 export function applyPartySelection(d: DeliveryDraft, party: DeliveryPartyOption | null): DeliveryDraft {
   if (!party) return { ...d, partyId: null, partyName: "" };
-  const fee = d.fee.trim() ? d.fee : party.defaultFee ?? "0";
+  const fee = d.feeManual ? d.fee : party.defaultFee ?? "0";
   return { ...d, partyId: party.id, partyName: party.name, fee };
 }
 
@@ -175,34 +177,12 @@ export function applyGovernorateSelection(
   let next: DeliveryDraft = { ...d, governorate };
   const suggested = opts.suggestedPartyId != null ? opts.parties.find((p) => p.id === opts.suggestedPartyId) ?? null : null;
   if (next.partyId == null && suggested) next = applyPartySelection(next, suggested);
-  if (!next.fee.trim() && governorate) {
+  // التقديرُ التلقائيّ نقطةُ انطلاقٍ حين لا جهةَ تُملي الأجرة ولم يحرّرها الكاشير (تدقيق Codex P1):
+  // يُستبدَل عند تغيّر المحافظة بدل التجمّد على تقديرٍ قديم، ويُترَك لأجرةٍ يدويّةٍ أو جهةٍ مختارة.
+  if (!next.feeManual && next.partyId == null && governorate) {
     const estimate = deliveryFeeFor(governorate);
-    if (estimate > 0) next = { ...next, fee: String(estimate) };
+    next = { ...next, fee: estimate > 0 ? String(estimate) : "" };
   }
-  return next;
-}
-
-/** اقتراح الخادم للمنطقة (`delivery.suggestPartyForZone`): الجهة المعتادة + أجرة المنطقة الفعّالة. */
-export interface ZoneSuggestion {
-  partyId: number;
-  partyName: string;
-  fee: string;
-}
-
-/**
- * تطبيق اقتراح الخادم حين يصل (أتمتة ٤ — «المستخدم يعدّل لا يبتدئ»): الجهة تُختار إن لم يختر
- * الكاشير جهةً بعد؛ والأجرة المقترَحة تحلّ محلّ **الفارغ أو تقدير `shared/governorates` الثابت**
- * فقط — أجرةٌ كتبها الكاشير بيده لا تُطمس. يُعيد نفس الكائن حين لا تغيير (لا حلقة تصيير).
- */
-export function applyZoneSuggestion(d: DeliveryDraft, s: ZoneSuggestion | null | undefined): DeliveryDraft {
-  if (!s || !d.governorate) return d;
-  let next = d;
-  if (next.partyId == null) next = { ...next, partyId: s.partyId, partyName: s.partyName };
-  const estimate = String(deliveryFeeFor(d.governorate));
-  const fee = next.fee.trim();
-  const feeUntouched = !fee || fee === estimate;
-  const suggestedFee = normalizeFee(s.fee);
-  if (feeUntouched && suggestedFee != null && Number(suggestedFee) > 0 && fee !== s.fee) next = { ...next, fee: s.fee };
   return next;
 }
 
