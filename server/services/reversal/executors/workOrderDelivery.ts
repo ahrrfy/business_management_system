@@ -23,7 +23,7 @@ import { appErrorMessage } from "@shared/errors";
 import { invoices, receipts, workOrders } from "../../../../drizzle/schema";
 import { extractInsertId } from "../../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../../accounting/postingEngine";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../../cash/cashAvailability";
 import { postEntry } from "../../ledgerService";
 import { money, round2, toDbMoney } from "../../money";
 import { paymentAssetRole } from "../../sale/paymentPosting";
@@ -42,8 +42,13 @@ export interface WorkOrderDeliveryContext {
   completedOut: Decimal;
   /** خطّةُ الردّ المطابِقة للمقبوضات (مُطبَّعة ومرتّبة). */
   plans: readonly WorkOrderRefundSourcePlan[];
-  /** درجُ الاستقبال المقفول للردود النقديّة — `null` حين لا ردَّ نقديّاً. */
+  /** درجُ الاستقبال المقفول للردود النقديّة — `null` حين لا ردَّ نقديّاً أو حين المصدرُ الخزينة. */
   cashShiftId: number | null;
+  /**
+   * مصدرُ النقد المقفول في الخدمة: درجُ استقبالٍ أو **الخزينة** (حين لا وردية استقبال مفتوحة —
+   * استثناء `WORK_ORDER_REVERSE_DELIVERY_COMPENSATION`، م٢ ق١٠). `null` حين لا ردَّ نقديّاً.
+   */
+  cashBucket: "DRAWER" | "TREASURY" | null;
   approvedControlRequestId: number;
   reopen: boolean;
   reason: string;
@@ -163,14 +168,32 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
       const amount = money(plan.amount);
       const cash = plan.refundMethod === "CASH";
       if (cash) {
-        if (ctx.cashShiftId == null) throw new TRPCError({ code: "CONFLICT", message: "مصدر درج الرد النقدي غير مقفل" });
+        if (ctx.cashBucket == null || (ctx.cashBucket === "DRAWER" && ctx.cashShiftId == null)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: `تعذّر ردّ مقبوض أمر الشغل ${ctx.wo.orderNumber} نقداً`,
+              why: "مصدر درج الرد النقدي غير مقفل — وصلت خطّةُ ردٍّ نقديّ بلا درجٍ أو خزينةٍ محجوزين في بداية المعاملة (خللٌ في تسلسل التنفيذ لا في مدخلاتك)",
+              doThis: "لم يخرج أيّ مبلغ؛ أعد اعتماد الطلب مرّةً واحدة، وإن تكرّر فأبلغ مسؤول النظام برقم الأمر",
+            }),
+          });
+        }
+        // الخزينةُ مصدرُ الطوارئ المصنَّف (لا وردية استقبال مفتوحة) — استثناءٌ مغلق باسمه.
+        if (ctx.cashBucket === "TREASURY") assertTreasuryOutException("WORK_ORDER_REVERSE_DELIVERY_COMPENSATION");
         await assertCashOutAvailable(tx, {
-          branchId: Number(ctx.wo.branchId), cashBucket: "DRAWER", shiftId: ctx.cashShiftId,
+          branchId: Number(ctx.wo.branchId), cashBucket: ctx.cashBucket, shiftId: ctx.cashShiftId,
           amount, operation: "رد مقبوضات عكس تسليم أمر شغل",
         });
       } else {
         if (ctx.wo.customerId == null) {
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الرد غير النقدي يحتاج عميلاً مرتبطاً للاعتماد الخارجي" });
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: `تعذّر تسجيل ردٍّ غير نقديّ (${plan.refundMethod}) لأمر الشغل ${ctx.wo.orderNumber}`,
+              why: "الرد غير النقدي يحتاج عميلاً مرتبطاً للاعتماد الخارجي — سندُ الصرف المعلَّق يُنسَب إلى عميلٍ مسجَّل، والأمرُ بلا عميل",
+              doThis: "اربط الأمر بعميلٍ مسجَّل من شاشة الأمر ثمّ أعد الاعتماد، أو ردّ نقداً من درجٍ مفتوح",
+            }),
+          });
         }
         assertNonPhysicalOutReceipt({
           classification: "DEFERRED_APPROVAL", paymentMethod: plan.refundMethod,
@@ -181,7 +204,7 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
       const inserted = await tx.insert(receipts).values({
         branchId: Number(ctx.wo.branchId), shiftId: cash ? ctx.cashShiftId : null,
         workOrderId, invoiceId, direction: "OUT", amount: toDbMoney(amount),
-        paymentMethod: plan.refundMethod, cashBucket: cash ? "DRAWER" : null,
+        paymentMethod: plan.refundMethod, cashBucket: cash ? ctx.cashBucket : null,
         status: cash ? "COMPLETED" : "PENDING",
         approvalStatus: cash ? "APPROVED" : "PENDING_APPROVAL",
         referenceNumber: cash ? `WO-REV-${invoiceId}-${plan.sourceReceiptId}-${plan.counterRole === "AR" ? "A" : "L"}` : null,
@@ -200,7 +223,7 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
       }
       state.immediateCashRefund = state.immediateCashRefund.plus(amount);
       reversedAmount = reversedAmount.plus(amount);
-      const assetRole = paymentAssetRole("CASH", "DRAWER", "OUT");
+      const assetRole = paymentAssetRole("CASH", ctx.cashBucket, "OUT");
       const profile = plan.counterRole === "AR" ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
       const source = { roleDebits: { [plan.counterRole]: amount }, roleCredits: { [assetRole]: amount } };
       await postEntry(tx, {
@@ -221,7 +244,7 @@ export const workOrderDeliveryRefundExecutor: EffectExecutor = async (tx, effect
         signedAmount: reversedAmount.neg(),
         effectTable: "receipts",
         effectRowId: firstReceiptId,
-        payloadJson: { sourceReceiptId, plans: plans.map((p) => ({ amount: p.amount, counterRole: p.counterRole, method: p.refundMethod })) },
+        payloadJson: { sourceReceiptId, cashBucket: ctx.cashBucket, shiftId: ctx.cashShiftId, plans: plans.map((p) => ({ amount: p.amount, counterRole: p.counterRole, method: p.refundMethod })) },
       });
     }
   }

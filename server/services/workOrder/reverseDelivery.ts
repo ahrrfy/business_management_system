@@ -18,7 +18,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { logAuditTx } from "../auditService";
-import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
+import { assertTreasuryOutException, lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { appendDeliveryEvent } from "../delivery/lifecycle";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
@@ -82,7 +82,15 @@ interface ReverseEvidence {
 
 export interface ReverseDeliveryApprovalLocks {
   workOrder: typeof workOrders.$inferSelect;
+  /** درجُ الاستقبال المقفول للردود النقديّة — `null` حين لا ردَّ نقديّاً أو حين المصدرُ الخزينة. */
   cashShiftId: number | null;
+  /** مصدرُ النقد المقفول: درجٌ، أو **الخزينة** حين لا وردية استقبال مفتوحة والمعتمِدُ يملكها. */
+  cashBucket: "DRAWER" | "TREASURY" | null;
+}
+
+/** الصرفُ من الخزينة بلا وردية استقبال — سلطةُ الإداريّ وحده (مرآةُ `shiftIdForCashTx`). */
+function actorMayDrawFromTreasury(actor: Actor & { role?: string }): boolean {
+  return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
 const auditCtx = (actor: Actor, branchId: number) =>
@@ -435,13 +443,34 @@ export async function computeWorkOrderInvoiceNetPaidInTx(
   return (await reverseEvidence(tx, { workOrderId, invoiceId, deposit, lock: true })).netPaid.toFixed(2);
 }
 
-async function resolveLockedReceptionCashShift(tx: Tx, branchId: number, explicitShiftId: number | null): Promise<number> {
+/**
+ * مصدرُ الردّ النقديّ المقفول لعكس التسليم:
+ *  · درجٌ صريح (`refundShiftId`) ⇒ يجب أن يكون وردية استقبالٍ مفتوحة؛
+ *  · بلا تحديد ووردية استقبالٍ واحدة مفتوحة ⇒ هي؛ وأكثرُ من واحدة ⇒ يلزم التحديد؛
+ *  · ⭐ **بلا أيّ وردية استقبال مفتوحة** (م٢ ق١٠ — المفتاحُ الناقص): كان هذا باباً مسدوداً يُسقط
+ *    اعتمادَ العكس ويُبقي مالَ الزبون محتجَزاً. الآن يخرج الردُّ من **الخزينة** بصفة المعتمِد
+ *    (مدير/أدمن) تحت استثناء `WORK_ORDER_REVERSE_DELIVERY_COMPENSATION` — والدرجُ الصريح يفوز دائماً.
+ */
+async function resolveLockedReceptionCashSource(
+  tx: Tx,
+  branchId: number,
+  explicitShiftId: number | null,
+  actor: Actor & { role?: string },
+): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
   const open = await tx.select({ id: shifts.id }).from(shifts)
     .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN"), eq(shifts.shiftType, "RECEPTION")));
   const chosen = explicitShiftId != null
     ? open.find((row) => Number(row.id) === explicitShiftId)
     : open.length === 1 ? open[0] : null;
   if (!chosen) {
+    if (open.length === 0 && explicitShiftId == null && actorMayDrawFromTreasury(actor)) {
+      assertTreasuryOutException("WORK_ORDER_REVERSE_DELIVERY_COMPENSATION");
+      await lockMaterializedCashReceiptSourceForWrite(tx, {
+        branchId, shiftId: null, cashBucket: "TREASURY", paymentMethod: "CASH",
+        status: "COMPLETED", approvalStatus: "APPROVED",
+      });
+      return { shiftId: null, cashBucket: "TREASURY" };
+    }
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: open.length > 1
@@ -454,7 +483,7 @@ async function resolveLockedReceptionCashShift(tx: Tx, branchId: number, explici
     branchId, shiftId, cashBucket: "DRAWER", paymentMethod: "CASH",
     status: "COMPLETED", approvalStatus: "APPROVED",
   });
-  return shiftId;
+  return { shiftId, cashBucket: "DRAWER" };
 }
 
 /**
@@ -470,8 +499,8 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
   const hint = (await tx.select({ branchId: workOrders.branchId, invoiceId: workOrders.invoiceId })
     .from(workOrders).where(eq(workOrders.id, Number(input.workOrderId))).limit(1))[0];
   if (!hint) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-  const cashShiftId = requestedPlans.some((plan) => plan.refundMethod === "CASH")
-    ? await resolveLockedReceptionCashShift(tx, Number(hint.branchId), input.refundShiftId ?? null)
+  const cashSource = requestedPlans.some((plan) => plan.refundMethod === "CASH")
+    ? await resolveLockedReceptionCashSource(tx, Number(hint.branchId), input.refundShiftId ?? null, actor)
     : null;
   if (hint.invoiceId != null) {
     await reverseEvidence(tx, {
@@ -483,7 +512,7 @@ export async function lockReverseDeliveryApprovalResourcesInTx(
   }
   const workOrder = await loadWorkOrder(tx, Number(input.workOrderId));
   assertWorkOrderBranch(workOrder, actor);
-  return { workOrder, cashShiftId };
+  return { workOrder, cashShiftId: cashSource?.shiftId ?? null, cashBucket: cashSource?.cashBucket ?? null };
 }
 
 function assertSettledConsignmentOrNone(consignment: typeof deliveryConsignments.$inferSelect | undefined): void {
@@ -548,6 +577,7 @@ export async function reverseWorkOrderDeliveryInTx(
 
   const locked = approvalLocks ?? await lockReverseDeliveryApprovalResourcesInTx(tx, input, actor);
   const cashShiftId = locked.cashShiftId;
+  const cashBucket = locked.cashBucket;
   const wo = locked.workOrder;
   if (Number(wo.version) !== expectedVersion) {
     throw new TRPCError({ code: "CONFLICT", message: "تغيّرت نسخة أمر الشغل قبل اعتماد العكس" });
@@ -609,6 +639,7 @@ export async function reverseWorkOrderDeliveryInTx(
     })),
     plans: requestedPlans,
     cashShiftId,
+    cashBucket,
     approvedControlRequestId: control.approvedControlRequestId,
     reopen: input.reopen === true,
     reason,

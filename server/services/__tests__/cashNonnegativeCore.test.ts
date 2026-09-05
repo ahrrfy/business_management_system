@@ -783,6 +783,10 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
       ["workOrder/cancel.ts", "WORK_ORDER_CANCELLATION_COMPENSATION"],
+      // م٢ ق١٠ — المفتاح الناقص: عكسُ التسليم بلا وردية استقبال مفتوحة يصرف من الخزينة بصفة المعتمِد؛
+      // يُعلَن في الخدمة (قفلُ المصدر) وفي المنفّذ (كتابةُ الإيصال) معاً.
+      ["workOrder/reverseDelivery.ts", "WORK_ORDER_REVERSE_DELIVERY_COMPENSATION"],
+      ["reversal/executors/workOrderDelivery.ts", "WORK_ORDER_REVERSE_DELIVERY_COMPENSATION"],
     ];
     for (const [relative, key] of exceptionFiles) {
       const source = readFileSync(path.join(root, relative), "utf8");

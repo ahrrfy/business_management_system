@@ -299,6 +299,42 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     expect(out.map((r) => Number(r.id))).toContain(Number(refundReverse.effectRowId));
   });
 
+  it("⭐ بلا وردية استقبال مفتوحة عند الاعتماد: الردّ النقديّ يخرج من الخزينة بصفة المعتمِد (المفتاح الناقص) ولا يسقط الاعتماد", async () => {
+    const order = await deliveredOrder({ key: "treasury-fallback", deposit: "10000.00" });
+    // تمويلُ الخزينة ثمّ إقفالُ وردية الاستقبال الوحيدة (قُبض العربون فيها) قبل الطلب.
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "100000.00", paymentMethod: "CASH",
+      status: "COMPLETED", approvalStatus: "APPROVED", referenceNumber: "TREASURY-FUND-REVERSE", createdBy: 1,
+    } as never);
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await approveReverse(order.workOrderId);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
+    expect(invoice.status).toBe("RETURNED");
+    expect(invoice.paidAmount).toBe("0.00");
+    const out = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, order.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED"),
+    ));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.cashBucket).toBe("TREASURY");
+    expect(out[0]!.shiftId).toBeNull();
+    expect(out[0]!.amount).toBe("10000.00");
+    // الأثرُ متوازن: المقبوضُ رُدّ كاملاً من الخزينة، والقيدُ والذمّةُ صفر.
+    const sums = await deliveryEffectSums(order.workOrderId);
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]!.currentBalance).toBe("0.00");
+  });
+
+  it("درجٌ صريحٌ أُغلق بين الطلب والاعتماد لا يسقط إلى الخزينة صامتاً — يُرفض بسببه", async () => {
+    const order = await deliveredOrder({ key: "explicit-closed-drawer", deposit: "10000.00" });
+    // الطلبُ يسمّي الدرج 1 وهو مفتوح؛ ثمّ يُقفل قبل الاعتماد (بوّابةُ الطلب نفسها ترفض درجاً مغلقاً مسبقاً).
+    const { request } = await requestReverse({ workOrderId: order.workOrderId, refundShiftId: 1 });
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await expect(approveWorkOrderControlRequest(Number(request.id), REVIEWER, "مراجعة"))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+  });
+
   it("وردّيتان نقديتان تفرضان اختيار درج صريح", async () => {
     const order = await deliveredOrder({ key: "two-shifts", deposit: "10000.00" });
     await db().insert(s.shifts).values({ id: 2, branchId: 1, userId: 3, shiftType: "RECEPTION", status: "OPEN", openingCash: "500000.00" } as never);

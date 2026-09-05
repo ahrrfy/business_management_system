@@ -226,6 +226,11 @@ export const TREASURY_OUT_EXCEPTION_POLICY = Object.freeze({
   // ردُّ عربون/حصص/أمانة أمرِ شغلٍ مُلغى: عكسٌ مقيَّدٌ بمصدره (إيصالُ القبض بهويّته، ومبلغٌ لا
   // يتجاوزه) — نظيرُ SALE_CANCELLATION_COMPENSATION تماماً، فيُعفى من طابور مالك الصرف الخارجي.
   WORK_ORDER_CANCELLATION_COMPENSATION: "REVERSAL_COMPENSATION",
+  // ردُّ مقبوضات **عكس تسليم** أمر شغلٍ معتمَد (م٢ ق١٠ — «المفتاح الناقص»): حين لا وردية استقبال
+  // مفتوحة يخرج الردّ من الخزينة بصفة المعتمِد (مدير/أدمن)، مقيَّداً بإيصال القبض بهويّته ومبلغه
+  // — نظيرُ WORK_ORDER_CANCELLATION_COMPENSATION. بلا هذا المفتاح كان الاعتمادُ يسقط على
+  // «لا توجد وردية RECEPTION مفتوحة» فيبقى مالُ الزبون محتجَزاً بلا مسار خروج.
+  WORK_ORDER_REVERSE_DELIVERY_COMPENSATION: "REVERSAL_COMPENSATION",
 } as const);
 
 export type TreasuryOutExceptionOperation = keyof typeof TREASURY_OUT_EXCEPTION_POLICY;
