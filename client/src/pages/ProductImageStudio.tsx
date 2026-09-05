@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } from "@/lib/productStudio/studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
@@ -486,25 +486,15 @@ export default function ProductImageStudio() {
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
 
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
-  const queuedProductIds = taskItems.filter((task) => isQueuedStudioTask(task)).map((task) => Number(task.productId));
-  const allQueuedSelected = queuedProductIds.length > 0 && queuedProductIds.every((id) => selectedTaskIds.has(id));
-  // فرزُ التحديد بحسب نوع العمل الممكن — أزرارُ الشريط الجماعيّ تعمل على مجموعاتٍ مختلفة:
-  // الإسناد على غير المسنَد، وإعادة الإسناد على المسنَد، والأولوية على أيّ نشط.
-  const selectedTasks = taskItems.filter((task) => selectedTaskIds.has(Number(task.productId)));
-  const selectedAssignedTaskIds = selectedTasks
-    .filter((task) => task.assignedTo != null && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status))
-    .map((task) => Number(task.id));
-  const selectedActiveTaskIds = selectedTasks
-    .filter((task) => ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status))
-    .map((task) => Number(task.id));
-  const toggleTaskSelection = (productId: number) =>
+  const { queuedTaskIds, allQueuedSelected, selectedAssignedTaskIds, selectedActiveTaskIds } = studioTaskSelection(taskItems, selectedTaskIds);
+  const toggleTaskSelection = (taskId: number) =>
     setSelectedTaskIds((current) => {
       const next = new Set(current);
-      if (next.has(productId)) next.delete(productId);
-      else next.add(productId);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
       return next;
     });
-  const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedProductIds));
+  const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedTaskIds));
 
   const onlineSelected =
     taskItems.find((task) => Number(task.id) === selectedId) ??
@@ -2175,12 +2165,12 @@ export default function ProductImageStudio() {
                   <CardTitle className="text-base">المهام</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {canBulkAssign && (queuedProductIds.length > 0 || selectedTaskIds.size > 0) && (
+                  {canBulkAssign && (queuedTaskIds.length > 0 || selectedTaskIds.size > 0) && (
                     <div className="space-y-2 rounded-md border bg-muted/30 p-2">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        {queuedProductIds.length > 0 ? (
+                        {queuedTaskIds.length > 0 ? (
                           <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
-                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedProductIds.length})`}
+                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedTaskIds.length})`}
                           </button>
                         ) : (
                           <span className="text-muted-foreground">حدّد المهام يدوياً بمربّعات الاختيار</span>
@@ -2188,7 +2178,7 @@ export default function ProductImageStudio() {
                         <span className="text-muted-foreground">{selectedTaskIds.size} محدَّدة</span>
                       </div>
                       {/* إسنادُ غير المسنَد إلى موظّف. */}
-                      {selectedTaskIds.size > 0 && queuedProductIds.some((id) => selectedTaskIds.has(id)) && (
+                      {selectedTaskIds.size > 0 && queuedTaskIds.some((id) => selectedTaskIds.has(id)) && (
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="min-w-40 flex-1">
                             <AppSelect id="studio-bulk-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkAssigneeId} onValueChange={setBulkAssigneeId} disabled={assignees.isError}>
@@ -2203,16 +2193,16 @@ export default function ProductImageStudio() {
                           <Button
                             type="button"
                             className="min-h-11"
-                            disabled={offline || bulkAssign.isPending || !bulkAssigneeId}
+                            disabled={offline || bulkReassign.isPending || !bulkAssigneeId}
                             onClick={() => {
                               // نُصفّي التحديد إلى الطابور فقط — بقيّةُ التحديد تخدم الأزرار الأخرى.
-                              const queuedSelected = queuedProductIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
-                              bulkAssign.mutate({ productIds: queuedSelected, assigneeId: Number(bulkAssigneeId) });
+                              const queuedSelected = queuedTaskIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
+                              bulkReassign.mutate({ taskIds: queuedSelected, newAssigneeId: Number(bulkAssigneeId) });
                             }}
                           >
-                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
+                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
                           </Button>
-                          {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                          {queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
                         </div>
                       )}
                       {/* إعادةُ إسنادٍ جماعيّة — تعمل على المسنَد فقط، بمصوّرٍ محدَّد أو الطابور المفتوح. */}
@@ -2306,8 +2296,8 @@ export default function ProductImageStudio() {
                           type="checkbox"
                           className="mt-4 size-4 shrink-0"
                           aria-label={`تحديد ${task.productName}`}
-                          checked={selectedTaskIds.has(Number(task.productId))}
-                          onChange={() => toggleTaskSelection(Number(task.productId))}
+                          checked={selectedTaskIds.has(Number(task.id))}
+                          onChange={() => toggleTaskSelection(Number(task.id))}
                         />
                       )}
                     <button type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
@@ -2530,7 +2520,7 @@ export default function ProductImageStudio() {
 
                   {editable && capabilities.canEditLocalDraft && (
                     <>
-                      <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} onBusyChange={setIsBatchBusy}>
+                      <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} submitting={isPreparingThumbnail} onBusyChange={setIsBatchBusy}>
                       <ProductMediaContentSection title="الصورة الأولى والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
                       </StudioCampaignImageBatch>
                       {offline && (

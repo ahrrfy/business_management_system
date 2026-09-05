@@ -31,6 +31,7 @@ interface Props {
   onPrimaryImage: (image: ImageItem) => void;
   adminOverrideReason?: string;
   offline: boolean;
+  submitting?: boolean;
   onBusyChange: (busy: boolean) => void;
 }
 
@@ -188,14 +189,14 @@ export function StudioCampaignImageBatch(props: Props) {
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       {!ready && !props.offline && <Button type="button" variant="outline" disabled={busy} onClick={() => void initialize()}>تحديث سماح الصور</Button>}
       {ready && occupied < maxImages && (
-        <fieldset disabled={busy || props.offline}>
+        <fieldset disabled={busy || props.submitting || props.offline}>
           <ImageUploader value={[]} onChange={(images) => void addImages(images)} maxItems={maxImages - occupied}
             hint="اختر عدة صور من المعرض، أو التقط صورة ثم كرّر زر الكاميرا لإضافة الزوايا الأخرى." />
         </fieldset>
       )}
-      {props.children}
+      <fieldset disabled={busy || props.submitting}>{props.children}</fieldset>
       {slots.map((slot, index) => (
-        <fieldset key={slot.taskId} disabled={busy || slot.sent || slot.conflict} className="space-y-2 rounded-md border p-3">
+        <fieldset key={slot.taskId} disabled={busy || props.submitting || slot.sent || slot.conflict} className="space-y-2 rounded-md border p-3">
           <p className="text-sm font-medium">صورة إضافية {index + 1}{slot.sent ? " — أُرسلت للمراجعة" : ""}</p>
           {slot.conflict && <p role="alert" className="text-sm text-destructive">تغيّرت المهمة؛ احتُفظ بالصورة محلياً. افتح المهمة من مهامّي لمراجعتها.</p>}
           {slot.hasOriginal && !slot.image && <p className="text-sm text-muted-foreground">لهذه الصورة أصل محفوظ؛ افتح مهمتها من مهامّي لاستكمالها.</p>}

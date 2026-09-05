@@ -909,6 +909,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
   const variantId = resolved.variantId == null ? null : Number(resolved.variantId);
   // اسمُ العرض للرسائل يجمع المنتج والبديل (إن وُجد).
   const displayName = resolved.variantName ? `${resolved.productName} — ${resolved.variantName}` : resolved.productName;
+  const eligibleQueueCampaign = sql`exists (select 1 from ${productStudioCampaigns} c
+    where c.id = ${productImageJobs.campaignId} and c.status = 'ACTIVE'
+    ${canCrossBranches(actor) ? sql`` : sql`and c.branchId = ${actor.branchId}`}
+    ${isManager(actor) ? sql`` : sql`and exists (select 1 from ${productStudioCampaignAssignees} ca where ca.campaignId = c.id and ca.userId = ${actor.userId})`})`;
   return withStudioTx(async (tx) => {
     // البحثُ عن مهمّةٍ نشطة يُقيَّد بـ **البديل نفسه**، مع سماحٍ باستهداف مهمّة الطابور
     // المستوى-الأمّ (`variantId IS NULL`) إن كان الماسحُ يمسح بديلاً ولا مهمّةَ خاصّةً بذلك
@@ -925,7 +929,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
             .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
-            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 else 1 end`, asc(productImageJobs.id))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -936,7 +940,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
             .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
-            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 else 1 end`, asc(productImageJobs.id))
+            .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
             .limit(1)
             .for("update")
         )[0];
@@ -3630,11 +3634,9 @@ export async function bulkAssignStudioTasks(
       });
     }
     const productById = new Map(selectedProducts.map((product) => [Number(product.id), product]));
-    const unassignedByProduct = new Map(
-      active.map((task) => [Number(task.productId), Number(task.id)]),
-    );
+    const unassignedProducts = new Set(active.map((task) => Number(task.productId)));
     const newProductIds = productIds.filter(
-      (productId) => !unassignedByProduct.has(productId),
+      (productId) => !unassignedProducts.has(productId),
     );
     try {
       if (newProductIds.length > 0) {
@@ -3657,14 +3659,15 @@ export async function bulkAssignStudioTasks(
           })),
         );
       }
-      const unassignedIds = Array.from(unassignedByProduct.values());
+      const unassignedIds = active.map((task) => Number(task.id));
       if (unassignedIds.length > 0) {
         // إعادةُ الإسناد لطابورٍ قائم: `sourceProductHash` يُحدَّث ليطابق محتوى المنتج
         // اللحظة، وإلّا رُفض الاعتماد لاحقاً بـ«عُدّل محتوى المنتج بعد بدء المهمة» بينما
         // المصوّر عمل على المحتوى الراهن منذ لحظة الإسناد. مُسنَدٌ بمعنيَين: بيدٍ جديدة
         // ومقابل محتوى راهن. الجذر أمسكه تدقيق ٢٤/٨ (بنك الوكلاء الخامس).
-        for (const [productId, jobId] of Array.from(unassignedByProduct.entries())) {
-          const product = productById.get(productId);
+        for (const queuedTask of active) {
+          const jobId = Number(queuedTask.id);
+          const product = productById.get(Number(queuedTask.productId));
           if (!product) continue;
           await tx
             .update(productImageJobs)
@@ -3707,9 +3710,9 @@ export async function bulkAssignStudioTasks(
     const assignedRows = await tx
       .select({ id: productImageJobs.id, revision: productImageJobs.revision })
       .from(productImageJobs)
-      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), isNotNull(productImageJobs.activeSlot)));
+      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)));
     return {
-      createdCount: productIds.length,
+      createdCount: assignedRows.length,
       taskIds: assignedRows.map((row) => ({ id: Number(row.id), revision: Number(row.revision) })),
       assigneeRole: assignee.role,
     };
@@ -4403,8 +4406,11 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
           eq(productImageJobs.status, "APPROVED")))
       : await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
           eq(productImages.productId, task.productId), eq(productImages.reviewStatus, "APPROVED")));
+    const capacityJobs = campaign?.imagesPolicy === "ANY_REGARDLESS"
+      ? live.filter((row) => row.campaignId === task.campaignId)
+      : live.filter((row) => row.sourceImageId == null);
     const remaining = campaign?.status === "ACTIVE"
-      ? Math.max(0, Number(campaign.requiredImages) - Number(completed?.n ?? 0) - live.length) : 0;
+      ? Math.max(0, Number(campaign.requiredImages) - Number(completed?.n ?? 0) - capacityJobs.length) : 0;
     const maxImages = Math.min(MAX_REQUIRED_IMAGES, slots.length + remaining);
     if (input.count > maxImages) {
       throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
@@ -4413,6 +4419,7 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
       }) });
     }
     const used = new Set(live.filter((row) => row.variantId === task.variantId).map((row) => row.activeSlot));
+    if (slots.length < input.count) assertStoragePolicy();
     while (slots.length < input.count) {
       const activeSlot = Array.from({ length: MAX_REQUIRED_IMAGES }, (_, i) => i + 1).find((slot) => !used.has(slot));
       if (!activeSlot) throw new TRPCError({ code: "CONFLICT" });

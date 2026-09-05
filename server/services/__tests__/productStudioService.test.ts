@@ -9,7 +9,7 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import { createAppNotification } from "../appNotificationService";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
-import { reserveStudioImageTasks } from "../productStudioService";
+import { reserveStudioImageTasks, bulkReassignStudioTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -2709,6 +2709,47 @@ describe("product studio governed workflow", () => {
     const images = await db().select().from(s.productImages).where(eq(s.productImages.productId, 1));
     expect(images).toHaveLength(3);
     expect(images.every((image) => image.reviewStatus === "APPROVED")).toBe(true);
+  });
+
+  it("claims an available sibling before another photographer's older job", async () => {
+    await db().insert(s.productVariants).values({ id: 901, productId: 1, sku: "BATCH-SCAN", costPrice: "1" });
+    await db().insert(s.productUnits).values({ id: 901, variantId: 901, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000901" });
+    await createStudioCampaign(manager, { name: "التقاط جماعي", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3, assigneeIds: [worker.userId, otherWorker.userId] });
+    const first = await claimStudioProductByBarcode(worker, "6001000000901");
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    await bulkReassignStudioTasks(manager, { taskIds: [batch.tasks[2].taskId], newAssigneeId: null });
+    const claimed = await claimStudioProductByBarcode(otherWorker, "6001000000901");
+    expect(claimed.taskId).toBe(batch.tasks[2].taskId);
+  });
+
+  it("bulk assignment preserves all queued sibling jobs", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "دفعة الطابور", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3 });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    await bulkReassignStudioTasks(manager, { taskIds: batch.tasks.map((task) => task.taskId), newAssigneeId: null });
+    expect(await bulkAssignStudioTasks(manager, { productIds: [1], assigneeId: worker.userId })).toMatchObject({ createdCount: 3 });
+    const jobs = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => job.assignedTo === worker.userId)).toBe(true);
+    await bulkReassignStudioTasks(manager, { taskIds: [batch.tasks[1].taskId], newAssigneeId: null });
+    const after = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    expect(after.filter((job) => job.assignedTo == null).map((job) => Number(job.id))).toEqual([batch.tasks[1].taskId]);
+  });
+
+  it("ANY_REGARDLESS does not consume another campaign's image allowance", async () => {
+    const firstCampaign = await createStudioCampaign(manager, { name: "الحملة الأولى", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 1 });
+    await createStudioCampaignBacklog(manager, firstCampaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const second = await createStudioCampaign(manager, { name: "الحملة الثانية", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3, imagesPolicy: "ANY_REGARDLESS" });
+    // A different variant scope can have work in an independent campaign.
+    await db().insert(s.productVariants).values({ id: 901, productId: 1, sku: "OTHER-CAMPAIGN", costPrice: "1" });
+    await db().update(s.productImageJobs).set({ variantId: 901 }).where(eq(s.productImageJobs.id, first.taskId));
+    const other = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await db().update(s.productImageJobs).set({ campaignId: second.campaignId }).where(eq(s.productImageJobs.id, other.taskId));
+    const batch = await reserveStudioImageTasks(worker, { taskId: other.taskId, count: 3 });
+    expect(batch.maxImages).toBe(3);
+    expect(batch.tasks).toHaveLength(3);
   });
 
   it("does not grant multiple photos for standalone, single-image or paused campaigns", async () => {
