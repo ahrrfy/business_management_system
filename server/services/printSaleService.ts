@@ -43,6 +43,7 @@ import { nextInvoiceNumber } from "./numbering";
 import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
+import { assertCreditLimit } from "../lib/credit";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 import { paymentAssetRole } from "./sale/paymentPosting";
@@ -57,6 +58,7 @@ import {
 } from "./posExternalPayment";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
+import { appErrorMessage } from "@shared/errors";
 
 /** علامة عرض ومسار بيع لبنود الطباعة، سواء كانت بلا مخزون أم نواتج مخزنية. */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
@@ -113,6 +115,12 @@ export interface CreatePrintSaleInput {
   cashRoundingBasketOthers?: string | null;
   /** ش٧ — متبقّي فاتورة التوصيل عهدةٌ على مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create). */
   codDispatchPending?: boolean;
+  /**
+   * م١ (PR-1) — مرآة `CreateSaleInput.paymentMode`: `'COD'` يُتجاوز به سقفُ الائتمان في
+   * `assertCreditLimit` (المال يأتي مع المندوب)، ويُختَم على الفاتورة. يمرّره `checkoutReception`
+   * حين يحمل الطلبُ توصيلاً؛ غيابُه = `PREPAID` (السلوك القائم).
+   */
+  paymentMode?: "PREPAID" | "COD" | "CREDIT" | null;
   /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
   priceOverrideApproved?: boolean;
@@ -144,7 +152,11 @@ interface MaterialConsumption {
 }
 
 export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
-    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
+    // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود التوصيل (COD) لا معلومةٌ مستقلّة؛ إدراجُه في بصمة
+    // idempotency يكسر تكرارَ بيع طباعةٍ التزم قبل نشر م١ (بصمتُه بلا paymentMode) بـCONFLICT بدل replay.
+    // نستبعده من البصمة وحدها — نظير `createSaleInTx`.
+    const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(fingerprintInput) : null;
     // حارس النواة لا وسم الراوتر: الاستقبال وتثبيت المسوّدة يستدعيان
     // هذه الخدمة مباشرةً بلا requireExternalPaymentAttempt؛ لذلك يُرفض غير النقدي قبل
     // idempotency أو أي قراءة/كتابة مالية أو مخزنية.
@@ -265,16 +277,12 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
 
     // ٣. فئة التسعير الفعّالة + قفل العميل (يُسلسِل البيوع الآجلة فلا يتجاوز اثنان حدّ الائتمان معاً).
+    //    فحصُ الحدّ نفسه في `assertCreditLimit` أدناه (يقرأ الصفّ المقفول بنفس المعاملة).
     let customerTier: PriceTier | null = null;
-    let customerCredit: { limit: Decimal | null; balance: Decimal } | null = null;
     if (input.customerId) {
       const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1);
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
-      customerCredit = {
-        limit: c[0].creditLimit == null ? null : money(c[0].creditLimit),
-        balance: money(c[0].currentBalance ?? "0"),
-      };
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
@@ -520,19 +528,30 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
           branchId: input.branchId,
           consumerUserId: actor.userId,
         });
-      } else if (customerCredit?.limit != null) {
-        if (customerCredit.limit.lte(0)) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: "هذا العميل نقدي فقط (حد الائتمان صفر)",
-          });
-        }
-        const projected = customerCredit.balance.plus(unpaid);
-        if (projected.gt(customerCredit.limit)) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: `تجاوز حدّ الائتمان: الرصيد بعد البيع ${projected.toFixed(2)} يتجاوز السقف ${customerCredit.limit.toFixed(2)} — تلزم موافقة مدير مع سقف صريح.`,
-          });
+      } else {
+        // م١ (PR-1) — جذرُ «عميلٌ جديد يُرفض توصيلُه من الاستقبال ويُقبل من المتجر»: كان الفحص
+        // هنا نسخةً محلّية **بلا فرع COD**، فحدّ «0» (افتراض كلّ عميلٍ جديد) يحجب طلبَ توصيلٍ لا
+        // يترك ديناً أصلاً. الحارس الواحد `assertCreditLimit` (server/lib/credit.ts): null = بلا
+        // حدّ، 0 = نقديّ فقط، موجب = فحص الإسقاط، وCOD يعبر — نفس سلوك الحالات الثلاث بلا نسخةٍ
+        // ثانية تنجرف (يحرسه `saleDeliveryDispatch.test.ts`).
+        // ⚠️ Codex #1006 P1 — عقدُ الرمز لقناة المطبعة: `PrintPOS.tsx` يفتح حوارَ اعتماد المدير فقط
+        // على `PRECONDITION_FAILED` (أو رسالةٍ فيها «موافقة مدير»)، و`assertCreditLimit` يرمي
+        // `FORBIDDEN` ⇒ يصير الرفضُ نهائياً بلا مسار اعتماد. نُبقي الحارسَ الواحد (وعبورَ COD)
+        // ونترجم حجبَه إلى `PRECONDITION_FAILED` كي يُتاح إعادةُ المحاولة بموافقة مدير مُتحقَّقة.
+        try {
+          await assertCreditLimit(tx, input.customerId, unpaid, input.branchId, input.paymentMode ?? undefined);
+        } catch (creditErr) {
+          if (creditErr instanceof TRPCError && creditErr.code === "FORBIDDEN") {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تجاوز حدّ الائتمان — تلزم موافقة مدير",
+                why: creditErr.message,
+                doThis: "اطلب من المدير اعتماد التجاوز بسقفٍ صريح، أو حصّل كامل المبلغ نقداً",
+              }),
+            });
+          }
+          throw creditErr;
         }
       }
     }
@@ -560,6 +579,10 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,
+      // م١ (PR-1): يُختَم COD حين يمرّره الاستقبال مع توصيل (مرآة sale/create) — كان يبقى PREPAID دائماً.
+      // ⚠️ Codex #1006 P2 — فاتورةُ المطبعة في السلّة المختلطة تُدفَع كاملةً عمداً لتكون الفاتورةُ
+      // العاديّة حاملةَ COD وحدها؛ فمتى لا متبقٍّ تحمله الإرساليّة فهي PREPAID لا COD (نشتقّه من المتبقّي).
+      paymentMode: input.paymentMode === "COD" && unpaid.lte(0) ? "PREPAID" : (input.paymentMode ?? "PREPAID"),
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).

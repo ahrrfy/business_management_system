@@ -6,6 +6,8 @@
  * يُسدّد الفاتورة (ذمّة العميل↓) ويرفع عهدة المندوب (delivery.settle يُورّدها للمتجر لاحقاً).
  */
 import { z } from "zod";
+import { SHORTFALL_REASONS, type ShortfallReason } from "@shared/shortfallReason";
+import { nonNegMoneyString } from "../lib/schemas";
 import { courierProcedure, router } from "../trpc";
 import { logAudit } from "../services/auditService";
 import { confirmConsignmentDelivery, confirmCourierDelivery, failCourierDelivery, listMyDeliveries, transitionConsignmentParcel } from "../services/deliveryService";
@@ -41,16 +43,32 @@ export const courierRouter = router({
   /**
    * تأكيد التسليم الفعلي والتحصيل: يغلق ذمّة العميل وينقل COD إلى عهدة الجهة.
    * إدخال النقد في الدرج يبقى بيد الموظف عبر delivery.recordRemittance.
+   *
+   * م١ (PR-4، العيب ج): كان الختم من البوّابة يشترط قبض المتبقّي **كاملاً** بلا أيّ مسارٍ للعجز من
+   * الميدان — فالمندوب الذي قبض أقلّ (تاجرٌ رفض العمولة، خصمٌ لحظيّ…) لم يكن يستطيع الختم أصلاً.
+   * الآن `collectedAmount` اختياريّ (غيابُه = المتبقّي كاملاً كما كان)، وأيُّ عجزٍ يلزمه `shortfallReason`
+   * من القائمة المغلقة فيُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة — نفس القاعدة الحاكمة
+   * لمسارَي الكاشير (DFP1) بلا نسخةٍ ثانية من المنطق (`confirmConsignmentDelivery` واحدة).
    */
   confirmConsignmentDelivery: courierProcedure
-    .input(z.object({ consignmentId: z.number().int().positive(), clientRequestId: z.string().trim().min(8).max(100) }))
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      clientRequestId: z.string().trim().min(8).max(100),
+      collectedAmount: nonNegMoneyString.optional(),
+      shortfallReason: z.enum(SHORTFALL_REASONS as unknown as [ShortfallReason, ...ShortfallReason[]]).optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
       const res = await retryOnDeadlock(() => confirmConsignmentDelivery(input, { userId: ctx.user.id }));
       await logAudit(ctx, {
         action: "courier.confirmConsignmentDelivery",
         entityType: "deliveryConsignment",
         entityId: input.consignmentId,
-        newValue: { deliveredAt: res.deliveredAt, alreadyDelivered: res.alreadyDelivered ?? false },
+        newValue: {
+          deliveredAt: res.deliveredAt,
+          alreadyDelivered: res.alreadyDelivered ?? false,
+          collectedAmount: input.collectedAmount ?? null,
+          shortfallReason: input.shortfallReason ?? null,
+        },
       });
       return res;
     }),

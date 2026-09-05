@@ -642,7 +642,7 @@ function AiImageStudioIntegrationCard() {
             <AlertTriangle aria-hidden className="size-3.5 shrink-0 mt-0.5" />
             <span>توليديّ (يعيد رسم الصورة، بخلاف remove.bg القاصّ) ⇒ قد يغيّر تفاصيل دقيقة/كتابة. لذلك النتيجة تعرض للمراجعة والاعتماد قبل استبدال الأصل، <b>والأصل يبقى دائماً</b>.</span>
           </p>
-          <p>مفتاح Gemini من: <span dir="ltr">Google AI Studio ← Get API key</span>. النموذج الافتراضيّ <span dir="ltr">{s?.aiModelEffective ?? "gemini-2.5-flash-image"}</span>.</p>
+          <p>مفتاح Gemini من: <span dir="ltr">Google AI Studio ← Get API key</span>. النموذج الافتراضيّ السريع والاقتصادي <span dir="ltr">{s?.aiModelEffective ?? "gemini-3.1-flash-lite-image"}</span>.</p>
         </div>
 
         {s?.aiLastError && (
@@ -677,7 +677,7 @@ function AiImageStudioIntegrationCard() {
               type="text"
               value={modelValue}
               onChange={(e) => setModelDraft(e.target.value)}
-              placeholder="gemini-2.5-flash-image"
+              placeholder="gemini-3.1-flash-lite-image"
               dir="ltr"
               className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />

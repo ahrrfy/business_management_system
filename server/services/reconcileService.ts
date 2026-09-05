@@ -18,6 +18,8 @@ import {
   suppliers,
 } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
+import { deliveryLedgerEntries } from "../../drizzle/schema";
+import { deriveCashInHandFromLedger } from "@shared/partyExposure";
 import {
   ACCOUNT_ROLES,
   ALL_POSTING_PROFILES,
@@ -712,6 +714,37 @@ export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {
       issues.push({ entity: "deliveryParty", id: partyId, expected: expected.toFixed(2), actual: actual.toFixed(2), drift: drift.toFixed(2) });
+    }
+  }
+
+  /**
+   * م١ (PR-3) — **الدفتر الإلحاقيّ مقابل العمود المخزَّن، لكلّ جهةٍ باسمها** (لا مجموعاً):
+   *   ledger = Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+   *   (`deriveCashInHandFromLedger` — الصيغةُ الواحدة مع اللوحة و`cashSource.ts`).
+   * الكاشفُ أعلاه يطابق قيود المحاسبة؛ وهذا يطابق **الدفتر التشغيليّ** الذي سيصير المرجع عند قلب
+   * `courierLedgerDerived` — صفرُ انحرافٍ على كلّ الجهات لأيامٍ متتالية هو شرطُ القلب (§١٠).
+   */
+  const ledgerAgg = await db
+    .select({
+      partyId: deliveryLedgerEntries.partyId,
+      entryType: deliveryLedgerEntries.entryType,
+      total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
+    })
+    .from(deliveryLedgerEntries)
+    .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);
+  const ledgerByParty = new Map<number, { entryType: string; amount: string }[]>();
+  for (const r of ledgerAgg) {
+    const list = ledgerByParty.get(Number(r.partyId)) ?? [];
+    list.push({ entryType: r.entryType, amount: String(r.total ?? "0") });
+    ledgerByParty.set(Number(r.partyId), list);
+  }
+  const ledgerParties = new Set<number>([...Array.from(ledgerByParty.keys()), ...Array.from(seen)]);
+  for (const partyId of Array.from(ledgerParties)) {
+    const ledger = money(deriveCashInHandFromLedger(ledgerByParty.get(partyId) ?? []));
+    const stored = money(actualMap.get(partyId) ?? "0");
+    const drift = ledger.minus(stored).abs();
+    if (drift.greaterThan("0.01")) {
+      issues.push({ entity: "deliveryPartyLedger", id: partyId, expected: ledger.toFixed(2), actual: stored.toFixed(2), drift: drift.toFixed(2) });
     }
   }
   return issues;

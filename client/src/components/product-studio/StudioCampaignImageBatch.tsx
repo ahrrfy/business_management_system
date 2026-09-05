@@ -2,7 +2,7 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { Button } from "@/components/ui/button";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
-import { loadStudioDraft, saveStudioDraft, purgeStudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
+import { reconcileStudioDraftAfterReconnect, saveStudioDraft, purgeStudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref, type ReactNode } from "react";
 
@@ -14,6 +14,8 @@ type Slot = Reservation["tasks"][number] & {
   receipt: string | null;
   sent?: boolean;
   conflict?: boolean;
+  ownershipLost?: boolean;
+  lockedUntil?: number;
   proposedName?: string;
   proposedDescription?: string;
   proposedMarketingCopy?: string;
@@ -65,15 +67,28 @@ export function StudioCampaignImageBatch(props: Props) {
   async function hydrate(result: Reservation): Promise<Slot[]> {
     return Promise.all(result.tasks.filter((row) => row.taskId !== props.taskId).map(async (row) => {
       const current = slotsRef.current.find((slot) => slot.taskId === row.taskId);
-      if (current) return current;
-      const draft = props.userId == null ? null : await loadStudioDraft(props.userId, row.taskId);
+      if (current && (!current.lockedUntil || current.lockedUntil > Date.now())) {
+        return { ...current, ...row };
+      }
+      const reconciliation = props.userId == null
+        ? { kind: "NONE" as const }
+        : await reconcileStudioDraftAfterReconnect({
+            userId: props.userId,
+            taskId: row.taskId,
+            taskFound: true,
+            revision: String(row.revision),
+            editable: row.status === "ASSIGNED" || row.status === "IN_PROGRESS" || row.status === "REJECTED",
+          });
+      const draft = "draft" in reconciliation ? reconciliation.draft : null;
       return {
         ...row,
         original: draft?.originalDataUrl ?? "",
         image: draft?.imageDataUrl ? { id: `studio-batch-${row.taskId}`, dataUrl: draft.imageDataUrl, isPrimary: false } : undefined,
         mode: draft?.mode ?? "FLATTEN",
         receipt: draft?.processingReceipt ?? null,
-        conflict: Boolean(draft && draft.revision !== String(row.revision)),
+        conflict: reconciliation.kind === "CONFLICT",
+        ownershipLost: false,
+        lockedUntil: reconciliation.kind === "ALREADY_RESUMED" ? reconciliation.retryAt : undefined,
         proposedName: draft?.proposedName,
         proposedDescription: draft?.proposedDescription,
         proposedMarketingCopy: draft?.proposedMarketingCopy,
@@ -102,23 +117,51 @@ export function StudioCampaignImageBatch(props: Props) {
     void initialize();
   }, [props.taskId, props.offline]);
 
+  useEffect(() => {
+    const retryAt = slots.reduce(
+      (earliest, slot) => slot.lockedUntil && slot.lockedUntil > Date.now()
+        ? Math.min(earliest, slot.lockedUntil)
+        : earliest,
+      Number.POSITIVE_INFINITY,
+    );
+    if (!Number.isFinite(retryAt) || props.offline) return;
+    const timer = window.setTimeout(() => void initialize(), Math.max(0, retryAt - Date.now()) + 25);
+    return () => window.clearTimeout(timer);
+  }, [slots, props.offline]);
+
   function patch(taskId: number, change: Partial<Slot>) {
     setSlots((current) => current.map((slot) => slot.taskId === taskId ? { ...slot, ...change } : slot));
+  }
+
+  async function persistSlotDraft(userId: number, slot: Slot): Promise<void> {
+    if (!slot.image) return;
+    await saveStudioDraft({
+      userId, taskId: slot.taskId, revision: String(slot.revision),
+      proposedName: slot.proposedName ?? "", proposedDescription: slot.proposedDescription ?? "", proposedMarketingCopy: slot.proposedMarketingCopy ?? "",
+      imageDataUrl: slot.image.dataUrl, originalDataUrl: slot.original || null,
+      processingReceipt: slot.receipt, mode: slot.mode,
+      taskSnapshot: { taskId: slot.taskId, productName: props.productName, currentDescription: null,
+        status: slot.status as "ASSIGNED" | "IN_PROGRESS" | "REJECTED",
+        hasOriginal: slot.hasOriginal, hasCandidate: slot.hasCandidate, updatedAt: String(slot.updatedAt) },
+    });
   }
 
   useEffect(() => {
     if (!ready || props.userId == null) return;
     const userId = props.userId;
     const timer = window.setTimeout(() => {
-      void Promise.all(slots.filter((slot) => !slot.sent && !slot.conflict).map((slot) => slot.image ? saveStudioDraft({
-        userId, taskId: slot.taskId, revision: String(slot.revision),
-        proposedName: slot.proposedName ?? "", proposedDescription: slot.proposedDescription ?? "", proposedMarketingCopy: slot.proposedMarketingCopy ?? "",
-        imageDataUrl: slot.image!.dataUrl, originalDataUrl: slot.original || null,
-        processingReceipt: slot.receipt, mode: slot.mode,
-        taskSnapshot: { taskId: slot.taskId, productName: props.productName, currentDescription: null,
-          status: slot.status as "ASSIGNED" | "IN_PROGRESS" | "REJECTED",
-          hasOriginal: slot.hasOriginal, hasCandidate: slot.hasCandidate, updatedAt: String(slot.updatedAt) },
-      }) : purgeStudioDraft(userId, slot.taskId))).catch(() => setError("تعذّر حفظ الصور الإضافية على الجهاز؛ أبقِ الصفحة مفتوحة حتى الإرسال"));
+      for (const slot of slots.filter((candidate) =>
+        !candidate.sent && !candidate.conflict && !candidate.ownershipLost &&
+        (!candidate.lockedUntil || candidate.lockedUntil <= Date.now()) && candidate.image,
+      )) {
+        void persistSlotDraft(userId, slot).catch((cause) => {
+          if (cause instanceof Error && cause.message.includes("تبويب آخر")) {
+            patch(slot.taskId, { ownershipLost: true });
+            return;
+          }
+          setError("تعذّر حفظ الصورة الإضافية على الجهاز؛ أبقِ الصفحة مفتوحة حتى الإرسال");
+        });
+      }
     }, 650);
     return () => window.clearTimeout(timer);
   }, [slots, ready, props.userId, props.productName]);
@@ -156,16 +199,33 @@ export function StudioCampaignImageBatch(props: Props) {
     async submitAdditional() {
       if (locked.current || busy) throw new Error("انتظر انتهاء معالجة الصور");
       const pending = slotsRef.current.filter((slot) => !slot.sent && slot.image);
-      if (pending.some((slot) => slot.conflict)) throw new Error("تغيّرت مهمة صورة إضافية؛ افتحها من مهامّي قبل الإرسال");
+      if (pending.some((slot) => slot.conflict || slot.ownershipLost || (slot.lockedUntil != null && slot.lockedUntil > Date.now()))) {
+        throw new Error("إحدى الصور الإضافية مفتوحة في تبويب آخر أو تغيّرت مهمتها؛ افتحها من مهامّي قبل الإرسال");
+      }
       locked.current = true;
       setWorking(true);
       try {
         // Separate requests stay below the HTTP payload cap and permit partial retry.
         for (const slot of pending) {
+          if (props.userId != null) {
+            try {
+              // حفظٌ ذري قبل الشبكة يجدد ملكية هذه الصورة؛ إن استحوذ تبويب آخر عليها
+              // نوقف الإرسال ولا نعتمد على علم conflict قديم من لحظة فتح الشاشة.
+              await persistSlotDraft(props.userId, slot);
+            } catch (cause) {
+              if (cause instanceof Error && cause.message.includes("تبويب آخر")) {
+                patch(slot.taskId, { ownershipLost: true });
+                throw new Error("هذه الصورة الإضافية مفتوحة في تبويب آخر؛ أغلِقه ثم أعد المحاولة");
+              }
+              throw cause;
+            }
+          }
           await submit.mutateAsync({
             taskId: slot.taskId, expectedRevision: slot.revision,
             originalDataUrl: slot.original || null, processedDataUrl: slot.image!.dataUrl,
             thumbnailDataUrl: await createProductDisplayThumbnail(slot.image!.dataUrl),
+            // AI لا يُقبل كتسميةٍ من العميل: الإيصال المرتبط بهذه المهمة/البايتات
+            // هو الذي يرفع الوضع خادمياً إلى AI. يبقى wire mode آمناً ولا يخلط إثباتات الصور.
             mode: slot.mode === "AI" ? "FLATTEN" : slot.mode, processingReceipt: slot.receipt,
             adminOverrideReason: props.adminOverrideReason,
             proposedName: slot.proposedName, proposedDescription: slot.proposedDescription,
@@ -196,10 +256,13 @@ export function StudioCampaignImageBatch(props: Props) {
       )}
       <fieldset disabled={busy || props.submitting}>{props.children}</fieldset>
       {slots.map((slot, index) => (
-        <fieldset key={slot.taskId} disabled={busy || props.submitting || slot.sent || slot.conflict} className="space-y-2 rounded-md border p-3">
-          <p className="text-sm font-medium">صورة إضافية {index + 1}{slot.sent ? " — أُرسلت للمراجعة" : ""}</p>
+        <fieldset key={slot.taskId} disabled={busy || props.submitting || slot.sent || slot.conflict || slot.ownershipLost || (slot.lockedUntil != null && slot.lockedUntil > Date.now()) || (slot.hasOriginal && !slot.image) || slot.hasCandidate} className="space-y-2 rounded-md border p-3">
+          <p className="text-sm font-medium">صورة الحملة {slot.activeSlot ?? index + 2}{slot.sent ? " — أُرسلت للمراجعة" : ""}</p>
           {slot.conflict && <p role="alert" className="text-sm text-destructive">تغيّرت المهمة؛ احتُفظ بالصورة محلياً. افتح المهمة من مهامّي لمراجعتها.</p>}
+          {slot.ownershipLost && <p role="alert" className="text-sm text-destructive">فُتحت هذه الصورة في تبويب آخر؛ أغلِقه وافتح المهمة من مهامّي قبل الإرسال.</p>}
+          {slot.lockedUntil != null && slot.lockedUntil > Date.now() && <p role="status" className="text-sm text-muted-foreground">هذه الصورة مفتوحة مؤقتاً في تبويب آخر؛ سيُعاد التحقق تلقائياً.</p>}
           {slot.hasOriginal && !slot.image && <p className="text-sm text-muted-foreground">لهذه الصورة أصل محفوظ؛ افتح مهمتها من مهامّي لاستكمالها.</p>}
+          {slot.hasCandidate && <p className="text-sm text-muted-foreground">أُرسلت لهذه الصورة نتيجة سابقة؛ افتح مهمتها من مهامّي لمتابعة مراجعتها.</p>}
           <ImageStudioUploader value={slot.image ? [slot.image] : []} maxItems={1} singlePrimary={false}
             studioTaskId={slot.taskId} adminOverrideReason={props.adminOverrideReason} offline={props.offline}
             onChange={(images) => patch(slot.taskId, { image: images[0], original: images[0]?.id === slot.image?.id ? slot.original : images[0]?.dataUrl ?? "", receipt: null })}

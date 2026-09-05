@@ -6,9 +6,12 @@ import { courierCommissionRules, deliveryConsignments, deliveryLedgerEntries, de
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { money, toDbMoney } from "../money";
+import { money, round2, toDbMoney } from "../money";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { withTx } from "../tx";
+import { computePartyExposure } from "@shared/partyExposure";
+import { deliveryCashSource, partyCashInHandTx } from "./cashSource";
+import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { appendDeliveryEvent } from "./lifecycle";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
 
@@ -54,7 +57,8 @@ export async function assertFloatLimitTx(
       ELSE 0 END),0)`,
   }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, Number(party.id))))[0];
   const committed = money(row?.exposure ?? "0");
-  const legacyCash = money(party.currentBalance ?? "0");
+  // م١ (PR-3): «النقد بيد الجهة» من المصدر الذي يقرّره العلَم (`cashSource.ts`) لا العمود مباشرةً.
+  const legacyCash = (await partyCashInHandTx(tx, { id: party.id, currentBalance: party.currentBalance })).effective;
   const after = DecimalMax(committed, legacyCash).plus(codAmount).toDecimalPlaces(2);
   if (after.gt(limit)) {
     throw new TRPCError({
@@ -475,51 +479,18 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
   /**
-   * Slice DFP1 (٣٠/٨/٢٦، P1 #2+#7) — الأعمدة الجديدة لقائمة المناديب (٣٠/٨):
-   * ٢) parcelsInTransitAmount = Σ codAmount للطرود ASSIGNED/OUT_FOR_DELIVERY (بضاعةٌ خرجت لم تصل).
-   * ٣) deliveredUncollectedAmount = Σ متبقّي الطرود DELIVERED مع moneyStatus ∈ (UNSETTLED, PARTIAL).
-   * ٤) feesOwedAmount = Σ (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET) مقصوصةً عند صفر لكل جهة.
-   * الحسبة هنا اختصار للطاقة، والأعمدة تُعرَض في DeliveryParties بتوكينات لون partyExposure.
+   * Slice DFP1 (٣٠/٨/٢٦) — الأعمدة الأربعة لقائمة المناديب؛ م١ (PR-3): عبر **الدالّة النقيّة**
+   * `computePartyExposure` (كانت صيغةً SQL موازية هنا وفي `queries.ts` — نسختان لمفهومٍ واحد
+   * انحرفتا فعلاً في معالجة `returnDeclaredAt`). المدخلات من `loadPartyExposureInputsTx` على
+   * **مستوى الجهة كلّها** (كما كانت الحسبة هنا بلا فرع)، و«النقد بيده» يُعاد بمصدرَيه (الدفتر/
+   * المخزَّن) وفرقهما للطرح الظلّيّ (§١٠).
    */
-  const exposureAgg = await db
-    .select({
-      partyId: deliveryConsignments.partyId,
-      parcelsInTransit: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryConsignments.parcelStatus} IN ('ASSIGNED','OUT_FOR_DELIVERY')
-        THEN CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
-      deliveredUncollected: sql<string>`COALESCE(SUM(CASE
-        WHEN ${deliveryConsignments.parcelStatus} = 'DELIVERED'
-          AND ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')
-          AND ${deliveryConsignments.returnDeclaredAt} IS NULL
-        THEN GREATEST(
-          CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))
-          - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2))
-          - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)), 0)
-        ELSE 0 END), 0)`,
-    })
-    .from(deliveryConsignments)
-    .where(sql`${deliveryConsignments.parcelStatus} != 'CANCELLED'`)
-    .groupBy(deliveryConsignments.partyId);
-  const exposureMap = new Map(
-    exposureAgg.map((r) => [
-      Number(r.partyId),
-      {
-        parcelsInTransit: String(r.parcelsInTransit ?? "0.00"),
-        deliveredUncollected: String(r.deliveredUncollected ?? "0.00"),
-      },
-    ]),
+  const exposureInputs = await loadPartyExposureInputsTx(
+    db as unknown as Tx,
+    parties.map((p) => Number(p.id)),
+    null,
   );
-  const feesAgg = await db
-    .select({
-      partyId: deliveryLedgerEntries.partyId,
-      feesOwed: sql<string>`GREATEST(COALESCE(SUM(CASE
-        WHEN ${deliveryLedgerEntries.entryType} = 'FEE_EARNED' THEN ${deliveryLedgerEntries.amount}
-        WHEN ${deliveryLedgerEntries.entryType} = 'FEE_REFUNDED' THEN -${deliveryLedgerEntries.amount}
-        WHEN ${deliveryLedgerEntries.entryType} IN ('FEE_PAID', 'FEE_OFFSET') THEN -${deliveryLedgerEntries.amount}
-        ELSE 0 END), 0), 0)`,
-    })
-    .from(deliveryLedgerEntries)
-    .groupBy(deliveryLedgerEntries.partyId);
-  const feesMap = new Map(feesAgg.map((r) => [Number(r.partyId), String(r.feesOwed ?? "0.00")]));
+  const cashSource = deliveryCashSource();
 
   const driverRows = await db.select({
     partyId: deliveryPartyMembers.partyId,
@@ -544,17 +515,38 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
     driversByParty.set(partyId, list);
   }
 
-  return parties.map((p) => ({
-    ...p,
-    drivers: driversByParty.get(Number(p.id)) ?? [],
-    hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),
-    openConsignments: openMap.get(Number(p.id))?.openCount ?? 0,
-    oldestOutstanding: openMap.get(Number(p.id))?.oldest ?? null,
-    // Slice DFP1 (٣٠/٨/٢٦) — الأعمدة الأربعة الجديدة (partyExposure):
-    parcelsInTransitAmount: exposureMap.get(Number(p.id))?.parcelsInTransit ?? "0.00",
-    deliveredUncollectedAmount: exposureMap.get(Number(p.id))?.deliveredUncollected ?? "0.00",
-    feesOwedAmount: feesMap.get(Number(p.id)) ?? "0.00",
-  }));
+  return parties.map((p) => {
+    const inputs = exposureInputs.get(Number(p.id));
+    // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
+    const custodyStored = round2(money(p.currentBalance ?? "0")).toFixed(2);
+    const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
+    const exposure = computePartyExposure({
+      cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
+      parcels: inputs?.parcels ?? [],
+      ledger: inputs?.ledger ?? [],
+    });
+    // Codex #1012 P2 — «نقد بيده» ماديٌّ وحده: العجزُ (ذمّةٌ غير نقديّة) يُطرح ويُعرَض مستقلّاً.
+    const shortfallOwed = exposure.shortfallOwed;
+    const cashInHandLedger = round2(money(custodyLedger).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
+    return {
+      ...p,
+      drivers: driversByParty.get(Number(p.id)) ?? [],
+      hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),
+      openConsignments: openMap.get(Number(p.id))?.openCount ?? 0,
+      oldestOutstanding: openMap.get(Number(p.id))?.oldest ?? null,
+      // Slice DFP1 (٣٠/٨/٢٦) — الأعمدة الأربعة (partyExposure) — م١: من الدالّة النقيّة نفسها.
+      parcelsInTransitAmount: exposure.parcelsInTransit,
+      deliveredUncollectedAmount: exposure.deliveredUncollected,
+      feesOwedAmount: exposure.feesOwedToThem,
+      // Codex #1012 P2 — العجزُ المحمَّل على الجهة عمودٌ مستقلّ (ذمّةٌ غير نقديّة).
+      shortfallOwedAmount: shortfallOwed,
+      // م١ (PR-3) — الطرح الظلّيّ: المصدران الماديّان معاً وفرقهما (شارة الانحراف في الواجهة).
+      cashInHandLedger,
+      cashInHandStored,
+      cashInHandDrift: round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2),
+    };
+  });
 }
 
 export async function getDeliveryParty(id: number) {

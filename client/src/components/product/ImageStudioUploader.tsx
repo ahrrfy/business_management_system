@@ -137,8 +137,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
       // تسلسليّ لا متوازٍ — للسبب نفسه الموثَّق في مسار الذكاء الاصطناعي أدناه:
       // httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
       // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر، برسالةٍ لا يفهمها المستخدم.
-      // ولا فائدة من التوازي أصلاً: للمزوّد فتحتا تنفيذٍ اثنتان وسقفُ ٣ نداءات لكل دقيقة
-      // لكل مستخدم ⇒ الباقي يعود BUSY/RATE_LIMITED. والتسلسل يُخلي الخيط بين الصور.
+      // ولا فائدة من التوازي أصلاً: للمزوّد فتحتا تنفيذ تقنيتان. التسلسل يُخلي الخيط بين الصور.
       const processOne = async (it: (typeof targets)[number]): Promise<StudioPreview> => {
         let r: StudioResult;
         let processingReceipt: string | undefined;
@@ -153,15 +152,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
               trustCutout: true,
             });
-            if (props.studioTaskId && res.processingReceipt) {
-              await bindProcessingProof.mutateAsync({
-                taskId: props.studioTaskId,
-                processingReceipt: res.processingReceipt,
-                candidateDataUrl: r.dataUrl,
-                adminOverrideReason: props.adminOverrideReason,
-              });
-              processingReceipt = res.processingReceipt;
-            }
+            processingReceipt = res.processingReceipt;
             if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
           } catch (e) {
             // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
@@ -232,14 +223,6 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             adminOverrideReason: props.adminOverrideReason,
           });
           const norm = await normalizeAiStudioImage(res.imageDataUrl);
-          if (props.studioTaskId && res.processingReceipt) {
-            await bindProcessingProof.mutateAsync({
-              taskId: props.studioTaskId,
-              processingReceipt: res.processingReceipt,
-              candidateDataUrl: norm.dataUrl,
-              adminOverrideReason: props.adminOverrideReason,
-            });
-          }
           ok.push({
             id: it.id,
             before: it.dataUrl,
@@ -276,23 +259,39 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     }
   };
 
-  const accept = () => {
+  const accept = async () => {
     if (!previews) return;
+    const providerPreview = previews.find((preview) => preview.processingReceipt);
+    setBusy(true);
+    setError(null);
+    try {
+      // لا نبدّل proof الخادمي عند مجرد عرض المعاينة: الإلغاء أو فشل معاينة جديدة يجب ألّا
+      // يبطل نتيجةً سبق أن اعتمدها المصوّر. الربط يحدث لحظة الاعتماد فقط وبالبايتات المعروضة.
+      if (props.studioTaskId && providerPreview?.processingReceipt) {
+        await bindProcessingProof.mutateAsync({
+          taskId: props.studioTaskId,
+          processingReceipt: providerPreview.processingReceipt,
+          candidateDataUrl: providerPreview.after,
+          adminOverrideReason: props.adminOverrideReason,
+        });
+      }
     // نطبّق كلّ ناتجٍ على صورته بالمعرّف حصراً (لا خلط/تكرار على غير المستهدَف) — راجع applyStudioPreviews.
-    onChange(applyStudioPreviews(value, previews));
-    const acceptedMode = previews.some((preview) => preview.mode === "AI")
-      ? "AI"
-      : previews.some((preview) => preview.mode === "CUT")
-        ? "CUT"
-        : "FLATTEN";
-    props.onStudioModeChange?.(acceptedMode);
-    props.onProcessingReceiptChange?.(
-      previews.find((preview) => preview.processingReceipt)
-        ?.processingReceipt ?? null,
-    );
-    setPreviews(null);
-    setNotice(null);
-    setTargetIds([]);
+      onChange(applyStudioPreviews(value, previews));
+      const acceptedMode = previews.some((preview) => preview.mode === "AI")
+        ? "AI"
+        : previews.some((preview) => preview.mode === "CUT")
+          ? "CUT"
+          : "FLATTEN";
+      props.onStudioModeChange?.(acceptedMode);
+      props.onProcessingReceiptChange?.(providerPreview?.processingReceipt ?? null);
+      setPreviews(null);
+      setNotice(null);
+      setTargetIds([]);
+    } catch (e) {
+      setError("تعذّر اعتماد معاينة الاستوديو: " + String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const modeLabel = (m: StudioPreview["mode"]) =>
@@ -338,7 +337,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                     />
                   </button>
                 ))}
-                {value.length > 1 && (
+                {workflowTaskId == null && value.length > 1 && (
                   <Button
                     type="button"
                     variant="outline"
@@ -362,7 +361,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {value.length > 1 && targets.length < value.length && (
+                  {workflowTaskId == null && value.length > 1 && targets.length < value.length && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -497,7 +496,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             ))}
           </div>
           <div className="flex gap-2">
-            <Button type="button" size="sm" onClick={accept}>
+            <Button type="button" size="sm" disabled={busy || bindProcessingProof.isPending} onClick={() => void accept()}>
               <Check aria-hidden className="size-4" /> اعتماد{" "}
               {previews.length > 1 ? "الكل" : ""}
             </Button>
@@ -505,6 +504,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
               type="button"
               variant="ghost"
               size="sm"
+              disabled={busy || bindProcessingProof.isPending}
               onClick={() => {
                 setPreviews(null);
                 setNotice(null);

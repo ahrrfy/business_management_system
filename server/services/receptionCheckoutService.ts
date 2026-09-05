@@ -469,6 +469,8 @@ export async function checkoutReceptionInTx(
             }
             : null,
           codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — الجذر: `credit.ts` يعبر COD حين يصله `paymentMode` فقط، ولم يكن يُمرَّر من هنا.
+          paymentMode: input.delivery != null ? "COD" : undefined,
           // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
           openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
           clientRequestId: `${input.clientRequestId}-sale`,
@@ -504,6 +506,8 @@ export async function checkoutReceptionInTx(
             }
             : null,
           codDispatchPending: input.delivery != null,
+          // م١ (PR-1) — نفس الجذر على قناة الطباعة (كانت تفحص الحدّ inline بلا فرع COD).
+          paymentMode: input.delivery != null ? "COD" : undefined,
           clientRequestId: `${input.clientRequestId}-print`,
           offlineCapture: input.offlineCapture ?? null,
           creditApproved: false,
