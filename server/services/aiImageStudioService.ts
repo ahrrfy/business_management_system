@@ -191,7 +191,11 @@ export async function generateStudioImage(
     if (timeoutMs <= 0) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
     return generateStudioImageAttempt(params, { ...opts, timeoutMs });
   };
-  const attempt = () => opts.runAttempt ? opts.runAttempt(run) : run();
+  const attempt = () => {
+    // افحص قبل حجز الحصة أيضاً: قد يستيقظ مؤقت الإعادة بعد انتهاء المهلة.
+    if (Date.now() >= deadline) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+    return opts.runAttempt ? opts.runAttempt(run) : run();
+  };
   try {
     return await attempt();
   } catch (error) {

@@ -86,6 +86,25 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     expect(fakeFetch).toHaveBeenCalledTimes(1);
   });
 
+  it("does not reserve retry quota when the backoff timer runs after the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+        new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+      const runAttempt = vi.fn(async (run: () => Promise<any>) => run());
+      const result = expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt, timeoutMs: 1000 }))
+        .rejects.toMatchObject({ kind: "TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(0);
+      vi.setSystemTime(Date.now() + 1000);
+      await vi.advanceTimersByTimeAsync(250);
+      await result;
+      expect(runAttempt).toHaveBeenCalledTimes(1);
+      expect(fakeFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("EDIT: يُرسل نصّاً + inline_data ومفتاحاً في الترويسة، ويستخرج الصورة", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | undefined;
