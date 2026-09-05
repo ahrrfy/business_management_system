@@ -6,6 +6,7 @@ import { ProductImageGallery } from "@/components/product-studio/ProductImageGal
 import { StudioStandaloneImageManagerCard } from "@/components/product-studio/StudioStandaloneImageManagerCard";
 import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioImageDiscoveryPanel";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
+import { useStudioSelectedTask } from "@/components/product-studio/useStudioSelectedTask";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -426,11 +427,8 @@ export default function ProductImageStudio() {
       getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     },
   );
-  // A scanned task can be outside every loaded page or list filter.
-  const selectedTaskQuery = trpc.productStudio.tasks.useQuery(
-    { scope, taskId: selectedId ?? 0, limit: 1, hideClosedCampaigns: false },
-    { enabled: !offline && Boolean(selectedId) },
-  );
+  const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
+  const { selectedTaskQuery, onlineSelected } = useStudioSelectedTask(scope, selectedId, offline, taskItems, scannedTask);
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
     {
@@ -488,7 +486,6 @@ export default function ProductImageStudio() {
   )
     .filter(([query]) => query.isError)
     .map(([, label]) => label);
-  const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
 
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
   const { queuedTaskIds, allQueuedSelected, selectedAssignedTaskIds, selectedActiveTaskIds } = studioTaskSelection(taskItems, selectedTaskIds);
@@ -501,10 +498,6 @@ export default function ProductImageStudio() {
     });
   const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedTaskIds));
 
-  const onlineSelected =
-    selectedTaskQuery.data?.items.find((task) => Number(task.id) === selectedId) ??
-    taskItems.find((task) => Number(task.id) === selectedId) ??
-    (scannedTask && Number(scannedTask.id) === selectedId ? scannedTask : null);
   const selected =
     onlineSelected ??
     (offline && offlineSelectedDraft

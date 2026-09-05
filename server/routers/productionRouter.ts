@@ -7,6 +7,7 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { branches, productVariants, productionLines, productionOrders, products } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -231,7 +232,9 @@ export const productionRouter = router({
   create: inventoryManagerProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive(),
+        // م٤ (الاستنتاج قبل السؤال): اختياريّ — يُشتقّ من الفاعل حين يغيب؛ الأدمن يمرّره لفرعٍ
+        // آخر بقصدٍ صريح، وغيرُه يُثبَّت على فرعه مهما أرسل.
+        branchId: z.number().int().positive().optional(),
         // المدخلات/المخرجات اليدوية اختيارية عند تمرير run (التشغيل بوصفة).
         inputs: z.array(lineInput).optional(),
         outputs: z.array(outputLineInput).optional(),
@@ -247,10 +250,22 @@ export const productionRouter = router({
       // عزل الفرع (تدقيق ١٧/٧): createProduction كان يستعمل input.branchId مباشرةً (ترقيم/استهلاك/إنتاج)
       // ⇒ دورٌ مُنح inventory=FULL (غير مدير) يُنتج/يستهلك في فرعٍ آخر. غير admin/manager يُجبَر على فرعه.
       const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
-      if (!elevated && ctx.user.branchId == null) {
+      const assignedBranchId = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      if (!elevated && assignedBranchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const effectiveBranchId = elevated ? (input.branchId ?? assignedBranchId) : assignedBranchId;
+      if (effectiveBranchId == null) {
+        // أدمنٌ بلا فرعٍ مُسنَد لم يُرسل فرعاً: لا فرعَ افتراضيّ (حارس check:branch) — اختيارٌ صريح.
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تحديد فرع الإنتاج",
+            why: "حسابك بلا فرعٍ مُسنَد ولم تُرسل الشاشة فرعاً",
+            doThis: "اختر الفرع من القائمة في شاشة الإنتاج ثم أعِد الترحيل",
+          }),
+        });
+      }
       const enforcedInput = { ...input, branchId: effectiveBranchId };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -261,7 +276,7 @@ export const productionRouter = router({
               entityType: "production",
               entityId: (res as { productionOrderId?: number })?.productionOrderId,
               newValue: {
-                branchId: input.branchId,
+                branchId: effectiveBranchId,
                 mode: input.run ? "recipe" : "manual",
                 inputsCount: input.inputs?.length ?? null,
                 outputsCount: input.outputs?.length ?? null,

@@ -91,8 +91,8 @@ async function confirmDelivered(consignmentId: number, collectedAmount: string, 
 }
 const board = () => withTx((tx) => listPartyBoardTx(tx, { branchId: 1, canCrossBranches: false }, CASHIER));
 const preview = () => withTx((tx) => previewDailySettlementTx(tx, { partyId: PARTY, branchId: 1 }, CASHIER));
-const settle = (countedCash: string, shortfallReason?: string, key = `settle-${countedCash}-${shortfallReason ?? "none"}`) =>
-  withTx((tx) => settleDailyTx(tx, { partyId: PARTY, branchId: 1, countedCash, shortfallReason, shiftType: "RECEPTION", clientRequestId: key }, CASHIER));
+const settle = (countedCash: string, shortfallReason?: string, key = `settle-${countedCash}-${shortfallReason ?? "none"}`, shiftType: "RECEPTION" | "RETAIL" = "RECEPTION") =>
+  withTx((tx) => settleDailyTx(tx, { partyId: PARTY, branchId: 1, countedCash, shortfallReason, shiftType, clientRequestId: key }, CASHIER));
 const suggest = (governorate: string) => withTx((tx) => suggestPartyForZoneTx(tx, { governorate, branchId: 1 }));
 const partyBalance = async () =>
   String((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, PARTY)))[0].currentBalance);
@@ -277,6 +277,23 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect(replay.shortfallTotal).toBe("500.00");
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
     // العجزُ لم يُقيَّد مرّتين على الجهة.
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
+  });
+
+  it.each([
+    ["countedCash", "2400", "CUSTOMER_REQUESTED_DISCOUNT", "RECEPTION"],
+    ["shortfallReason", "2500", "MERCHANT_REFUSED_COMMISSION", "RECEPTION"],
+    ["shiftType", "2500", "CUSTOMER_REQUESTED_DISCOUNT", "RETAIL"],
+  ] as const)("نفس مفتاح التسوية مع %s مغيّر ⇒ CONFLICT لا السند القديم", async (_field, countedCash, shortfallReason, shiftType) => {
+    await openReception();
+    const a = await saleWithDelivery(`payload-conflict-${shiftType}`, "3");
+    await confirmDelivered(a.consignmentId, "3000");
+    const key = `daily-payload-conflict-${shiftType}-${shortfallReason}`;
+    const first = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key);
+    expect(first.status).toBe("SHORT");
+
+    await expect(settle(countedCash, shortfallReason, key, shiftType)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
     expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
   });
 });

@@ -58,7 +58,10 @@ export const PAGE_SIZE_THRESHOLD = 1200;
  */
 export function stripComments(source) {
   return source
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, " ")
+    // يمسك تعليقَ JSX المكتمل وحده. «النقطة المروَّضة» (tempered dot) في النمط أدناه تمنع
+    // تجاوزَ أوّل «*/»، فلا يُبتلَع جسمُ دالّةٍ يبدأ بتعليق JSDoc حتى أوّل «*/}» لاحق — وكان
+    // ذلك إنذاراً كاذباً بالنقصان (false negative) يُمرّر صفحاتٍ عملاقةً تحت العتبة.
+    .replace(/\{\s*\/\*(?:(?!\*\/)[\s\S])*?\*\/\s*\}/g, " ")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
 }
@@ -134,6 +137,23 @@ function runSelfTest({ quiet }) {
 
   // (٥) `assertMonotonicDescent` قابلٌ للاستدعاء وموقَّعٌ صحيحاً.
   eq("assertMonotonicDescent دالّة", typeof assertMonotonicDescent, "function");
+
+  // (٦) جسمُ دالّةٍ يبدأ بتعليق JSDoc لا يُبتلَع حتى أوّل تعليق JSX عميق (الثقب المُصلَح):
+  //     الشيفرةُ بين الـJSDoc وتعليق JSX تُعَدّ كاملةً — لا تُطرح كأنّها كتلةُ تعليقٍ واحدة.
+  //     بالنمط القديم كان العدّ ٢ (يبتلع الجسمَ كلَّه)؛ بالنمط المروَّض العدّ الصادق ٦.
+  const jsdocBodySrc = [
+    "export default function DemoPage() {",
+    "  /**",
+    "   * Multi-line JSDoc for the component.",
+    "   * Second documentation line.",
+    "   */",
+    "  const first = 1;",
+    "  const second = 2;",
+    "  const third = 3;",
+    "  return <div>{/* inline jsx comment */}<span>{first}</span></div>;",
+    "}",
+  ].join("\n");
+  eq("جسمُ دالّةٍ يبدأ بـJSDoc لا يُبتلَع", countCodeLines(jsdocBodySrc), 6);
 
   if (fails.length > 0) {
     console.error("✗ الاختبار الذاتيّ لحارس حجم الصفحة فشل:\n");

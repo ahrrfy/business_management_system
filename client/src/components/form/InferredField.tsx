@@ -21,7 +21,7 @@
  *   `check:branch` — والمكوّن يبني قيمتَه من `useSessionBranchInference` وحدها.
  */
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, Building2, Pencil, X } from "lucide-react";
+import { AlertCircle, Building2, Pencil, RefreshCw, Sparkles, X } from "lucide-react";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -92,7 +92,11 @@ export function InferredBranchField({
   // زرُّ التغيير مسموحٌ فقط للأدمن/المالك ومع غير الـdisabled. حين لا فرعَ مُسنَد أصلاً
   // (`unassigned` = أدمن بلا فرع)، القائمةُ تُعرَض مباشرة بلا زرّ — فرضٌ لطيف على الاختيار.
   const canPick = inference.canOverride && !disabled;
-  const showPicker = pickerOpen || inference.status === "unassigned";
+  // القائمةُ تظهر أيضاً حين تخالف قيمةُ الأب الفرعَ المستنتَج (تبديلٌ من خارج المكوّن، كزرّ
+  // «عكس الاتجاه» في التحويل): ما سيُرسَل يجب أن يُرى، لا أن يُغطّيه عرضُ الفرع المستنتَج.
+  const deviates =
+    inference.status === "resolved" && branchId != null && branchId !== inference.branchId;
+  const showPicker = pickerOpen || deviates || inference.status === "unassigned";
 
   return (
     <div className={cn("space-y-1", className)}>
@@ -172,10 +176,19 @@ function InferredFieldBody({
         className="flex items-start gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-3 text-sm text-[var(--sem-neg)]"
       >
         <AlertCircle aria-hidden className="mt-0.5 size-4 shrink-0" />
-        <span>
+        <span className="flex-1">
           {inference.message ??
             "تعذّرت قراءةُ جلستك · انتهت الجلسة أو لم تُقبل · سجّل الدخول مجدّداً."}
         </span>
+        {/* المخرجُ العمليّ الذي تذكره الرسالة يجب أن يكون زرّاً فعلياً لا وعداً. */}
+        <button
+          type="button"
+          onClick={inference.retry}
+          className="inline-flex shrink-0 items-center gap-1 text-xs underline-offset-2 hover:underline"
+        >
+          <RefreshCw aria-hidden className="size-3" />
+          إعادة المحاولة
+        </button>
       </div>
     );
   }
@@ -189,7 +202,9 @@ function InferredFieldBody({
         <AppSelect
           id={id}
           value={branchId != null ? String(branchId) : ""}
-          disabled={disabled}
+          // غيرُ عابر الفروع يرى قيمةً مخالفةً (إن وُجدت) ولا يُبدّلها — الخادم سيرفضها أصلاً؛
+          // مخرجُه «استعِد الفرعَ المسند» أدناه.
+          disabled={disabled || !inference.canOverride}
           onValueChange={(next) => onChange(next ? Number(next) : null)}
           className="h-9"
         >
@@ -225,34 +240,79 @@ function InferredFieldBody({
 
   // ─── العرضُ الاستنتاجيّ العاديّ (`resolved`) ─────────────────────────────
   return (
-    <div
-      id={id}
-      className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/30 px-3 text-sm"
-      // ⚠️ لا `disabled`/`aria-disabled` هنا: الحقلُ **يعرض** لا يُدخل — فتعطيلُه بصرياً يخدع.
-      // القراءةُ العارضة تُعرَف بغياب الحدود الفعّالة والخلفيّة الرماديّة.
-    >
-      <Building2 aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      <span className="truncate font-medium">{displayName}</span>
-      <span className="text-xs text-muted-foreground">
-        ({inference.sourceLabel})
-      </span>
-      {canPick && (
-        <button
-          type="button"
-          onClick={onOpenPicker}
-          className="ms-auto inline-flex items-center gap-1 text-xs text-primary hover:underline"
-        >
-          <Pencil aria-hidden className="size-3" />
-          تغيير
-        </button>
-      )}
+    <div className="space-y-1">
+      <div
+        id={id}
+        className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/30 px-3 text-sm"
+        // ⚠️ لا `disabled`/`aria-disabled` هنا: الحقلُ **يعرض** لا يُدخل — فتعطيلُه بصرياً يخدع.
+        // القراءةُ العارضة تُعرَف بغياب الحدود الفعّالة والخلفيّة الرماديّة.
+      >
+        <Building2 aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-medium" title={displayName}>
+          {displayName}
+        </span>
+        {canPick && (
+          <button
+            type="button"
+            onClick={onOpenPicker}
+            className="ms-auto inline-flex shrink-0 items-center gap-1 text-xs text-primary hover:underline"
+          >
+            <Pencil aria-hidden className="size-3" />
+            تغيير
+          </button>
+        )}
+      </div>
+      {/* مصدرُ القيمة في سطرٍ تحت الحقل لا داخله: داخل حقلٍ ضيّق (شبكةُ عمودين) كان يقصّ اسمَ
+          الفرع نفسَه («الفرع الر…») ويترك التسميةَ كاملة — فيقرأ الموظّفُ المصدرَ ولا يقرأ الفرع. */}
+      <p className="text-[11px] text-muted-foreground">{inference.sourceLabel}</p>
     </div>
   );
 }
 
+interface InferredFieldProps {
+  label: string;
+  /** القيمةُ المعروضة كما ردّها الخادم (أو الجلسة) — نصٌّ أو عنصر؛ لا تُشتقّ في الشاشة. */
+  value: React.ReactNode;
+  /** مصدرُ القيمة بكلمتين («حسابك المسجل»، «اليوم التشغيلي») — بلا تشكيل: نصٌّ صغير. */
+  sourceLabel?: string;
+  /** سطرُ شرحٍ اختياريّ تحت الحقل. */
+  hint?: string;
+  icon?: React.ReactNode;
+  id?: string;
+  className?: string;
+}
+
 /**
- * الحقول المستنتَجة الأخرى (يوم تشغيليّ، فئة سعرية، طريقة دفع افتراضية) لها نفس النمط لكنها
- * ليست حاجةً حاكمةً في هذه الشريحة — تُبنى عند حاجةِ الشاشة الفعليّة. المُصدَّرُ هنا الآن هو
- * حقلُ الفرع لأنّه ٦٩ إجراءً في الجرد الحاكم (٢/٩/٢٦) وحرّاسُ `check:branch` تدور حوله.
+ * `InferredField` العامّ — عرضٌ للقراءة لقيمةٍ يعرفها الخادم أصلاً (اسمُ الفاعل، اليومُ
+ * التشغيليّ، الفئةُ السعرية…). ليس مُدخَلاً: لا `disabled` ولا حدودٌ فعّالة، فلا يُخدَع المستخدم
+ * بحقلٍ «معطَّل» ولا بـ`readOnly` يوهم بالإدخال. حقلُ الفرع له مكوّنُه المتخصّص أعلاه لأنّه وحده
+ * يحمل تجاوزاً مشروعاً (الأدمن/المالك) وحرّاساً (`check:branch`).
  */
+export function InferredField({
+  label,
+  value,
+  sourceLabel,
+  hint,
+  icon,
+  id = "inferred-field",
+  className,
+}: InferredFieldProps): React.ReactElement {
+  return (
+    <div className={cn("space-y-1", className)}>
+      <Label htmlFor={id}>{label}</Label>
+      <div
+        id={id}
+        className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/30 px-3 text-sm"
+      >
+        {icon ?? <Sparkles aria-hidden className="size-4 shrink-0 text-muted-foreground" />}
+        <span className="truncate font-medium">{value}</span>
+        {sourceLabel && (
+          <span className="text-xs text-muted-foreground">({sourceLabel})</span>
+        )}
+      </div>
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
 export default InferredBranchField;

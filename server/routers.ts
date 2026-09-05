@@ -93,6 +93,7 @@ import { purchaseChargesRouter } from "./routers/purchaseChargesRouter";
 import { purchaseIntegrityRouter } from "./routers/purchaseIntegrityRouter";
 import { goodsReceiptReversalRouter } from "./routers/goodsReceiptReversalRouter";
 import { supplierInvoiceApprovalRouter } from "./routers/supplierInvoiceApprovalRouter";
+import { sessionContextRouter } from "./routers/sessionContextRouter";
 import { decisionsRouter } from "./routers/decisionsRouter";
 
 /**
@@ -224,6 +225,8 @@ export const appRouter = router({
   // تقريرُ الاعتماد الذاتي (٤/٩/٢٦): الضابطُ التعويضيّ لقرار المالك «لا اعتماد ثانٍ بعد
   // المالك» (٣/٩/٢٦، PR #962) — راجع shared/approvalPolicy.ts.
   selfApprovalAudit: selfApprovalAuditRouter,
+  // سياقُ الجلسة المُشتَقّ خادمياً (م٤ ق١: الاستنتاج قبل السؤال) — تستهلكه `useSessionContext`.
+  sessionContext: sessionContextRouter,
   // صندوق «مطلوب مني الآن» من سجلّ القرارات (م٧ ق٢، ٥/٩/٢٦): سردٌ موحّد + حسمٌ في مكانه.
   decisions: decisionsRouter,
 });
