@@ -295,8 +295,15 @@ export default defineConfig({
       "shared/hr.test.ts",
       // برنامج v2 (٣/٩/٢٦) — سجلّاتٌ نقيّة بلا قاعدة بيانات: لا تُشغَّل حتى تُسجَّل هنا.
       "shared/nextAction.test.ts",
+      "shared/documentActions.test.ts",
       "shared/automationRegistry.test.ts",
       "shared/decisionRegistry.test.ts",
+      // م٧ ق٢ — محوِّلات صندوق «مطلوب مني الآن» ومرآة بوّاباته (نقيّة، بلا قاعدة).
+      "server/services/decisions/__tests__/rows.test.ts",
+      // م٧ ق٢ (Codex على #1004) — مبالغُ ضبط البيع المتأثّرة وحاجزُ الاعتماد السطريّ + عقود الواجهة وروابط المشتريات.
+      "server/services/decisions/__tests__/salesControlView.test.ts",
+      "client/src/components/decision/DecisionRow.test.ts",
+      "client/src/pages/__tests__/decisionRegistryPurchaseTabs.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
@@ -317,6 +324,9 @@ export default defineConfig({
       "shared/terms.test.ts",
       // FP-05 — حارس فقدان البيانات يعترض تنقّل SPA بحوارٍ عربيّ موحّد.
       "client/src/hooks/__tests__/useUnsavedGuard.test.ts",
+      // م٦ ق٤+ق٨ — النموذج الواحد (نتيجة الحفظ المُهيكَلة) واللقطة («ما الذي تغيّر» النقيّ) وتناظر زوج المنتج.
+      "shared/productVersionDiff.test.ts",
+      "client/src/components/form/__tests__/saveOutcome.test.ts",
       // م١ (٥/٩/٢٦) — الكاشير بوضعين + لوحة الخمسة أعمدة + التسوية اليوميّة + مطابقة كشف الشركة (منطقٌ نقيّ بلا قاعدة).
       "client/src/components/customer/customerByPhoneMachine.test.ts",
       "client/src/components/pos/deliveryMode.test.ts",

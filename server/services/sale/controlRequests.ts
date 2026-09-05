@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, getTableColumns } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
   invoices,
@@ -649,7 +649,16 @@ export async function withdrawSalesControlRequest(
 
 export async function listSalesControlRequests(
   actor: Actor & { role?: string },
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE" | "WITHDRAWN"; mine?: boolean },
+  options?: {
+    status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE" | "WITHDRAWN";
+    mine?: boolean;
+    /**
+     * ترتيبُ الإرجاع قبل القصّ (300). الافتراضُ الأحدث أوّلاً (الشاشة)؛ وصندوق القرارات يطلب
+     * `ASC` — الأقدم أوّلاً — لأنّ القصّ بالأحدث يُسقط أكثرَ الطلبات تأخّراً بالضبط حين يكثر
+     * المعلَّق (Codex على #1004).
+     */
+    order?: "ASC" | "DESC";
+  },
 ) {
   const db = requireDb();
   const mineOnly = options?.mine === true || (actor.role !== "admin" && actor.role !== "manager");
@@ -671,7 +680,7 @@ export async function listSalesControlRequests(
     .innerJoin(users, eq(users.id, salesControlRequests.requestedBy))
     .leftJoin(invoiceCreator, eq(invoiceCreator.id, invoices.createdBy))
     .where(where)
-    .orderBy(desc(salesControlRequests.id))
+    .orderBy(options?.order === "ASC" ? asc(salesControlRequests.id) : desc(salesControlRequests.id))
     .limit(300);
 }
 

@@ -11,7 +11,7 @@
 //     قد تُفتَح وردية بين الطلب والاعتماد. نفس منطق اللقطة التفاؤلية في stockAdjustmentRequests.
 //  ٣) **الطالب ≠ المعتمِد** (فصل مهام، نمط النظام المعتمَد).
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import {
   financialPeriods,
   monthCloseRequests,
@@ -434,7 +434,8 @@ export async function rejectMonthClose(
 /** طابور الطلبات — المعلَّقة أولاً ثم الأحدث. */
 export async function listMonthCloseRequests(
   tx: Tx,
-  opts?: { pendingOnly?: boolean },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (100) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  opts?: { pendingOnly?: boolean; order?: "ASC" | "DESC" },
 ): Promise<MonthCloseRequestRow[]> {
   const requester = { id: users.id, name: users.name };
   const rows = await tx
@@ -462,7 +463,7 @@ export async function listMonthCloseRequests(
         ? eq(monthCloseRequests.status, "PENDING_APPROVAL")
         : undefined,
     )
-    .orderBy(desc(monthCloseRequests.requestedAt))
+    .orderBy(opts?.order === "ASC" ? asc(monthCloseRequests.requestedAt) : desc(monthCloseRequests.requestedAt))
     .limit(100);
 
   return rows.map((r) => ({

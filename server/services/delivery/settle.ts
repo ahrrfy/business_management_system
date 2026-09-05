@@ -29,8 +29,9 @@ import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
+import { partyCashInHandTx } from "./cashSource";
 import { consignmentBackedBalance } from "./guards";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryCustomerCollectionIntent, deliveryRemitIntent, deliveryWriteoffIntent, paymentAccountRole } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
@@ -133,7 +134,8 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
       const replayAfterLock = await checkIdempotency(tx, "delivery.settle", input.clientRequestId, payloadHash);
       if (replayAfterLock != null) return { receiptId: replayAfterLock, idempotentReplay: true as const };
     }
-    const balance = round2(money(party.currentBalance));
+    // م١ (PR-3): التسويةُ الحرّة تقرأ «النقد بيد الجهة» من المصدر الذي يقرّره العلَم (`cashSource.ts`).
+    const balance = (await partyCashInHandTx(tx, party)).effective;
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -570,6 +572,7 @@ export async function writeOffDeliveryShortfallInTx(
         });
         if (inv.customerId != null) await adjustCustomerBalance(tx, Number(inv.customerId), realPart.neg());
       }
+      assertConsignmentStatusTransition(cn.status, "WRITTEN_OFF");
       await tx.update(deliveryConsignments).set({
         collectedAmount: toDbMoney(round2(money(cn.collectedAmount).plus(realPart))),
         status: "WRITTEN_OFF",

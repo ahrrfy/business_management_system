@@ -36,9 +36,10 @@ export type PartyBoardRow = {
   deliveredUnremitted: PartyBoardBucket; // DELIVERED & moneyStatus UNSETTLED|PARTIAL
   returned: PartyBoardBucket;            // parcelStatus RETURNED خلال آخر ٣٠ يوماً
   cancelled: PartyBoardBucket;           // parcelStatus CANCELLED خلال آخر ٣٠ يوماً
-  cashInHandLedger: string;              // مشتقّ من deliveryLedgerEntries
-  cashInHandStored: string;              // deliveryParties.currentBalance (ظلّ)
-  cashInHandDrift: string;               // ledger − stored
+  cashInHandLedger: string;              // نقدٌ ماديّ مشتقّ من deliveryLedgerEntries (بعد طرح العجز)
+  cashInHandStored: string;              // نقدٌ ماديّ من currentBalance (بعد طرح العجز، ظلّ)
+  cashInHandDrift: string;               // ledger − stored (الماديّان)
+  shortfallOwed: string;                 // عجزٌ محمَّل على الجهة — ذمّةٌ غير نقديّة (Codex #1012 P2)
   feesOwed: string; net: string;         // بحسب partyExposure
   staleOpenParcels: number;              // أقدم من maxOpenParcelAgeDays
 };

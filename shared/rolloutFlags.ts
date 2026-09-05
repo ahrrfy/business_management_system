@@ -50,13 +50,36 @@ export interface RolloutFlagSpec {
  * موجة، وإلّا صار المستودع مليئاً بمفاتيحَ لا أحد يعرف متى تُغلق.
  */
 export const ROLLOUT_FLAGS = {
-  /** م١ — رصيد جهة التوصيل مشتقٌّ من دفترٍ إلحاقيّ بدل عمودٍ مخزَّن. */
+  /**
+   * م١ — رصيد جهة التوصيل («النقد بيدها») مشتقٌّ من دفترٍ إلحاقيّ بدل عمودٍ مخزَّن.
+   *
+   * القارئُ الوحيد على الخادم `server/services/delivery/cashSource.ts` (`deliveryCashSource()`):
+   *   `OFF`/`SHADOW` ⇒ `stored` — `deliveryParties.currentBalance` هو المرجع لسقف التوريد
+   *   (`remittance.ts`) وسقف العهدة (`parties.assertFloatLimitTx`) والتسوية الحرّة (`settle.ts`)؛
+   *   `ON` ⇒ `ledger` — `deriveCashInHandFromLedger` من `deliveryLedgerEntries`.
+   * لوحةُ الجهات (`board.ts`) تعرض المصدرَين معاً دائماً مع فرقهما (`cashInHandDrift`)، و
+   * `reconcileDeliveryFloat` يُبلغ الانحراف باسم الجهة. **القلبُ إلى `ON` قرارُ مالكٍ بعد ٧ أيامٍ
+   * متطابقة** (الخطّة §١٠) — لا يُقلَب في نشرٍ عاديّ.
+   */
   courierLedgerDerived: {
     env: "ROLLOUT_COURIER_LEDGER_DERIVED",
     label: "دفترُ جهة التوصيل المشتقّ",
     wave: "م1",
     supports: ["OFF", "SHADOW", "ON"],
     offMeans: "العمود المخزَّن `deliveryParties.currentBalance` يبقى المرجع كما اليوم.",
+  },
+  /**
+   * م١ (PR-4، أتمتة ١) — الكنّاس يَسِم الطردَ المتقادم بلا قبض `FAILED` تلقائياً
+   * (`staleSweep.autoFailStaleParcels`: عمرُه فوق `deliveryParties.maxOpenParcelAgeDays` ولا
+   * `COD_COLLECTED`) بحدث `AUTO_FAILED_SLA` ومهمّةٍ للمالك، تحت سقفٍ يوميّ
+   * (`DELIVERY_MAX_AUTO_FAILS_PER_DAY`). التراجع: إعادةُ الإسناد FAILED→ASSIGNED القائمة.
+   */
+  deliveryAutoFailSla: {
+    env: "ROLLOUT_DELIVERY_AUTO_FAIL_SLA",
+    label: "وسمُ التعذّر الآليّ بانقضاء SLA",
+    wave: "م1",
+    supports: ["OFF", "ON"],
+    offMeans: "الكنّاس يُصعّد إعلامياً فقط (`STALE_ESCALATED`) ولا يغيّر حالة أيّ طرد.",
   },
   /** م١ — الوضع الثاني في الكاشير: بيعٌ عبر التوصيل بخمسة حقولٍ إضافية. */
   posDeliveryMode: {

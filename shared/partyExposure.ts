@@ -5,12 +5,18 @@
  *
  * ⚠️ الأعمدة الأربعة **دلالياً منفصلة** — الخلط بينها كذّبت اللوحة على المالك ٣ أسابيع:
  *
- *   ١) نقد بيده              (cashInHand)          — نقدٌ قبضه المندوب لم يُورَّد بعد
+ *   ١) نقد بيده              (cashInHand)          — نقدٌ **ماديّ** قبضه المندوب لم يُورَّد بعد
  *   ٢) طرود بالطريق         (parcelsInTransit)     — بضاعة سُلِّمت للمندوب لم تصل الزبون
  *   ٣) سُلِّم لم يُحصَّل      (deliveredUncollected) — العميل استلم لم يدفع (تسليم جزئيّ/مؤجَّل)
  *   ٤) أجور مستحقّة له      (feesOwedToThem)       — نحن مدينون له بأجور توصيل
+ *   ٥) عجزٌ محمَّل عليه      (shortfallOwed)        — ذمّةٌ **غير نقديّة** على الجهة (نقدٌ لم يُحصَّل حُمِّل عليها)
  *
- * صافي المسؤوليّة (net) = 1 + 2 + 3 − 4 (كم هو مدينٌ لنا صافيةً).
+ * صافي المسؤوليّة (net) = 1 + 2 + 3 + 5 − 4 (كم هو مدينٌ لنا صافيةً).
+ *
+ * ⚠️ Codex #1012 P2 — **العجز ذمّةٌ لا نقدٌ ماديّ**: `SHORTFALL_ASSIGNED` يرفع عهدة الجهة
+ * (`currentBalance` والدفتر معاً) تماماً كالنقد، لكنّه دَينٌ لم تقبضه قطّ. فُصِل عن العمود ١
+ * («نقد بيده») إلى عمودٍ خامسٍ مستقلّ كي لا تُبنى قراراتُ الدرج على دَينٍ يظهر نقداً ماديّاً؛
+ * والعهدةُ الكلّية (نقد + عجز) تبقى مصدرَ الحقيقة الذي يطابقه المخزَّن (`reconcileService`).
  *
  * هذه دالّة نقيّة (pure) — تأخذ مصفوفة قيود دفتر التوصيل + معطيات الطرود وتُنتج الأربعة.
  * لا استعلام DB. لا side effects. الغرض: قابلة للاختبار البسيط، ومستهلَكة سيرفر وعميل.
@@ -46,8 +52,16 @@ export type PartyExposureLedgerEntry = {
   amount: string | number;
 };
 
+/**
+ * حالاتُ الطرد التي **بيد الجهة في السوق** (عمود «طرود بالطريق»): من الإسناد حتى إثبات الوصول.
+ * ⚠️ Codex #1012 P2 — لزم أن تشمل `ACCEPTED`/`PICKED_UP`: لوحةُ الجهات (`board.ts`) تعدّها ضمن
+ * الدلو «المُسنَد» بينما كان هذا المسند يقصر على `ASSIGNED`/`OUT_FOR_DELIVERY` وحدهما ⇒ طردٌ
+ * قَبِله المندوب أو استلمه (عالي القيمة) يظهر في الدلو ويسقط من `net` — تبخيسٌ لمسؤوليّته.
+ */
+export const PARCEL_IN_TRANSIT_STATUSES = ["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const;
+
 export type PartyExposureParcelSnapshot = {
-  parcelStatus: "ASSIGNED" | "OUT_FOR_DELIVERY" | "DELIVERED" | "FAILED" | "RETURNED" | "CANCELLED" | string;
+  parcelStatus: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY" | "DELIVERED" | "FAILED" | "RETURNED" | "CANCELLED" | string;
   moneyStatus: "UNSETTLED" | "PARTIAL" | "SETTLED" | "NOT_APPLICABLE" | string;
   codAmount: string | number;
   collectedAmount: string | number;
@@ -72,7 +86,12 @@ export type PartyExposureBreakdown = {
   deliveredUncollected: string;
   /** ٤) أجور مستحقّة للمندوب — Σ(FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET) مقصوصةً عند صفر. */
   feesOwedToThem: string;
-  /** صافي المسؤوليّة على المندوب = 1 + 2 + 3 − 4 (موجب = مدينٌ لنا). */
+  /**
+   * ٥) عجزٌ محمَّل على الجهة — Σ SHORTFALL_ASSIGNED (ذمّةٌ غير نقديّة، Codex #1012 P2). يُفصَل عن
+   * «نقد بيده» فلا يُعرَض دَينٌ نقداً ماديّاً؛ ويبقى داخل `net` (الجهة مدينةٌ لنا به فعلاً).
+   */
+  shortfallOwed: string;
+  /** صافي المسؤوليّة على المندوب = 1 + 2 + 3 + 5 − 4 (موجب = مدينٌ لنا). */
   netResponsibility: string;
 };
 
@@ -101,6 +120,19 @@ export function deriveCashInHandFromLedger(ledger: PartyExposureLedgerEntry[]): 
 }
 
 /**
+ * Codex #1012 P2 — **العجزُ المحمَّل على الجهة** (`SHORTFALL_ASSIGNED`) مجموعاً: ذمّةٌ غير نقديّة
+ * تُطرح من «العهدة الكلّية» لِتُعرَض «نقد بيده» ماديّاً وحده، وتظهر عموداً خامساً مستقلّاً.
+ * لا كاتبَ يُنقصها في الشيفرة اليوم (لا نوعَ «تسوية عجز») ⇒ المجموع = العجز القائم.
+ */
+export function deriveShortfallOwedFromLedger(ledger: PartyExposureLedgerEntry[]): string {
+  let owed = 0;
+  for (const e of ledger) {
+    if (e.entryType === "SHORTFALL_ASSIGNED") owed += toNum(e.amount);
+  }
+  return fmt(owed);
+}
+
+/**
  * ملحوظة معماريّة: لا نقرأ من DB هنا — المستدعي في server/queries.ts يجمع البيانات
  * (currentBalance من العمود، مصفوفة parcels من deliveryConsignments، مصفوفة ledger من
  * deliveryLedgerEntries) ويستدعي هذه الدالّة. الأخير في العميل يستقبل الأعداد المحسوبة
@@ -121,7 +153,9 @@ export function computePartyExposure(input: {
     const cod = toNum(p.codAmount);
     const collected = toNum(p.collectedAmount);
     const counter = toNum(p.counterSettledAmount ?? 0);
-    if (p.parcelStatus === "ASSIGNED" || p.parcelStatus === "OUT_FOR_DELIVERY") {
+    // Codex #1012 P2 — يشمل ACCEPTED/PICKED_UP (المسند الواحد `PARCEL_IN_TRANSIT_STATUSES`) كي لا
+    // يسقط طردٌ قَبِله المندوب أو استلمه من `net` بينما لوحةُ الجهات تعدّه ضمن الدلو المُسنَد.
+    if ((PARCEL_IN_TRANSIT_STATUSES as readonly string[]).includes(p.parcelStatus)) {
       parcelsInTransit += cod;
     } else if (
       p.parcelStatus === "DELIVERED" &&
@@ -146,14 +180,21 @@ export function computePartyExposure(input: {
   }
   const feesOwedToThem = Math.max(0, feesOwedRaw);
 
+  // ٥) العجزُ المحمَّل (ذمّةٌ غير نقديّة) — يُطرح من العهدة الكلّية المُمرَّرة (`cashInHand`) لِيُعرَض
+  // العمود ١ نقداً ماديّاً وحده، ويظهر عموداً خامساً مستقلّاً. صافي المسؤوليّة **لا يتغيّر**:
+  // physicalCash + shortfallOwed = cashInHand المُمرَّرة، فالمجموع كما كان (Codex #1012 P2).
+  const shortfallOwed = toNum(deriveShortfallOwedFromLedger(input.ledger));
+  const physicalCashInHand = cashInHand - shortfallOwed;
+
   const netResponsibility =
-    cashInHand + parcelsInTransit + deliveredUncollected - feesOwedToThem;
+    physicalCashInHand + parcelsInTransit + deliveredUncollected + shortfallOwed - feesOwedToThem;
 
   return {
-    cashInHand: fmt(cashInHand),
+    cashInHand: fmt(physicalCashInHand),
     parcelsInTransit: fmt(parcelsInTransit),
     deliveredUncollected: fmt(deliveredUncollected),
     feesOwedToThem: fmt(feesOwedToThem),
+    shortfallOwed: fmt(shortfallOwed),
     netResponsibility: fmt(netResponsibility),
   };
 }
@@ -171,6 +212,7 @@ export const PARTY_EXPOSURE_LABEL_AR = Object.freeze({
   parcelsInTransit:     "طرود بالطريق",
   deliveredUncollected: "سلم لم يحصل",
   feesOwedToThem:       "أجور له",
+  shortfallOwed:        "عجز عليه",
   netResponsibility:    "صافي المسؤولية",
 } as const);
 
@@ -180,5 +222,6 @@ export const PARTY_EXPOSURE_COLOR_TOKEN = Object.freeze({
   parcelsInTransit:     "warning",  // بضاعة في السوق — تحذير
   deliveredUncollected: "danger",   // سُلِّم بلا قبض — خطر أعلى
   feesOwedToThem:       "positive", // نحن ندين له — إشارة إيجابيّة من منظوره
+  shortfallOwed:        "danger",   // دَينُ عجزٍ عليه — خطر (لا يُخلَط بالنقد الماديّ)
   netResponsibility:    "primary",  // الرقم الحاسم — إبراز رئيسيّ
 } as const);

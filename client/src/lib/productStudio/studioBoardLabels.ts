@@ -13,6 +13,18 @@ export function isQueuedStudioTask(task: { status: StudioBoardStatus; assigneeNa
   return task.status === "ASSIGNED" && task.assigneeName == null;
 }
 
+/** Selection belongs to a review job, even when sibling jobs share a product. */
+export function studioTaskSelection<T extends { id: number | string; status: StudioBoardStatus; assignedTo: number | null; assigneeName?: string | null }>(tasks: T[], selectedIds: ReadonlySet<number>) {
+  const queuedTaskIds = tasks.filter(isQueuedStudioTask).map((task) => Number(task.id));
+  const selectedTasks = tasks.filter((task) => selectedIds.has(Number(task.id)));
+  return {
+    queuedTaskIds,
+    allQueuedSelected: queuedTaskIds.length > 0 && queuedTaskIds.every((id) => selectedIds.has(id)),
+    selectedAssignedTaskIds: selectedTasks.filter((task) => task.assignedTo != null && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)).map((task) => Number(task.id)),
+    selectedActiveTaskIds: selectedTasks.filter((task) => ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status)).map((task) => Number(task.id)),
+  };
+}
+
 /**
  * تسمية زرّ توليد المهام الناقصة.
  * الصفر الصريح كان يُطبَع أيضاً حين لا تُنفَّذ المعاينة (بلا حملة) أو حين تفشل،

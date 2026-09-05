@@ -15,10 +15,13 @@
  *   - المفتاح يُمرَّر في ترويسة `x-goog-api-key` (لا في مسار الـURL — لا تسريب في السجلّات).
  */
 
-import { DEFAULT_GEMINI_IMAGE_MODEL } from "@shared/imageStudio/aiPrompt";
+import {
+  normalizeGeminiModelName,
+  resolveGeminiImageModel,
+} from "@shared/imageStudio/aiPrompt";
 
 /** قاعدة عنوان Gemini API — قابلة للتجاوز عبر env (لتوجيهٍ لبروكسي/إصدار آخر بلا تغيير كود). */
-const GEMINI_API_BASE = (process.env.GEMINI_API_BASE ?? "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+const GEMINI_API_BASE = (process.env.GEMINI_API_BASE?.trim() || "https://generativelanguage.googleapis.com/v1").replace(/\/+$/, "");
 
 /** تصنيف أخطاء المزوّد — يقود العرض والتشخيص. */
 export type AiImageErrorKind =
@@ -27,6 +30,7 @@ export type AiImageErrorKind =
   | "BAD_INPUT" // طلب غير صالح (400 غير المصادقة)
   | "BLOCKED" // حجب أمان من المزوّد (المحتوى/السلامة)
   | "NO_IMAGE" // نجح النداء لكن بلا صورة في الردّ (رفض النموذج/نصّ فقط)
+  | "IMAGE_OTHER" // عطل توليد بلا صورة أو تفسير من المزوّد
   | "TIMEOUT" // انتهت مهلة الاتصال بالمزوّد
   | "RESPONSE_TOO_LARGE" // تجاوز ردّ المزوّد حدّ ذاكرة الخادم
   | "SERVICE" // 5xx أو غير متوقّع
@@ -66,12 +70,14 @@ export interface GenerateStudioImageResult {
 export interface AiImageCallOptions {
   /** لِحقن fetch مُموَّه في الاختبار (افتراضياً fetch العام). */
   fetchImpl?: typeof fetch;
-  /** تضمين imageConfig (aspectRatio 1:1) — الافتراضي true (النموذج الافتراضي يدعمه). */
+  /** تضمين responseFormat للصورة (1:1 بحجم 1K) — الافتراضي true. */
   includeImageConfig?: boolean;
   /** مهلة الاتصال الخارجي؛ تمنع طلباً واحداً من احتجاز العامل بلا حد. */
   timeoutMs?: number;
   /** سقف بايتات JSON من المزوّد قبل التحليل. */
   maxResponseBytes?: number;
+  /** يحجز فتحة التنفيذ التقنية لكل محاولة خارجية، بما فيها الإعادة. */
+  runAttempt?: (run: () => Promise<GenerateStudioImageResult>) => Promise<GenerateStudioImageResult>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -113,13 +119,16 @@ async function readBoundedText(res: Response, maxBytes: number): Promise<string>
 }
 
 /** أسباب الحجب الأمنيّ من finishReason (candidate) — تُصنَّف BLOCKED لا NO_IMAGE. */
-const SAFETY_FINISH_REASONS = new Set(["SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "RECITATION", "BLOCKLIST", "SPII"]);
+const SAFETY_FINISH_REASONS = new Set(["SAFETY", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "PROHIBITED_CONTENT", "RECITATION", "BLOCKLIST", "SPII"]);
 
 /** يستخرج جزء الصورة (inlineData/inline_data) من أوّل مرشّح — يدعم camelCase وsnake_case. */
 function extractImagePart(json: any): { data: string; mime: string } | null {
   const parts = json?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return null;
   for (const p of parts) {
+    // Gemini قد يرفق صورةً داخل جزء التفكير قبل الصورة النهائية. لا يجوز عرضها
+    // للمستخدم أو ربط إثبات المعالجة بها.
+    if (p?.thought === true) continue;
     const inline = p?.inlineData ?? p?.inline_data;
     const data = inline?.data;
     if (typeof data === "string" && data.length > 0) {
@@ -152,7 +161,7 @@ function extractProviderDiagnostic(json: any): string {
     }
   }
   // نظّف من الأسطر/التحكّم واقصص عند ٥٠٠ لكل حقل — كي لا يُفجّر السجلّ ولا يُعرض حمولةً خبيثة.
-  const clean = (s: string) => s.replace(/[ -]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+  const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
   const bits: string[] = [];
   if (blockReason) bits.push(`blockReason=${clean(blockReason)}`);
   if (finishReason) bits.push(`finishReason=${clean(finishReason)}`);
@@ -182,10 +191,36 @@ export async function generateStudioImage(
   params: GenerateStudioImageParams,
   opts: AiImageCallOptions = {},
 ): Promise<GenerateStudioImageResult> {
+  const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const run = () => {
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs <= 0) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+    return generateStudioImageAttempt(params, { ...opts, timeoutMs });
+  };
+  const attempt = () => {
+    // افحص قبل حجز الحصة أيضاً: قد يستيقظ مؤقت الإعادة بعد انتهاء المهلة.
+    if (Date.now() >= deadline) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+    return opts.runAttempt ? opts.runAttempt(run) : run();
+  };
+  try {
+    return await attempt();
+  } catch (error) {
+    // IMAGE_OTHER بلا تفسير قد يكون مؤقتاً. محاولة إضافية واحدة بنفس المدخلات،
+    // دون إعادة رفض السلامة/النص أو تمديد المهلة الكلية.
+    if (!(error instanceof AiImageError) || error.kind !== "IMAGE_OTHER" || deadline - Date.now() <= 250) throw error;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return attempt();
+  }
+}
+
+async function generateStudioImageAttempt(
+  params: GenerateStudioImageParams,
+  opts: AiImageCallOptions,
+): Promise<GenerateStudioImageResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  const model = (params.model && params.model.trim()) || DEFAULT_GEMINI_IMAGE_MODEL;
+  const model = resolveGeminiImageModel(params.model);
   const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 
   const parts: Array<Record<string, unknown>> = [{ text: params.prompt }];
@@ -195,10 +230,10 @@ export async function generateStudioImage(
     });
   }
 
-  const generationConfig: Record<string, unknown> = { responseModalities: ["TEXT", "IMAGE"] };
+  const generationConfig: Record<string, unknown> = { responseModalities: ["IMAGE"] };
   if (opts.includeImageConfig !== false) {
-    // إطار مربّع 1:1 مطابق لقالب الاستوديو (بقيّة الأنابيب مربّعة). النموذج الافتراضي يدعم imageConfig.
-    generationConfig.imageConfig = { aspectRatio: "1:1" };
+    // عقد Gemini 3 الرسمي عبر generateContent: صورة 1K مربعة تطابق بقية أنبوب الاستوديو.
+    generationConfig.responseFormat = { image: { aspectRatio: "1:1", imageSize: "1K" } };
   }
 
   let res: Response;
@@ -245,7 +280,9 @@ export async function generateStudioImage(
   // حجب أمنيّ على مستوى البرومت أو المرشّح ⇒ BLOCKED (لا NO_IMAGE) لرسالة أدقّ.
   const blockReason = json?.promptFeedback?.blockReason;
   const finishReason = json?.candidates?.[0]?.finishReason;
-  if (blockReason || (finishReason && SAFETY_FINISH_REASONS.has(String(finishReason)))) {
+  const candidate = json?.candidates?.[0];
+  const safetyBlocked = Array.isArray(candidate?.safetyRatings) && candidate.safetyRatings.some((rating: { blocked?: boolean }) => rating?.blocked === true);
+  if (blockReason || safetyBlocked || (finishReason && SAFETY_FINISH_REASONS.has(String(finishReason)))) {
     const diag = extractProviderDiagnostic(json);
     throw new AiImageError(
       "BLOCKED",
@@ -256,6 +293,13 @@ export async function generateStudioImage(
 
   const img = extractImagePart(json);
   if (!img) {
+    const hasExplanation = (typeof candidate?.finishMessage === "string" && candidate.finishMessage.trim()) ||
+      (Array.isArray(candidate?.content?.parts) && candidate.content.parts.some(
+        (part: { text?: string }) => typeof part?.text === "string" && part.text.trim(),
+      ));
+    if (finishReason === "IMAGE_OTHER" && !hasExplanation) {
+      throw new AiImageError("IMAGE_OTHER", res.status, "finishReason=IMAGE_OTHER");
+    }
     // ⭐ فجوة تشخيصية أُغلقت: النموذج يُرجع أحياناً نصَّ رفضٍ ضمنيّ («I cannot edit this image...»)
     // أو ينهي بـfinishReason غير STOP (MAX_TOKENS/OTHER/IMAGE_OTHER) — كنّا نبتلع كليهما فيرى المالك
     // «جرّب مجدّداً» بلا معرفة السبب. الآن نمرّر السبب الحقيقيّ في `message` (يُلحقه الراوتر بالرسالة).
@@ -289,6 +333,8 @@ export function aiImageErrorMessageAr(kind: AiImageErrorKind): string {
       return "حَجَب المزوّد الطلب لأسباب سلامة المحتوى — جرّب صورةً/برومتاً آخر.";
     case "NO_IMAGE":
       return "لم يُعِد المزوّد صورةً — جرّب مجدّداً أو بصياغة برومت أوضح.";
+    case "IMAGE_OTHER":
+      return "تعذّر على المزوّد إنشاء الصورة حالياً؛ أعد المحاولة لاحقاً.";
     case "TIMEOUT":
       return "تأخر مزوّد الذكاء الاصطناعي في الردّ؛ أعد المحاولة لاحقاً.";
     case "RESPONSE_TOO_LARGE":
@@ -316,42 +362,56 @@ export interface VerifyGeminiResult {
  */
 export async function verifyGeminiKey(apiKey: string, fetchImpl?: typeof fetch): Promise<VerifyGeminiResult> {
   const doFetch = fetchImpl ?? fetch;
-  let res: Response;
-  try {
-    res = await doFetch(`${GEMINI_API_BASE}/models`, {
-      method: "GET",
-      headers: { "x-goog-api-key": apiKey, Accept: "application/json" },
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-    });
-  } catch (e: any) {
-    if (isTimeout(e)) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
-    throw new AiImageError("NETWORK", 0, `تعذّر الوصول لمزوّد الذكاء الاصطناعي: ${e?.message ?? "خطأ شبكة"}`);
-  }
-  if (!res.ok) {
-    let detail = "";
+  const models = new Set<string>();
+  let pageToken: string | undefined;
+
+  // قائمة النماذج مُصفّحة. نفحص صفحاتها كي لا نعلن خطأً أن النموذج المختار غير
+  // متاح لمجرد أنه لم يقع في الصفحة الأولى. الحد يمنع حلقة مزوّد شاذة بلا كلفة توليد.
+  for (let page = 0; page < 5; page += 1) {
+    const url = new URL(`${GEMINI_API_BASE}/models`);
+    url.searchParams.set("pageSize", "1000");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    let res: Response;
     try {
-      const j = JSON.parse(await readBoundedText(res, 256 * 1024)) as { error?: { message?: string; status?: string } };
-      detail = j?.error?.message ?? j?.error?.status ?? "";
-    } catch {
-      detail = "";
+      res = await doFetch(url.toString(), {
+        method: "GET",
+        headers: { "x-goog-api-key": apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      });
+    } catch (e: any) {
+      if (isTimeout(e)) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+      throw new AiImageError("NETWORK", 0, `تعذّر الوصول لمزوّد الذكاء الاصطناعي: ${e?.message ?? "خطأ شبكة"}`);
     }
-    throw new AiImageError(classifyHttpError(res.status, String(detail)), res.status, String(detail) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const j = JSON.parse(await readBoundedText(res, 256 * 1024)) as { error?: { message?: string; status?: string } };
+        detail = j?.error?.message ?? j?.error?.status ?? "";
+      } catch {
+        detail = "";
+      }
+      throw new AiImageError(classifyHttpError(res.status, String(detail)), res.status, String(detail) || `HTTP ${res.status}`);
+    }
+    let body: { models?: Array<{ name?: string }>; nextPageToken?: string } = {};
+    try {
+      body = JSON.parse(await readBoundedText(res, 256 * 1024));
+    } catch (e) {
+      if (e instanceof AiImageError) throw e;
+    }
+    for (const model of body.models ?? []) {
+      const normalized = normalizeGeminiModelName(String(model?.name ?? ""));
+      if (normalized) models.add(normalized);
+    }
+    pageToken = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : undefined;
+    if (!pageToken) break;
   }
-  let j: { models?: Array<{ name?: string }> } = {};
-  try {
-    j = JSON.parse(await readBoundedText(res, 256 * 1024));
-  } catch (e) {
-    if (e instanceof AiImageError) throw e;
-  }
-  const models = Array.isArray(j?.models)
-    ? j.models.map((m) => String(m?.name ?? "").replace(/^models\//, "")).filter(Boolean)
-    : [];
-  return { ok: true, modelCount: models.length || null, models };
+  const available = Array.from(models);
+  return { ok: true, modelCount: available.length || null, models: available };
 }
 
 /** هل النموذج المُختار ضمن قائمة النماذج المتاحة؟ (يتساهل عند قائمة فارغة — تعذّر الجلب لا منع). */
 export function isModelAvailable(effectiveModel: string, models: string[]): boolean {
   if (!models.length) return true;
-  const target = effectiveModel.replace(/^models\//, "");
-  return models.some((m) => m === target);
+  const target = normalizeGeminiModelName(effectiveModel);
+  return models.some((m) => normalizeGeminiModelName(m) === target);
 }

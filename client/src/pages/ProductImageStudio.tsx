@@ -1,3 +1,4 @@
+import { StudioCampaignImageBatch, taskSnapshot, type StudioCampaignImageBatchHandle } from "@/components/product-studio/StudioCampaignImageBatch";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
@@ -7,7 +8,6 @@ import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioIma
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,19 +15,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } from "@/lib/productStudio/studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
 import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_EMPTY_HINTS, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
-import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
+import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, studioDraftWritesAllowed, type StudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
 import { studioOfflineCapabilities, studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
 import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { STUDIO_CAMPAIGN_STATUS_AR, STUDIO_CAMPAIGN_STATUS_VARIANT, STUDIO_CAMPAIGN_EDITABLE, type StudioCampaignStatus } from "@shared/studioCampaignStatus";
-import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, PauseCircle, PlayCircle, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearch } from "wouter";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -69,17 +69,6 @@ const CameraScanner = lazy(() =>
   })),
 );
 
-function taskSnapshot(task: StudioTask): StudioDraftTaskSnapshot {
-  return {
-    taskId: Number(task.id),
-    productName: task.productName,
-    currentDescription: task.currentDescription ?? null,
-    status: task.status as StudioDraftTaskSnapshot["status"],
-    hasOriginal: task.hasOriginal,
-    hasCandidate: task.hasCandidate,
-    updatedAt: String(task.revision),
-  };
-}
 
 export const STUDIO_STORAGE_DISABLED_MESSAGE = "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
 
@@ -338,6 +327,8 @@ export default function ProductImageStudio() {
   const [description, setDescription] = useState("");
   const [marketingCopy, setMarketingCopy] = useState("");
   const [images, setImages] = useState<ImageItem[]>([]);
+  const imageBatch = useRef<StudioCampaignImageBatchHandle>(null);
+  const [isBatchBusy, setIsBatchBusy] = useState(false);
   const [originalDataUrl, setOriginalDataUrl] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [studioMode, setStudioMode] = useState<"FLATTEN" | "CUT" | "AI">("FLATTEN");
@@ -494,25 +485,15 @@ export default function ProductImageStudio() {
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
 
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
-  const queuedProductIds = taskItems.filter((task) => isQueuedStudioTask(task)).map((task) => Number(task.productId));
-  const allQueuedSelected = queuedProductIds.length > 0 && queuedProductIds.every((id) => selectedTaskIds.has(id));
-  // فرزُ التحديد بحسب نوع العمل الممكن — أزرارُ الشريط الجماعيّ تعمل على مجموعاتٍ مختلفة:
-  // الإسناد على غير المسنَد، وإعادة الإسناد على المسنَد، والأولوية على أيّ نشط.
-  const selectedTasks = taskItems.filter((task) => selectedTaskIds.has(Number(task.productId)));
-  const selectedAssignedTaskIds = selectedTasks
-    .filter((task) => task.assignedTo != null && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status))
-    .map((task) => Number(task.id));
-  const selectedActiveTaskIds = selectedTasks
-    .filter((task) => ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status))
-    .map((task) => Number(task.id));
-  const toggleTaskSelection = (productId: number) =>
+  const { queuedTaskIds, allQueuedSelected, selectedAssignedTaskIds, selectedActiveTaskIds } = studioTaskSelection(taskItems, selectedTaskIds);
+  const toggleTaskSelection = (taskId: number) =>
     setSelectedTaskIds((current) => {
       const next = new Set(current);
-      if (next.has(productId)) next.delete(productId);
-      else next.add(productId);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
       return next;
     });
-  const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedProductIds));
+  const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedTaskIds));
 
   const onlineSelected =
     taskItems.find((task) => Number(task.id) === selectedId) ??
@@ -556,16 +537,6 @@ export default function ProductImageStudio() {
     isOwner: me.data?.isOwner === true,
   };
   const onlineUserId = workflowUser.userId > 0 ? workflowUser.userId : null;
-  // حصص المزوّد المدفوع قرارٌ ماليّ (كل نداءٍ كلفة) ⇒ للمدير العام وحده، كبقيّة إعدادات Pro.
-  const isStudioAdmin = me.data?.role === "admin";
-  const branchBudgets = trpc.imageStudio.branchBudgets.useQuery(undefined, { enabled: !offline && isStudioAdmin });
-  const setBranchBudget = trpc.imageStudio.setBranchBudget.useMutation({
-    onSuccess: () => {
-      void branchBudgets.refetch();
-      notify.ok("حُفظت حصّة الفرع");
-    },
-    onError: (error) => notify.err(error),
-  });
   const authenticatedUserId = onlineUserId ?? coldIdentityUserId;
   const editOverrideRequired = selected ? needsStudioEditOverride(selected, workflowUser) : false;
   const reviewOverrideRequired = selected ? needsStudioReviewOverride(selected, workflowUser) : false;
@@ -906,6 +877,21 @@ export default function ProductImageStudio() {
     setProcessingReceipt(draft.processingReceipt);
   }
 
+  async function discardConflictingDraft() {
+    if (!selected || !authenticatedUserId) return;
+    await purgeStudioDraft(authenticatedUserId, Number(selected.id));
+    setName(selected.proposedName ?? selected.productName);
+    setDescription(selected.proposedDescription ?? selected.currentDescription ?? "");
+    setMarketingCopy(selected.proposedMarketingCopy ?? "");
+    setImages([]);
+    setOriginalDataUrl("");
+    setProcessingReceipt(null);
+    setStudioMode("FLATTEN");
+    setDraftConflict(false);
+    setDraftReady(false);
+    setResumeRetry((attempt) => attempt + 1);
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedTaskSearch(taskSearch.trim()), 300);
     return () => window.clearTimeout(timer);
@@ -930,13 +916,19 @@ export default function ProductImageStudio() {
     let cancelled = false;
     let retryTimer: number | undefined;
     void (async () => {
+      let allowDraftWrites = false;
       try {
         if (offline) {
           const draft = await loadStudioDraft(authenticatedUserId, taskId);
           if (draft && !cancelled) applyLocalDraft(draft);
+          allowDraftWrites = true;
           return;
         }
         const refreshed = await tasks.refetch();
+        if (refreshed.isError) {
+          retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
+          return;
+        }
         const task = refreshed.data?.pages.flatMap((page) => page.items).find((item) => Number(item.id) === taskId);
         if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
@@ -947,15 +939,21 @@ export default function ProductImageStudio() {
           editable: task ? canEditStudioTask(task, workflowUser, editOverrideReasonRef.current) : false,
         });
         if (cancelled) return;
-        if (result.kind === "RESUME") applyLocalDraft(result.draft);
+        allowDraftWrites = studioDraftWritesAllowed(result);
+        if (result.kind === "RESUME") {
+          applyLocalDraft(result.draft);
+        }
         if (result.kind === "ALREADY_RESUMED") {
           retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), Math.max(0, result.retryAt - Date.now()) + 25);
         }
         if (result.kind === "CONFLICT") setDraftConflict(true);
       } catch {
-        // IndexedDB is best-effort; a local failure must not block the online editor.
+        // في عدم الاتصال نسمح بالعمل المحلي. أمّا عند الاتصال فلا نفسّر فشل قراءة
+        // الخادم على أنه حذفٌ للمهمة، لأن ذلك قد يمحو مسودةً صالحة بتعارضٍ وهمي.
+        if (offline) allowDraftWrites = true;
+        else retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
       } finally {
-        if (!cancelled) setDraftReady(true);
+        if (!cancelled) setDraftReady(allowDraftWrites);
       }
     })();
     return () => {
@@ -989,7 +987,7 @@ export default function ProductImageStudio() {
   }, [authenticatedUserId, description, draftConflict, draftReady, editable, images, marketingCopy, name, originalDataUrl, processingReceipt, selected?.id, selectedRevision, studioMode]);
 
   useEffect(() => {
-    if (!selectedId || !sourcePreview.data || images.length > 0) return;
+    if (!draftReady || !selectedId || !sourcePreview.data || images.length > 0) return;
     const dataUrl = `data:${sourcePreview.data.mime};base64,${sourcePreview.data.base64}`;
     setImages([
       {
@@ -999,7 +997,7 @@ export default function ProductImageStudio() {
         name: "صورة المصدر",
       },
     ]);
-  }, [images.length, selectedId, sourcePreview.data]);
+  }, [draftReady, images.length, selectedId, sourcePreview.data]);
 
   function selectTask(task: StudioTask) {
     setOfflineSelectedDraft(null);
@@ -1054,6 +1052,7 @@ export default function ProductImageStudio() {
     if (offline || !selected || !images[0]?.dataUrl) return;
     setIsPreparingThumbnail(true);
     try {
+      await imageBatch.current?.submitAdditional();
       const thumbnailDataUrl = await createProductDisplayThumbnail(images[0].dataUrl);
       await submit.mutateAsync({
         taskId: Number(selected.id),
@@ -1077,13 +1076,13 @@ export default function ProductImageStudio() {
   }
 
   const counts = dashboard.data?.counts;
-  const busy = isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending || updateSchedule.isPending;
+  const busy = isBatchBusy || isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending || updateSchedule.isPending;
   const capabilities = studioOfflineCapabilities({
     offline,
     storageReady: dashboard.data?.storageReady,
   });
   const storageActionsDisabled = !capabilities.canUseProviderOrStorage;
-  const localEditingDisabled = !editable || !capabilities.canEditLocalDraft;
+  const localEditingDisabled = !draftReady || draftConflict || !editable || !capabilities.canEditLocalDraft;
   const mobilePanel = mobileStudioPanel(selected ? Number(selected.id) : null);
 
   return (
@@ -1348,73 +1347,6 @@ export default function ProductImageStudio() {
             </div>
           )}
         </div>
-      )}
-
-      {isStudioAdmin && !offline && (branchBudgets.data ?? []).length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Wallet aria-hidden className="size-4" /> حصص المزوّد المدفوع لكل فرع
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* السقف الشركيّ يبقى الأعلى؛ هذه حصّةٌ تُقتطع منه. تُعرض مع الاستهلاك اليوم:
-                رقمٌ بلا استهلاكه لا يُقرَّر عليه. الفراغ = بلا حدٍّ فرعيّ (السلوك الافتراضيّ). */}
-            <p className="text-xs text-muted-foreground">
-              اترك الخانة فارغة لرفع الحدّ الفرعيّ (يبقى السقف الشركيّ وحده)، أو اكتب صفراً لإيقاف المزوّد المدفوع لهذا الفرع.
-              الاستهلاك يُصفَّر يومياً بتوقيت بغداد.
-            </p>
-            {/* شبكةُ تحرير لا عرض (موجة الجداول ٢/٩/٢٦): كل صفٍّ يحمل حقلَ «الحصّة اليومية»
-                يُطلق `setBranchBudget.mutate` عند `onBlur` — `DataTable` أداةُ عرضٍ فتبقى هذه
-                خامّةً عن قصد. لكنّ قشرتها مشتركة: `ScrollTableShell` بدل `overflow-x-auto`
-                اليدوية، فتلتصق الترويسة حين يطول جدول الفروع. `bordered=false` لأنّ البطاقة
-                تُؤطّره أصلاً ولا حدَّ في الأصل، و`showColumnVisibility` معطَّل لأنّ الحصّة قرارٌ
-                لا يُتَّخذ إلّا باستهلاك اليوم بجانبه — إخفاءُ عمودٍ هنا يُنتج قراراً أعمى. */}
-            <ScrollTableShell bordered={false} showColumnVisibility={false}>
-              <table className="w-full min-w-[32rem] text-sm">
-                <thead>
-                  <tr className="text-right text-xs text-muted-foreground">
-                    <th className="p-2 font-medium">الفرع</th>
-                    <th className="p-2 font-medium">الخدمة</th>
-                    <th className="p-2 font-medium">استُهلك اليوم</th>
-                    <th className="p-2 font-medium">الحصّة اليومية</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(branchBudgets.data ?? []).flatMap((branch) =>
-                    branch.services.map((row) => (
-                      <tr key={`${branch.branchId}:${row.service}`} className="border-t">
-                        <td className="p-2">{branch.branchName}</td>
-                        <td className="p-2">{row.service === "REMOVEBG" ? "قصّ الخلفية (Pro)" : "الذكاء الاصطناعي"}</td>
-                        <td className="p-2 tabular-nums">{row.usedToday}</td>
-                        <td className="p-2">
-                          <Input
-                            className="max-w-32"
-                            type="number"
-                            min={0}
-                            max={100000}
-                            inputMode="numeric"
-                            defaultValue={row.dailyLimit == null ? "" : String(row.dailyLimit)}
-                            placeholder="بلا حدّ"
-                            disabled={setBranchBudget.isPending}
-                            aria-label={`حصّة ${branch.branchName} — ${row.service}`}
-                            onBlur={(event) => {
-                              const raw = event.target.value.trim();
-                              const next = raw === "" ? null : Number(raw);
-                              if (next != null && (!Number.isInteger(next) || next < 0)) return;
-                              if (next === (row.dailyLimit ?? null)) return;
-                              setBranchBudget.mutate({ branchId: branch.branchId, service: row.service, dailyLimit: next });
-                            }}
-                          />
-                        </td>
-                      </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          </CardContent>
-        </Card>
       )}
 
       {dashboard.data?.canManage && (
@@ -2182,12 +2114,12 @@ export default function ProductImageStudio() {
                   <CardTitle className="text-base">المهام</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {canBulkAssign && (queuedProductIds.length > 0 || selectedTaskIds.size > 0) && (
+                  {canBulkAssign && (queuedTaskIds.length > 0 || selectedTaskIds.size > 0) && (
                     <div className="space-y-2 rounded-md border bg-muted/30 p-2">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        {queuedProductIds.length > 0 ? (
+                        {queuedTaskIds.length > 0 ? (
                           <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
-                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedProductIds.length})`}
+                            {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض في الطابور (${queuedTaskIds.length})`}
                           </button>
                         ) : (
                           <span className="text-muted-foreground">حدّد المهام يدوياً بمربّعات الاختيار</span>
@@ -2195,7 +2127,7 @@ export default function ProductImageStudio() {
                         <span className="text-muted-foreground">{selectedTaskIds.size} محدَّدة</span>
                       </div>
                       {/* إسنادُ غير المسنَد إلى موظّف. */}
-                      {selectedTaskIds.size > 0 && queuedProductIds.some((id) => selectedTaskIds.has(id)) && (
+                      {selectedTaskIds.size > 0 && queuedTaskIds.some((id) => selectedTaskIds.has(id)) && (
                         <div className="flex flex-wrap items-end gap-2">
                           <div className="min-w-40 flex-1">
                             <AppSelect id="studio-bulk-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkAssigneeId} onValueChange={setBulkAssigneeId} disabled={assignees.isError}>
@@ -2210,16 +2142,16 @@ export default function ProductImageStudio() {
                           <Button
                             type="button"
                             className="min-h-11"
-                            disabled={offline || bulkAssign.isPending || !bulkAssigneeId}
+                            disabled={offline || bulkReassign.isPending || !bulkAssigneeId}
                             onClick={() => {
                               // نُصفّي التحديد إلى الطابور فقط — بقيّةُ التحديد تخدم الأزرار الأخرى.
-                              const queuedSelected = queuedProductIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
-                              bulkAssign.mutate({ productIds: queuedSelected, assigneeId: Number(bulkAssigneeId) });
+                              const queuedSelected = queuedTaskIds.filter((id) => selectedTaskIds.has(id)).slice(0, BULK_ASSIGN_MAX);
+                              bulkReassign.mutate({ taskIds: queuedSelected, newAssigneeId: Number(bulkAssigneeId) });
                             }}
                           >
-                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
+                            <UserCheck aria-hidden className="size-4" /> إسناد {queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length} من الطابور
                           </Button>
-                          {queuedProductIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                          {queuedTaskIds.filter((id) => selectedTaskIds.has(id)).length > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
                         </div>
                       )}
                       {/* إعادةُ إسنادٍ جماعيّة — تعمل على المسنَد فقط، بمصوّرٍ محدَّد أو الطابور المفتوح. */}
@@ -2313,8 +2245,8 @@ export default function ProductImageStudio() {
                           type="checkbox"
                           className="mt-4 size-4 shrink-0"
                           aria-label={`تحديد ${task.productName}`}
-                          checked={selectedTaskIds.has(Number(task.productId))}
-                          onChange={() => toggleTaskSelection(Number(task.productId))}
+                          checked={selectedTaskIds.has(Number(task.id))}
+                          onChange={() => toggleTaskSelection(Number(task.id))}
                         />
                       )}
                     <button type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
@@ -2530,14 +2462,25 @@ export default function ProductImageStudio() {
                   </Card>
 
                   {draftConflict && (
-                    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-                      احتُفظ بالمسودة المحلية ولم تُطبّق لأن المهمة تغيّرت أو لم تعد قابلة للتحرير بعد عودة الاتصال. راجعها قبل متابعة العمل.
+                    <div role="alert" className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                      <p>احتُفظ بالمسودة المحلية ولم تُطبّق لأن المهمة تغيّرت أو لم تعد قابلة للتحرير بعد عودة الاتصال. راجعها أو اختر نسخة الخادم للمتابعة.</p>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void discardConflictingDraft()}>
+                        تجاهل المسودة المحلية وفتح نسخة الخادم
+                      </Button>
                     </div>
                   )}
 
-                  {editable && capabilities.canEditLocalDraft && (
+                  {editable && capabilities.canEditLocalDraft && !draftReady && !draftConflict && (
+                    <p role="status" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                      جار استعادة مسودة هذه المهمة. إن كانت مفتوحة في تبويب آخر فسيعاد التحقق تلقائياً قبل السماح بالتحرير.
+                    </p>
+                  )}
+
+                  {editable && capabilities.canEditLocalDraft && draftReady && !draftConflict && (
                     <>
-                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
+                      <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} submitting={isPreparingThumbnail} onBusyChange={setIsBatchBusy}>
+                      <ProductMediaContentSection title={`صورة الحملة ${selected.activeSlot ?? 1} والمحتوى`} description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
+                      </StudioCampaignImageBatch>
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.
@@ -2563,7 +2506,7 @@ export default function ProductImageStudio() {
                         </Button>
                         <Button className="min-h-11" disabled={offline || busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
                           {isPreparingThumbnail && <Loader2 aria-hidden className="size-4 animate-spin" />}
-                          إرسال المحتوى والصورة للمراجعة
+                          إرسال المحتوى والصور للمراجعة
                         </Button>
                       </div>
                     </>

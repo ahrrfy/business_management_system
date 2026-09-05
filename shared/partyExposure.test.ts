@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   computePartyExposure,
   deriveCashInHandFromLedger,
+  deriveShortfallOwedFromLedger,
   PARTY_EXPOSURE_LABEL_AR,
   PARTY_EXPOSURE_COLOR_TOKEN,
   type PartyExposureParcelSnapshot,
@@ -322,6 +323,86 @@ describe("computePartyExposure — صافي المسؤوليّة (الحسبة �
   });
 });
 
+// ─── Codex #1012 P2 — العجزُ ذمّةٌ لا نقدٌ ماديّ (العمود الخامس) ───────────────────────────────
+describe("computePartyExposure — العمود ٥: عجزٌ محمَّل (ذمّةٌ غير نقديّة، لا نقدٌ بيده)", () => {
+  it("deriveShortfallOwedFromLedger يجمع SHORTFALL_ASSIGNED وحده", () => {
+    const owed = deriveShortfallOwedFromLedger([
+      { entryType: "COD_COLLECTED", amount: "5000" },
+      { entryType: "SHORTFALL_ASSIGNED", amount: "300" },
+      { entryType: "SHORTFALL_ASSIGNED", amount: "200" },
+      { entryType: "COD_REMITTED", amount: "5000" },
+      { entryType: "FEE_EARNED", amount: "1000" },
+    ]);
+    expect(owed).toBe("500.00");
+  });
+
+  it("العجز يُطرح من «نقد بيده» ويظهر عموداً مستقلّاً — والعهدةُ الكلّية المُمرَّرة = physical + shortfall", () => {
+    // جهةٌ: قبضت 2500، حُمِّل عليها 500 عجز، ورّدت 2500 ⇒ عهدةٌ كلّية = 500 (currentBalance)، نقدٌ ماديّ = 0.
+    const r = computePartyExposure({
+      cashInHand: "500", // العهدةُ الكلّية (نقد + عجز) — ما يُخزَّنه currentBalance
+      parcels: [],
+      ledger: [{ entryType: "SHORTFALL_ASSIGNED", amount: "500" }],
+    });
+    expect(r.cashInHand).toBe("0.00"); // نقدٌ ماديٌّ وحده — لا يُعرَض الدَينُ نقداً
+    expect(r.shortfallOwed).toBe("500.00");
+    // net لا يتغيّر: الجهةُ ما زالت مدينةً بالعجز (physical 0 + shortfall 500).
+    expect(r.netResponsibility).toBe("500.00");
+  });
+
+  it("صافي المسؤوليّة لا يتغيّر بفصل العجز — نقدٌ ماديّ + عجز + طرود − أجور", () => {
+    const r = computePartyExposure({
+      cashInHand: "3000", // عهدةٌ كلّية = 2500 نقد ماديّ + 500 عجز
+      parcels: [mkParcel({ parcelStatus: "ASSIGNED", codAmount: "10000" })],
+      ledger: [
+        { entryType: "SHORTFALL_ASSIGNED", amount: "500" },
+        { entryType: "FEE_EARNED", amount: "1000" },
+      ],
+    });
+    expect(r.cashInHand).toBe("2500.00");
+    expect(r.shortfallOwed).toBe("500.00");
+    expect(r.parcelsInTransit).toBe("10000.00");
+    expect(r.feesOwedToThem).toBe("1000.00");
+    // 2500 + 10000 + 0 + 500 − 1000 = 12000 (نفس ما كان قبل الفصل: 3000 + 10000 − 1000).
+    expect(r.netResponsibility).toBe("12000.00");
+  });
+
+  it("بلا عجزٍ في الدفتر: العمود صفر و«نقد بيده» = العهدة المُمرَّرة حرفياً (لا انحدار)", () => {
+    const r = computePartyExposure({ cashInHand: "7777.50", parcels: [], ledger: [] });
+    expect(r.cashInHand).toBe("7777.50");
+    expect(r.shortfallOwed).toBe("0.00");
+  });
+});
+
+// ─── Codex #1012 P2 — طرود ACCEPTED/PICKED_UP ضمن «بالطريق» (يطابق دلوَ اللوحة) ────────────────
+describe("computePartyExposure — العمود ٢ يشمل ACCEPTED/PICKED_UP (طابق board.ts)", () => {
+  it("طردٌ قَبِله المندوب (ACCEPTED) أو استلمه (PICKED_UP) يدخل «طرود بالطريق» وnet", () => {
+    const r = computePartyExposure({
+      cashInHand: 0,
+      parcels: [
+        mkParcel({ parcelStatus: "ACCEPTED", codAmount: "12000" }),
+        mkParcel({ parcelStatus: "PICKED_UP", codAmount: "8000" }),
+      ],
+      ledger: [],
+    });
+    expect(r.parcelsInTransit).toBe("20000.00");
+    expect(r.netResponsibility).toBe("20000.00");
+  });
+
+  it("الأربعُ الحالاتُ الحيّة معاً (ASSIGNED/ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY) تُجمَع", () => {
+    const r = computePartyExposure({
+      cashInHand: 0,
+      parcels: [
+        mkParcel({ parcelStatus: "ASSIGNED", codAmount: "1000" }),
+        mkParcel({ parcelStatus: "ACCEPTED", codAmount: "2000" }),
+        mkParcel({ parcelStatus: "PICKED_UP", codAmount: "3000" }),
+        mkParcel({ parcelStatus: "OUT_FOR_DELIVERY", codAmount: "4000" }),
+      ],
+      ledger: [],
+    });
+    expect(r.parcelsInTransit).toBe("10000.00");
+  });
+});
+
 describe("قواميس التسميات + الألوان", () => {
   it("تسميات الأعمدة موجودة ومجمَّدة", () => {
     expect(Object.isFrozen(PARTY_EXPOSURE_LABEL_AR)).toBe(true);
@@ -330,6 +411,7 @@ describe("قواميس التسميات + الألوان", () => {
     expect(PARTY_EXPOSURE_LABEL_AR.parcelsInTransit).toBe("طرود بالطريق");
     expect(PARTY_EXPOSURE_LABEL_AR.deliveredUncollected).toBe("سلم لم يحصل");
     expect(PARTY_EXPOSURE_LABEL_AR.feesOwedToThem).toBe("أجور له");
+    expect(PARTY_EXPOSURE_LABEL_AR.shortfallOwed).toBe("عجز عليه");
     expect(PARTY_EXPOSURE_LABEL_AR.netResponsibility).toBe("صافي المسؤولية");
   });
 
@@ -337,6 +419,7 @@ describe("قواميس التسميات + الألوان", () => {
     expect(Object.isFrozen(PARTY_EXPOSURE_COLOR_TOKEN)).toBe(true);
     expect(PARTY_EXPOSURE_COLOR_TOKEN.deliveredUncollected).toBe("danger");
     expect(PARTY_EXPOSURE_COLOR_TOKEN.parcelsInTransit).toBe("warning");
+    expect(PARTY_EXPOSURE_COLOR_TOKEN.shortfallOwed).toBe("danger");
     expect(PARTY_EXPOSURE_COLOR_TOKEN.netResponsibility).toBe("primary");
   });
 });

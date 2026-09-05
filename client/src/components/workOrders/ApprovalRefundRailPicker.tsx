@@ -8,26 +8,19 @@
  *
  * فهنا يرى المعتمِدُ **الأرصدة الحيّة قبل الضغط** ويختار من أين يخرج المال فعلاً.
  *
- * ⚠️ **ملاحظة بنيويّة مقصودة:** رقائقُ الروافد مكتوبةٌ هنا ولا تُعاد استعمالها من
- * `CancelWorkOrderDialog`. المنطقُ كلُّه مشترَكٌ فعلاً (`@shared/refundRail` +
- * `RefundDrawerPicker`)، والمكرَّرُ عرضٌ محض. والسببُ صريح: حالةُ الرافد هناك صُلِّبت بثلاث
- * مراجعاتٍ متتابعة (ترتيبُ المؤثّرات · تصفيرُ البطاقة · تصفيرُ المرجع بين المحاولات)،
- * وإعادةُ تركيبها في خطّاف مشترك تُخاطر بإرجاع أعطابٍ أُغلقت للتوّ. الاستخراجُ يستحقّ شريحتَه.
+ * م٢ ق١٠ب (٥/٩/٢٦): العرضُ هو `RefundRailPickerView` الموحَّد نفسُه (رقائقُ الروافد · حقلُ الدرج ·
+ * مرجعُ البطاقة · الروافدُ غيرُ المتاحة بسببها) مبذوراً باقتراح الطالب؛ ما يبقى هنا هو حالةُ
+ * الاعتماد وحدها: **هل يختلف الاختيارُ عن الطلب** (`changed`) فيُرسَل تجاوزٌ. ثلاثُ مراجعات
+ * كانت قد صلَّبت هذا الملفّ (ترتيبُ المؤثّرات · تصفيرُ البطاقة · تصفيرُ المرجع بين المحاولات)،
+ * وكلُّها صارت داخل المنتقي الموحَّد: يُعاد بذرُه مع كلّ فتحٍ (`key`)، ودرجُ الطالب يُصان ما دام
+ * مؤهَّلاً، ومرجعُ البطاقة يُبذَر من الطلب فلا يُعَدّ تجاوزاً إلّا إن **اختلف**.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Wallet } from "lucide-react";
-import {
-  REFUND_RAILS,
-  REFUND_RAIL_HINT,
-  REFUND_RAIL_LABEL,
-  refundRailNeedsReference,
-  refundRailNeedsShift,
-  type RefundRail,
-} from "@shared/refundRail";
+import { refundRailNeedsReference, refundRailNeedsShift, type RefundRail } from "@shared/refundRail";
 import type { RefundPreflight } from "@shared/refundPreflight";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RefundDrawerPicker, useRefundDrawer } from "@/components/workorder/RefundDrawerPicker";
+import { RefundRailPickerView, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 import { fmtAr } from "@/lib/money";
 
 export interface ApprovalRefundChoice {
@@ -38,9 +31,10 @@ export interface ApprovalRefundChoice {
   blockReason: string | null;
   /** هل يختلف الاختيارُ عمّا اقترحه الطالب؟ (يُرسَل التجاوزُ عندئذٍ وحده). */
   changed: boolean;
-  setRail: (rail: RefundRail) => void;
-  setReference: (value: string) => void;
-  drawer: ReturnType<typeof useRefundDrawer>;
+  /** ما اقترحه الطالب — يبذر به المنتقي الموحَّد. */
+  requested: { rail: RefundRail | null; shiftId: number | null; reference: string | null };
+  /** يستقبل حالةَ المنتقي الموحَّد (الوضع المضمَّن). */
+  onStateChange: (state: RefundRailPickerState) => void;
 }
 
 export function useApprovalRefundChoice(args: {
@@ -53,87 +47,56 @@ export function useApprovalRefundChoice(args: {
 }): ApprovalRefundChoice {
   const { open, preflight, requestedRail, requestedShiftId, requestedReference } = args;
   const needsCash = preflight?.needsCashDrawer === true;
-  const [rail, setRail] = useState<RefundRail>(requestedRail ?? "DRAWER");
-  const [reference, setReference] = useState(requestedReference ?? "");
-  const drawer = useRefundDrawer({ preflight: open ? preflight : null, emptyLabel: "وردية استقبال" });
+  const [state, setState] = useState<RefundRailPickerState | null>(null);
 
-  // فتحٌ جديد ⇒ نبدأ من اقتراح الطالب لا من قيمةٍ عالقة.
+  // فتحٌ جديد ⇒ حالةٌ نظيفة (المنتقي نفسُه يُعاد بذرُه من الطلب عند التركيب).
   useEffect(() => {
-    if (!open) return;
-    setRail(requestedRail ?? "DRAWER");
-    // ⚠️ **مرجعُ البطاقة يُبذَر من الطلب** (مراجعة Codex P2): طلبٌ يقترح `CARD` يحمل مرجعاً
-    // مُتحقَّقاً منه سلفاً؛ تفريغُه كان يحجب الاعتماد حتى يُعيد المديرُ كتابتَه، ويَعُدّ ما
-    // يكتبه **تجاوزاً** — فيستحيل اعتمادُ الطلب كما قُدِّم رغم أنّ الخادم يقبله.
-    setReference(requestedReference ?? "");
-    drawer.reset();
-  }, [open, requestedRail, requestedReference]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!open) setState(null);
+  }, [open]);
 
-  /**
-   * ⭐⛔ **درجُ الطالب يُصان** (مراجعة Codex P1): `drawer.reset()` يُفرّغ الاختيار، فيختار
-   * `pickDefaultRefundDrawer` **درجَ المعتمِد نفسه** متى كان مفتوحاً. النتيجة: نقدٌ يخرج من
-   * درجٍ لم يُقصَد، و`changed` يصير صحيحاً فيُرسَل تجاوزٌ لم يطلبه أحد — وتنكسر تسويةُ درجَين
-   * معاً (§٥: لكلّ دينارٍ مسارٌ منسوبٌ لفاعله). فنُعيد بذرَ درج الطلب **ما دام مؤهَّلاً**،
-   * ولا نسقط إلى اختيارٍ جديد إلّا إن أُغلق أو لم يعد صالحاً.
-   */
-  const drawerSeededRef = useRef(false);
-  useEffect(() => { if (!open) drawerSeededRef.current = false; }, [open]);
-  useEffect(() => {
-    if (!open || !preflight || drawerSeededRef.current) return;
-    drawerSeededRef.current = true;
-    if (requestedShiftId != null && preflight.drawers.some((d) => d.shiftId === requestedShiftId)) {
-      drawer.setRefundShiftId(requestedShiftId);
-    }
-  }, [open, preflight, requestedShiftId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /**
-   * ⭐ **جوهرُ الإصلاح**: إن كان رافدُ الطالب لا يغطّي المبلغَ الآن وتغطّيه الخزينة، نبدأ على
-   * الخزينة. مرّةً واحدةً عند الفتح — فلا تُطمَس نقرةُ المدير اليدويّة بعدها (الكفايةُ إرشادٌ
-   * لا حجب: الرصيدُ حيّ وقد يتغيّر، والخادمُ هو الحَكَم).
-   */
-  const [autoDefaulted, setAutoDefaulted] = useState(false);
-  useEffect(() => { if (!open) setAutoDefaulted(false); }, [open]);
-  useEffect(() => {
-    if (!open || !needsCash || !preflight || autoDefaulted) return;
-    setAutoDefaulted(true);
-    const proposed = requestedRail ?? "DRAWER";
-    const proposedFits =
-      proposed === "TREASURY" ? preflight.treasurySufficient
-      : proposed === "DRAWER" ? preflight.drawers.some((d) => d.sufficient)
-      : true;
-    if (!proposedFits && preflight.treasurySufficient) setRail("TREASURY");
-  }, [open, needsCash, preflight, autoDefaulted, requestedRail]);
-
-  const shiftId = needsCash && refundRailNeedsShift(rail) ? drawer.refundShiftId : undefined;
+  const rail: RefundRail = state?.selection?.rail ?? requestedRail ?? "DRAWER";
+  const shiftId = needsCash && refundRailNeedsShift(rail) ? state?.selection?.refundShiftId : undefined;
+  const reference = state?.selection?.cardReference ?? "";
 
   const blockReason = !needsCash
     ? null
-    : refundRailNeedsShift(rail)
-      ? drawer.blockReason
-      : refundRailNeedsReference(rail) && reference.trim().length < 3
-        ? "أدخِل مرجع تنفيذ الاسترداد من جهاز الدفع (٣ محارف على الأقل)."
-        : null;
+    : state == null || state.loading
+      ? "جارٍ التحقق من روافد الردّ والأدراج المفتوحة…"
+      : state.error != null
+        ? `تعذّر التحقق من روافد الردّ — ${state.error}`
+        : state.blockReason;
 
   const changed = useMemo(() => {
-    if (!needsCash) return false;
+    if (!needsCash || state?.selection == null) return false;
     if (rail !== (requestedRail ?? "DRAWER")) return true;
     if (refundRailNeedsShift(rail) && (shiftId ?? null) !== (requestedShiftId ?? null)) return true;
     // المرجعُ تجاوزٌ حين **يختلف** عمّا قدّمه الطالب — لا لمجرّد وجوده.
     return refundRailNeedsReference(rail)
       && reference.trim() !== (requestedReference ?? "").trim();
-  }, [needsCash, rail, requestedRail, shiftId, requestedShiftId, reference, requestedReference]);
+  }, [needsCash, state?.selection, rail, requestedRail, shiftId, requestedShiftId, reference, requestedReference]);
 
-  return { rail, shiftId, reference, blockReason, changed, setRail, setReference, drawer };
+  return {
+    rail,
+    shiftId,
+    reference,
+    blockReason,
+    changed,
+    requested: { rail: requestedRail, shiftId: requestedShiftId, reference: requestedReference },
+    onStateChange: setState,
+  };
 }
 
 export function ApprovalRefundRailPicker({
   preflight,
   choice,
+  workOrderId,
 }: {
   preflight: RefundPreflight | null;
   choice: ApprovalRefundChoice;
+  /** أمرُ الشغل المعتمَد إلغاؤه — هويّةُ المستند التي يُبذَر بها المنتقي ويُعاد ضبطُه معها. */
+  workOrderId: number;
 }) {
   if (preflight?.needsCashDrawer !== true) return null;
-  const { drawer, setRail: onRailChange, setReference: onReferenceChange } = choice;
 
   return (
     <div className="space-y-2 rounded-md border p-3">
@@ -146,73 +109,21 @@ export function ApprovalRefundRailPicker({
           <span dir="ltr" className="font-bold tabular-nums">{fmtAr(preflight.estimatedCashOut)}</span> د.ع
         </span>
       </div>
-
-      <div className="flex flex-wrap gap-1.5">
-        {REFUND_RAILS
-          .filter((r) => r !== "CARD" || preflight.cardRefundAllowed === true)
-          .map((r) => {
-            const fits = r === "TREASURY"
-              ? preflight.treasurySufficient
-              : r === "DRAWER"
-                ? preflight.drawers.some((d) => d.sufficient)
-                : true;
-            return (
-              <button
-                key={r}
-                type="button"
-                onClick={() => onRailChange(r)}
-                className={`rounded-full border px-2.5 py-1 text-2xs font-bold transition-colors ${
-                  choice.rail === r ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-muted"
-                }`}
-              >
-                {REFUND_RAIL_LABEL[r]}
-                {/* «قد لا يكفي» إرشادٌ لا حجب — الرصيدُ حيّ والخادمُ هو الحَكَم. */}
-                {fits === false ? " — قد لا يكفي" : ""}
-              </button>
-            );
-          })}
-      </div>
-      <p className="text-2xs text-muted-foreground">{REFUND_RAIL_HINT[choice.rail]}</p>
-
-      {refundRailNeedsShift(choice.rail) && (
-        <div className="space-y-1">
-          <Label className="text-2xs font-bold">درج ردّ النقد</Label>
-          <RefundDrawerPicker
-            state={drawer}
-            needed
-            hint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
-          />
-        </div>
-      )}
-
-      {choice.rail === "TREASURY" && preflight.treasuryCash != null && (
-        <p className="text-2xs text-muted-foreground">
-          نقدُ الخزينة المتاح:{" "}
-          <span dir="ltr" className="font-bold tabular-nums">{fmtAr(preflight.treasuryCash)}</span> د.ع
-        </p>
-      )}
-
-      {refundRailNeedsReference(choice.rail) && (
-        <div className="space-y-1">
-          <Label htmlFor="approval-refund-reference" className="text-2xs font-bold">
-            مرجع تنفيذ الاسترداد الخارجيّ
-          </Label>
-          <Input
-            id="approval-refund-reference"
-            value={choice.reference}
-            onChange={(event) => onReferenceChange(event.target.value)}
-            maxLength={100}
-            placeholder="رقم عملية الاسترداد على جهاز الدفع"
-            className="text-sm"
-          />
-        </div>
-      )}
-
-      {choice.changed && (
-        <p className="text-2xs font-bold text-[var(--sem-warn)]">
-          غيّرتَ رافدَ الردّ عمّا اقترحه الطالب — يُسجَّل التغييرُ وفاعلُه في سجلّ الأمر.
-        </p>
-      )}
+      <RefundRailPickerView
+        context={{ sourceDocType: "WORKORDER_CANCEL", sourceDocId: workOrderId }}
+        preflight={preflight}
+        loading={false}
+        error={null}
+        mode="embedded"
+        onStateChange={choice.onStateChange}
+        initialSelection={{
+          rail: choice.requested.rail ?? "DRAWER",
+          ...(choice.requested.shiftId != null ? { refundShiftId: choice.requested.shiftId } : {}),
+          ...(choice.requested.reference ? { cardReference: choice.requested.reference } : {}),
+        }}
+        drawerLabel="درج ردّ النقد"
+        drawerHint="وردية قبض العربون قد تكون أُغلقت — النقد يخرج من درجٍ مفتوحٍ الآن."
+      />
     </div>
   );
 }

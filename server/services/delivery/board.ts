@@ -15,20 +15,13 @@
  * `cashInHandDrift` فرقُهما؛ أيُّهما يدخل `net` يقرّره `deliveryCashSource()` (علَم `courierLedgerDerived`).
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import type { PartyBoardBucket, PartyBoardRow } from "@shared/deliveryBoard";
-import { DELIVERY_CASH_CUSTODY_SIGN } from "@shared/deliveryLedgerEntryType";
 import { computeDeliveryFee, type DeliveryPricingRuleInput } from "@shared/deliveryPricing";
-import {
-  computePartyExposure,
-  deriveCashInHandFromLedger,
-  type PartyExposureLedgerEntry,
-  type PartyExposureParcelSnapshot,
-} from "@shared/partyExposure";
+import { computePartyExposure } from "@shared/partyExposure";
 import {
   deliveryConsignments,
-  deliveryLedgerEntries,
   deliveryParties,
   deliveryPricingRules,
   deliveryZones,
@@ -36,6 +29,7 @@ import {
 import type { Tx } from "../../db";
 import { money, round2 } from "../money";
 import { deliveryCashSource } from "./cashSource";
+import { loadPartyExposureInputsTx } from "./exposureInputs";
 import { consignmentShortfallAssignedSql, staleOpenParcelCondition } from "./openParcelPredicates";
 import type { DeliveryTxActor } from "./types";
 
@@ -52,18 +46,6 @@ export const PARTY_BOARD_CLOSED_WINDOW_DAYS = 30;
 const ZERO_BUCKET: PartyBoardBucket = { count: 0, amount: "0.00" };
 
 const fmt = (v: unknown): string => round2(money(String(v ?? "0"))).toFixed(2);
-
-/**
- * عهدةُ النقد لكلّ طرد — `CASE` مبنيٌّ من الثابت الواحد `DELIVERY_CASH_CUSTODY_SIGN` (لا صيغةَ
- * مكتوبةً بيد تنجرف عن `deriveCashInHandFromLedger`).
- */
-export const ledgerCustodySumSql = sql<string>`COALESCE(SUM(CASE ${sql.join(
-  Object.entries(DELIVERY_CASH_CUSTODY_SIGN).map(
-    ([entryType, sign]) =>
-      sql`WHEN ${deliveryLedgerEntries.entryType} = ${entryType} THEN ${sign > 0 ? sql`` : sql`-`}${deliveryLedgerEntries.amount}`,
-  ),
-  sql` `,
-)} ELSE 0 END), 0)`;
 
 export async function listPartyBoardTx(
   tx: Tx,
@@ -135,66 +117,9 @@ export async function listPartyBoardTx(
     .groupBy(deliveryConsignments.partyId);
   const bucketMap = new Map(buckets.map((b) => [Number(b.partyId), b]));
 
-  // ── مدخلاتُ الدالّة النقيّة: الطرود الحيّة (تعرّضٌ غير محرَّر) + مجاميع الدفتر لكلّ نوع ────
-  // الطردُ المُعلَن رجوعُه حُرِّر تعرّضُه لحظة الإعلان (`declaredReturn.ts`) فلا يدخل الأعمدة.
-  const liveParcels = await tx
-    .select({
-      id: deliveryConsignments.id,
-      partyId: deliveryConsignments.partyId,
-      parcelStatus: deliveryConsignments.parcelStatus,
-      moneyStatus: deliveryConsignments.moneyStatus,
-      codAmount: deliveryConsignments.codAmount,
-      collectedAmount: deliveryConsignments.collectedAmount,
-      counterSettledAmount: deliveryConsignments.counterSettledAmount,
-    })
-    .from(deliveryConsignments)
-    .where(and(
-      inArray(deliveryConsignments.partyId, partyIds),
-      inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
-      isNull(deliveryConsignments.returnDeclaredAt),
-      cnBranch,
-    ));
-  // عهدةُ كلّ طردٍ حيّ من الدفتر — تُنقِص «سُلِّم لم يُحصَّل» بما قبضته الجهة فعلاً (انظر
-  // `PartyExposureParcelSnapshot.ledgerCustody`: بلا هذا كان الطرد المقبوض غير المورَّد يُحسَب مرّتين).
-  const liveIds = liveParcels.map((p) => Number(p.id));
-  const custodyRows = liveIds.length
-    ? await tx
-        .select({ consignmentId: deliveryLedgerEntries.consignmentId, custody: ledgerCustodySumSql })
-        .from(deliveryLedgerEntries)
-        .where(and(isNotNull(deliveryLedgerEntries.consignmentId), inArray(deliveryLedgerEntries.consignmentId, liveIds)))
-        .groupBy(deliveryLedgerEntries.consignmentId)
-    : [];
-  const custodyByCn = new Map(custodyRows.map((r) => [Number(r.consignmentId), String(r.custody ?? "0")]));
-  const parcelsByParty = new Map<number, PartyExposureParcelSnapshot[]>();
-  for (const p of liveParcels) {
-    const list = parcelsByParty.get(Number(p.partyId)) ?? [];
-    list.push({
-      parcelStatus: p.parcelStatus,
-      moneyStatus: p.moneyStatus,
-      codAmount: String(p.codAmount ?? "0"),
-      collectedAmount: String(p.collectedAmount ?? "0"),
-      counterSettledAmount: String(p.counterSettledAmount ?? "0"),
-      ledgerCustody: custodyByCn.get(Number(p.id)) ?? "0",
-    });
-    parcelsByParty.set(Number(p.partyId), list);
-  }
-  // الدفتر **على مستوى الجهة كلّها** (بلا فرع): العمودُ المخزَّن `currentBalance` جهويٌّ لا فرعيّ،
-  // ومقارنةُ الانحراف تصحّ على نفس النطاق وحده.
-  const ledgerAgg = await tx
-    .select({
-      partyId: deliveryLedgerEntries.partyId,
-      entryType: deliveryLedgerEntries.entryType,
-      total: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}), 0)`,
-    })
-    .from(deliveryLedgerEntries)
-    .where(inArray(deliveryLedgerEntries.partyId, partyIds))
-    .groupBy(deliveryLedgerEntries.partyId, deliveryLedgerEntries.entryType);
-  const ledgerByParty = new Map<number, PartyExposureLedgerEntry[]>();
-  for (const r of ledgerAgg) {
-    const list = ledgerByParty.get(Number(r.partyId)) ?? [];
-    list.push({ entryType: r.entryType, amount: String(r.total ?? "0") });
-    ledgerByParty.set(Number(r.partyId), list);
-  }
+  // ── مدخلاتُ الدالّة النقيّة (المصدر الواحد `exposureInputs.ts`): الطرود الحيّة بعهدتها من
+  // الدفتر + مجاميع الدفتر لكلّ نوع على مستوى الجهة كلّها (العمودُ المخزَّن جهويٌّ لا فرعيّ) ────
+  const exposureInputs = await loadPartyExposureInputsTx(tx, partyIds, branchId);
 
   // ── الطرود المتأخّرة (نفس مسند حارس الإسناد — مصدرٌ واحد) ───────────────────────────
   const stale = await tx
@@ -215,15 +140,22 @@ export async function listPartyBoardTx(
     const b = bucketMap.get(id);
     const bucket = (c: unknown, a: unknown): PartyBoardBucket =>
       b ? { count: Number(c ?? 0), amount: fmt(a) } : ZERO_BUCKET;
-    const ledger = ledgerByParty.get(id) ?? [];
-    const cashInHandLedger = deriveCashInHandFromLedger(ledger);
-    const cashInHandStored = fmt(p.currentBalance);
-    const cashInHandDrift = round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2);
+    const inputs = exposureInputs.get(id);
+    const ledger = inputs?.ledger ?? [];
+    // العهدةُ الكلّية (نقد + عجز) بمصدرَيها — تُمرَّر للدالّة النقيّة التي تفصل الماديّ عن العجز.
+    const custodyLedger = inputs?.cashInHandLedger ?? "0.00";
+    const custodyStored = fmt(p.currentBalance);
     const exposure = computePartyExposure({
-      cashInHand: cashSource === "ledger" ? cashInHandLedger : cashInHandStored,
-      parcels: parcelsByParty.get(id) ?? [],
+      cashInHand: cashSource === "ledger" ? custodyLedger : custodyStored,
+      parcels: inputs?.parcels ?? [],
       ledger,
     });
+    // Codex #1012 P2 — العمود «نقد بيده» ماديٌّ وحده: نطرح العجزَ (ذمّةٌ غير نقديّة) من العهدة
+    // الكلّية بمصدرَيها، ويظهر العجزُ عموداً مستقلّاً. الانحرافُ يبقى بين الماديَّين (فرقٌ واحد).
+    const shortfallOwed = exposure.shortfallOwed;
+    const cashInHandLedger = round2(money(custodyLedger).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandStored = round2(money(custodyStored).minus(money(shortfallOwed))).toFixed(2);
+    const cashInHandDrift = round2(money(cashInHandLedger).minus(money(cashInHandStored))).toFixed(2);
     const row: PartyBoardRow = {
       partyId: id,
       partyName: p.name,
@@ -236,16 +168,18 @@ export async function listPartyBoardTx(
       cashInHandLedger,
       cashInHandStored,
       cashInHandDrift,
+      shortfallOwed,
       feesOwed: exposure.feesOwedToThem,
       net: exposure.netResponsibility,
       staleOpenParcels: staleMap.get(id) ?? 0,
     };
-    // جهةٌ معطَّلة بلا أثرٍ حيّ تختفي؛ وما عليها التزامٌ (طرود/نقد/أجور) يبقى ظاهراً — الواجهةُ
+    // جهةٌ معطَّلة بلا أثرٍ حيّ تختفي؛ وما عليها التزامٌ (طرود/نقد/عجز/أجور) يبقى ظاهراً — الواجهةُ
     // الوحيدة التي تُسوَّى منها (نفس درس `listPartyObligations`، Codex P2 #5).
     const hasLiveObligation =
       row.assigned.count + row.inTransit.count + row.deliveredUnremitted.count > 0
       || !money(row.cashInHandStored).isZero()
       || !money(row.cashInHandLedger).isZero()
+      || !money(row.shortfallOwed).isZero()
       || money(row.feesOwed).gt(0)
       || row.staleOpenParcels > 0;
     if (p.isActive || hasLiveObligation) rows.push(row);

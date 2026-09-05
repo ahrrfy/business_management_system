@@ -35,6 +35,76 @@ function imageResponse(data = "QUJD", mime = "image/png", extra: Record<string, 
 
 // ────────────────────────── generateStudioImage (نقيّ) ──────────────────────────
 describe("generateStudioImage (fetch مُموَّه)", () => {
+  it("retries empty HTTP 200 IMAGE_OTHER once with the same request", async () => {
+    const fakeFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })))
+      .mockResolvedValueOnce(imageResponse());
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "QUJD" }, { fetchImpl: fakeFetch }))
+      .resolves.toMatchObject({ imageBase64: "QUJD" });
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+    expect(fakeFetch.mock.calls[1][1]?.body).toBe(fakeFetch.mock.calls[0][1]?.body);
+  });
+
+  it("bounds IMAGE_OTHER to two separately guarded attempts", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    const runAttempt = vi.fn(async (run: () => Promise<any>) => run());
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt }))
+      .rejects.toMatchObject({ kind: "IMAGE_OTHER" });
+    expect(fakeFetch).toHaveBeenCalledTimes(2);
+    expect(runAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a refused execution slot before sending the retry", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    const blocked = new Error("execution slot unavailable");
+    const runAttempt = vi.fn(async (run: () => Promise<any>) => run()).mockImplementationOnce(async run => run())
+      .mockRejectedValueOnce(blocked);
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt })).rejects.toBe(blocked);
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ finishReason: "IMAGE_SAFETY" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_PROHIBITED_CONTENT" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_RECITATION" }, "BLOCKED"],
+    [{ finishReason: "IMAGE_OTHER", safetyRatings: [{ blocked: true }] }, "BLOCKED"],
+    [{ finishReason: "IMAGE_OTHER", content: { parts: [{ text: "Cannot edit this image" }] } }, "NO_IMAGE"],
+    [{ finishReason: "IMAGE_OTHER", finishMessage: "Content not supported" }, "NO_IMAGE"],
+  ])("does not retry safety or explained refusal %j", async (candidate, kind) => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({ candidates: [candidate] })));
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not extend the total timeout for retries", async () => {
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, timeoutMs: 100 }))
+      .rejects.toMatchObject({ kind: "IMAGE_OTHER" });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reserve a retry slot when the backoff timer runs after the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async () =>
+        new Response(JSON.stringify({ candidates: [{ finishReason: "IMAGE_OTHER" }] })));
+      const runAttempt = vi.fn(async (run: () => Promise<any>) => run());
+      const result = expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, runAttempt, timeoutMs: 1000 }))
+        .rejects.toMatchObject({ kind: "TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(0);
+      vi.setSystemTime(Date.now() + 1000);
+      await vi.advanceTimersByTimeAsync(250);
+      await result;
+      expect(runAttempt).toHaveBeenCalledTimes(1);
+      expect(fakeFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("EDIT: يُرسل نصّاً + inline_data ومفتاحاً في الترويسة، ويستخرج الصورة", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | undefined;
@@ -50,7 +120,7 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     expect(r.imageBase64).toBe("SU1H");
     expect(r.mimeType).toBe("image/png");
     // المفتاح في الترويسة لا في الـURL (لا تسريب).
-    expect(capturedUrl).toContain("gemini-2.5-flash-image:generateContent");
+    expect(capturedUrl).toContain("gemini-3.1-flash-lite-image:generateContent");
     expect(capturedUrl).not.toContain("SECRETKEY");
     const headers = capturedInit?.headers as Record<string, string>;
     expect(headers["x-goog-api-key"]).toBe("SECRETKEY");
@@ -58,8 +128,8 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     const parts = body.contents[0].parts;
     expect(parts.some((p: any) => p.text === "P")).toBe(true);
     expect(parts.some((p: any) => p.inline_data?.data === "QUJD")).toBe(true);
-    expect(body.generationConfig.responseModalities).toContain("IMAGE");
-    expect(body.generationConfig.imageConfig.aspectRatio).toBe("1:1");
+    expect(body.generationConfig.responseModalities).toEqual(["IMAGE"]);
+    expect(body.generationConfig.responseFormat.image).toEqual({ aspectRatio: "1:1", imageSize: "1K" });
   });
 
   it("GENERATE: بلا صورة ⇒ لا inline_data في الطلب", async () => {
@@ -196,14 +266,38 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     }
   });
 
-  it("model فارغ ⇒ يستعمل الافتراضي gemini-2.5-flash-image", async () => {
+  it("model فارغ ⇒ يستعمل الافتراضي السريع والاقتصادي gemini-3.1-flash-lite-image", async () => {
     let capturedUrl = "";
     const fakeFetch: typeof fetch = async (url) => {
       capturedUrl = String(url);
       return imageResponse();
     };
     await generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X", model: null }, { fetchImpl: fakeFetch });
-    expect(capturedUrl).toContain("gemini-2.5-flash-image:generateContent");
+    expect(capturedUrl).toContain("gemini-3.1-flash-lite-image:generateContent");
+  });
+
+  it("يتجاهل صورة التفكير ويعيد صورة النتيجة النهائية", async () => {
+    const fakeFetch: typeof fetch = async () =>
+      new Response(JSON.stringify({ candidates: [{ content: { parts: [
+        { thought: true, inlineData: { mimeType: "image/png", data: "VEhPVUdIVA==" } },
+        { inlineData: { mimeType: "image/png", data: "RklOQUw=" } },
+      ] } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch }))
+      .resolves.toMatchObject({ imageBase64: "RklOQUw=" });
+  });
+
+  it("يطبع بادئة models/ الرسمية قبل بناء رابط التوليد", async () => {
+    let capturedUrl = "";
+    const fakeFetch: typeof fetch = async (url) => {
+      capturedUrl = String(url);
+      return imageResponse();
+    };
+    await generateStudioImage(
+      { apiKey: "K", prompt: "P", imageBase64: "X", model: "models/gemini-3.1-flash-image" },
+      { fetchImpl: fakeFetch },
+    );
+    expect(capturedUrl).toContain("/models/gemini-3.1-flash-image:generateContent");
+    expect(capturedUrl).not.toContain("models%2F");
   });
 });
 
@@ -220,6 +314,14 @@ describe("verifyGeminiKey", () => {
     const fakeFetch: typeof fetch = async () => new Response("{}", { status: 403 });
     await expect(verifyGeminiKey("K", fakeFetch)).rejects.toBeInstanceOf(AiImageError);
     await expect(verifyGeminiKey("K", fakeFetch)).rejects.toMatchObject({ kind: "AUTH" });
+  });
+  it("يتابع صفحات النماذج حتى يجد النماذج المتاحة كلها", async () => {
+    const fakeFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: "models/text-model" }], nextPageToken: "NEXT" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: "models/gemini-3.1-flash-lite-image" }] })));
+    const result = await verifyGeminiKey("K", fakeFetch);
+    expect(result.models).toEqual(["text-model", "gemini-3.1-flash-lite-image"]);
+    expect(String(fakeFetch.mock.calls[1][0])).toContain("pageToken=NEXT");
   });
 });
 
@@ -309,7 +411,7 @@ describe("imageStudioSettingsService — AI (DB)", () => {
     expect(st.aiKeyMasked).not.toContain("secret");
     expect(st.aiKeyMasked?.endsWith("EY99")).toBe(true);
     expect(st.aiStudioPromptIsDefault).toBe(true);
-    expect(st.aiModelEffective).toBe("gemini-2.5-flash-image");
+    expect(st.aiModelEffective).toBe("gemini-3.1-flash-lite-image");
   });
 
   it("تفعيل بلا مفتاح ⇒ يُرفَض", async () => {
@@ -317,13 +419,13 @@ describe("imageStudioSettingsService — AI (DB)", () => {
     expect((await getAiStudioConfig()).aiAvailable).toBe(false);
   });
 
-  it("مفتاح ثمّ تفعيل ⇒ aiAvailable + runtime بالمفتاح المفكوك والنموذج", async () => {
+  it("مفتاح ثمّ تفعيل ⇒ يرقّي النموذج القديم تلقائياً إلى الافتراضي المستقر", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456", aiModel: "gemini-2.5-flash-image" }, 1);
     await updateAiImageStudioSettings({ aiEnabled: true }, 1);
     expect((await getAiStudioConfig()).aiAvailable).toBe(true);
     const rt = await getAiStudioRuntime();
     expect(rt?.apiKey).toBe("MYKEY123456");
-    expect(rt?.model).toBe("gemini-2.5-flash-image");
+    expect(rt?.model).toBe("gemini-3.1-flash-lite-image");
     expect(rt?.basePrompt).toContain("white");
   });
 
@@ -355,7 +457,7 @@ describe("imageStudioSettingsService — AI (DB)", () => {
   it("verifyAiConnection (النموذج المُختار متاح) ⇒ ok + يُثبِت aiLastVerifiedAt", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456" }, 1);
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-3.1-flash-lite-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
     );
     try {
       const r = await verifyAiConnection();
@@ -370,7 +472,7 @@ describe("imageStudioSettingsService — AI (DB)", () => {
   it("verifyAiConnection (النموذج المُختار غير متاح) ⇒ ok=false ولا يُثبِت الفحص", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456", aiModel: "gemini-typo-999" }, 1);
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-3.1-flash-lite-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
     );
     try {
       const r = await verifyAiConnection();
@@ -385,7 +487,7 @@ describe("imageStudioSettingsService — AI (DB)", () => {
   it("تغيير النموذج يُصفّر حالة الفحص السابقة", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456" }, 1);
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-3.1-flash-lite-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
     );
     try {
       await verifyAiConnection();

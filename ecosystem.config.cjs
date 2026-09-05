@@ -73,6 +73,26 @@ const webTunables = Object.freeze(
   ),
 );
 
+// مفاتيح الاستوديو النصية تُرسل دائماً. القيمة الفارغة مقصودة: تمسح نسخة PM2 الموروثة
+// عند إزالة إعداد من .env، فلا يبقى العامل على مفتاح/عنوان/سائق قديم بعد نشر ناجح شكلياً.
+const webStudioEnvironmentKeys = Object.freeze([
+  "INTEGRATIONS_ENCRYPTION_KEY",
+  "GEMINI_API_BASE",
+  "IMAGE_STORE_DRIVER",
+  "R2_ACCOUNT_ID",
+  "R2_IMAGE_BUCKET",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_MAX_CONCURRENCY",
+  "R2_MAX_QUEUE",
+  "R2_QUEUE_TIMEOUT_MS",
+  "R2_CIRCUIT_FAILURE_THRESHOLD",
+  "R2_CIRCUIT_OPEN_MS",
+]);
+const webStudioEnvironment = Object.freeze(
+  Object.fromEntries(webStudioEnvironmentKeys.map((key) => [key, process.env[key] ?? ""])),
+);
+
 const webForbiddenEnvironmentKeys = Object.freeze([
   "DB_ROOT_PW",
   "DB_CONTAINER",
@@ -182,6 +202,7 @@ module.exports = {
         // قد يصل العملية نصّاً `"undefined"`، و`boundedIntEnv` في `server/db.ts` **يرمي** على
         // قيمةٍ غير عددية ⇒ خادمٌ لا يُقلع في أيّ نشرٍ لا يضبط المفتاح في `.env`.
         ...webTunables,
+        ...webStudioEnvironment,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
         // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.

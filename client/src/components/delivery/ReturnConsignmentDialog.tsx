@@ -5,16 +5,16 @@
  * (نداءان: استلامُ المرتجع من «قيد التوصيل»، والإرجاعُ من شاشة التسوية) ⇒ كلّما فُتح درجان
  * في الفرع صار إرجاعُ طردٍ مدفوعٍ مستحيلاً برسالةٍ تطلب ما لا سبيل لإعطائه.
  *
- * ⚠️ رافدُ التوصيل يقبل **أيّ** درجٍ مفتوح (`resolveBranchCashShiftTx`) بخلاف رافد أمر الشغل
- * المقصور على `RECEPTION` — والتمييزُ يقع **خادمياً** في `delivery.returnPreflight`، فلا
- * تُصفّي الشاشةُ ولا تُخمّن.
+ * م٢ ذيل (ق١٠): الردُّ عبر `<RefundRailPicker>` الموحَّد — الخادمُ يفتي بالدرج والكفاية،
+ * والروافدُ التي لا يقبلها فعلُ `delivery.returnConsignment` (الخزينة/البطاقة) تُعلَن بسببها
+ * لا تُخفى: «إرجاعُ الإرسالية يقبل درجاً مفتوحاً فقط» — **المفتاحُ الناقص** في سياسة الخزينة
+ * يُفتح حين يقبل فعلُ التوصيل رافدَ الخزينة (خارج هذه الشريحة: `server/services/delivery/**`).
  */
-import { useEffect } from "react";
+import { useState } from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { RefundDrawerPicker, useRefundDrawer } from "@/components/workorder/RefundDrawerPicker";
-import { trpc } from "@/lib/trpc";
+import { RefundRailPicker, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 
 export interface ReturnConsignmentTarget {
   consignmentId: number;
@@ -32,25 +32,38 @@ export function ReturnConsignmentDialog({
   onClose: () => void;
   onConfirm: (args: { consignmentId: number; refundShiftId: number | undefined }) => void;
 }) {
-  /**
-   * **التمهيدُ الخادميّ** — يقول إن كان الطردُ يُخرج نقداً أصلاً. الافتراضُ السابق («كلُّ
-   * إرجاعٍ يُخرج نقداً») كان يُعطّل إرجاعَ طردٍ غيرِ محصَّلٍ خارج الوردية (Codex P1)، والأدراجُ
-   * تأتي مُصفّاةً **بفرع الإرسالية** فلا يُعرَض درجُ فرعٍ آخر يرفضه الخادم (Codex P2).
-   */
-  const preflightQ = trpc.delivery.returnPreflight.useQuery(
-    { consignmentId: target?.consignmentId ?? 0 },
-    { enabled: target != null, staleTime: 0 },
-  );
-  const drawer = useRefundDrawer({
-    preflight: target ? preflightQ.data ?? null : null,
-    emptyLabel: "وردية",
-  });
-
-  useEffect(() => {
-    if (target) drawer.reset();
-  }, [target?.consignmentId]); // eslint-disable-line react-hooks/exhaustive-deps
-
   if (!target) return null;
+  return (
+    <ReturnConsignmentDialogBody
+      key={target.consignmentId}
+      target={target}
+      pending={pending}
+      onClose={onClose}
+      onConfirm={onConfirm}
+    />
+  );
+}
+
+/** جسمُ الحوار — يُعاد تركيبه لكلّ إرسالية (`key`) فلا تبقى حالةُ درجٍ من طردٍ سابق. */
+function ReturnConsignmentDialogBody({
+  target,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  target: ReturnConsignmentTarget;
+  pending?: boolean;
+  onClose: () => void;
+  onConfirm: (args: { consignmentId: number; refundShiftId: number | undefined }) => void;
+}) {
+  /**
+   * **التمهيدُ الخادميّ الموحَّد** — يقول إن كان الطردُ يُخرج نقداً أصلاً (طردٌ غيرُ محصَّلٍ خارج
+   * الوردية لا يُعطَّل — Codex P1)، والأدراجُ مُصفّاةٌ بفرع الإرسالية (Codex P2)، والروافدُ غيرُ
+   * المقبولة معلَنةٌ بسببها. الزرُّ يقرأ سببَ الحجب من حالة المنتقي لا من تخمينٍ محلّيّ.
+   */
+  const [rail, setRail] = useState<RefundRailPickerState | null>(null);
+  const blockReason = rail == null ? null : rail.blockReason;
+  const notReady = rail == null || rail.loading || rail.error != null;
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v && !pending) onClose(); }}>
@@ -71,24 +84,26 @@ export function ReturnConsignmentDialog({
             </span>
           </p>
 
-          <RefundDrawerPicker
-            state={drawer}
-            needed={preflightQ.data?.needsCashDrawer === true}
-            hint="قُبض على هذا الطرد نقدٌ — من هذا الدرج يخرج ردُّه."
+          <RefundRailPicker
+            context={{ sourceDocType: "CONSIGNMENT_RETURN", sourceDocId: target.consignmentId }}
+            mode="embedded"
+            onStateChange={setRail}
+            drawerHint="قُبض على هذا الطرد نقدٌ — من هذا الدرج يخرج ردُّه."
+            submitting={pending}
           />
         </div>
 
         <DialogFooter>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-            {drawer.blockReason && (
-              <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">{drawer.blockReason}</span>
+            {blockReason && (
+              <span className="text-2xs font-bold text-[var(--sem-warn)] sm:me-auto">{blockReason}</span>
             )}
             <div className="flex items-center justify-end gap-2">
               <Button variant="ghost" onClick={onClose} disabled={pending}>تراجع</Button>
               <Button
                 variant="destructive"
-                disabled={pending || drawer.blockReason != null}
-                onClick={() => onConfirm({ consignmentId: target.consignmentId, refundShiftId: drawer.refundShiftId })}
+                disabled={pending || notReady || blockReason != null}
+                onClick={() => onConfirm({ consignmentId: target.consignmentId, refundShiftId: rail?.selection?.refundShiftId })}
               >
                 {pending ? "جارٍ…" : "استلمتُ الطرد — أرجِع"}
               </Button>

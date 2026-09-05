@@ -157,6 +157,22 @@ describe("bundleService — ثوابت الأمان B1..B6", () => {
     ).rejects.toThrow(/رصيد/);
   });
 
+  it("Codex #1008: بكجٌ مُوجَّهٌ لشبكة الطباعة (showInPrintPos) مرفوضٌ عند الإنشاء", async () => {
+    // بلا الرفض: يُوسَم PRINT_SERVICE فيظهر في `listPrintServices` ثمّ يسقط `createPrintSale` على `applyMovement`.
+    await expect(
+      createProduct(
+        {
+          name: "طقم-طباعة",
+          isBundle: true,
+          showInPrintPos: true,
+          variants: [{ sku: "BDL-PP", costPrice: "0", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "20.00" }] }] }],
+          bundleComponents: [{ componentVariantId: 1, componentBaseQuantity: 2 }],
+        } as any,
+        actor,
+      ),
+    ).rejects.toThrow(/شبكة الطباعة/);
+  });
+
   it("بكجٌ يحتوي على نفسه (self-ref) مرفوض في validateBundleComponents", async () => {
     await withTx(async (tx) => {
       await expect(validateBundleComponents(tx, 1, [{ componentVariantId: 1, componentBaseQuantity: 2 }])).rejects.toThrow(/نفسه/);
