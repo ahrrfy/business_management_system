@@ -10,7 +10,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest, openCashDrawer } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
@@ -28,7 +28,7 @@ import { trpc } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Power, Globe, Check, Banknote } from "lucide-react";
+import { Printer, Power, Globe, Check, Banknote, Vault } from "lucide-react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -38,7 +38,7 @@ import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt, computeInvoiceDiscount,
 } from "@/components/pos/posShared";
 import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 import { POSHeader } from "@/components/pos/POSHeader";
@@ -48,6 +48,7 @@ import { PaymentPanel } from "@/components/pos/PaymentPanel";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -383,15 +384,6 @@ export default function POS() {
     const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
     return s.plus(refUnit.times(c.qty));
   }, D(0));
-  const rawInvoiceDiscountPctD = D(activeTab.invoiceDiscountPct || 0);
-  const clampedByFieldD = rawInvoiceDiscountPctD.lt(0)
-    ? D(0)
-    : rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : rawInvoiceDiscountPctD;
-  // **السقف الفعّال المتبقّي**: عتبةُ الخادم ١٥٪ تُقاس على المرجع، فإن كان في السلّة انحرافٌ سطريّ
-  // مسبق (`refGross − subtotal`)، فسلطةُ الكاشير على الرأس = ١٥٪ − (نسبةُ الانحراف المسبقة)،
-  // مقيسةً على الصافي الحاليّ (subtotal). قيمةٌ سالبةٌ ⇒ صفرٌ (لا سلطة).
   const priorDeviationRatioD = referenceGrossD.gt(0)
     ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
     : D(0);
@@ -404,11 +396,17 @@ export default function POS() {
     : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const invoiceDiscountPctD = invoiceDiscountAllowed
-    ? (clampedByFieldD.gt(effectiveHeaderCapPctD) ? effectiveHeaderCapPctD : clampedByFieldD)
-    : D(0);
-  const invoiceDiscountAmountD = round2(subtotalD.times(invoiceDiscountPctD).div(100));
-  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const discountCalc = computeInvoiceDiscount({
+    subtotalD,
+    effectiveHeaderCapPctD,
+    invoiceDiscountAllowed,
+    type: activeTab.invoiceDiscountType ?? "percent",
+    value: activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || ""),
+  });
+  const invoiceDiscountAmountD = discountCalc.discountAmountD;
+  const invoiceDiscountAmount = discountCalc.discountAmount;
+  const invoiceDiscountPctD = discountCalc.discountPctD;
+  const maxDiscountAmount = discountCalc.maxDiscountAmount;
   const subtotal = round2(subtotalD).toNumber();
   // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
   // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
@@ -1308,6 +1306,13 @@ export default function POS() {
         case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
           if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
         }).catch((error) => notify.err(error)); break;
+        case "F10":
+          e.preventDefault();
+          void openCashDrawer().then((res) => {
+            if (res.ok) notify.ok("تم فتح درج النقود");
+            else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها");
+          });
+          break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -1457,6 +1462,7 @@ export default function POS() {
 
       {headerActionsNode && createPortal(
         <RetailPosHeaderActions
+          placement="inline"
           C={C}
           shift={shift}
           userRole={me.data?.role}
@@ -1606,7 +1612,17 @@ export default function POS() {
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
           invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
-          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v })}
+          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v, invoiceDiscountValue: v, invoiceDiscountType: "percent" })}
+          invoiceDiscountType={activeTab.invoiceDiscountType ?? "percent"}
+          invoiceDiscountValue={activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || "")}
+          onInvoiceDiscountChange={(val, typ) => {
+            patchActive({
+              invoiceDiscountValue: val,
+              invoiceDiscountType: typ,
+              invoiceDiscountPct: typ === "percent" ? val : (discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : ""),
+            });
+          }}
+          maxDiscountAmount={maxDiscountAmount}
           invoiceDiscountAllowed={invoiceDiscountAllowed}
           effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
           cashRoundingDelta={cashRoundingDelta}
@@ -1715,88 +1731,6 @@ export default function POS() {
         />
       )}
     </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── إجراءات رأس الكاشير (تُحقَن في الرأس الموحّد) ────────────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════════
-function RetailPosHeaderActions({
-  C,
-  shift,
-  userRole,
-  onCloseShift,
-  onCashDrop,
-  printerReady,
-  onConnectPrinter,
-  bridgeEnabled,
-  bridgeDesc,
-  onTestPrint,
-}: {
-  C: C;
-  shift: ShiftData;
-  userRole?: string | null;
-  onCloseShift: () => void;
-  onCashDrop: () => void;
-  printerReady: boolean;
-  onConnectPrinter: () => void;
-  bridgeEnabled: boolean;
-  bridgeDesc: string;
-  onTestPrint: () => void;
-}) {
-  return (
-    <>
-      {shift && (
-        <span className="inline-flex h-[var(--ui-control)] shrink-0 items-center rounded-lg border bg-muted/40 px-2.5 text-xs font-bold text-muted-foreground">
-          <span aria-hidden className="me-1.5 size-2 rounded-full bg-[var(--sem-pos)]" />
-          وردية #{shift.id}
-        </span>
-      )}
-      {bridgeEnabled && (
-        <button
-          type="button"
-          onClick={onTestPrint}
-          title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          aria-label="اختبار جسر الطباعة"
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border border-[var(--sem-pos)] text-[var(--sem-pos)]"
-        >
-          <Globe aria-hidden size={16} />
-        </button>
-      )}
-      {isWebUsbSupported() && (
-        <button
-          type="button"
-          onClick={onConnectPrinter}
-          title={printerReady ? "الطابعة الافتراضية مربوطة — اضغط لتبديلها" : "ربط الطابعة الحرارية"}
-          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط الطابعة الحرارية"}
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border"
-          style={{ color: printerReady ? C.success : C.mutedFg, borderColor: printerReady ? C.success : C.border }}
-        >
-          <Printer aria-hidden size={16} />
-        </button>
-      )}
-      {shift && (
-        <button
-          type="button"
-          onClick={onCashDrop}
-          title="سحب نقدي من الدرج إلى الخزينة"
-          className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
-        >
-          <Banknote aria-hidden size={16} />
-          <span className="hidden 2xl:inline">سحب نقدي</span>
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={onCloseShift}
-        title="إغلاق الوردية"
-        className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
-      >
-        <Power aria-hidden size={16} />
-        <span className="hidden 2xl:inline">إغلاق الوردية</span>
-      </button>
-      <OfflineSyncChip userRole={userRole} placement="inline" />
-    </>
   );
 }
 

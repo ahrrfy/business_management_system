@@ -68,6 +68,8 @@ import {
   validAccrualReissueReason,
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
+import { DigitalStampOverlay } from "@/components/vouchers/DigitalStampOverlay";
+import { ResubmitVoucherDialog } from "@/components/vouchers/ResubmitVoucherDialog";
 import { selectClsFull } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
@@ -246,9 +248,22 @@ export default function Vouchers() {
           ? `اعتُمد وصُرف السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`
           : `اعتُمد السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`,
       );
+      setStampInfo({
+        isOpen: true,
+        voucherNumber: res.voucherNumber,
+        title: approvedDirection === "OUT" ? "صُرف واعتُمد" : "مُعتمَد رسمياً",
+        actorName: me.data?.name ?? undefined,
+      });
     },
     onError: (e) => notify.err(e),
   });
+
+  const [stampInfo, setStampInfo] = useState<{
+    isOpen: boolean;
+    voucherNumber?: string;
+    title?: string;
+    actorName?: string;
+  }>({ isOpen: false });
 
   // حوار سبب الرفض (بديل window.prompt — نمط حوارات النظام).
   const [rejectTarget, setRejectTarget] = useState<VoucherRow | null>(null);
@@ -1381,128 +1396,31 @@ export default function Vouchers() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={resubmitTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !resubmitSystemPaymentMut.isPending) {
-            setResubmitTarget(null);
-            setReissueReason("");
-            setResubmitNote("");
-            setResubmitAttachmentImages([]);
-          }
+      <ResubmitVoucherDialog
+        resubmitTarget={resubmitTarget}
+        onClose={() => {
+          setResubmitTarget(null);
+          setReissueReason("");
+          setResubmitNote("");
+          setResubmitAttachmentImages([]);
         }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {isPurchaseSupplierPaymentReference(
-                resubmitTarget?.referenceNumber,
-              )
-                ? resubmitTarget?.referenceNumber?.startsWith("PO-USD-PAY-")
-                  ? "إعادة إصدار تسديد USD"
-                  : "إعادة إصدار دفعة المورد"
-                : "إعادة إصدار طلب الدفع"}{" "}
-              {resubmitTarget?.voucherNumber ?? ""}
-            </DialogTitle>
-            <DialogDescription>
-              {isPurchaseSupplierPaymentReference(
-                resubmitTarget?.referenceNumber,
-              ) ? (
-                <>
-                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
-                  {resubmitTarget?.id ?? "—"} وبأمر الشراء نفسه، بعد إعادة فحص
-                  رصيده الدفتري، بلا تغيير ذمة المورد أو أثر نقدي قبل اعتماد
-                  المالك.
-                </>
-              ) : (
-                <>
-                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
-                  {resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد
-                  الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reissue-reason">سبب إعادة الإصدار *</Label>
-            <Textarea
-              id="voucher-reissue-reason"
-              value={reissueReason}
-              onChange={(event) => setReissueReason(event.target.value)}
-              placeholder="مثلاً: أُرفقت فاتورة النقل المصححة"
-              rows={3}
-              minLength={5}
-              maxLength={500}
-              autoFocus
-            />
-            <div className="text-[11px] text-muted-foreground">
-              السبب جزء ثابت من سلسلة التدقيق ولا يمكن استبداله بعد إنشاء
-              المحاولة.
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>المستند المصحح (اختياري)</Label>
-            <ImageUploader
-              value={resubmitAttachmentImages}
-              onChange={setResubmitAttachmentImages}
-              maxItems={1}
-              maxSizeMB={2}
-              singlePrimary={false}
-              hint="اختر مستند المحاولة الجديدة. مرفق السند المرفوض لا يُنقل تلقائياً."
-            />
-            {resubmitTarget?.attachmentUrl && (
-              <a
-                href={resubmitTarget.attachmentUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs underline text-muted-foreground"
-              >
-                فتح مرفق المحاولة المرفوضة للمراجعة فقط
-              </a>
-            )}
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reissue-note">
-              ملاحظة المحاولة (اختيارية)
-            </Label>
-            <Textarea
-              id="voucher-reissue-note"
-              value={resubmitNote}
-              onChange={(event) => setResubmitNote(event.target.value)}
-              placeholder="ملاحظة تشغيلية تضاف إلى وصف المحاولة الجديدة"
-              rows={2}
-              maxLength={500}
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setResubmitTarget(null);
-                setReissueReason("");
-                setResubmitNote("");
-                setResubmitAttachmentImages([]);
-              }}
-              disabled={resubmitSystemPaymentMut.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              onClick={submitResubmitSystemPayment}
-              disabled={
-                !validAccrualReissueReason(reissueReason) ||
-                resubmitSystemPaymentMut.isPending
-              }
-            >
-              {resubmitSystemPaymentMut.isPending
-                ? "جارٍ إنشاء المحاولة…"
-                : "إنشاء محاولة مرتبطة"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onSubmit={submitResubmitSystemPayment}
+        reissueReason={reissueReason}
+        setReissueReason={setReissueReason}
+        resubmitNote={resubmitNote}
+        setResubmitNote={setResubmitNote}
+        resubmitAttachmentImages={resubmitAttachmentImages}
+        setResubmitAttachmentImages={setResubmitAttachmentImages}
+        isPending={resubmitSystemPaymentMut.isPending}
+      />
+
+      <DigitalStampOverlay
+        isOpen={stampInfo.isOpen}
+        onClose={() => setStampInfo({ isOpen: false })}
+        title={stampInfo.title}
+        referenceNumber={stampInfo.voucherNumber}
+        actorName={stampInfo.actorName}
+      />
     </div>
   );
 }
