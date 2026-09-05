@@ -11,7 +11,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
-import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../deposits";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder, workOrderInvoiceSourceId } from "./helpers";
 import { assertSiblingsReady } from "./siblings";

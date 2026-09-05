@@ -24,6 +24,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { newClientRequestId } from "@/lib/countQueue";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 
 export interface EditableMaterial {
   variantId: number;
@@ -60,6 +61,7 @@ export function WorkOrderMaterialsEditor({
     { branchId, tier: "RETAIL", query: search, limit: 20 },
     { enabled: search.trim().length >= 2, staleTime: 15_000 },
   );
+  const utils = trpc.useUtils();
 
   const setMaterials = trpc.workOrders.setMaterials.useMutation({
     onSuccess: async (res) => {
@@ -111,6 +113,31 @@ export function WorkOrderMaterialsEditor({
     setSearch("");
     searchRef.current?.focus();
   }
+
+  async function resolveBarcodeOrSettledSearch(raw: string, allowSearchFallback: boolean) {
+    const code = raw.trim();
+    if (!code) return;
+    try {
+      const exact = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+      if (exact) {
+        addVariant(exact);
+        return;
+      }
+      // لا نستهلك نتيجة posList قديمة: الرجوع لبحث الاسم مسموح فقط إذا لم يتغيّر الحقل
+      // وكان طلب النص الحالي مستقراً لحظة Enter. مسح HID لا يرجع أبداً لنتيجة LIKE.
+      const first = (posList.data ?? [])[0];
+      if (allowSearchFallback && !posList.isFetching && searchRef.current?.value.trim() === code && first) {
+        addVariant(first);
+        return;
+      }
+      notify.warn("لم يُعثر على المادة", `لا يوجد باركود مطابق أو نتيجة بحث مستقرة لـ«${code}».`);
+    } catch (error) {
+      notify.err(error);
+    }
+  }
+  const barcodeInput = useBarcodeInput((code) => {
+    void resolveBarcodeOrSettledSearch(code, false);
+  });
 
   function setQty(variantId: number, next: number) {
     // الحذف بإسقاط الصنف لا بصفر — مرآةٌ لعقد الخادم (يرفض الكمّية الصفرية صراحةً).
@@ -184,10 +211,11 @@ export function WorkOrderMaterialsEditor({
               dir="auto"
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
+                barcodeInput.handleKeyDown(e, setSearch);
+                if (e.defaultPrevented) return;
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  const first = (posList.data ?? [])[0];
-                  if (first) addVariant(first as never);
+                  void resolveBarcodeOrSettledSearch(search, true);
                 }
               }}
               placeholder="امسح الباركود (Enter للإضافة) أو ابحث بالاسم/الـSKU"

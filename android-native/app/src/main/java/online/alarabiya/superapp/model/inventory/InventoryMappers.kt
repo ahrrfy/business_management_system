@@ -209,6 +209,7 @@ object InventoryMappers {
             zone = assignment.nullableText("zone"),
             counted = mine.int("counted"),
             total = mine.int("total"),
+            countMethod = session.text("countMethod", "FREE"),
             items = state.list("items").mapNotNull { value -> value.asMap()?.let { row ->
                 CountItem(
                     variantId = row.long("variantId"),
@@ -219,6 +220,14 @@ object InventoryMappers {
                     myQuantity = row.obj("myCount")?.nullableInt("qty"),
                     colleagueCounted = row.bool("colleagueCounted"),
                     recountReason = recountReasons[row.long("variantId")],
+                    units = row.list("units").mapNotNull { unitValue -> unitValue.asMap()?.let { unit ->
+                        CountUnit(
+                            name = unit.text("unitName"),
+                            factor = unit.text("factor", "1"),
+                            barcode = unit.nullableText("barcode"),
+                            aliases = unit.list("aliases").mapNotNull { it?.toString()?.takeIf(String::isNotBlank) },
+                        )
+                    } },
                 )
             } },
         )

@@ -7,12 +7,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraOff, Flashlight, FlashlightOff, ScanLine, X } from "lucide-react";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { dispatchManualCameraEntry } from "./cameraScannerLifecycle";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   /** يُستدعى بالنص المفكوك من الباركود أو QR. */
   onDetect: (code: string) => void;
+  /** الإدخال المكتوب ليس دليلاً من الكاميرا؛ المستدعي المحاسبي يميّزه صراحةً. */
+  onManualDetect?: (code: string) => void;
   /**
    * إبقاء الكاميرا مفتوحةً بعد كلّ مسحٍ ناجح لتمكين دورة «امسح ثمّ التالي» بلا إعادة فتح.
    * الافتراضي `false` للتوافق مع الاستدعاءات القائمة التي تتوقّع الإغلاق التلقائيّ.
@@ -80,9 +83,10 @@ function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
   );
 }
 
-export function CameraScanner({ open, onClose, onDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
+export function CameraScanner({ open, onClose, onDetect, onManualDetect, keepOpen = false, cooldownMs = 1500 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onDetectRef = useRef(onDetect);
+  const onManualDetectRef = useRef(onManualDetect ?? onDetect);
   const controlsRef = useRef<FallbackControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const detectedRef = useRef(false);
@@ -91,6 +95,7 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
   const keepOpenRef = useRef(keepOpen);
   const cooldownMsRef = useRef(cooldownMs);
   onDetectRef.current = onDetect;
+  onManualDetectRef.current = onManualDetect ?? onDetect;
   keepOpenRef.current = keepOpen;
   cooldownMsRef.current = cooldownMs;
 
@@ -365,7 +370,16 @@ export function CameraScanner({ open, onClose, onDetect, keepOpen = false, coold
       {/* الفصل البصريّ عبر borderTop خفيف يميّز منطقة الإدخال اليدويّ عن الكاميرا،
           فلا يظنّ المستخدم أنّ الحقلَ جزءٌ من إطار المسح. */}
       <div className="mt-1 w-full max-w-md border-t border-white/10 pt-3">
-        <ManualEntry onSubmit={deliver} />
+        <ManualEntry
+          onSubmit={(code) => {
+            dispatchManualCameraEntry(code, {
+              deliver,
+              stopMedia,
+              manual: onManualDetectRef.current,
+              hasManualOverride: onManualDetect != null,
+            });
+          }}
+        />
       </div>
     </div>
   );
