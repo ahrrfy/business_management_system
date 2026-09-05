@@ -156,6 +156,15 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       const codes = taken.map((t) => t.code).sort();
       expect(codes).toEqual(["6001000000017", "9990000000009"]);
     });
+
+    it("يعيد النص المخزّن لكل مالك مكافئ كي لا يُخفى تصادم وحدة أخرى", async () => {
+      await db().update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 1));
+      await db().update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 3));
+
+      const taken = await checkBarcodesTakenAcrossBoth(["036000291452"]);
+
+      expect(taken.map((usage) => usage.code).sort()).toEqual(["0036000291452", "036000291452"]);
+    });
   });
 
   describe("A3: cascade + إدارة القائمة", () => {
@@ -451,7 +460,7 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       await d.update(s.productUnits).set({ barcode: "10095" }).where(eq(s.productUnits.id, 1));
       await d.update(s.productUnits).set({ barcode: " 10095 " }).where(eq(s.productUnits.id, 3));
       expect(await resolveBarcodeOwnerResult(d, "10095")).toEqual({ status: "AMBIGUOUS" });
-      expect(await lookupByBarcode("10095", 1, "RETAIL")).toBeNull();
+      await expect(lookupByBarcode("10095", 1, "RETAIL")).rejects.toMatchObject({ code: "CONFLICT" });
     });
 
     it("الحفظ يُطبّع: assignBarcode/addUnitBarcodeAlias/createProduct تخزّن القيمة مقلَّمةً ومطويّة الأرقام", async () => {

@@ -57,6 +57,11 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { categoryOptionElements } from "@/lib/categoryTree";
+import {
+  findForeignBarcodeUsages,
+  findTakenEditableBarcodeCodes,
+  type EditableBarcodeField,
+} from "@/lib/productBarcodeOwnership";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -154,6 +159,7 @@ export default function ProductEdit() {
 
   const [units, setUnits] = useState<ClientUnit[]>([]);
   const unitSeq = useRef(1);
+  const originalBarcodeCodes = useRef(new Map<string, string | null>());
   const [variants, setVariants] = useState<ClientVariant[]>([]);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -233,9 +239,13 @@ export default function ProductEdit() {
     const firstSku = d.variants[0]?.sku ?? "";
     setBaseSku(firstSku.split("-").slice(0, Math.max(1, firstSku.split("-").length - (d.variants[0]?.size ? 2 : 1))).join("-"));
 
+    const initialCodes = new Map<string, string | null>();
     const rows: ClientVariant[] = d.variants.map((v) => {
       const unitBarcodes: Record<number, string> = {};
-      for (const cu of tmpl) unitBarcodes[cu.id] = v.unitBarcodes[cu.name] ?? "";
+      for (const cu of tmpl) {
+        unitBarcodes[cu.id] = v.unitBarcodes[cu.name] ?? "";
+        initialCodes.set(`${DB_PREFIX}${v.id}:${cu.id}`, v.unitBarcodes[cu.name] || null);
+      }
       const stockByBranch: Record<number, string> = {};
       for (const [bid, q] of Object.entries(v.stockByBranch)) stockByBranch[Number(bid)] = String(q);
       const override = v.costPrice !== sharedCost || (v.baseRetail !== "" && v.baseRetail !== tmplBaseRetail);
@@ -258,6 +268,7 @@ export default function ProductEdit() {
         image: v.image,
       };
     });
+    originalBarcodeCodes.current = initialCodes;
     setVariants(rows);
     setImages(hydrateProductImages(d.images));
     setHydrated(true);
@@ -277,25 +288,26 @@ export default function ProductEdit() {
     : 0;
 
   // فحص تكرار الباركود ضدّ القاعدة (live).
-  const allCodes = useMemo(() => {
-    const set = new Set<string>();
+  const barcodeFields = useMemo<EditableBarcodeField[]>(() => {
+    const fields: EditableBarcodeField[] = [];
     for (const v of variants) for (const u of units) {
-      const c = (v.unitBarcodes[u.id] || "").trim();
-      if (c) set.add(c);
+      const code = (v.unitBarcodes[u.id] || "").trim();
+      if (!code) continue;
+      const fieldKey = `${v.id}:${u.id}`;
+      fields.push({ fieldKey, code });
     }
-    return Array.from(set);
+    return fields;
   }, [variants, units]);
+  const allCodes = useMemo(() => Array.from(new Set(barcodeFields.map((field) => field.code))), [barcodeFields]);
   const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
     { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
   );
-  // الباركودات المملوكة لهذا المنتج نفسه ليست تعارضاً (نستثنيها من الكهرماني) — نفس مجموعة allCodes.
-  const ownCodes = useMemo(() => new Set(allCodes), [allCodes]);
   const takenInDb = useMemo(
-    () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
-    [checkQ.data, ownCodes]
+    () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
+    [checkQ.data, barcodeFields]
   );
 
   const update = trpc.catalog.updateProductVariants.useMutation({
@@ -526,7 +538,11 @@ export default function ProductEdit() {
     const codes = Array.from(new Set(variants.flatMap((v) => units.map((u) => (v.unitBarcodes[u.id] || "").trim())).filter(Boolean)));
     if (codes.length) {
       try {
-        const taken = (await utils.catalog.checkBarcodes.fetch({ codes })).filter((t) => !ownCodes.has(t.code));
+        const taken = findForeignBarcodeUsages(
+          await utils.catalog.checkBarcodes.fetch({ codes }),
+          barcodeFields,
+          originalBarcodeCodes.current,
+        );
         if (taken.length) { setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`); return; }
       } catch { /* القيد UNIQUE هو الحارس الأخير */ }
     }
