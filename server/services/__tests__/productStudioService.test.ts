@@ -9,6 +9,7 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import { createAppNotification } from "../appNotificationService";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
+import { reserveStudioImageTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -2676,6 +2677,51 @@ describe("product studio governed workflow", () => {
       .from(s.productImages)
       .where(and(eq(s.productImages.productId, 1), eq(s.productImages.variantId, 910)));
     expect(image).toMatchObject({ productId: 1, variantId: 910 });
+  });
+
+  it("reserves campaign photos idempotently and reviews each source independently", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "تصوير متعدد", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3,
+    });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const batch = await reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 });
+    expect(batch.tasks).toHaveLength(3);
+    expect(batch.maxImages).toBe(3);
+    const repeated = await Promise.all([
+      reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 }),
+      reserveStudioImageTasks(worker, { taskId: first.taskId, count: 3 }),
+    ]);
+    expect(repeated.map((row) => row.tasks.map((task) => task.taskId))).toEqual([
+      batch.tasks.map((task) => task.taskId), batch.tasks.map((task) => task.taskId),
+    ]);
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 4 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(reserveStudioImageTasks(otherWorker, { taskId: first.taskId, count: 3 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    for (const [index, task] of batch.tasks.entries()) {
+      await saveStudioDraft(worker, { taskId: task.taskId, proposedDescription: "" });
+      await submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: index === 1 ? PNG_1X1_ALT : PNG_1X1, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    }
+    await rejectStudioTask(manager, batch.tasks[1].taskId, "أعد ضبط الإضاءة");
+    const source = await getStudioSourcePreview(worker, batch.tasks[1].taskId);
+    expect(source.base64).toBe(PNG_1X1_ALT.split(",")[1]);
+    await submitStudioCandidate(worker, { taskId: batch.tasks[1].taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    for (const task of [...batch.tasks].reverse()) await approveStudioTask(manager, task.taskId);
+    const images = await db().select().from(s.productImages).where(eq(s.productImages.productId, 1));
+    expect(images).toHaveLength(3);
+    expect(images.every((image) => image.reviewStatus === "APPROVED")).toBe(true);
+  });
+
+  it("does not grant multiple photos for standalone, single-image or paused campaigns", async () => {
+    const standalone = await assignStudioTask(manager, { productId: 2, assigneeId: worker.userId });
+    await expect(reserveStudioImageTasks(worker, { taskId: standalone.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const campaign = await createStudioCampaign(manager, {
+      name: "صورة واحدة", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 1,
+    });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await db().update(s.productStudioCampaigns).set({ requiredImages: 3, status: "PAUSED" }).where(eq(s.productStudioCampaigns.id, campaign.campaignId));
+    await expect(reserveStudioImageTasks(worker, { taskId: first.taskId, count: 2 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("توجيه عدد الصور نافذٌ: المنتج يبقى ناقصاً حتى يبلغ العدد المطلوب", async () => {

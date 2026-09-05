@@ -1,3 +1,4 @@
+import { StudioCampaignImageBatch, taskSnapshot, type StudioCampaignImageBatchHandle } from "@/components/product-studio/StudioCampaignImageBatch";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
@@ -69,17 +70,6 @@ const CameraScanner = lazy(() =>
   })),
 );
 
-function taskSnapshot(task: StudioTask): StudioDraftTaskSnapshot {
-  return {
-    taskId: Number(task.id),
-    productName: task.productName,
-    currentDescription: task.currentDescription ?? null,
-    status: task.status as StudioDraftTaskSnapshot["status"],
-    hasOriginal: task.hasOriginal,
-    hasCandidate: task.hasCandidate,
-    updatedAt: String(task.revision),
-  };
-}
 
 export const STUDIO_STORAGE_DISABLED_MESSAGE = "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
 
@@ -338,6 +328,8 @@ export default function ProductImageStudio() {
   const [description, setDescription] = useState("");
   const [marketingCopy, setMarketingCopy] = useState("");
   const [images, setImages] = useState<ImageItem[]>([]);
+  const imageBatch = useRef<StudioCampaignImageBatchHandle>(null);
+  const [isBatchBusy, setIsBatchBusy] = useState(false);
   const [originalDataUrl, setOriginalDataUrl] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [studioMode, setStudioMode] = useState<"FLATTEN" | "CUT" | "AI">("FLATTEN");
@@ -1054,6 +1046,7 @@ export default function ProductImageStudio() {
     if (offline || !selected || !images[0]?.dataUrl) return;
     setIsPreparingThumbnail(true);
     try {
+      await imageBatch.current?.submitAdditional();
       const thumbnailDataUrl = await createProductDisplayThumbnail(images[0].dataUrl);
       await submit.mutateAsync({
         taskId: Number(selected.id),
@@ -1077,7 +1070,7 @@ export default function ProductImageStudio() {
   }
 
   const counts = dashboard.data?.counts;
-  const busy = isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending || updateSchedule.isPending;
+  const busy = isBatchBusy || isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending || updateSchedule.isPending;
   const capabilities = studioOfflineCapabilities({
     offline,
     storageReady: dashboard.data?.storageReady,
@@ -2537,7 +2530,9 @@ export default function ProductImageStudio() {
 
                   {editable && capabilities.canEditLocalDraft && (
                     <>
-                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
+                      <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} onBusyChange={setIsBatchBusy}>
+                      <ProductMediaContentSection title="الصورة الأولى والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
+                      </StudioCampaignImageBatch>
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.
@@ -2563,7 +2558,7 @@ export default function ProductImageStudio() {
                         </Button>
                         <Button className="min-h-11" disabled={offline || busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
                           {isPreparingThumbnail && <Loader2 aria-hidden className="size-4 animate-spin" />}
-                          إرسال المحتوى والصورة للمراجعة
+                          إرسال المحتوى والصور للمراجعة
                         </Button>
                       </div>
                     </>
