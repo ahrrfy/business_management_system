@@ -481,7 +481,7 @@ export default function CountPortal() {
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
     handleBarcode(code, "SCAN_HID");
-  });
+  }, { minLength: scanRequired ? 2 : 3 });
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.

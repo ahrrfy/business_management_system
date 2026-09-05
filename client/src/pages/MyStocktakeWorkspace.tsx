@@ -371,7 +371,7 @@ export default function MyStocktakeWorkspace() {
   const barcodeInput = useBarcodeInput((code) => {
     setQuery("");
     onBarcode(code, "SCAN_HID");
-  });
+  }, { minLength: scanRequired ? 2 : 3 });
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
   useBarcodeScanner((raw) => onBarcode(raw, "SCAN_HID"), {
     enabled: Boolean(st) && selected == null && !cameraOpen,
