@@ -1,38 +1,174 @@
 /**
  * useSessionContext.ts — قِراءةُ ما يعرفه الخادم عن هذه الجلسة، لا اختراعُ افتراضاتٍ مكانه.
  *
- * الغرض: يُغذّي `<InferredField>` بالمُشتَقّ الخادميّ للفرع النشط: **من ينسب** إليه هذا
- * المستخدمُ عمله (`me.branchId`)، وهل يستطيع تجاوزَه شرعياً (`canCrossBranches`). المصدر
- * الوحيد للحقيقة هنا هو ما تُرجعه `trpc.auth.me` — الشاشةُ لا تُنشئ فرعاً من العدم، ولا تختار
- * الفرع ١ حين لا فرعَ مُسنَد؛ تلك الفجوةُ هي بابُ IDOR التاريخيّ الذي يحرسه `check:branch`.
+ * (م٤ ق١ — الاستنتاج قبل السؤال) المصدرُ الوحيد للحقيقة هنا هو `sessionContext.get`
+ * (server/routers/sessionContextRouter.ts): يعيد `SessionContext` مركَّباً على الخادم عبر
+ * `composeSessionContext` — الفرعُ النشط باسمه · اليومُ التشغيليّ (بغداد) · طرقُ القبض ·
+ * الفئةُ السعرية الافتراضية · سلطةُ العبور · نطاقُ الرؤية — مع قائمةِ الفروع القابلة للاختيار.
+ * كان هذا الهوك يبني الاستنتاجَ من `auth.me` + `branches.list` على العميل؛ صار يعرض المُشتَقَّ
+ * الخادميّ وحده.
  *
- * ⚠️ **ليس نظير `composeSessionContext` الخادميّ.** هذا الملفّ **يقرأ للعرض** فقط:
- *   • لا يبني `SessionContext` بحمولةٍ ملفَّقة على العميل (`allowedPaymentMethods`،
- *     `businessDay` الخ ليست في `auth.me`).
- *   • الإنفاذُ النهائيّ يبقى خادمياً (§٢ من `CLAUDE.md`): `branchScopedProcedure` يحقن
- *     `scopedBranchId` بنفسه ويرفض ما لا يُطابقه للعميل غير عابر الفروع.
- *   • الوقتُ الوحيد لـ«ادّعاءٍ» عميليّ على `branchId` هو المرور بـ`assertMatchesDerived` من
- *     `shared/sessionContext.ts` بحمولةٍ **خادمية** — وذلك مسارُ متابعةٍ عبر
- *     `sessionContextRouter.derive` لا يجوز أن يقفزه هذا الهوك.
- *
- * ⛔ **لا افتراض `?? 1`**: أدمنٌ بلا فرعٍ مُسنَد ⇒ `status: 'unassigned'` — الشاشةُ تفتح قائمةَ
- *   فروعٍ خادميّة للاختيار، ولا تسقط على الفرع ١ صامتاً (نمطُ IDOR الذي كسر تدفّقاتٍ ماليّة).
- *
- * قاعدةُ عبور الفروع = مرآةُ `server/lib/branchAuthority.ts` سطراً بسطر: `admin || isOwner`.
- * تُكرَّر هنا بلا استيراد (اتّجاه الطبقات `server → client` ممنوع في الحزم المشتركة العميليّة).
+ * قواعدُ الهوك (كلٌّ منها يغلق باباً حقيقياً):
+ *   ١) **يفشل مغلقاً**: الحمولةُ تمرّ بـ`readSessionContext` (shared/sessionContext.ts) فأيّ حقلٍ
+ *      ناقصٍ أو متناقض ⇒ `status: "error"` برسالةٍ عمليّة، لا سياقٌ نصفُه مخترَع.
+ *   ٢) ⛔ **لا `?? 1`**: أدمنٌ/مالكٌ بلا فرعٍ مُسنَد ⇒ `unassigned` — الشاشةُ تعرض قائمةَ فروعٍ
+ *      خادميّة (`selectableBranches`) للاختيار، ولا تسقط على الفرع ١ صامتاً (بابُ IDOR الذي
+ *      يحرسه `check:branch`).
+ *   ٣) **يبطل عند تغيّر الجلسة أو الفرع**: مفتاحُ الاستعلام واحدٌ لكلّ الشاشات (بلا مُدخَل — الخادم
+ *      لا يقبل معرّفَ مستخدمٍ من العميل)، فتُراقَب هويّةُ `auth.me` (المستخدم · الفرع · الدور ·
+ *      الملكية) ويُبطَل السياقُ المخبَّأ حين تتبدّل، ويُمسَح عند الخروج كي لا يقرأ الداخلُ
+ *      التالي سياقَ سلفه.
+ *   ٤) **الإنفاذُ النهائيّ خادميّ** (§٢): هذا الملفّ يقرأ للعرض ولإزالة إغراء الاختراع فقط؛
+ *      `branchScopedProcedure` يحقن `scopedBranchId` بنفسه ويرفض ما لا يُطابقه.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { trpc } from "@/lib/trpc";
-import type { SessionBranch } from "@shared/sessionContext";
+import {
+  readSessionContext,
+  type SessionBranch,
+  type SessionContext,
+} from "@shared/sessionContext";
+
+export type SessionContextStatus = "loading" | "ready" | "error";
+
+export interface SessionContextState {
+  status: SessionContextStatus;
+  /** السياقُ الموثَّق (بعد `readSessionContext`) — `null` ما لم تكن الحالة `ready`. */
+  context: SessionContext | null;
+  /** الفروعُ التي يجوز اختيارُها صراحةً — قائمةٌ خادميّة تتبع سلطةَ الفاعل (لا `branches.list` العامّة). */
+  selectableBranches: readonly SessionBranch[];
+  /** رسالةٌ عمليّة بصيغة «ماذا حدث · لماذا · ماذا تفعل» — في `error` فقط. */
+  message: string | null;
+  /** إعادةُ القراءة من الخادم — مخرجُ حالة الخطأ. */
+  retry: () => void;
+}
+
+/** البيانات مستقرّةٌ طوال الجلسة؛ إعادةُ الجلب مع كلّ تركيبٍ تُنتج وميضاً في الشاشات المتعدّدة. */
+const SESSION_CONTEXT_STALE_MS = 60_000;
+
+const SIGN_IN_MESSAGE =
+  "تعذّرت قراءةُ جلستك · انتهت أو لم تُقبل · سجّل الدخول ثمّ حاول مجدّداً.";
+const UNREADABLE_PAYLOAD_MESSAGE =
+  "حمولةُ الجلسة غير مكتملة · ردُّ الخادم لا يطابق عقد السياق · حدّث الصفحة، وإن تكرّر أبلغ الدعم.";
+const NETWORK_MESSAGE =
+  "تعذّرت قراءةُ سياق جلستك · شبكةٌ أو خادمٌ لم يستجب · انقر «إعادة المحاولة» أو حدّث الصفحة.";
+const NO_BRANCH_MESSAGE =
+  "حسابك بلا فرعٍ مُسنَد · لا يمكن العملُ بلا فرع · اطلب من المدير إسنادَ فرعٍ لك ثم أعِد التحميل.";
+const UNASSIGNED_MESSAGE =
+  "حسابك بلا فرعٍ مُسنَد · لا يستطيع النظامُ اختيارَه عنك · اختر الفرعَ من القائمة قبل الحفظ.";
+
+/** بصمةُ الجلسة التي يُبطَل السياقُ عند تبدّلها — لا تحمل قيمةً تُعرض، بل تُقارَن فقط. */
+function identityOf(
+  me:
+    | { id: number; branchId?: number | null; role?: string | null; isOwner?: boolean | null }
+    | null
+    | undefined,
+): string | null {
+  if (!me) return null;
+  return `${me.id}:${me.branchId ?? "-"}:${me.role ?? "-"}:${me.isOwner ? 1 : 0}`;
+}
 
 /**
- * حالةُ الاستنتاج — أربعُ حالاتٍ متبادلةُ الاستبعاد، فكلٌّ منها له عرضٌ مختلفٌ في `<InferredField>`:
+ * رسالةُ الخطأ للعرض. رسائلُ الخادم الحديثة تحمل «ماذا تفعل» بنفسها (عقد `shared/errors.ts`)
+ * فتُعرَض كما هي؛ ورفضُ `branchScopedProcedure` القديم («لا فرع مُسنَد لهذا المستخدم») صمّاء،
+ * فتُترجَم إلى مخرجٍ عمليّ بدل أن تقف عند السبب.
+ */
+function describeContextError(
+  error: { message?: string; data?: { code?: string } | null } | null | undefined,
+): string {
+  const code = error?.data?.code;
+  if (code === "UNAUTHORIZED") return SIGN_IN_MESSAGE;
+  const message = error?.message?.trim() ?? "";
+  if (code === "FORBIDDEN" && message.includes("لا فرع مُسنَد لهذا المستخدم")) {
+    return NO_BRANCH_MESSAGE;
+  }
+  return message || NETWORK_MESSAGE;
+}
+
+/**
+ * سياقُ الجلسة كما اشتقّه الخادم — للشاشات التي تحتاج أكثر من الفرع (اليوم التشغيليّ، طرق القبض،
+ * الفئة السعرية، سلطة العبور). يُستدعى من أيّ شاشة؛ الاستعلامُ مشترَكٌ ومخبَّأ.
+ */
+export function useSessionContext(): SessionContextState {
+  const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery(undefined, { staleTime: SESSION_CONTEXT_STALE_MS });
+  const identity = identityOf(me.data);
+  const signedIn = identity != null;
+
+  const contextQuery = trpc.sessionContext.get.useQuery(undefined, {
+    enabled: signedIn,
+    staleTime: SESSION_CONTEXT_STALE_MS,
+    // FORBIDDEN/PRECONDITION_FAILED لا تتغيّر بإعادة المحاولة الآليّة؛ المخرجُ زرُّ «إعادة المحاولة».
+    retry: false,
+  });
+
+  // (٣) الإبطالُ عند تبدّل الهويّة — يُقارَن بالهويّة **السابقة** لا بالتركيب الأوّل: إبطالٌ عند كلّ
+  // تركيبٍ كان سيُلغي الجلبَ الجاري ويُعيده (طلبان لكلّ شاشة) ويُبطل `staleTime`.
+  const previousIdentity = useRef<string | null>(identity);
+  useEffect(() => {
+    const previous = previousIdentity.current;
+    if (previous === identity) return;
+    previousIdentity.current = identity;
+    // أوّلُ وصولٍ للهويّة: الاستعلامُ يُفعَّل ويُجلَب طبيعياً — لا إبطال.
+    if (previous == null) return;
+    if (identity == null) {
+      // خروج: يُمسَح كي لا يقرأ الداخلُ التالي سياقَ سلفه من الذاكرة.
+      void utils.sessionContext.get.reset();
+    } else {
+      void utils.sessionContext.get.invalidate();
+    }
+  }, [identity, utils]);
+
+  const refetch = contextQuery.refetch;
+  const { isLoading: meLoading, isError: meError } = me;
+  const { isPending, isError, error, data } = contextQuery;
+
+  return useMemo<SessionContextState>(() => {
+    const retry = () => {
+      void refetch();
+    };
+    const failed = (message: string): SessionContextState => ({
+      status: "error",
+      context: null,
+      selectableBranches: [],
+      message,
+      retry,
+    });
+    const loading: SessionContextState = {
+      status: "loading",
+      context: null,
+      selectableBranches: [],
+      message: null,
+      retry,
+    };
+
+    if (meLoading) return loading;
+    if (meError || !signedIn) return failed(SIGN_IN_MESSAGE);
+    if (isPending) return loading;
+    if (isError) return failed(describeContextError(error));
+
+    // (١) يفشل مغلقاً: حمولةٌ لا يقبلها العقدُ المشترك لا تصير سياقاً نصفُه مخترَع.
+    const context = readSessionContext(data.context);
+    if (!context) return failed(UNREADABLE_PAYLOAD_MESSAGE);
+
+    return {
+      status: "ready",
+      context,
+      selectableBranches: data.selectableBranches,
+      message: null,
+      retry,
+    };
+  }, [meLoading, meError, signedIn, isPending, isError, error, data, refetch]);
+}
+
+/**
+ * حالةُ استنتاج الفرع — أربعُ حالاتٍ متبادلةُ الاستبعاد، فكلٌّ منها له عرضٌ مختلفٌ في `<InferredField>`:
  *  • `loading`: الجلسة تُقرَأ الآن — شارةُ تحميلٍ لا حقلٌ فارغٌ مربك.
- *  • `resolved`: فرعٌ مُسنَد وقُرئ اسمُه — الحالةُ السعيدة (٦٩ إجراءً يعرف الخادمُ فرعَها أصلاً).
+ *  • `resolved`: فرعٌ مُسنَد وقُرئ اسمُه من الخادم — الحالةُ السعيدة.
  *  • `unassigned`: فاعلٌ عابرُ الفروع (`admin`/`isOwner`) بلا فرعٍ مُسنَد — يجب أن يختار من قائمة
- *    فروع؛ لا فرعَ افتراضيّ. ولا تُصنَّف حالةُ خطأ لأنّها مسارٌ مشروع خادمياً.
- *  • `error`: تعذّرت قراءةُ الجلسة (لم يوجد `me` أو ردّ الخادم `null`) — رسالةٌ عمليّة بمخرج،
- *    لا حقلٌ فارغٌ صامت.
+ *    فروعٍ خادميّة؛ لا فرعَ افتراضيّ. ولا تُصنَّف حالةَ خطأ لأنّها مسارٌ مشروع خادمياً.
+ *  • `error`: تعذّرت قراءةُ الجلسة (توكن ساقط، حمولةٌ ناقصة، أو رفضُ الخادم) — رسالةٌ عمليّة
+ *    بمخرج، لا حقلٌ فارغٌ صامت.
  */
 export type SessionBranchInferenceStatus =
   | "loading"
@@ -47,15 +183,16 @@ export interface SessionBranchInference {
   /** اسمُ الفرع كما هو في قاعدة البيانات — نصٌّ عربيّ (لا يُلفَّق من ID). */
   branchName: string | null;
   /**
-   * هل يستطيع هذا الفاعلُ تجاوزَ الفرع النشط باختيارٍ صريح؟ — `admin || isOwner` حصراً.
-   * غيرُ عابر الفروع لا يرى زرَّ التغيير، والقيمة تُرسَل للخادم كما هي وتُرفَض تلقائياً هناك.
+   * هل يستطيع هذا الفاعلُ تجاوزَ الفرع النشط باختيارٍ صريح؟ — `canCrossBranches` كما اشتقّها
+   * الخادم (admin/isOwner). غيرُ عابر الفروع لا يرى زرَّ التغيير، وما يُرسله يُرفَض خادمياً.
    */
   canOverride: boolean;
-  /** فروعُ الاختيار حين يفتح المستخدمُ قائمةَ التغيير (تُحمَّل كسولةً كي لا نُثقل الشاشة). */
+  /** فروعُ الاختيار الخادميّة: كلُّ النشطة لعابر الفروع، وفرعُه وحده لغيره. */
   branches: readonly SessionBranch[];
   /**
-   * تسمية عربية قصيرة تشرح **مصدر** القيمة المعروضة — «فرعك المُسنَد» أو «مختار» أو غيرها،
-   * تظهر تحت أو بجانب القيمة، فالموظّف يعرف لماذا يرى ما يراه.
+   * تسمية عربية قصيرة تشرح **مصدر** القيمة المعروضة — «فرعك المسند» أو «مختار» أو غيرها،
+   * تظهر بجانب القيمة فيعرف الموظّف لماذا يرى ما يراه. (بلا تشكيل: تُرسَم صغيرةً فيُقرأ
+   * «مُسنَد» «فسند» — درسُ حارس `check:tashkeel`.)
    */
   sourceLabel: string;
   /**
@@ -63,99 +200,44 @@ export interface SessionBranchInference {
    * «ماذا حدث · لماذا · ماذا تفعل الآن» (عقدُ الأخطاء في `shared/errors.ts`).
    */
   message: string | null;
-}
-
-/**
- * قاعدةُ عبور الفروع — مرآةٌ حرفيّة لـ`server/lib/branchAuthority.ts`. الإنفاذُ النهائيّ خادميّ:
- * هذا الملف يقرأ الحقلَ نفسه (`isOwner`) الذي طبَّعه `normalizeOwnerAuthority` قبل التوقيع
- * وأرسله في `auth.me`، فلا مسربَ لسقفٍ مرفوعٍ من الواجهة.
- */
-function inferCanCrossBranches(me: {
-  role?: string | null;
-  isOwner?: boolean | null;
-}): boolean {
-  return me.role === "admin" || me.isOwner === true;
+  /** إعادةُ قراءة السياق من الخادم — مخرجُ حالة الخطأ (زرُّ «إعادة المحاولة»). */
+  retry: () => void;
 }
 
 /**
  * هوكُ استنتاج الفرع النشط. يُستدعى داخل `<InferredField>` لكن يمكن استعمالُه في كلّ شاشةٍ
- * تحتاج فرعاً افتراضياً — بلا تكرار للمنطق ولا لخريطة الأدوار.
+ * تحتاج فرعاً افتراضياً — بلا تكرار للمنطق ولا لخريطة الأدوار (كلاهما خادميّ الآن).
  *
  * يحمي من ثلاث ألغام:
- *   ١) قراءةُ `branchId` قبل انتهاء `me.isLoading` تُنتج `undefined`؛ نرفع `loading` صراحةً.
- *   ٢) `me.data === null` (توكن ساقط) لا يجوز أن يُعطي فرعاً؛ نرفع `error` بمخرج «سجّل الدخول».
+ *   ١) قراءةُ `branchId` قبل وصول السياق تُنتج `undefined`؛ نرفع `loading` صراحةً.
+ *   ٢) جلسةٌ ساقطة أو حمولةٌ ناقصة لا يجوز أن تُعطي فرعاً؛ نرفع `error` بمخرج.
  *   ٣) أدمن بلا `branchId` ← `unassigned` لا `?? 1` (بابُ IDOR).
  */
 export function useSessionBranchInference(): SessionBranchInference {
-  const me = trpc.auth.me.useQuery(undefined, {
-    // البيانات مستقرّةٌ طوال الجلسة؛ إعادةُ الجلب مع كلّ mount تُنتج وميضاً في الشاشات المتعدّدة.
-    staleTime: 60_000,
-  });
-
-  // قائمةُ الفروع لا نطلبها إلّا حين نحتاج اسمَ الفرع أو نفتح قائمةَ التغيير — فحوّاف `enabled`
-  // تمنع طلبَها لمستخدم عابرٍ يفتح شاشةً لا تحتاجها. (اسم الفرع = بشرٌ يفهم، لا رقمٌ يخترعه.)
-  const branchesQ = trpc.branches.list.useQuery(undefined, {
-    enabled: me.data != null,
-    staleTime: 60_000,
-  });
+  const session = useSessionContext();
 
   return useMemo<SessionBranchInference>(() => {
-    if (me.isLoading) {
-      return emptyInference("loading", null);
-    }
-    if (me.isError || !me.data) {
-      return emptyInference(
-        "error",
-        "تعذّرت قراءةُ جلستك · انتهت أو لم تُقبل · سجّل الدخول ثمّ حاول مجدّداً.",
-      );
+    const { retry } = session;
+    if (session.status === "loading") return emptyInference("loading", null, retry);
+    if (session.status === "error" || !session.context) {
+      return emptyInference("error", session.message, retry);
     }
 
-    const canOverride = inferCanCrossBranches(me.data);
-    const assignedId =
-      typeof me.data.branchId === "number" && me.data.branchId > 0
-        ? me.data.branchId
-        : null;
-
-    // Codex #958: فشلُ `branches.list` كان يُطوى صامتاً إلى `[]` فيُعرَض للأدمن/المالك
-    // منتقياً فارغاً بلا سببٍ ولا مسار استعادة، ونماذجُ المصروف والجرد لا تُكمَل. الآن
-    // نُميّز الفشل الحيّ (وليس مجرَّد «لا شيءَ لعرضه») فنُظهره حالةَ خطأٍ صريحةً بمسار إعادة
-    // محاولة. الأدمن/المالك بلا فرعٍ مُسنَد يعتمد على القائمة اعتماداً كاملاً؛ الموظّفُ الذي
-    // له `assignedId` قد يستمرّ بلا اسمٍ (يظهر «فرع #N») لأنّ الاسمَ زخرفٌ لا حاجزٌ للحفظ.
-    if (branchesQ.isLoading) {
-      return emptyInference("loading", null);
-    }
-    const branchesFailed = branchesQ.isError && !branchesQ.data;
-    if (branchesFailed && assignedId == null) {
-      return emptyInference(
-        "error",
-        "تعذّرت قراءةُ قائمة الفروع · شبكةٌ أو خادمٌ لم يستجب · انقر «إعادة المحاولة» أو حدّث الصفحة.",
-      );
-    }
-
-    // قائمةُ الفروع للعرض — تُنقّى إلى ما يفهمه `SessionBranch` (id + name فقط) كي لا يعتمد
-    // `<InferredField>` على شكلِ صفّ `branches` بأعمدته الكاملة (isActive/type/…) — فتغيّر
-    // ذلك الصفّ خادمياً لا يكسر مستهلكاً هنا.
-    const branches: readonly SessionBranch[] =
-      branchesQ.data
-        ?.map((b): SessionBranch => ({ id: b.id, name: b.name }))
-        .filter((b) => b.id > 0 && b.name.trim().length > 0) ?? [];
-
-    if (assignedId != null) {
-      const branch = branches.find((b) => b.id === assignedId) ?? null;
+    const { context, selectableBranches: branches } = session;
+    if (context.branch) {
       return {
         status: "resolved",
-        branchId: assignedId,
-        // إن لم نجد الفرعَ في القائمة (سباقُ تحميل، أو الفرع مُعطَّل) نُعرَض بالرقم فقط بلا
-        // اسمٍ مخترع — بشرُ الشاشة يرى «فرع #٢» بدل اسمٍ خاطئ يُوهم الملكية.
-        branchName: branch?.name ?? null,
-        canOverride,
+        branchId: context.branch.id,
+        branchName: context.branch.name,
+        canOverride: context.canCrossBranches,
         branches,
-        sourceLabel: "فرعك المُسنَد",
+        sourceLabel: "فرعك المسند",
         message: null,
+        retry,
       };
     }
 
-    if (canOverride) {
+    if (context.canCrossBranches) {
       // أدمنٌ/مالكٌ بلا فرعٍ مُسنَد ⇒ يُسمَح له بالاختيار، لكن **لا يُختار له افتراضاً**.
       return {
         status: "unassigned",
@@ -163,31 +245,31 @@ export function useSessionBranchInference(): SessionBranchInference {
         branchName: null,
         canOverride: true,
         branches,
-        sourceLabel: "لا فرعَ مُسنَد",
-        message:
-          "حسابك بلا فرعٍ مُسنَد · لا يستطيع النظامُ اختيارَه عنك · اختر الفرعَ من القائمة قبل الحفظ.",
+        sourceLabel: "لا فرع مسند",
+        message: UNASSIGNED_MESSAGE,
+        retry,
       };
     }
 
-    // غيرُ عابر الفروع بلا فرعٍ مُسنَد = حالةٌ مستحيلةٌ خادمياً (الراوترُ يرفضها بـFORBIDDEN)،
-    // لكنّها تظهر تحت `auth.me` في نافذةٍ ضيّقة (توقفُ ثانيةٍ بين تعطيل الفرع وإنهاء الجلسة).
-    // نُعامَل كخطأ صريح لا حقلٍ فارغ ⇒ الرسالةُ عمليّة: تواصل مع المدير.
+    // غيرُ عابر الفروع بلا فرعٍ مُسنَد = حالةٌ مستحيلةٌ خادمياً (الراوترُ يرفضها بـFORBIDDEN قبل
+    // التركيب، والقارئُ المشترك يرفض حمولتَها). تبقى دفاعاً في العمق: خطأٌ صريح لا حقلٌ فارغ.
     return {
       status: "error",
       branchId: null,
       branchName: null,
       canOverride: false,
       branches,
-      sourceLabel: "لا فرعَ مُسنَد",
-      message:
-        "حسابك بلا فرعٍ مُسنَد · لا يمكن العملُ بلا فرع · اطلب من المدير إسنادَ فرعٍ لك ثم أعِد التحميل.",
+      sourceLabel: "لا فرع مسند",
+      message: NO_BRANCH_MESSAGE,
+      retry,
     };
-  }, [me.isLoading, me.isError, me.data, branchesQ.data]);
+  }, [session]);
 }
 
 function emptyInference(
   status: Extract<SessionBranchInferenceStatus, "loading" | "error">,
   message: string | null,
+  retry: () => void,
 ): SessionBranchInference {
   return {
     status,
@@ -195,7 +277,8 @@ function emptyInference(
     branchName: null,
     canOverride: false,
     branches: [],
-    sourceLabel: status === "loading" ? "" : "لا فرعَ نشط",
+    sourceLabel: status === "loading" ? "" : "لا فرع نشط",
     message,
+    retry,
   };
 }
