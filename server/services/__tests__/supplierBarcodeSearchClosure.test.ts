@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { listProductsAdmin } from "../catalog/adminList";
-import { listForPos } from "../catalog/pos";
+import { listForPos, lookupByBarcode } from "../catalog/pos";
 import { listForPurchase } from "../catalog/purchase";
 import { countPriceWaveScope } from "../priceWaveService";
 import { storefrontCatalog } from "../storefrontService";
@@ -103,7 +104,7 @@ beforeEach(async () => {
   ]);
   await d
     .insert(s.productUnitBarcodes)
-    .values({ productUnitId: 5827, barcode: "\u200fSUP  0095\t" });
+    .values({ productUnitId: 5828, barcode: "\u200fSUP  0095\t" });
   await d.insert(s.productPrices).values([
     { productUnitId: 5827, priceTier: "RETAIL", price: "1000.00" },
     { productUnitId: 5828, priceTier: "RETAIL", price: "9000.00" },
@@ -120,10 +121,10 @@ beforeEach(async () => {
 });
 
 describe("إغلاق بحث باركود المورد عبر مستهلكي الكتالوج", () => {
-  for (const [label, query, expectedUnitId] of [
-    ["مسافتان داخليتان", "1  0095", 5827],
-    ["باركود بديل موروث بتنسيق ومسافتين", "SUP  0095", 5827],
-    ["UPC-A مقابل EAN-13 محفوظ", "036000291452", 5828],
+  for (const [label, query, expectedUnitId, expectedPrice] of [
+    ["مسافتان داخليتان", "1  0095", 5827, "1000.00"],
+    ["باركود كرتون بديل موروث بتنسيق ومسافتين", "SUP  0095", 5828, "9000.00"],
+    ["UPC-A مقابل EAN-13 محفوظ", "036000291452", 5828, "9000.00"],
   ] as const) {
     it(`${label}: يتقدم المالك الحقيقي ولا تدخل نتيجة الاسم المشتتة`, async () => {
       const pos = await listForPos(1, "RETAIL", query, 20);
@@ -158,7 +159,62 @@ describe("إغلاق بحث باركود المورد عبر مستهلكي ال
         search: query,
         limit: 20,
       });
-      expect(storefront.items.map((item) => item.productId)).toEqual([4600]);
+      expect(storefront.items).toHaveLength(1);
+      expect(storefront.items[0]).toMatchObject({
+        productId: 4600,
+        productUnitId: expectedUnitId,
+        price: expectedPrice,
+      });
+      // هذه هي حبيبة سطر السلة التي يرسلها العميل؛ يجب ألا تهبط إلى أول وحدة في بطاقة المنتج.
+      expect(storefront.items.map((item) => ({ productUnitId: item.productUnitId, quantity: 1 }))).toEqual([
+        { productUnitId: expectedUnitId, quantity: 1 },
+      ]);
     });
   }
+
+  it("لا يستبدل كرتوناً ممسوحاً ونافداً بوحدة القطعة المتوفرة", async () => {
+    await db()
+      .update(s.branchStock)
+      .set({ quantity: "5" })
+      .where(eq(s.branchStock.variantId, 4700));
+
+    const inStock = await storefrontCatalog({ branchId: 1, search: "SUP  0095", limit: 20 });
+    expect(inStock.items).toEqual([]);
+
+    const all = await storefrontCatalog({
+      branchId: 1,
+      search: "SUP  0095",
+      limit: 20,
+      availability: "ALL",
+    });
+    expect(all.items).toHaveLength(1);
+    expect(all.items[0]).toMatchObject({
+      productId: 4600,
+      productUnitId: 5828,
+      price: "9000.00",
+      inStock: false,
+    });
+  });
+
+  it("يميّز lookupByBarcode الغموض عن الغياب ولا يختار مالكاً عشوائياً", async () => {
+    await db()
+      .insert(s.productUnitBarcodes)
+      .values({ productUnitId: 5830, barcode: "1  0095" });
+
+    await expect(lookupByBarcode("1  0095", 1, "RETAIL")).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+    await expect(lookupByBarcode("BARCODE-NOT-FOUND", 1, "RETAIL")).resolves.toBeNull();
+  });
+
+  it("يرفض lookupByBarcode الوحدة المعطلة بخطأ صريح بدلاً من null الغامضة", async () => {
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false })
+      .where(eq(s.productUnits.id, 5827));
+
+    await expect(lookupByBarcode("1  0095", 1, "RETAIL")).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+  });
 });

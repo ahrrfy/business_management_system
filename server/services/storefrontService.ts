@@ -860,7 +860,9 @@ export async function storefrontCatalog(opts: {
     // مسار الإرث المطبّع يستخدم مفتاح barcodeNormalized المفهرس؛ فلا يضيف مسحاً كاملاً لبحث الأسماء.
     const barcodeResolution = await resolveBarcodeOwnerResult(db, s, { allowNormalizedFallback: true });
     if (barcodeResolution.status === "FOUND") {
-      conds.push(eq(products.id, barcodeResolution.owner.productId));
+      // البحث بالباركود عقدُ وحدة لا عقدُ منتج: اختيار أول وحدة للمنتج قد يبدّل كرتوناً
+      // ممسوحاً إلى قطعة بسعر ومعامل مختلفين، فتصل حبيبة سلة خاطئة إلى createOrder.
+      conds.push(eq(productUnits.id, barcodeResolution.owner.productUnitId));
     } else if (barcodeResolution.status === "AMBIGUOUS") {
       conds.push(sql`false`);
     } else {
