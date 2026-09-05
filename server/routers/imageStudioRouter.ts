@@ -268,16 +268,18 @@ export const imageStudioRouter = router({
           throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مسار الذكاء الاصطناعي غير مُفعَّل." });
         }
         const prompt = buildAiStudioPrompt(runtime.basePrompt, input.userPrompt);
-        const result = await runGuardedImageStudioCall({
-          service: "AI",
-          userId: Number(ctx.user.id),
-          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
-          run: () => generateStudioImage({
-            apiKey: runtime.apiKey,
-            model: runtime.model,
-            prompt,
-            imageBase64,
-            mimeType,
+        const result = await generateStudioImage({
+          apiKey: runtime.apiKey,
+          model: runtime.model,
+          prompt,
+          imageBase64,
+          mimeType,
+        }, {
+          runAttempt: (run) => runGuardedImageStudioCall({
+            service: "AI",
+            userId: Number(ctx.user.id),
+            branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+            run,
           }),
         });
         const processingReceipt = await attestStudioProcessing(
