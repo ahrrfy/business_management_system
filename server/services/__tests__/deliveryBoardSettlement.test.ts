@@ -287,6 +287,24 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
     expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
   });
+
+  it("②-ب إعادةُ الطلب بنفس المفتاح لكن بحمولةٍ مختلفة ⇒ CONFLICT لا قبولٌ صامتٌ يكذب على الأثر", async () => {
+    await openReception();
+    const a = await saleWithDelivery("rp-3", "3"); // 3000
+    await confirmDelivered(a.consignmentId, "3000");
+    const key = "settle-daily-tampered";
+    const first = await settle("3000", undefined, key);
+    expect(first.status).toBe("BALANCED");
+    expect(await partyBalance()).toBe("0.00");
+
+    // نفس المفتاح لكن نقدٌ معدودٌ وسببُ عجزٍ مختلفان ⇒ حمولةٌ مختلفة ⇒ تعارضٌ **قبل** أيّ أثر
+    // (لا يُعاد السند القديم صامتاً فيكذب الأثرُ على «2500 بعجز» بينما المخزَّن «3000 متوازن»).
+    await expect(settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key)).rejects.toMatchObject({ code: "CONFLICT" });
+    // ولا سندَ ثانٍ، ولا عجزٌ زائفٌ قُيِّد على الجهة.
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
+    expect(await partyBalance()).toBe("0.00");
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(0);
+  });
 });
 
 describe("اقتراح الجهة بالمنطقة — دليلٌ لا تخمين", () => {

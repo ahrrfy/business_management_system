@@ -24,8 +24,8 @@ import {
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { checkIdempotency } from "../idempotency";
-import { money, round2 } from "../money";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { money, round2, toDbMoney } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
 import type { DeliveryTxActor } from "./types";
@@ -181,13 +181,29 @@ export async function settleDailyTx(
 ): Promise<SettleDailyResult> {
   const party = await loadPartyOrThrow(tx, input.partyId, "تعذّر تسجيل التسوية اليوميّة");
   // إعادةُ الطلب بنفس مفتاح idempotency (نقرٌ مزدوج · إعادةُ شبكة · إعادةُ محاولة الراوتر على
-  // ER_DUP): التوريدُ الأوّل نقل الطرود إلى «مُسوّاة» فيعود `loadSettlementLines` فارغاً — ولو
-  // فحصنا الأسطر أوّلاً لرُفضت الإعادةُ بـ«لا شيء يُسوَّى» بدل إعادة السند نفسه (عطبٌ عرَضيّ
-  // للمستعمل). فنفحص المفتاح **قبل** تحميل الأسطر — نفس عمليّة `recordDeliveryRemittanceInTx`
-  // (`delivery.remit`) وبلا payloadHash لأنّ أسطرَ الحمولة الأصلية استُهلكت بالتسوية الأولى:
-  // وُجِد ⇒ نُعيد نتيجة التوريد المخزَّنة حرفياً بلا تسويةٍ جديدة ولا فحص أسطر.
+  // ER_DUP): التسويةُ الأولى نقلت الطرود إلى «مُسوّاة» فيعود `loadSettlementLines` فارغاً — ولو
+  // فحصنا الأسطر أوّلاً لرُفضت الإعادةُ بـ«لا شيء يُسوَّى» بدل إعادة السند نفسه. فنفحص المفتاح
+  // **قبل** تحميل الأسطر، ببصمةِ الطلب على مستوى التسوية اليوميّة: نيّةُ المستدعي هي
+  // (الجهة/الفرع/النقد المعدود/سبب العجز/نوع الوردية) — أمّا الأسطرُ فيشتقّها الخادم من حالة
+  // القاعدة لا المستدعي، ولا سبيل لإعادة بنائها بعد أن استُهلكت. البصمةُ تجعل الإعادةَ الأمينة
+  // (نفس الحمولة) تُعيد السند حرفياً، وتجعل إعادةً بنفس المفتاح لكن بنقدٍ معدودٍ أو سببٍ أو ورديةٍ
+  // مختلفة **تعارضاً صريحاً** (`checkIdempotency` يرمي CONFLICT عند اختلاف البصمة) بدل إعادةِ
+  // سندٍ يكذب على ما نُفِّذ — نظير حارس بصمة الحمولة في `recordDeliveryRemittanceInTx`.
+  const settleRequestHash = idempotencyHash({
+    partyId: Number(input.partyId),
+    branchId: Number(input.branchId),
+    countedCash: toDbMoney(input.countedCash),
+    shortfallReason:
+      input.shortfallReason && isShortfallReason(input.shortfallReason) ? input.shortfallReason : null,
+    shiftType: input.shiftType ?? "RECEPTION",
+  });
   if (input.clientRequestId) {
-    const existingRemittanceId = await checkIdempotency(tx, "delivery.remit", input.clientRequestId);
+    const existingRemittanceId = await checkIdempotency(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      settleRequestHash,
+    );
     if (existingRemittanceId != null) {
       const rm = (
         await tx
@@ -197,18 +213,6 @@ export async function settleDailyTx(
           .limit(1)
       )[0];
       if (rm) {
-        // نفس حارس replay في `recordDeliveryRemittanceInTx`: المفتاحُ نفسُه لجهةٍ/فرعٍ مختلف ليس
-        // إعادةً بريئة بل مفتاحٌ ملوَّث — تعارضٌ لا تسوية.
-        if (Number(rm.branchId) !== Number(input.branchId) || Number(rm.partyId) !== Number(input.partyId)) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "تعذّر تسجيل التسوية اليوميّة",
-              why: "مفتاح الطلب مستعمَلٌ سلفاً لتوريد جهةٍ أو فرعٍ مختلف",
-              doThis: "أعد المحاولة بمفتاح طلبٍ جديد، أو راجع التوريد السابق لهذا المفتاح",
-            }),
-          });
-        }
         return {
           remittanceId: Number(rm.id),
           status: rm.status === "SHORT" ? "SHORT" : "BALANCED",
@@ -269,6 +273,17 @@ export async function settleDailyTx(
     },
     actor,
   );
+  // بصمةُ الطلب على مستوى التسوية اليوميّة — عمليّةٌ مستقلّة عن `delivery.remit` الداخليّة (مفتاحان
+  // بنفس clientRequestId، القيد الفريد على (operation, key) فلا يتصادمان). بها تلتقط الإعادةُ
+  // التالية نيّةَ المستدعي: تُعيد السند عند التطابق، وتُعارِض عند اختلاف الحمولة.
+  if (input.clientRequestId)
+    await recordIdempotencyKey(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      res.remittanceId,
+      settleRequestHash,
+    );
   return {
     remittanceId: res.remittanceId,
     status: res.status === "SHORT" ? "SHORT" : "BALANCED",
