@@ -59,6 +59,7 @@ object WarehouseToolsMappers {
             mineTotal = mine.int("total"),
             sessionCounted = all.int("counted"),
             sessionTotal = all.int("total"),
+            countMethod = session.text("countMethod", "FREE"),
             items = state.list("items").mapNotNull { value -> value.map()?.let { row ->
                 CountItem(
                     variantId = row.long("variantId"),
@@ -144,9 +145,9 @@ object WarehouseToolsMappers {
     }
 
     fun countJson(value: CountSession) = JSONObject()
-        .put("schema", 1).put("version", value.version).put("code", value.code).put("name", value.name)
+        .put("schema", 2).put("version", value.version).put("code", value.code).put("name", value.name)
         .put("branchName", value.branchName).put("sessionStatus", value.sessionStatus).put("duplicatePolicy", value.duplicatePolicy)
-        .put("blind", value.blind).put("assignmentId", value.assignmentId).put("assignmentName", value.assignmentName)
+        .put("blind", value.blind).put("countMethod", value.countMethod).put("assignmentId", value.assignmentId).put("assignmentName", value.assignmentName)
         .put("assignmentStatus", value.assignmentStatus).put("zone", value.zone ?: JSONObject.NULL)
         .put("mineCounted", value.mineCounted).put("mineTotal", value.mineTotal).put("sessionCounted", value.sessionCounted).put("sessionTotal", value.sessionTotal)
         .put("items", JSONArray().apply { value.items.forEach { item -> put(JSONObject()
@@ -157,10 +158,11 @@ object WarehouseToolsMappers {
             .put("units", JSONArray().apply { item.units.forEach { unit -> put(JSONObject().put("name", unit.name).put("factor", unit.factor).put("barcode", unit.barcode ?: JSONObject.NULL).put("aliases", JSONArray(unit.aliases))) } })) } })
 
     fun cachedCount(root: JSONObject): CountSession? {
-        if (root.optInt("schema") != 1) return null
+        if (root.optInt("schema") != 2) return null
         return CountSession(
             version = root.optString("version"), code = root.optString("code"), name = root.optString("name"), branchName = root.optString("branchName"),
             sessionStatus = root.optString("sessionStatus"), duplicatePolicy = root.optString("duplicatePolicy"), blind = root.optBoolean("blind"),
+            countMethod = root.optString("countMethod", "FREE"),
             assignmentId = root.optLong("assignmentId"), assignmentName = root.optString("assignmentName"), assignmentStatus = root.optString("assignmentStatus"),
             zone = root.nullableString("zone"), mineCounted = root.optInt("mineCounted"), mineTotal = root.optInt("mineTotal"),
             sessionCounted = root.optInt("sessionCounted"), sessionTotal = root.optInt("sessionTotal"),
@@ -177,6 +179,7 @@ object WarehouseToolsMappers {
     fun pendingJson(values: List<PendingCount>) = JSONArray().apply { values.forEach { value -> put(JSONObject()
         .put("sessionCode", value.sessionCode).put("variantId", value.variantId).put("quantityBase", value.quantityBase)
         .put("unitBreakdown", value.unitBreakdown).put("clientRequestId", value.clientRequestId).put("createdAt", value.createdAt)
+        .put("entryMethod", value.entryMethod).put("scannedBarcode", value.scannedBarcode ?: JSONObject.NULL)
         .put("status", value.status.name).put("lastError", value.lastError ?: JSONObject.NULL)) } }
 
     fun pending(root: JSONArray): List<PendingCount> = root.objects().map { row -> PendingCount(
@@ -184,6 +187,8 @@ object WarehouseToolsMappers {
         unitBreakdown = row.optString("unitBreakdown"), clientRequestId = row.optString("clientRequestId"), createdAt = row.optString("createdAt"),
         status = PendingCountStatus.entries.firstOrNull { it.name == row.optString("status") } ?: PendingCountStatus.QUEUED,
         lastError = row.nullableString("lastError"),
+        entryMethod = row.optString("entryMethod", "SEARCH_PICK"),
+        scannedBarcode = row.nullableString("scannedBarcode"),
     ) }
 }
 

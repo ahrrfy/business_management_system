@@ -19,6 +19,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
+import java.util.concurrent.ConcurrentHashMap
 import online.alarabiya.superapp.core.network.NetworkStatusMonitor
 import online.alarabiya.superapp.core.network.TrpcClient
 import online.alarabiya.superapp.core.notifications.NativeNotificationNavigationInbox
@@ -87,6 +88,10 @@ class MainActivity : FragmentActivity() {
     @Volatile private var composeLaunchReady = false
     private val platformSplashExited = mutableStateOf(false)
     private val brandLaunchVisible = mutableStateOf(true)
+    private val warehouseStores = ConcurrentHashMap<Long, EncryptedWarehouseStore>()
+
+    private fun warehouseStore(userId: Long): EncryptedWarehouseStore =
+        warehouseStores.computeIfAbsent(userId) { EncryptedWarehouseStore(applicationContext, it) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
@@ -225,7 +230,11 @@ class MainActivity : FragmentActivity() {
                         )
                     },
                     inventorySourceFactory = { bootstrap, branchId ->
-                        InventoryRepository(api, InventoryCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
+                        InventoryRepository(
+                            api,
+                            InventoryCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId),
+                            warehouseStore(bootstrap.user.id),
+                        )
                     },
                     hrAdminSourceFactory = { bootstrap, branchId ->
                         HrAdminRepository(api, HrAdminCapabilities.fromBootstrap(bootstrap).copy(branchId = branchId))
@@ -242,7 +251,7 @@ class MainActivity : FragmentActivity() {
                         WarehouseToolsRepository(
                             api,
                             capabilities,
-                            EncryptedWarehouseStore(applicationContext, bootstrap.user.id),
+                            warehouseStore(bootstrap.user.id),
                         )
                     },
                     storeDeliverySource = storeDeliveryRepository,

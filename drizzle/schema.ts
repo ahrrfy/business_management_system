@@ -23,6 +23,7 @@ import {
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
+import { barcodeIdentityColumn, barcodeIdentitySql } from "./barcodeIdentitySql";
 import type { DigitalCheckoutSnapshot } from "../shared/digitalSale";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
@@ -963,6 +964,7 @@ export const productUnits = mysqlTable(
       .default("1")
       .notNull(),
     barcode: varchar("barcode", { length: 64 }).unique(),
+    barcodeNormalized: barcodeIdentityColumn("barcodeNormalized").generatedAlwaysAs(sql.raw(barcodeIdentitySql("`barcode`")), { mode: "stored" }),
     isBaseUnit: boolean("isBaseUnit").default(false).notNull(),
     // قناة البيع مستقلة عن وحدة المخزون: قد يكون الأساس «ورقة» بينما المتجر يبيع «بند/كارتون».
     isStoreSaleUnit: boolean("isStoreSaleUnit").default(false).notNull(),
@@ -972,6 +974,7 @@ export const productUnits = mysqlTable(
   (table) => ({
     variantIdx: index("idx_unit_variant").on(table.variantId),
     barcodeIdx: index("idx_unit_barcode").on(table.barcode),
+    barcodeNormalizedIdx: index("idx_unit_barcode_normalized").on(table.barcodeNormalized),
   }),
 );
 
@@ -989,6 +992,7 @@ export const productUnitBarcodes = mysqlTable(
       .notNull()
       .references(() => productUnits.id, { onDelete: "cascade" }),
     barcode: varchar("barcode", { length: 64 }).notNull(),
+    barcodeNormalized: barcodeIdentityColumn("barcodeNormalized").generatedAlwaysAs(sql.raw(barcodeIdentitySql("`barcode`")), { mode: "stored" }),
     note: varchar("note", { length: 255 }),
     // `users.id` هو INT — يجب أن يطابق الـFK عمود الأب حرفياً وإلا فشل db:push بـERR 3780.
     createdBy: int("createdBy").references(() => users.id, {
@@ -998,6 +1002,7 @@ export const productUnitBarcodes = mysqlTable(
   },
   (table) => ({
     barcodeUq: unique("uq_unit_barcode_alias").on(table.barcode),
+    barcodeNormalizedIdx: index("idx_alias_barcode_normalized").on(table.barcodeNormalized, table.productUnitId),
     unitIdx: index("idx_alias_unit").on(table.productUnitId),
   }),
 );

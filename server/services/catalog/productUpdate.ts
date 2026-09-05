@@ -1,7 +1,7 @@
 // تحديث منتج قائم: ترويسة + متغيّر(ات) + وحدات + أسعار في معاملة واحدة.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { findBarcodeClashes } from "./barcodeAliases";
 import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
@@ -135,6 +135,17 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
         if (b) editCodes.push(b);
         if (u.id != null) ownUnitIds.push(Number(u.id));
       }
+    const seenEditCodes = new Set<string>();
+    for (const code of editCodes) {
+      const identities = barcodeIdentityCandidates(code).map(barcodeComparisonKey);
+      if (identities.some((identity) => seenEditCodes.has(identity)))
+        throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
+          what: `تعذّر حفظ الباركود ${code}`,
+          why: "الباركود مكرّر بين وحدات المنتج أو يمثّل UPC-A وEAN-13 للسلعة نفسها",
+          doThis: "اترك الباركود على وحدة واحدة واحذفه من الوحدة الأخرى، ثم احفظ المنتج",
+        }) });
+      identities.forEach((identity) => seenEditCodes.add(identity));
+    }
     if (editCodes.length) {
       const clashes = await findBarcodeClashes(tx, editCodes, { ignorePrimaryUnitIds: ownUnitIds });
       if (clashes[0])

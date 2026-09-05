@@ -31,6 +31,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
 import { Link } from "wouter";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
 const PREVIEW_ZOOM = 2.4; // تكبير المعاينة بصرياً للوضوح (المقاس الفعليّ صغير)
@@ -69,6 +70,7 @@ type QueueItem = {
 /** يبني عنصر قائمة الطباعة من صفّ الكتالوج — نقطة واحدة تلتقط كل حقوله ذات الأثر على الملصق.
  *  `rowTier` = الفئة التي جُلب بها هذا الصفّ فعلاً (يُثبَّت في `pricedTier`). */
 function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueItem {
+  const primaryBarcode = row.barcode ? canonicalizeBarcodeInput(row.barcode) || null : null;
   return {
     key,
     productId: row.productId,
@@ -80,14 +82,14 @@ function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueIt
     unitName: row.unitName,
     conversionFactor: row.conversionFactor,
     sku: row.sku,
-    barcode: row.barcode ?? internalBarcode(row.productUnitId),
-    primaryBarcode: row.barcode,
+    barcode: primaryBarcode ?? internalBarcode(row.productUnitId),
+    primaryBarcode,
     price: row.price,
     pricedTier: rowTier,
     promoPrice: row.promotionEffectivePrice,
     promotionName: row.promotionName,
     stockBase: row.stockBase,
-    saved: !!row.barcode,
+    saved: primaryBarcode != null,
     count: 1,
   };
 }
@@ -122,7 +124,8 @@ function renderItemFor(q: QueueItem, tier: LabelTier): LabelRenderItem {
       price: q.price,
       promotionEffectivePrice: q.promoPrice,
     },
-    q.barcode,
+    // لا نطبع أرقاماً عربية أو framing إرثياً، مع إبقاء المسافات الداخلية في Code39 حرفياً.
+    canonicalizeBarcodeInput(q.barcode),
     tier,
   );
 }
@@ -140,7 +143,13 @@ function loadQueueDraft(): QueueItem[] {
     const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as QueueItem[]) : [];
+    return Array.isArray(parsed)
+      ? (parsed as QueueItem[]).map((item) => ({
+          ...item,
+          barcode: canonicalizeBarcodeInput(item.barcode),
+          primaryBarcode: item.primaryBarcode ? canonicalizeBarcodeInput(item.primaryBarcode) || null : null,
+        }))
+      : [];
   } catch {
     return [];
   }
@@ -483,13 +492,15 @@ export default function BarcodeLabels() {
 
   // Enter في حقل البحث: نتيجة وحيدة ⇒ تُضاف، وإلا نحاول حلّ الباركود حرفياً.
   async function tryResolveBarcode(code: string) {
-    const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-    if (!looksLikeBarcode) return false;
+    // Enter/المسح فعلٌ صريح؛ لا نحصر هوية المورد في regex أضيق من عقد barcodeString
+    // (Code39/128 يسمحان بـ`.` و`$` و`/` و`+` و`%` والمسافة الداخلية).
+    const clean = canonicalizeBarcodeInput(code);
+    if (!clean || clean.length > 64) return false;
     if (branchId == null) { setError("اختر الفرع أولاً."); return false; }
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      const row = await utils.catalog.byBarcode.fetch({ barcode: clean, branchId, tier });
       if (row) { addRow(row); return true; }
-      setError(`الباركود غير معروف: ${code}`);
+      setError(`الباركود غير معروف: ${clean}`);
     } catch {
       setError("تعذّر الاتصال بالخادم");
     }
@@ -529,10 +540,17 @@ export default function BarcodeLabels() {
   function barcodeOptions(q: QueueItem): Array<{ code: string; label: string }> {
     const alts = aliasMap[q.productUnitId] ?? [];
     const opts: Array<{ code: string; label: string }> = [];
-    if (q.primaryBarcode) opts.push({ code: q.primaryBarcode, label: "أساسيّ" });
-    for (const a of alts) opts.push({ code: a.barcode, label: a.note?.trim() || "بديل" });
-    if (!opts.some((o) => o.code === q.barcode)) {
-      opts.unshift({ code: q.barcode, label: q.saved ? "محفوظ" : "داخليّ غير محفوظ" });
+    const primary = canonicalizeBarcodeInput(q.primaryBarcode ?? "");
+    if (primary) opts.push({ code: primary, label: "أساسيّ" });
+    for (const a of alts) {
+      const code = canonicalizeBarcodeInput(a.barcode);
+      if (code && !opts.some((option) => option.code === code)) {
+        opts.push({ code, label: a.note?.trim() || "بديل" });
+      }
+    }
+    const selected = canonicalizeBarcodeInput(q.barcode);
+    if (selected && !opts.some((o) => o.code === selected)) {
+      opts.unshift({ code: selected, label: q.saved ? "محفوظ" : "داخليّ غير محفوظ" });
     }
     return opts;
   }
@@ -540,8 +558,10 @@ export default function BarcodeLabels() {
   /** اختيار الباركود المطبوع. `saved` يتبع الواقع: البديل محفوظٌ في القاعدة ⇒ يمسحه الكاشير. */
   function pickBarcode(q: QueueItem, code: string) {
     const alts = aliasMap[q.productUnitId] ?? [];
-    const inDb = code === q.primaryBarcode || alts.some((a) => a.barcode === code);
-    patch(q.key, { barcode: code, saved: inDb });
+    const clean = canonicalizeBarcodeInput(code);
+    const inDb = clean === canonicalizeBarcodeInput(q.primaryBarcode ?? "")
+      || alts.some((a) => canonicalizeBarcodeInput(a.barcode) === clean);
+    patch(q.key, { barcode: clean, saved: inDb });
   }
   const remove = (key: number) => setQueue((prev) => prev.filter((q) => q.key !== key));
   function commitCount(key: number) {
@@ -917,7 +937,7 @@ export default function BarcodeLabels() {
                 {queue.map((q) => {
                   let preview = "";
                   try {
-                    preview = productBarcodeSvg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
+                    preview = productBarcodeSvg(canonicalizeBarcodeInput(q.barcode), { moduleWidth: 1.4, height: 34, showText: false }).svg;
                   } catch {
                     preview = "";
                   }
