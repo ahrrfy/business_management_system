@@ -5,15 +5,19 @@ import {
   applyPartySelection,
   buildDeliveryPayload,
   deliveryModeUnavailableReason,
+  deliveryReceiptAmounts,
+  deliverySendsPayment,
   emptyDeliveryDraft,
   governorateOptions,
   normalizeFee,
+  saleReceiptAmounts,
   toE164Iraq,
   validateDeliveryDraft,
   withRecipientDefaults,
   type DeliveryDraft,
 } from "./deliveryMode";
 import { GOVERNORATES } from "@shared/governorates";
+import { D } from "@/lib/money";
 
 const parties = [
   { id: 3, name: "مندوب الكرادة", defaultFee: "4000.00" },
@@ -74,12 +78,17 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     expect(normalizeFee("-5")).toBeNull();
   });
 
-  it("اختيار الجهة يملأ الأجرة من defaultFee فقط حين تكون فارغة — ما كتبه الكاشير لا يُطمس", () => {
-    const d = applyPartySelection(emptyDeliveryDraft(), parties[0]);
-    expect(d.partyId).toBe(3);
-    expect(d.partyName).toBe("مندوب الكرادة");
-    expect(d.fee).toBe("4000.00");
-    const kept = applyPartySelection(filled({ fee: "2500" }), parties[1]);
+  it("اختيار الجهة: الأجرة التلقائيّة تتبع الجهة الجديدة، واليدويّة (feeManual) لا تُطمَس", () => {
+    const first = applyPartySelection(emptyDeliveryDraft(), parties[0]);
+    expect(first.partyId).toBe(3);
+    expect(first.partyName).toBe("مندوب الكرادة");
+    expect(first.fee).toBe("4000.00");
+    // أجرةٌ تلقائيّة (feeManual=false) تُستبدَل بافتراض الجهة الجديدة عند التبديل — لا تعلَق على القديمة.
+    const swapped = applyPartySelection(first, parties[1]);
+    expect(swapped.partyId).toBe(9);
+    expect(swapped.fee).toBe("7500.00");
+    // أجرةٌ كتبها الكاشير بيده (feeManual=true) لا تُطمَس عند تبديل الجهة.
+    const kept = applyPartySelection(filled({ fee: "2500", feeManual: true }), parties[1]);
     expect(kept.partyId).toBe(9);
     expect(kept.partyName).toBe("شركة النقل السريع");
     expect(kept.fee).toBe("2500");
@@ -103,6 +112,67 @@ describe("وضع «توصيل» في الكاشير — المنطق النقي�
     const estimate = applyGovernorateSelection(emptyDeliveryDraft(), "basra", { suggestedPartyId: null, parties });
     expect(estimate.partyId).toBeNull();
     expect(estimate.fee).toBe(String(GOVERNORATES.find((g) => g.id === "basra")!.deliveryFee));
+  });
+
+  it("تقديرُ المحافظة التلقائيّ يُستبدَل عند تغيّرها، واليدويّ لا يُمَسّ", () => {
+    const basra = applyGovernorateSelection(emptyDeliveryDraft(), "basra", { suggestedPartyId: null, parties });
+    expect(basra.fee).toBe(String(GOVERNORATES.find((g) => g.id === "basra")!.deliveryFee));
+    // تغيير المحافظة يُعيد التقدير (لا يتجمّد على القديم) ما دامت الأجرة تلقائيّةً وبلا جهة.
+    const baghdad = applyGovernorateSelection(basra, "baghdad", { suggestedPartyId: null, parties });
+    expect(baghdad.fee).toBe(String(GOVERNORATES.find((g) => g.id === "baghdad")!.deliveryFee));
+    // أجرةٌ يدويّة (feeManual=true) لا يطمسها تغيّرُ المحافظة.
+    const manual = applyGovernorateSelection(filled({ partyId: null, fee: "3333", feeManual: true }), "basra", { suggestedPartyId: null, parties });
+    expect(manual.fee).toBe("3333");
+  });
+
+  it("قرارُ إرسال الدفع في التوصيل: يُحجَب فقط لنقدٍ بلا قبضٍ الآن (COD كامل)، وغيرُ النقد يُرسَل دائماً", () => {
+    expect(deliverySendsPayment("CASH", D(0))).toBe(false);
+    expect(deliverySendsPayment("CASH", D(5000))).toBe(true);
+    // بطاقة/تحويل/محفظة بلا قبضٍ نقديٍّ الآن: دفعٌ كامل مؤكَّد ⇒ يُرسَل (لا يُهمَل قبضٌ وقع).
+    expect(deliverySendsPayment("CARD", D(0))).toBe(true);
+    expect(deliverySendsPayment("TRANSFER", D(0))).toBe(true);
+    expect(deliverySendsPayment("WALLET", D(0))).toBe(true);
+  });
+
+  it("مبالغُ إيصال التوصيل: المقبوضُ الآن والفكّة بحسب الطريقة والقبض", () => {
+    const amt = (r: ReturnType<typeof deliveryReceiptAmounts>) => ({
+      received: r.received.toString(),
+      change: r.change.toString(),
+    });
+    const total = D(10000);
+    // نقدٌ بلا قبض ⇒ COD كامل: صفرٌ ولا فكّة.
+    expect(amt(deliveryReceiptAmounts({ method: "CASH", paidNow: D(0), total, isCredit: false })))
+      .toEqual({ received: "0", change: "0" });
+    // نقدٌ جزئيّ (COD جزئيّ): المقبوض = المدفوع، ولا فكّة.
+    expect(amt(deliveryReceiptAmounts({ method: "CASH", paidNow: D(4000), total, isCredit: true })))
+      .toEqual({ received: "4000", change: "0" });
+    // نقدٌ ≥ الإجماليّ: مدفوعٌ كاملاً + فكّةٌ كبيعٍ عاديّ (فائضٌ يُردّ).
+    expect(amt(deliveryReceiptAmounts({ method: "CASH", paidNow: D(12000), total, isCredit: false })))
+      .toEqual({ received: "10000", change: "2000" });
+    // بطاقةٌ بلا قبضٍ نقديٍّ الآن: دفعٌ كامل مؤكَّد ⇒ المقبوض = الإجماليّ ولا فكّة نقديّة.
+    expect(amt(deliveryReceiptAmounts({ method: "CARD", paidNow: D(0), total, isCredit: false })))
+      .toEqual({ received: "10000", change: "0" });
+    // بطاقةٌ جزئيّة + COD: المقبوض = المدفوع ولا فكّة.
+    expect(amt(deliveryReceiptAmounts({ method: "CARD", paidNow: D(4000), total, isCredit: true })))
+      .toEqual({ received: "4000", change: "0" });
+  });
+
+  it("مبالغُ إيصال البيع الموحّدة: التوصيل يشتقّ من deliveryReceiptAmounts بعهدةٍ لا ذمّة (credit=0)، والعاديّ يُبقي الذمّة", () => {
+    const amt = (r: ReturnType<typeof saleReceiptAmounts>) => ({
+      received: r.received.toString(),
+      change: r.change.toString(),
+      credit: r.credit.toString(),
+    });
+    const total = D(10000);
+    // توصيل COD كامل نقداً: عهدةٌ على المندوب لا ذمّةٌ على العميل ⇒ credit=0.
+    expect(amt(saleReceiptAmounts({ codMode: true, method: "CASH", paidNow: D(0), total, isCredit: false })))
+      .toEqual({ received: "0", change: "0", credit: "0" });
+    // بيعٌ عاديٌّ آجلٌ جزئيّ: المقبوض = المدفوع، لا فكّة، وذمّةٌ بالباقي.
+    expect(amt(saleReceiptAmounts({ codMode: false, method: "CASH", paidNow: D(4000), total, isCredit: true })))
+      .toEqual({ received: "4000", change: "0", credit: "6000" });
+    // بيعٌ عاديٌّ نقديٌّ كامل بفائض: المقبوض = الإجماليّ، فكّةٌ بالفائض، بلا ذمّة.
+    expect(amt(saleReceiptAmounts({ codMode: false, method: "CASH", paidNow: D(12000), total, isCredit: false })))
+      .toEqual({ received: "10000", change: "2000", credit: "0" });
   });
 
   it("قائمة المحافظات من المصدر المشترك حرفياً — لا قاموس محلّيّ", () => {

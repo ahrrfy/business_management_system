@@ -33,7 +33,7 @@ import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefr
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
-import { applyCustomerIdentity, buildDeliveryPayload, deliveryModeUnavailableReason } from "@/components/pos/deliveryMode";
+import { applyCustomerIdentity, buildDeliveryPayload, deliveryModeUnavailableReason, deliverySendsPayment, saleReceiptAmounts } from "@/components/pos/deliveryMode";
 import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
@@ -603,6 +603,9 @@ export default function POS() {
   /** يبدأ مسار البيع الرقميّ: تحقّقٌ خادميّ + حجز رصيد، **قبل** لمس جهاز المزوّد. */
   function startDigitalFulfillment() {
     if (!shift || digitalCheckoutRef.current || prepareIntent.isPending || fulfillIntentId != null || finalizeSale.isPending) return;
+    // م١ PR-B (تدقيق Codex P1): نواةُ التثبيت الرقميّة لا تُنشئ إرساليّةَ توصيل — سلّةٌ رقميّة/مختلطة في
+    // وضع التوصيل تُنتج فاتورةً ماديّةً بلا إسناد. نرفضها بدل إسقاط الإسناد صامتاً.
+    if (codMode) { notify.err("التوصيل لا يشمل البطاقات الرقميّة", "أزِل البطاقات الرقميّة من السلّة، أو أوقِف وضع التوصيل لبيعها منفصلة."); return; }
     if (offline) {
       notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
       return;
@@ -1049,11 +1052,11 @@ export default function POS() {
     // effectiveTotalD = ما يعرضه الكاشير للعميل. حين النقد الكامل هو المقرَّب (مطابقاً لِـcaptureSaleCtx القديم).
     const displayTotalD = effectiveTotalD;
     const displayPaidD = cashFull ? cashRoundedPaidD : paidD;
-    // م١ PR-B: في وضع التوصيل «المقبوض» هو ما قُبض الآن فعلاً (٠ أو جزئيّ) — لا الإجمالي؛ الباقي COD مع المندوب
-    // (يُعرض بكتلة التوصيل لا كآجلٍ على العميل).
-    const finalReceivedD = codMode ? displayPaidD : (isCredit ? displayPaidD : displayTotalD);
-    const finalChangeD   = codMode || isCredit ? D(0) : displayPaidD.minus(displayTotalD);
-    const finalCreditD   = !codMode && isCredit ? displayTotalD.minus(displayPaidD) : D(0);
+    // م١ PR-B (تدقيق Codex P1/P2): مبالغُ الإيصال من مصدرٍ واحدٍ نقيّ (saleReceiptAmounts). في التوصيل:
+    // المقبوضُ الآن ما يُسجَّل على الفاتورة، والفكّةُ صفرٌ لِـCOD الجزئيّ وتُحسب كبيعٍ عاديٍّ حين قُبض نقدٌ
+    // ≥ الإجماليّ (فائضٌ يُردّ)؛ وعهدةُ COD ليست ذمّةً على العميل ⇒ credit=0.
+    const { received: finalReceivedD, change: finalChangeD, credit: finalCreditD } =
+      saleReceiptAmounts({ codMode, method: activeTab.method, paidNow: displayPaidD, total: displayTotalD, isCredit });
     return {
       tabId: activeTab.id,
       lines: cart.map((c) => ({
@@ -1229,8 +1232,9 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      // م١ PR-B: في وضع التوصيل بلا قبضٍ الآن لا يُرسَل `payment` (المتبقّي عهدةُ مندوب COD)؛ قبضٌ جزئيّ يُرسَل كما هو.
-      ...(codMode && paidD.lte(0) ? {} : {
+      // م١ PR-B (تدقيق Codex P1): يُحجَب `payment` فقط لبيعٍ نقديٍّ بلا قبضٍ الآن (COD كامل)؛ غيرُ النقد
+      // مؤكَّدٌ سلفاً بمحاولةٍ خارجيّة ناجحة فيُرسَل دائماً — حجبُه كان يُهمِل قبضاً وقع ويُسنِد الطلبَ COD خطأً.
+      ...(codMode && !deliverySendsPayment(activeTab.method, paidD) ? {} : {
         payment: {
           amount: payAmount,
           method: activeTab.method,

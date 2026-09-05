@@ -192,6 +192,9 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
           onChange={onDeliveryChange}
           onIdentityChange={onDeliveryIdentity}
           customerBalance={customerBalance}
+          // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone) يبنيه فريقُ courier-ledger (متابَعة #1012)؛
+          // حتى يصل الإجراء لا اقتراحَ في الكاشير — نمرّر null صراحةً بلا وعدٍ كاذبٍ في قائمة الجهات.
+          suggestedPartyId={null}
           disabledReason={deliveryDisabledReason}
         />
       )}

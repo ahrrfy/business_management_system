@@ -16,6 +16,7 @@ import { isValidIqMobile } from "@/components/form/PhoneDigitsInput";
 import {
   LINK_ANNOUNCE_AR,
   PHONE_LOOKUP_DEBOUNCE_MS,
+  creditLimitAfterPhoneChange,
   creditLimitPayload,
   initialCustomerByPhoneState,
   onNameTyped,
@@ -100,7 +101,13 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
     return () => window.clearTimeout(timer);
   }, [state.phone, resolve]);
 
-  const setPhone = useCallback((digits: string) => setState((prev) => onPhoneChanged(prev, digits)), []);
+  const setPhone = useCallback((digits: string) => {
+    // #3 (تدقيق Codex P1): حدّ الائتمان يتبع هويّة الهاتف — تبدّلُها أو تفريغُها يُصفّره كي لا يرثه
+    // العميلُ التالي صامتاً. نلتقط الرقم السابق قبل الانتقال ونصفّره عند اختلافه (لا مع ضغطةٍ تُبقيه).
+    const prevPhone = stateRef.current.phone;
+    setCreditLimitRaw((limit) => creditLimitAfterPhoneChange(prevPhone, digits, limit));
+    setState((prev) => onPhoneChanged(prev, digits));
+  }, []);
   const setCustomer = useCallback((customer: PhoneCustomer) => setState((prev) => ({ ...prev, customer })), []);
   const setCustomerName = useCallback((name: string) => setState((prev) => onNameTyped(prev, name)), []);
   const setCreditLimit = useCallback((raw: string) => setCreditLimitRaw(sanitizeCreditLimitInput(raw)), []);

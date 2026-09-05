@@ -127,7 +127,9 @@ export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, d
           <MoneyInput
             id="pos-delivery-fee"
             value={draft.fee}
-            onChange={(v) => onChange({ ...draft, fee: v })}
+            // تحرير الأجرة يدوياً يَسِمها feeManual كي لا يطمسها تبديلُ الجهة/المحافظة (تدقيق Codex P1)؛
+            // وتفريغُها يُعيدها اشتقاقاً تلقائياً (المستخدم يعدّل لا يبتدئ).
+            onChange={(v) => onChange({ ...draft, fee: v, feeManual: v.trim() !== "" })}
             ariaLabel="أجرة التوصيل"
             className="h-9 text-xs"
             disabled={disabled}

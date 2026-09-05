@@ -10,6 +10,7 @@
  */
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { type DeliveryFeeCollection } from "@shared/deliveryFeeCollection";
+import Decimal from "decimal.js";
 
 export interface DeliveryDraft {
   /** معرّف المحافظة من `shared/governorates` ("baghdad" …) أو "" قبل الاختيار. */
@@ -20,6 +21,9 @@ export interface DeliveryDraft {
   partyName: string;
   /** نصّ مالٍ (MoneyInput) — يُطبَّع عند البناء. */
   fee: string;
+  /** هل حرّر الكاشير الأجرة بيده؟ الأجرةُ المشتقّة تلقائياً (افتراضُ الجهة أو تقديرُ المحافظة) تتبع
+   *  تغيّر الجهة/المحافظة؛ أمّا ما كتبه الكاشير فلا يُطمَس (تدقيق Codex P1، ٥/٩/٢٦). */
+  feeManual: boolean;
   feeCollection: DeliveryFeeCollection;
   recipientName: string;
   recipientPhone: string;
@@ -61,7 +65,7 @@ export function deliveryModeUnavailableReason(offline: boolean): string | null {
 }
 
 export function emptyDeliveryDraft(): DeliveryDraft {
-  return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
+  return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeManual: false, feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
 }
 
 const MONEY_RE = /^\d+(\.\d{1,2})?$/;
@@ -102,12 +106,62 @@ export function buildDeliveryPayload(d: DeliveryDraft): DeliveryPayload | null {
 }
 
 /**
- * اختيار الجهة: تُملأ الأجرة من `defaultFee` الجهة **إن كانت فارغة** (المستخدم يعدّل لا يبتدئ)؛
- * أجرةٌ كتبها الكاشير بيده لا تُطمس.
+ * وضع التوصيل — قرارُ إرسال `payment` (تدقيق Codex P1، ٥/٩/٢٦): يُحجَب الدفعُ فقط لبيعٍ نقديٍّ بلا
+ * قبضٍ الآن (COD كامل يقبضه المندوب). غيرُ النقد مؤكَّدٌ سلفاً (محاولةٌ خارجيّة ناجحة) ⇒ يُرسَل
+ * دائماً؛ حجبُه كان يُهمِل قبضاً خارجياً وقع فعلاً ويُسنِد الطلبَ COD خطأً.
+ */
+export function deliverySendsPayment(method: string, paidNow: Decimal): boolean {
+  return !(method === "CASH" && paidNow.lte(0));
+}
+
+/**
+ * وضع التوصيل — مبالغُ الإيصال (تدقيق Codex P1/P2، ٥/٩/٢٦): «المقبوض الآن» = ما يُسجَّل على الفاتورة
+ * (صفرٌ لِـCOD الكامل · المدفوعُ لقبضٍ جزئيّ · الإجماليُّ لدفعٍ كامل/بطاقة)، والفكّةُ تبقى صفراً لتحصيل
+ * COD الجزئيّ وتُحسب كبيعٍ عاديّ حين قُبض نقدٌ ≥ الإجماليّ (فائضٌ يُردّ للزبون).
+ */
+export function deliveryReceiptAmounts(args: {
+  method: string;
+  paidNow: Decimal;
+  total: Decimal;
+  isCredit: boolean;
+}): { received: Decimal; change: Decimal } {
+  const { method, paidNow, total, isCredit } = args;
+  const received = deliverySendsPayment(method, paidNow) ? (isCredit ? paidNow : total) : new Decimal(0);
+  const change = method === "CASH" && paidNow.gte(total) ? paidNow.minus(total) : new Decimal(0);
+  return { received, change };
+}
+
+/**
+ * مبالغُ إيصال بيع الكاشير (تدقيق Codex P1/P2، ٥/٩/٢٦) — مصدرٌ واحدٌ للوضعين: في التوصيل تُشتقّ من
+ * `deliveryReceiptAmounts` (وعهدةُ COD ليست ذمّةً على العميل ⇒ credit=0)؛ وفي البيع العاديّ الآجلُ
+ * الجزئيُّ يُظهر المدفوعَ، الفكّةَ صفراً، وذمّةً بالباقي (السلوكُ القائم بلا تغيير).
+ */
+export function saleReceiptAmounts(args: {
+  codMode: boolean;
+  method: string;
+  paidNow: Decimal;
+  total: Decimal;
+  isCredit: boolean;
+}): { received: Decimal; change: Decimal; credit: Decimal } {
+  const { codMode, method, paidNow, total, isCredit } = args;
+  if (codMode) {
+    const { received, change } = deliveryReceiptAmounts({ method, paidNow, total, isCredit });
+    return { received, change, credit: new Decimal(0) };
+  }
+  return {
+    received: isCredit ? paidNow : total,
+    change: isCredit ? new Decimal(0) : paidNow.minus(total),
+    credit: isCredit ? total.minus(paidNow) : new Decimal(0),
+  };
+}
+
+/**
+ * اختيار الجهة: الأجرةُ المشتقّة تلقائياً تتبع الجهةَ المختارة، وأجرةٌ كتبها الكاشير بيده (feeManual)
+ * لا تُطمَس. قبل تدقيق Codex P1 كانت أوّلُ جهةٍ تُثبّت الأجرة فيبقى مبلغُ الجهة السابقة عند تبديلها.
  */
 export function applyPartySelection(d: DeliveryDraft, party: DeliveryPartyOption | null): DeliveryDraft {
   if (!party) return { ...d, partyId: null, partyName: "" };
-  const fee = d.fee.trim() ? d.fee : party.defaultFee ?? "0";
+  const fee = d.feeManual ? d.fee : party.defaultFee ?? "0";
   return { ...d, partyId: party.id, partyName: party.name, fee };
 }
 
@@ -123,9 +177,11 @@ export function applyGovernorateSelection(
   let next: DeliveryDraft = { ...d, governorate };
   const suggested = opts.suggestedPartyId != null ? opts.parties.find((p) => p.id === opts.suggestedPartyId) ?? null : null;
   if (next.partyId == null && suggested) next = applyPartySelection(next, suggested);
-  if (!next.fee.trim() && governorate) {
+  // التقديرُ التلقائيّ نقطةُ انطلاقٍ حين لا جهةَ تُملي الأجرة ولم يحرّرها الكاشير (تدقيق Codex P1):
+  // يُستبدَل عند تغيّر المحافظة بدل التجمّد على تقديرٍ قديم، ويُترَك لأجرةٍ يدويّةٍ أو جهةٍ مختارة.
+  if (!next.feeManual && next.partyId == null && governorate) {
     const estimate = deliveryFeeFor(governorate);
-    if (estimate > 0) next = { ...next, fee: String(estimate) };
+    next = { ...next, fee: estimate > 0 ? String(estimate) : "" };
   }
   return next;
 }
