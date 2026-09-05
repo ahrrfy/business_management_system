@@ -1,11 +1,83 @@
 import { describe, it, expect } from "vitest";
 import {
   computePartyExposure,
+  deriveCashInHandFromLedger,
   PARTY_EXPOSURE_LABEL_AR,
   PARTY_EXPOSURE_COLOR_TOKEN,
   type PartyExposureParcelSnapshot,
   type PartyExposureLedgerEntry,
 } from "./partyExposure";
+import {
+  DELIVERY_CASH_CUSTODY_SIGN,
+  DELIVERY_FEE_ENTRY_TYPES,
+  DELIVERY_LEDGER_ENTRY_SIGN,
+} from "./deliveryLedgerEntryType";
+
+describe("deriveCashInHandFromLedger — النقد بيد الجهة من الدفتر (م١ PR-2/3)", () => {
+  it("Σ COD_COLLECTED + SHORTFALL_ASSIGNED − COD_REMITTED − COD_WRITTEN_OFF، وما عداها لا يمسّ العهدة", () => {
+    const cash = deriveCashInHandFromLedger([
+      { entryType: "COD_ASSIGNED", amount: "9999" },
+      { entryType: "COD_COLLECTED", amount: "5000" },
+      { entryType: "SHORTFALL_ASSIGNED", amount: "500" },
+      { entryType: "COD_REMITTED", amount: "3000" },
+      { entryType: "COD_WRITTEN_OFF", amount: "200" },
+      { entryType: "COD_RELEASED", amount: "9999" },
+      { entryType: "COD_RECOVERED", amount: "9999" },
+      { entryType: "FEE_EARNED", amount: "9999" },
+    ]);
+    expect(cash).toBe("2300.00");
+  });
+
+  it("إشاراتُها هي عينُ إشارات الجدول العامّ على أنواع النقد (ثابتٌ واحد لا نسخة)", () => {
+    for (const [entryType, sign] of Object.entries(DELIVERY_CASH_CUSTODY_SIGN)) {
+      expect(sign, entryType).toBe(DELIVERY_LEDGER_ENTRY_SIGN[entryType as keyof typeof DELIVERY_LEDGER_ENTRY_SIGN]);
+    }
+  });
+
+  it("خطّيّة: مجاميعُ الأنواع المُجمَّعة تُنتج ما تُنتجه القيود مفرَّقة", () => {
+    const detailed = deriveCashInHandFromLedger([
+      { entryType: "COD_COLLECTED", amount: "1000" },
+      { entryType: "COD_COLLECTED", amount: "2500.5" },
+      { entryType: "COD_REMITTED", amount: "700" },
+    ]);
+    const aggregated = deriveCashInHandFromLedger([
+      { entryType: "COD_COLLECTED", amount: "3500.5" },
+      { entryType: "COD_REMITTED", amount: "700" },
+    ]);
+    expect(detailed).toBe(aggregated);
+  });
+});
+
+describe("computePartyExposure — العمود ٣ لا يحسب الطرد المقبوض غير المورَّد مرّتين (م١ PR-2)", () => {
+  it("طردٌ سُلِّم وقُبض نقدُه كاملاً (عهدةُ الطرد في الدفتر = COD) ⇒ صفر «سُلِّم لم يُحصَّل»", () => {
+    const r = computePartyExposure({
+      cashInHand: "2000",
+      parcels: [{ parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED", codAmount: "2000", collectedAmount: "0", ledgerCustody: "2000" }],
+      ledger: [],
+    });
+    expect(r.deliveredUncollected).toBe("0.00");
+    expect(r.netResponsibility).toBe("2000.00");
+  });
+
+  it("تحصيلٌ جزئيّ من الكشف: المتبقّي على الزبون = COD − ما قبضته الجهة", () => {
+    const r = computePartyExposure({
+      cashInHand: "1200",
+      parcels: [{ parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED", codAmount: "2000", collectedAmount: "0", ledgerCustody: "1200" }],
+      ledger: [],
+    });
+    expect(r.deliveredUncollected).toBe("800.00");
+    expect(r.netResponsibility).toBe("2000.00");
+  });
+
+  it("الصفوف القديمة بلا قيود قبض (ledgerCustody غائب) تبقى كما كانت: المتبقّي كلُّه غير محصَّل", () => {
+    const r = computePartyExposure({
+      cashInHand: 0,
+      parcels: [{ parcelStatus: "DELIVERED", moneyStatus: "PARTIAL", codAmount: "2000", collectedAmount: "500" }],
+      ledger: [],
+    });
+    expect(r.deliveredUncollected).toBe("1500.00");
+  });
+});
 
 const mkParcel = (over: Partial<PartyExposureParcelSnapshot> = {}): PartyExposureParcelSnapshot => ({
   parcelStatus: "ASSIGNED",
@@ -165,16 +237,20 @@ describe("computePartyExposure — العمود ٤: أجور مستحقّة له
     expect(r.feesOwedToThem).toBe("5000.00");
   });
 
-  it("FEE_REFUNDED يخصم أيضاً", () => {
-    const r = computePartyExposure({
-      cashInHand: 0,
-      parcels: [],
-      ledger: [
-        mkLedger({ entryType: "FEE_EARNED", amount: "5000" }),
-        mkLedger({ entryType: "FEE_REFUNDED", amount: "2000" }),
-      ],
-    });
-    expect(r.feesOwedToThem).toBe("3000.00");
+  it("إشاراتُ الأجور تُقرأ من الثابت الواحد DELIVERY_LEDGER_ENTRY_SIGN — لا قائمةَ محلّية", () => {
+    // م١ (PR-2): كانت هنا قائمةٌ محلّية تطرح FEE_REFUNDED بينما جدولُ الدفتر يعطيها -1 (رفعٌ لما
+    // ندين به). المعنى قرارُ مالكٍ معلَّق (`deliveryLedgerEntryType.ts`)، والمحروسُ هنا أنّ
+    // المصدرَين لا يفترقان: كلُّ نوعِ أجرةٍ يؤثّر في العمود الرابع بعكس إشارته في الجدول تماماً.
+    for (const entryType of DELIVERY_FEE_ENTRY_TYPES) {
+      const r = computePartyExposure({
+        cashInHand: 0,
+        parcels: [],
+        ledger: [mkLedger({ entryType: "FEE_EARNED", amount: "10000" }), mkLedger({ entryType, amount: "2000" })],
+      });
+      // أثرُ النوع في «ما ندين به» = عكسُ إشارته في الجدول (ما يرفع دَينَها لنا يخفض دَينَنا لها).
+      const expected = 10000 - DELIVERY_LEDGER_ENTRY_SIGN[entryType] * 2000;
+      expect(r.feesOwedToThem, entryType).toBe(expected.toFixed(2));
+    }
   });
 
   it("لا يعطي أجراً سالباً (الفائض يُقصّ عند صفر لأنّ الجهة لا تدين لنا بأجر مقصوصاً)", () => {

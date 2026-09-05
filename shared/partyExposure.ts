@@ -14,7 +14,21 @@
  *
  * هذه دالّة نقيّة (pure) — تأخذ مصفوفة قيود دفتر التوصيل + معطيات الطرود وتُنتج الأربعة.
  * لا استعلام DB. لا side effects. الغرض: قابلة للاختبار البسيط، ومستهلَكة سيرفر وعميل.
+ *
+ * م١ (PR-2/3، ٥/٩/٢٦): الخادم **يستدعي هذه الدالّة فعلاً** (`delivery/board.ts` و`parties.ts` و
+ * `queries.ts`) بدل إعادة كتابة صيغها SQL — كانت ثلاثُ نسخٍ متوازية. والعمود ١ صار له مصدران
+ * يُعرَضان معاً في الطرح الظلّيّ: المخزَّن (`currentBalance`) والمشتقّ من الدفتر
+ * (`deriveCashInHandFromLedger`)، ومن يُقدَّم منهما في `net` يقرّره علَم `courierLedgerDerived`.
+ * إشاراتُ الأجور تُقرأ من `DELIVERY_LEDGER_ENTRY_SIGN` (ثابتٌ واحد مع قاموس الدفتر) — انظر
+ * `deliveryFeeLiabilityDelta` وقرارَ المالك المعلَّق على `FEE_REFUNDED` هناك.
  */
+
+import {
+  DELIVERY_CASH_CUSTODY_SIGN,
+  DELIVERY_FEE_ENTRY_TYPES,
+  deliveryFeeLiabilityDelta,
+  type DeliveryFeeEntryType,
+} from "./deliveryLedgerEntryType";
 
 export type PartyExposureLedgerEntry = {
   entryType:
@@ -38,6 +52,15 @@ export type PartyExposureParcelSnapshot = {
   codAmount: string | number;
   collectedAmount: string | number;
   counterSettledAmount?: string | number | null;
+  /**
+   * م١ (PR-2) — **ما تحمله الجهة من نقد هذا الطرد بحسب الدفتر** (Σ `DELIVERY_CASH_CUSTODY_SIGN`
+   * لقيود الطرد: قُبض + عجزٌ مُحمَّل − وُرِّد − شُطب). لماذا لزم: `collectedAmount` عمودُ
+   * **تخصيص التوريد** لا القبض — ختمُ التسليم من البوّابة يكتب `COD_COLLECTED` ويرفع العهدة
+   * ولا يمسّه. فطردٌ سُلِّم وقُبض نقدُه ولم يُورَّد كان يُحسَب **مرّتين**: نقداً بيد الجهة
+   * (العمود ١) **و**«سُلِّم لم يُحصَّل» (العمود ٣) بكامل قيمته — وصافي المسؤوليّة ضعفَ الحقيقة.
+   * `null`/غياب = صفر (الصفوف القديمة بلا قيود قبض تبقى كما كانت: المتبقّي كلُّه غير محصَّل).
+   */
+  ledgerCustody?: string | number | null;
 };
 
 export type PartyExposureBreakdown = {
@@ -60,6 +83,22 @@ const toNum = (v: string | number | null | undefined): number => {
 };
 
 const fmt = (n: number): string => n.toFixed(2);
+
+/**
+ * م١ (PR-2/3) — **النقد بيد الجهة مشتقّاً من الدفتر الإلحاقيّ** (مصدر الحقيقة المستهدَف):
+ *   Σ COD_COLLECTED + Σ SHORTFALL_ASSIGNED − Σ COD_REMITTED − Σ COD_WRITTEN_OFF
+ * الأنواعُ والإشارات من `DELIVERY_CASH_CUSTODY_SIGN` (ثابتٌ واحد يقرؤه الخادم SQL أيضاً).
+ * الدالّة خطّيّة في المبالغ ⇒ تمريرُ مجاميعَ مُجمَّعةٍ لكلّ نوعٍ يُنتج نفس الناتج تماماً.
+ */
+export function deriveCashInHandFromLedger(ledger: PartyExposureLedgerEntry[]): string {
+  let cash = 0;
+  for (const e of ledger) {
+    const sign = (DELIVERY_CASH_CUSTODY_SIGN as Record<string, 1 | -1 | undefined>)[e.entryType];
+    if (sign == null) continue;
+    cash += sign * toNum(e.amount);
+  }
+  return fmt(cash);
+}
 
 /**
  * ملحوظة معماريّة: لا نقرأ من DB هنا — المستدعي في server/queries.ts يجمع البيانات
@@ -88,7 +127,9 @@ export function computePartyExposure(input: {
       p.parcelStatus === "DELIVERED" &&
       (p.moneyStatus === "UNSETTLED" || p.moneyStatus === "PARTIAL")
     ) {
-      const remaining = cod - collected - counter;
+      // ما لم يدفعه الزبون بعد = المتبقّي الحيّ − ما قبضته الجهة منه فعلاً (عهدةُ الطرد في الدفتر).
+      const custody = toNum(p.ledgerCustody ?? 0);
+      const remaining = cod - collected - counter - Math.max(0, custody);
       if (remaining > 0) deliveredUncollected += remaining;
     }
   }
@@ -96,12 +137,12 @@ export function computePartyExposure(input: {
   // ٤) أجور مستحقّة للمندوب — يُخصَم منها المدفوع/المُسوَّى، مقصوصةً عند صفر لكل جهة (ليس لكل طرد،
   // فالمقصّ هنا على المجموع لأنّ الجهة الواحدة قد يُوازِن دَينٌ منها فائضاً على طرد آخر — دلالياً
   // «إجمالي أجورها الصافية»؛ الطرود السالبة تعني تصحيحاً محاسبياً مقبولاً في المجموع).
+  // الإشارةُ من الثابت الواحد `DELIVERY_LEDGER_ENTRY_SIGN` (عبر `deliveryFeeLiabilityDelta`) — لا
+  // قائمةَ محلّية تنجرف عن قاموس الدفتر (كانت `FEE_REFUNDED` تُطرح هنا وتُرفع هناك).
   let feesOwedRaw = 0;
   for (const e of input.ledger) {
-    const amt = toNum(e.amount);
-    if (e.entryType === "FEE_EARNED") feesOwedRaw += amt;
-    else if (e.entryType === "FEE_REFUNDED") feesOwedRaw -= amt;
-    else if (e.entryType === "FEE_PAID" || e.entryType === "FEE_OFFSET") feesOwedRaw -= amt;
+    if (!(DELIVERY_FEE_ENTRY_TYPES as readonly string[]).includes(e.entryType)) continue;
+    feesOwedRaw += deliveryFeeLiabilityDelta(e.entryType as DeliveryFeeEntryType) * toNum(e.amount);
   }
   const feesOwedToThem = Math.max(0, feesOwedRaw);
 
