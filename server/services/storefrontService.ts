@@ -43,6 +43,7 @@ import {
   evaluateStorefrontUnitEligibility,
   storefrontPublishableCondition,
 } from "./storefrontEligibilityService";
+import { resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
 import { titleForChannel } from "@shared/productChannelTitles";
 import {
@@ -854,41 +855,53 @@ export async function storefrontCatalog(opts: {
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
-    // تطبيعٌ عربيّ مشتركٌ مع اقتراحات العميل ([`shared/storefrontSearchNormalize.ts`](../../shared/storefrontSearchNormalize.ts))
-    // — يوحّد الألفات (أ/إ/آ ⇒ ا) والتاء المربوطة (ة ⇒ ه) ويطوي الفراغات المتعدّدة. كان الاقتراح
-    // يظهر لحظياً لأنّ العميل يُطبّع محلياً، ثمّ يختفي حين يستبدل الخادم صفحات الكتالوج بنتائج LIKE
-    // خامّ ⇒ Codex P2 على #904. نطبّق نفس التطبيع على العمود ⇒ ما ظهر في القائمة يبقى في الصفحة.
-    //
-    // تصحيح Codex على #907 (٢ من ٢): (١) طيّ الفراغات SQL يجب أن يوازي طيّ الفراغات JS وإلّا
-    // `قلم  ازرق` المخزَّن لا يُطابق `قلم ازرق` المُبحَث — نطبّقه بـREGEXP_REPLACE. (٢) الباركود
-    // يبقى بنمطٍ خامّ (بلا تطبيع عربيّ) — الكتالوجُ يقبله سلسلةً حرّة، فباركودٌ فيه `أ` يُخفَق
-    // مع نمطٍ فيه `ا`؛ نُفصلُ نمطَه.
-    //
-    // الأزواج ثابتةٌ لا مدخلَ من المستخدم ⇒ لا حقن؛ القيمة المُطبَّعة مربوطةٌ بالوسائط.
-    // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث.
-    const normalizedTerm = normalizeArabicSearch(s);
-    const p = `%${escLike(normalizedTerm)}%`;
-    const barcodePattern = `%${escLike(s)}%`;
-    // بناءُ عبارة تطبيعٍ على العمود بنفس ترتيب `normalizeArabicSearch`:
-    //   REPLACE المُتَتَابع للأزواج → `REGEXP_REPLACE` لطيّ الفراغات → `TRIM` → `LOWER`
-    // MySQL 8 REGEXP_REPLACE + POSIX class `[[:space:]]` أوسع من `\\s` (يشمل U+00A0/NBSP وسواه).
-    // توسيعُ أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا.
-    const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
-      let expr: SQL = sql`${col}`;
-      for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
-        expr = sql`REPLACE(${expr}, ${from}, ${to})`;
-      }
-      return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
-    };
-    // storeTitle: عنوان القناة (عرضٌ في المتجر) — كان مغيَّباً عن البحث فتنعدمُ قابليّةُ اكتشاف
-    // منتجٍ ذي عنوانٍ متجريٍّ مختلفٍ عن اسمه الداخليّ. `LIKE` على NULL = NULL ⇒ يُعامَل كاذباً في OR.
-    const searchCond = or(
-      arabicLike(products.name, p),
-      arabicLike(products.storeTitle, p),
-      arabicLike(products.brand, p),
-      sql`${productUnits.barcode} LIKE ${barcodePattern} ESCAPE '!'`,
-    );
-    if (searchCond) conds.push(searchCond);
+    // هوية الباركود تُحسم أولاً بالمساواة المفهرسة على الشكل الخام ومرشّحات UPC/EAN؛
+    // لا نمرّرها عبر مطبّع بحث الأسماء الذي يطوي مسافتين داخليتين إلى واحدة.
+    // مسار الإرث المطبّع يستخدم مفتاح barcodeNormalized المفهرس؛ فلا يضيف مسحاً كاملاً لبحث الأسماء.
+    const barcodeResolution = await resolveBarcodeOwnerResult(db, s, { allowNormalizedFallback: true });
+    if (barcodeResolution.status === "FOUND") {
+      // البحث بالباركود عقدُ وحدة لا عقدُ منتج: اختيار أول وحدة للمنتج قد يبدّل كرتوناً
+      // ممسوحاً إلى قطعة بسعر ومعامل مختلفين، فتصل حبيبة سلة خاطئة إلى createOrder.
+      conds.push(eq(productUnits.id, barcodeResolution.owner.productUnitId));
+    } else if (barcodeResolution.status === "AMBIGUOUS") {
+      conds.push(sql`false`);
+    } else {
+      // تطبيعٌ عربيّ مشتركٌ مع اقتراحات العميل ([`shared/storefrontSearchNormalize.ts`](../../shared/storefrontSearchNormalize.ts))
+      // — يوحّد الألفات (أ/إ/آ ⇒ ا) والتاء المربوطة (ة ⇒ ه) ويطوي الفراغات المتعدّدة. كان الاقتراح
+      // يظهر لحظياً لأنّ العميل يُطبّع محلياً، ثمّ يختفي حين يستبدل الخادم صفحات الكتالوج بنتائج LIKE
+      // خامّ ⇒ Codex P2 على #904. نطبّق نفس التطبيع على العمود ⇒ ما ظهر في القائمة يبقى في الصفحة.
+      //
+      // تصحيح Codex على #907 (٢ من ٢): (١) طيّ الفراغات SQL يجب أن يوازي طيّ الفراغات JS وإلّا
+      // `قلم  ازرق` المخزَّن لا يُطابق `قلم ازرق` المُبحَث — نطبّقه بـREGEXP_REPLACE. (٢) الباركود
+      // يبقى بنمطٍ خامّ (بلا تطبيع عربيّ) — الكتالوجُ يقبله سلسلةً حرّة، فباركودٌ فيه `أ` يُخفَق
+      // مع نمطٍ فيه `ا`؛ نُفصلُ نمطَه.
+      //
+      // الأزواج ثابتةٌ لا مدخلَ من المستخدم ⇒ لا حقن؛ القيمة المُطبَّعة مربوطةٌ بالوسائط.
+      // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث.
+      const normalizedTerm = normalizeArabicSearch(s);
+      const p = `%${escLike(normalizedTerm)}%`;
+      const barcodePattern = `%${escLike(s)}%`;
+      // بناءُ عبارة تطبيعٍ على العمود بنفس ترتيب `normalizeArabicSearch`:
+      //   REPLACE المُتَتَابع للأزواج → `REGEXP_REPLACE` لطيّ الفراغات → `TRIM` → `LOWER`
+      // MySQL 8 REGEXP_REPLACE + POSIX class `[[:space:]]` أوسع من `\\s` (يشمل U+00A0/NBSP وسواه).
+      // توسيعُ أزواج التطبيع مستقبلاً يمرّ من ملفٍ واحد ويسري تلقائياً هنا.
+      const arabicLike = (col: SQL | AnyColumn, pattern: string) => {
+        let expr: SQL = sql`${col}`;
+        for (const [from, to] of ARABIC_NORMALIZATION_PAIRS) {
+          expr = sql`REPLACE(${expr}, ${from}, ${to})`;
+        }
+        return sql`LOWER(TRIM(REGEXP_REPLACE(${expr}, '[[:space:]]+', ' '))) LIKE ${pattern} ESCAPE '!'`;
+      };
+      // storeTitle: عنوان القناة (عرضٌ في المتجر) — كان مغيَّباً عن البحث فتنعدمُ قابليّةُ اكتشاف
+      // منتجٍ ذي عنوانٍ متجريٍّ مختلفٍ عن اسمه الداخليّ. `LIKE` على NULL = NULL ⇒ يُعامَل كاذباً في OR.
+      const searchCond = or(
+        arabicLike(products.name, p),
+        arabicLike(products.storeTitle, p),
+        arabicLike(products.brand, p),
+        sql`${productUnits.barcode} LIKE ${barcodePattern} ESCAPE '!'`,
+      );
+      if (searchCond) conds.push(searchCond);
+    }
   }
   // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
   // variant×unit كي لا يبتلع متغيّر واحد الصفحة كلها. cursor هو آخر منتج من هذا الترتيب لا

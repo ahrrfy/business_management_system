@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import type { ProductBarcodeMatch } from "@shared/productScan";
+import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { nonNegMoneyString } from "../lib/schemas";
 import { alias } from "drizzle-orm/mysql-core";
@@ -35,7 +36,7 @@ import {
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import { signedMoveQty } from "../services/inventoryService";
 import { buildVariantCatalogSearchWhere } from "../services/catalog/search";
-import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
+import { barcodeAmbiguityMessage, resolveBarcodeOwnerResult } from "../services/catalog/barcodeAliases";
 import { loadProductIdentificationImages } from "../services/catalog/productIdentification";
 import {
   ADJUSTMENT_REASONS,
@@ -702,8 +703,24 @@ export const inventoryRouter = router({
       const conds: any[] = [
         sql`(${branchStock.variantId} IS NOT NULL OR (${productVariants.isActive} = true AND ${products.isActive} = true AND ${products.isService} = false AND ${products.isBundle} = false))`,
       ];
-      const search = buildVariantCatalogSearchWhere(input?.q);
-      if (search) conds.push(search);
+      // المسحُ هويةٌ قاطعة لا بحثٌ ضبابيّ: حلّ المالك أولاً بعقد الباركود المركزي، ثم
+      // احصر الصفّ في متغيّره. هذا يمنع اسمَ منتجٍ عَرَضياً يحتوي الرمز من أن يسبق المالك
+      // عند limit=1، ويشفي الإرث الملوّث وتكافؤ UPC-A/EAN-13 في شاشة الجرد نفسها.
+      const scannedBarcode = canonicalizeBarcodeInput(input?.q ?? "");
+      const scanResolution = scannedBarcode
+        // المطابقة المطبعة مفهرسة الآن؛ شكل الحروف وحده لا يميّز الاسم عن باركود المورد.
+        ? await resolveBarcodeOwnerResult(db, scannedBarcode)
+        : { status: "NOT_FOUND" as const };
+      if (scanResolution.status === "AMBIGUOUS") {
+        throw new TRPCError({ code: "CONFLICT", message: barcodeAmbiguityMessage("تعذّر تحديد صنف الجرد من الباركود") });
+      }
+      const scanOwner = scanResolution.status === "FOUND" ? scanResolution.owner : null;
+      if (scanOwner) {
+        conds.push(eq(productVariants.id, scanOwner.variantId));
+      } else {
+        const search = buildVariantCatalogSearchWhere(input?.q);
+        if (search) conds.push(search);
+      }
       // «تحت الحدّ» و«سالب فقط»: مقارنةٌ على الحقل الخام دون COALESCE — المتغيّر بلا صفٍّ
       // (quantity = NULL) لا يُصنّف «تحت الحدّ» ولا «سالباً»، فلا يُفيض هذان الفلتران بمنتجاتٍ
       // كتالوجيّة صفريّة. من يريد رؤيتها يفتح القائمة بلا فلتر «تحت الحدّ».
@@ -783,9 +800,6 @@ export const inventoryRouter = router({
         })),
         { kind: "inventory" },
       );
-      const scannedBarcode = input?.q?.trim() ?? "";
-      const scanOwner = scannedBarcode ? await resolveBarcodeOwner(db, scannedBarcode) : null;
-
       return rows.map((r) => {
         // hasStockRow = صفٌّ فعليّ في branchStock (LEFT JOIN التقط الرصيد). المتغيّرات
         // الكتالوجيّة الصفريّة (لا صفَّ) تخرج بـ`quantity = 0` لكنّ isLow=false — كي يتطابق

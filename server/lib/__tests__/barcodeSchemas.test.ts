@@ -22,4 +22,10 @@ describe("barcodeString / optionalBarcodeString — حدّ الإدخال يُط
     expect(optionalBarcodeString.parse(" 6001000000017 ")).toBe("6001000000017");
     expect(optionalBarcodeString.safeParse("1".repeat(65)).success).toBe(false);
   });
+
+  it("يزيل علامات الاتجاه ويرفض محارف التحكّم الداخلية", () => {
+    expect(barcodeString.parse("\u200f١٠٠٩٥\u2066")).toBe("10095");
+    expect(() => barcodeString.parse("AB\t12")).toThrow(/محارف تحكّم/);
+    expect(() => barcodeString.parse("AB\u000012")).toThrow(/محارف تحكّم/);
+  });
 });

@@ -30,7 +30,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { type Actor, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";

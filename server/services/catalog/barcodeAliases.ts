@@ -5,12 +5,13 @@
 // يمرّ على الجدولين معاً قبل أيّ إدراج، والبحث بالباركود يمرّ عليهما معاً كذلك.
 //
 // (٤/٩) التطبيع: كل باركود يدخل هنا — للحفظ أو للمطابقة — يمرّ بـ`canonicalizeBarcodeInput`
-// (تقليم + طيّ أرقام عربية-هندية). وللمطابقة مسارٌ احتياطيّ على العمود المُطبَّع داخل SQL كي يبقى
-// الإرثُ الملوَّث (صفوفٌ حُفظت قبل التطبيع بمسافةٍ طرفية) قابلاً للمسح بلا هجرةِ بيانات.
+// (تقليم + طيّ أرقام عربية-هندية). والمطابقة بهوية الباركود تقرأ العمود المولّد المُطبَّع
+// والمفهرس، فيبقى الإرث الملوَّث قابلاً للمسح بلا full scan ولا هجرة بيانات.
 import { TRPCError } from "@trpc/server";
 import { asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { ProductBarcodeMatchKind } from "@shared/productScan";
-import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { appErrorMessage } from "@shared/errors";
 import { getDb, type DB, type Tx } from "../../db";
 import { productUnits, productUnitBarcodes, productVariants, products } from "../../../drizzle/schema";
 import { foldDigitsSql } from "../../lib/similarMatch";
@@ -19,84 +20,130 @@ type DbOrTx = DB | Tx;
 
 export type BarcodeOwner = {
   productUnitId: number;
+  productId: number;
   variantId: number;
   productName: string;
+  variantName: string | null;
   unitName: string;
   sku: string | null;
   matchKind: ProductBarcodeMatchKind;
   primaryBarcode: string | null;
   factor: number;
+  productActive: boolean;
+  variantActive: boolean;
+  unitActive: boolean;
+  isBundle: boolean;
+  isService: boolean;
 };
+
+export type BarcodeOwnerResolution =
+  | { status: "FOUND"; owner: BarcodeOwner }
+  | { status: "NOT_FOUND" }
+  | { status: "AMBIGUOUS" };
+
+export function barcodeAmbiguityMessage(what: string): string {
+  return appErrorMessage({
+    what,
+    why: "الباركود يطابق أكثر من وحدة في الكتالوج، واختيار إحداها آلياً قد ينفّذ العملية على الصنف الخطأ",
+    doThis: "افتح المنتجات وصحّح الباركودات المتعارضة، ثم أعد المسح",
+  });
+}
 
 /**
  * الباركود المخزَّن بعد تطبيعه داخل SQL: تقليم + حالةٌ موحّدة (صغيرة) + طيّ الأرقام العربية-الهندية
  * والفارسية — يُقارَن بمُدخلٍ مُطبَّعٍ **بحروفٍ صغيرة**.
  *
- * ⚠️ دالّةٌ على العمود ⇒ تُعطّل فهرس `barcode` الفريد. لذلك هي **المسار الاحتياطيّ** بعد إخفاق المساواة
- * الخامّة على مسار الكاشير الساخن (`resolveBarcodeOwner`)، ولا تُدفَع كلفتُها إلّا حين يُخطئ المسار
- * السريع. في الاستوديو (`listStudioProducts`) الاستعلامُ مسحٌ متعدّد الشروط أصلاً فتُستعمل مباشرةً.
+ * تُستعمل أيضاً للتحقق من تعارض الإرث قبل قبول التطابق الحرفي: وجود صف نظيف لا يثبت
+ * انفراده بالهوية. لا نخزّن نتيجة هذا الفحص في كاش كي تظهر الكتابات المتزامنة فوراً.
  */
 export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
+  if (column === productUnits.barcode) return sql`${productUnits.barcodeNormalized}`;
+  if (column === productUnitBarcodes.barcode) return sql`${productUnitBarcodes.barcodeNormalized}`;
   // يجب أن يُطابق `canonicalizeBarcodeInput` (الذي يقلّم بـJS `String.prototype.trim()`): وهذا يزيل
   // **كلّ** الفراغات الطرفية (space + \t \n \r \f \v + NBSP)، لا مسافة ASCII وحدها كما يفعل MySQL
   // `TRIM()` بلا وسيط. عدمُ التكافؤ كان يُعمي المسارَ الاحتياطيّ وكشفَ الصدام عن إرثٍ ملوَّث بتبويب/سطرٍ
   // جديد (لاحقة Excel/الماسح CR/LF/Tab — وهي المصدر الذي صرّح به هذا الإصلاح). التقليم **طرفيٌّ فقط**
   // (`^…|…$`) حفاظاً على مسافة Code39 الداخليّة المعنويّة التي يُبقيها التطبيعُ نفسه. NBSP (بايتاه C2A0)
-  // قد لا يلتقطه `[[:space:]]` في بعض البناءات فنُحوّله مسافةً أوّلاً. القيم كلّها معاملات ⇒ لا حقن.
-  const denbsp = sql`replace(${column}, unhex('C2A0'), ' ')`;
-  const trimmed = sql`regexp_replace(${denbsp}, '^[[:space:]]+|[[:space:]]+$', '')`;
+  // قد لا يلتقطه `[[:space:]]` في بعض البناءات فنذكره صراحةً عند الحواف فقط. القيم كلّها معاملات ⇒ لا حقن.
+  let visible: SQL = sql`${column}`;
+  for (const mark of ["\u00ad", "\u061c", "\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e", "\u2060", "\u2061", "\u2062", "\u2063", "\u2064", "\u2066", "\u2067", "\u2068", "\u2069", "\ufeff"]) {
+    visible = sql`replace(${visible}, ${mark}, '')`;
+  }
+  const edge = "[\\x{0000}-\\x{0020}\\x{007f}-\\x{00a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]";
+  const trimmed = sql`regexp_replace(${visible}, ${`^${edge}+|${edge}+$`}, '')`;
   return foldDigitsSql(sql`lower(${trimmed})`);
 }
 
 /** شرط «يساوي أيّاً من القيم» على العمود المُطبَّع — لكشف الصدام مع الإرث الملوَّث. مُصدَّرٌ لإعادة
  *  استعماله في كشف مُلّاك الإرث الملوَّث بمسار الاستيراد (import/products). */
 export function normalizedMatchAny(column: SQLWrapper, codes: string[]): SQL | undefined {
-  const lows = Array.from(new Set(codes.map((c) => c.toLowerCase())));
+  const lows = Array.from(
+    new Set(codes.flatMap(barcodeIdentityCandidates).map((candidate) => candidate.toLowerCase())),
+  );
   if (!lows.length) return undefined;
-  return or(...lows.map((v) => sql`${normalizedStoredBarcodeSql(column)} = ${v}`));
+  return inArray(normalizedStoredBarcodeSql(column), lows);
 }
 
-async function findPrimaryOwner(db: DbOrTx, where: SQL): Promise<BarcodeOwner | null> {
+async function findPrimaryOwners(db: DbOrTx, where: SQL): Promise<BarcodeOwner[]> {
   const rows = await db
     .select({
       productUnitId: productUnits.id,
+      productId: products.id,
       variantId: productVariants.id,
       productName: products.name,
+      variantName: productVariants.variantName,
       unitName: productUnits.unitName,
       sku: productVariants.sku,
       primaryBarcode: productUnits.barcode,
       factor: productUnits.conversionFactor,
+      productActive: products.isActive,
+      variantActive: productVariants.isActive,
+      unitActive: productUnits.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(where)
     .orderBy(asc(productUnits.id))
-    .limit(1);
-  const r = rows[0];
-  if (!r) return null;
-  return {
+    .limit(2);
+  return rows.map((r) => ({
     productUnitId: Number(r.productUnitId),
+    productId: Number(r.productId),
     variantId: Number(r.variantId),
     productName: r.productName,
+    variantName: r.variantName,
     unitName: r.unitName,
     sku: r.sku,
     matchKind: "PRIMARY",
     primaryBarcode: r.primaryBarcode,
     factor: Number(r.factor),
-  };
+    productActive: Boolean(r.productActive),
+    variantActive: Boolean(r.variantActive),
+    unitActive: Boolean(r.unitActive),
+    isBundle: Boolean(r.isBundle),
+    isService: Boolean(r.isService),
+  }));
 }
 
-async function findAliasOwner(db: DbOrTx, where: SQL): Promise<BarcodeOwner | null> {
+async function findAliasOwners(db: DbOrTx, where: SQL): Promise<BarcodeOwner[]> {
   const rows = await db
     .select({
       productUnitId: productUnitBarcodes.productUnitId,
+      productId: products.id,
       variantId: productVariants.id,
       productName: products.name,
+      variantName: productVariants.variantName,
       unitName: productUnits.unitName,
       sku: productVariants.sku,
       primaryBarcode: productUnits.barcode,
       factor: productUnits.conversionFactor,
+      productActive: products.isActive,
+      variantActive: productVariants.isActive,
+      unitActive: productUnits.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
     })
     .from(productUnitBarcodes)
     .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
@@ -104,29 +151,34 @@ async function findAliasOwner(db: DbOrTx, where: SQL): Promise<BarcodeOwner | nu
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(where)
     .orderBy(asc(productUnitBarcodes.id))
-    .limit(1);
-  const r = rows[0];
-  if (!r) return null;
-  return {
+    .limit(2);
+  return rows.map((r) => ({
     productUnitId: Number(r.productUnitId),
+    productId: Number(r.productId),
     variantId: Number(r.variantId),
     productName: r.productName,
+    variantName: r.variantName,
     unitName: r.unitName,
     sku: r.sku,
     matchKind: "ALIAS",
     primaryBarcode: r.primaryBarcode,
     factor: Number(r.factor),
-  };
+    productActive: Boolean(r.productActive),
+    variantActive: Boolean(r.variantActive),
+    unitActive: Boolean(r.unitActive),
+    isBundle: Boolean(r.isBundle),
+    isService: Boolean(r.isService),
+  }));
 }
 
 /**
- * المسار الاحتياطيّ الشافي: يطابق العمود المُطبَّع (لإرثٍ حُفظ قبل تطبيع الكتابة)، لكنّه **يرفض الحسم
+ * مسار الهوية المُطبَّعة: يطابق العمود المولّد المفهرس (ويشفي إرثاً حُفظ قبل تطبيع الكتابة)، لكنه **يرفض الحسم
  * عند تعدّد المالك**. لو تطبّع صفّان ملوّثان على وحدتين مختلفتين إلى القيمة نفسها («10095 » و«10095\t»)،
  * فإعادةُ أدنى id صامتاً تُسعّر المسحَ وتخصم مخزونَ **غير صاحبه** (نقضُ «لا دينار لغير صاحبه»، §٥). عند
- * الغموض نُرجع null ⇒ رسالةُ «لا يطابق» الصاخبة، فيبحث الكاشير يدوياً بدل تسعيرٍ خاطئ صامت. يجمع المُلّاك
- * المتمايزين (بمعرّف الوحدة) عبر الجدولين؛ واحدٌ ⇒ يُعاد، صفرٌ ⇒ غير موجود، أكثرُ ⇒ غموضٌ ⇒ null.
+ * الغموض نُرجع حالةً صريحةً؛ يحوّلها المستدعي القديم إلى null، فيما يرفعها مسار البيع الحديث كتعارضٍ صاخب.
+ * يجمع المُلّاك المتمايزين (بمعرّف الوحدة) عبر الجدولين؛ واحدٌ ⇒ يُعاد، صفرٌ ⇒ غير موجود، أكثرُ ⇒ غموض.
  */
-async function resolveNormalizedOwner(db: DbOrTx, loose: string): Promise<BarcodeOwner | null> {
+async function resolveNormalizedOwner(db: DbOrTx, candidates: string[]): Promise<BarcodeOwnerResolution> {
   // نعدّ المُلّاك المتمايزين بـ **معرّف الوحدة** لا بالصفوف: وحدةٌ واحدة قد تملك عدّة بدائلَ ملوّثة
   // تتطبّع كلّها إلى القيمة نفسها، فحدُّ الصفوف (limit 2) قد يُرجع صفَّين لمالكٍ واحد ويُخفي مالكاً
   // ثالثاً مختلفاً ⇒ حسمٌ خاطئ (مراجعة Codex P1). لذا نُجمّع على معرّف الوحدة (`groupBy`) ونحدّ
@@ -134,7 +186,7 @@ async function resolveNormalizedOwner(db: DbOrTx, loose: string): Promise<Barcod
   const primUnits = await db
     .select({ id: productUnits.id })
     .from(productUnits)
-    .where(sql`${normalizedStoredBarcodeSql(productUnits.barcode)} = ${loose}`)
+    .where(normalizedMatchAny(productUnits.barcode, candidates))
     .groupBy(productUnits.id)
     .limit(2);
   const ownerIds = new Set<number>(primUnits.map((r) => Number(r.id)));
@@ -142,53 +194,86 @@ async function resolveNormalizedOwner(db: DbOrTx, loose: string): Promise<Barcod
     const aliUnits = await db
       .select({ id: productUnitBarcodes.productUnitId })
       .from(productUnitBarcodes)
-      .where(sql`${normalizedStoredBarcodeSql(productUnitBarcodes.barcode)} = ${loose}`)
+      .where(normalizedMatchAny(productUnitBarcodes.barcode, candidates))
       .groupBy(productUnitBarcodes.productUnitId)
       .limit(2);
     for (const r of aliUnits) ownerIds.add(Number(r.id));
   }
-  if (ownerIds.size !== 1) return null; // صفر = غير موجود، أكثرُ من واحد = غموضٌ لا يُحسَم صامتاً
+  if (ownerIds.size === 0) return { status: "NOT_FOUND" };
+  if (ownerIds.size > 1) return { status: "AMBIGUOUS" };
   const unitId = ownerIds.values().next().value as number;
   const isPrimary = primUnits.some((r) => Number(r.id) === unitId);
   const [row] = await db
     .select({
+      productId: products.id,
       variantId: productVariants.id,
       productName: products.name,
+      variantName: productVariants.variantName,
       unitName: productUnits.unitName,
       sku: productVariants.sku,
       primaryBarcode: productUnits.barcode,
       factor: productUnits.conversionFactor,
+      productActive: products.isActive,
+      variantActive: productVariants.isActive,
+      unitActive: productUnits.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(eq(productUnits.id, unitId))
     .limit(1);
-  if (!row) return null;
-  return {
+  if (!row) return { status: "NOT_FOUND" };
+  return { status: "FOUND", owner: {
     productUnitId: unitId,
+    productId: Number(row.productId),
     variantId: Number(row.variantId),
     productName: row.productName,
+    variantName: row.variantName,
     unitName: row.unitName,
     sku: row.sku,
     matchKind: isPrimary ? "PRIMARY" : "ALIAS",
     primaryBarcode: row.primaryBarcode,
     factor: Number(row.factor),
-  };
+    productActive: Boolean(row.productActive),
+    variantActive: Boolean(row.variantActive),
+    unitActive: Boolean(row.unitActive),
+    isBundle: Boolean(row.isBundle),
+    isService: Boolean(row.isService),
+  } };
 }
 
 /** يحلّ باركوداً واحداً إلى وحدة المنتج المالكة — أساسيّاً كان أو بديلاً. للاستعمال الداخليّ. */
-export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<BarcodeOwner | null> {
+export async function resolveBarcodeOwnerResult(
+  db: DbOrTx,
+  code: string,
+  options?: { allowNormalizedFallback?: boolean },
+): Promise<BarcodeOwnerResolution> {
   const c = canonicalizeBarcodeInput(code);
-  if (!c) return null;
-  // المسار السريع: مساواةٌ خامّة تستعمل فهرس `productUnits.barcode` الفريد — الأساسيّ أوّلاً ثم البديل.
-  const exact = (await findPrimaryOwner(db, eq(productUnits.barcode, c))) ?? (await findAliasOwner(db, eq(productUnitBarcodes.barcode, c)));
-  if (exact) return exact;
-  // المسار الاحتياطيّ (٤/٩): صفٌّ حُفظ قبل تطبيع الحفظ قد يحمل فراغاً طرفياً أو رقماً عربياً-هندياً ⇒
-  // المساواة الخامّة تُخطئه رغم أنّ الباركود «هو نفسه» بعين الإنسان والماسح. نُطبّع العمودَ داخل SQL
-  // ونقارن بالمُدخل المُطبَّع، **رافضين الحسمَ عند تعدّد المالك** (لئلّا يُسعَّر المسحُ لغير صاحبه).
-  // الكلفة مسحٌ بلا فهرس — تُدفَع فقط حين يُخطئ المسار السريع (المسحُ الموجود يعود فوراً)، لا على كلّ مسح.
-  return resolveNormalizedOwner(db, c.toLowerCase());
+  if (!c) return { status: "NOT_FOUND" };
+  const candidates = barcodeIdentityCandidates(c);
+  // المسار السريع مفهرس، لكنه يجمع الشكلين UPC-A/EAN-13 وعبر الجدولين قبل الحسم.
+  // إن امتلك الشكلين مالكان مختلفان نفشل بصخب بدلاً من خصم مخزون الصنف الخطأ.
+  const primaryMatches = await findPrimaryOwners(db, inArray(productUnits.barcode, candidates));
+  const aliasMatches = await findAliasOwners(db, inArray(productUnitBarcodes.barcode, candidates));
+  const exactOwners = new Set([...primaryMatches, ...aliasMatches].map((owner) => owner.productUnitId));
+  if (exactOwners.size > 1) return { status: "AMBIGUOUS" };
+  if (exactOwners.size === 1) {
+    // التطابق الحرفي لا يجيز تجاوز تعارض مع صف إرثي على وحدة أخرى.
+    return resolveNormalizedOwner(db, candidates);
+  }
+  if (options?.allowNormalizedFallback === false) return { status: "NOT_FOUND" };
+  // مسار الهوية المُطبَّعة (٤/٩): صفٌّ حُفظ قبل تطبيع الحفظ قد يحمل فراغاً طرفياً أو رقماً عربياً-هندياً ⇒
+  // المساواة الخامّة تُخطئه رغم أنّ الباركود «هو نفسه» بعين الإنسان والماسح. نقرأ هوية العمود المولّدة
+  // والمفهرسة ونقارنها بالمُدخل المُطبَّع، **رافضين الحسمَ عند تعدّد المالك** (لئلّا يُسعَّر المسحُ لغير صاحبه).
+  // العمود المولّد وفهرسه يجعلان هذا بحث هوية مفهرساً؛ لم يعد full scan احتياطياً.
+  return resolveNormalizedOwner(db, candidates);
+}
+
+export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<BarcodeOwner | null> {
+  const result = await resolveBarcodeOwnerResult(db, code);
+  return result.status === "FOUND" ? result.owner : null;
 }
 
 /** كاشف صدامات الباركود داخل معاملة الكتابة (tx) — نقطة الحقيقة للـwrite paths.
@@ -198,15 +283,16 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
 export async function findBarcodeClashes(
   tx: DbOrTx,
   codes: string[],
-  opts?: { ignorePrimaryUnitIds?: number[]; ignoreAliasIds?: number[] },
+  opts?: { ignorePrimaryUnitIds?: number[]; ignoreAliasIds?: number[]; ignoreProductIds?: number[] },
 ): Promise<Array<{ code: string; takenBy: string; source: "primary" | "alias" }>> {
-  const clean = Array.from(new Set(codes.map(canonicalizeBarcodeInput).filter(Boolean)));
+  const clean = Array.from(new Set(codes.flatMap(barcodeIdentityCandidates).filter(Boolean)));
   if (!clean.length) return [];
   const ignorePrim = opts?.ignorePrimaryUnitIds ?? [];
   const ignoreAli = opts?.ignoreAliasIds ?? [];
+  const ignoreProducts = opts?.ignoreProductIds ?? [];
 
   const primary = await tx
-    .select({ id: productUnits.id, code: productUnits.barcode, productName: products.name, sku: productVariants.sku })
+    .select({ id: productUnits.id, code: productUnits.barcode, productId: products.id, productName: products.name, sku: productVariants.sku })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
@@ -216,6 +302,7 @@ export async function findBarcodeClashes(
     .select({
       id: productUnitBarcodes.id,
       code: productUnitBarcodes.barcode,
+      productId: products.id,
       productName: products.name,
       sku: productVariants.sku,
     })
@@ -229,20 +316,24 @@ export async function findBarcodeClashes(
   for (const r of primary) {
     if (!r.code) continue;
     if (ignorePrim.includes(Number(r.id))) continue;
+    if (ignoreProducts.includes(Number(r.productId))) continue;
     out.push({ code: r.code, takenBy: `${r.productName} (${r.sku})`, source: "primary" });
   }
   for (const r of aliases) {
     if (ignoreAli.includes(Number(r.id))) continue;
+    if (ignoreProducts.includes(Number(r.productId))) continue;
     out.push({ code: r.code, takenBy: `${r.productName} (${r.sku}) — بديل`, source: "alias" });
   }
   return out;
 }
 
-/** يفحص قائمةً من الباركودات ويعيد المُستعمَل منها (بصريّاً أو بديلاً) — للتحقّق اللحظيّ قبل الحفظ. */
+/** يفحص قائمةً من الباركودات ويعيد المُستعمَل منها (بصريّاً أو بديلاً) — للتحقّق اللحظيّ قبل الحفظ.
+ *  يُعيد النص المخزّن نفسه لكل صف مطابق؛ تعتمد شاشة التعديل عليه لاستثناء النص الأصلي للحقل وحده،
+ *  مع إبقاء صيغة UPC/EAN مكافئة مخزّنة على وحدة أخرى كتعارض حقيقي. */
 export async function checkBarcodesTakenAcrossBoth(codes: string[]): Promise<Array<{ code: string; takenBy: string }>> {
   const db = getDb();
   if (!db) return [];
-  const clean = Array.from(new Set(codes.map(canonicalizeBarcodeInput).filter(Boolean)));
+  const clean = Array.from(new Set(codes.flatMap(barcodeIdentityCandidates).filter(Boolean)));
   if (!clean.length) return [];
 
   const primary = await db

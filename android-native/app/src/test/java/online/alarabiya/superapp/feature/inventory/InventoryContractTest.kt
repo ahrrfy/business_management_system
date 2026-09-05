@@ -1,9 +1,13 @@
 package online.alarabiya.superapp.feature.inventory
 
+import online.alarabiya.superapp.core.scanner.NativeBarcodeResolution
 import online.alarabiya.superapp.model.AppBootstrap
 import online.alarabiya.superapp.model.ModuleAccess
 import online.alarabiya.superapp.model.UserIdentity
 import online.alarabiya.superapp.model.inventory.AdjustmentDraft
+import online.alarabiya.superapp.model.inventory.CountItem
+import online.alarabiya.superapp.model.inventory.CountSession
+import online.alarabiya.superapp.model.inventory.CountUnit
 import online.alarabiya.superapp.model.inventory.InventoryCapabilities
 import online.alarabiya.superapp.model.inventory.InventoryMappers
 import online.alarabiya.superapp.model.inventory.InventorySection
@@ -74,7 +78,7 @@ class InventoryContractTest {
             mapOf(
                 "changed" to true,
                 "state" to mapOf(
-                    "session" to mapOf("code" to "ST-26-4", "name" to "جرد أغسطس", "branchName" to "بغداد"),
+                    "session" to mapOf("code" to "ST-26-4", "name" to "جرد أغسطس", "branchName" to "بغداد", "countMethod" to "SCAN_REQUIRED"),
                     "assignment" to mapOf("name" to "الممر الأول", "zone" to "A"),
                     "progress" to mapOf("mine" to mapOf("counted" to 1, "total" to 2)),
                     "recountTasks" to listOf(mapOf("variantId" to 9, "reason" to "تحقق من العبوة")),
@@ -87,6 +91,7 @@ class InventoryContractTest {
                             "counted" to true,
                             "myCount" to mapOf("qty" to 12),
                             "colleagueCounted" to true,
+                            "units" to listOf(mapOf("unitName" to "قطعة", "factor" to "1", "barcode" to "0036000291452", "aliases" to listOf("ALT-9"))),
                         ),
                     ),
                 ),
@@ -98,6 +103,33 @@ class InventoryContractTest {
         assertEquals(12, count.items.single().myQuantity)
         assertTrue(count.items.single().colleagueCounted)
         assertEquals("تحقق من العبوة", count.items.single().recountReason)
+        assertEquals("SCAN_REQUIRED", count.countMethod)
+        assertEquals("036000291452", count.items.single().barcodeMatch("036000291452"))
+        assertEquals("alt-9", count.items.single().barcodeMatch("alt-9"))
+    }
+
+    @Test
+    fun countScanRejectsEquivalentBarcodeAssignedToDifferentVariants() {
+        fun item(id: Long, vararg barcodes: String) = CountItem(
+            variantId = id,
+            productName = "صنف $id",
+            variantName = null,
+            sku = "SKU-$id",
+            counted = false,
+            myQuantity = null,
+            colleagueCounted = false,
+            recountReason = null,
+            units = listOf(CountUnit("قطعة", "1", barcodes.first(), barcodes.drop(1))),
+        )
+        val first = item(1, "0036000291452", "ALT-1")
+        val unique = CountSession("C-1", "جرد", "الرئيسي", "تكليف", null, 0, 1, listOf(first))
+            .barcodeMatch("036000291452")
+        assertTrue(unique is NativeBarcodeResolution.Unique)
+        assertEquals(1L, (unique as NativeBarcodeResolution.Unique).value.variantId)
+
+        val ambiguous = uniqueSession(first, item(2, "036000291452"))
+            .barcodeMatch("0036000291452")
+        assertEquals(NativeBarcodeResolution.Ambiguous, ambiguous)
     }
 
     @Test
@@ -192,5 +224,16 @@ class InventoryContractTest {
         createdAt = null,
         createdByName = "مدير المخزون",
         lines = listOf(TransferLine(7, 9, "ورق", "A4", "P-A4", 5, null, null)),
+    )
+
+    private fun uniqueSession(vararg items: CountItem) = CountSession(
+        code = "C-1",
+        name = "جرد",
+        branchName = "الرئيسي",
+        assignmentName = "تكليف",
+        zone = null,
+        counted = 0,
+        total = items.size,
+        items = items.toList(),
     )
 }

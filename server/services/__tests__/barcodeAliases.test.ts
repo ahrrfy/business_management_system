@@ -16,12 +16,14 @@ import {
   migrateAliases,
   removeUnitBarcodeAlias,
   resolveBarcodeOwner,
+  resolveBarcodeOwnerResult,
   resolveProductUnitId,
 } from "../catalog/barcodeAliases";
 import { assignBarcode } from "../catalog/barcode";
 import { createProduct } from "../catalog/productCreate";
 import { lookupByBarcode } from "../catalog/pos";
 import { kioskLookup } from "../kioskService";
+import { barcodeComparisonKey } from "../../../shared/barcodeNormalize";
 
 const TABLES = [
   "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "productImages", "products",
@@ -63,6 +65,32 @@ async function seedBase() {
 
 describe("barcodeAliases — ثوابت السلامة", () => {
   beforeEach(async () => { await reset(); await seedBase(); });
+
+  it("generated identity keys match JS normalization and preserve the supplier's raw Code39 value", async () => {
+    const samples = [
+      "1  0095", "00095", "\u0000\u001b ١  ۰۰۹۵\r\n\u009f", "\u200fA\u2066B\u2069-95\ufeff",
+      "\u00a0ABC\u3000", "A\u00a0B", "A\tB", "Ä-95", "$95/+",
+    ];
+    for (let i = 0; i < samples.length; i++) {
+      const raw = samples[i];
+      await db().update(s.productUnits).set({ barcode: raw }).where(eq(s.productUnits.id, 1));
+      await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: raw });
+      const [primary] = await db().select().from(s.productUnits).where(eq(s.productUnits.id, 1));
+      const [alias] = await db().select().from(s.productUnitBarcodes).where(eq(s.productUnitBarcodes.productUnitId, 1));
+      expect(primary.barcode).toBe(raw);
+      expect(primary.barcodeNormalized).toBe(barcodeComparisonKey(raw));
+      expect(alias.barcodeNormalized).toBe(barcodeComparisonKey(raw));
+      await db().delete(s.productUnitBarcodes).where(eq(s.productUnitBarcodes.productUnitId, 1));
+    }
+  });
+
+  it("normalized ownership queries use persistent indexes on both barcode tables", async () => {
+    await db().insert(s.productUnitBarcodes).values({ productUnitId: 1, barcode: "1  0095" });
+    for (const [table, indexName] of [[s.productUnits, "idx_unit_barcode_normalized"], [s.productUnitBarcodes, "idx_alias_barcode_normalized"]] as const) {
+      const [plan] = await db().execute(sql`EXPLAIN SELECT ${table.id} FROM ${table} WHERE ${table.barcodeNormalized} IN (${"1  0095"})`);
+      expect((plan as unknown as Array<{ key: string }>)[0].key).toBe(indexName);
+    }
+  });
 
   describe("A1: البحث يمرّ على الأساسيّ والبديل معاً", () => {
     it("resolveBarcodeOwner يعيد نفس الوحدة للأساسيّ", async () => {
@@ -127,6 +155,15 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       ]);
       const codes = taken.map((t) => t.code).sort();
       expect(codes).toEqual(["6001000000017", "9990000000009"]);
+    });
+
+    it("يعيد النص المخزّن لكل مالك مكافئ كي لا يُخفى تصادم وحدة أخرى", async () => {
+      await db().update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 1));
+      await db().update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 3));
+
+      const taken = await checkBarcodesTakenAcrossBoth(["036000291452"]);
+
+      expect(taken.map((usage) => usage.code).sort()).toEqual(["0036000291452", "036000291452"]);
     });
   });
 
@@ -308,6 +345,20 @@ describe("barcodeAliases — ثوابت السلامة", () => {
         ),
       ).rejects.toThrow(/مكرّر|CONFLICT/);
     });
+
+    it("createProduct يرفض UPC-A وEAN-13 المكافئ داخل الحمولة نفسها", async () => {
+      await expect(createProduct({
+        name: "منتج UPC مزدوج",
+        variants: [{
+          sku: "UPC-DUP",
+          costPrice: "50.00",
+          units: [
+            { unitName: "قطعة", conversionFactor: "1", barcode: "036000291452", isBaseUnit: true },
+            { unitName: "علبة", conversionFactor: "12", barcode: "0036000291452" },
+          ],
+        }],
+      }, { userId: 1, branchId: 1 })).rejects.toThrow(/مكرّر|CONFLICT/);
+    });
   });
 
   describe("A7: findBarcodeClashes يحترم استثناءات المفاتيح", () => {
@@ -339,6 +390,20 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       // الكاشير (POS) والكشك يمرّان بالحلّال نفسه ⇒ يريان الصفّ الإرثيّ أيضاً بلا هجرة بيانات.
       expect(await lookupByBarcode("10095", 1, "RETAIL")).toMatchObject({ productUnitId: 3 });
       expect(await kioskLookup("9990000000044", 1)).toMatchObject({ productName: "قلم أزرق" });
+    });
+
+    it("يوحّد UPC-A مع EAN-13 ذي الصفر البادئ ويرفض الغموض بين مالكين", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "0036000291452" }).where(eq(s.productUnits.id, 1));
+      expect(await resolveBarcodeOwner(d, "036000291452")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      expect(await findBarcodeClashes(d, ["036000291452"])).toHaveLength(1);
+      await expect(assignBarcode(3, "036000291452")).rejects.toThrow(/مُستخدَم|CONFLICT/);
+
+      // صفّان إرثيان متكافئان في جدولٍ واحد: لا يُحسم أحدهما صامتاً.
+      await d.update(s.productUnits).set({ barcode: "036000291452" }).where(eq(s.productUnits.id, 3));
+      expect(await resolveBarcodeOwner(d, "036000291452")).toBeNull();
+      expect(await resolveBarcodeOwner(d, "0036000291452")).toBeNull();
+      expect(await resolveBarcodeOwnerResult(d, "036000291452")).toEqual({ status: "AMBIGUOUS" });
     });
 
     it("يشفي إرثاً ملوَّثاً بتبويب/سطرٍ جديد/مسافةٍ غير قابلة للكسر (لا مسافة ASCII وحدها)", async () => {
@@ -390,13 +455,12 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await resolveBarcodeOwner(d, "88800")).toMatchObject({ productUnitId: 1, matchKind: "ALIAS" });
     });
 
-    it("المسار السريع أوّلاً: الصفّ النظيف يفوز على الإرث الملوَّث المكافئ له", async () => {
-      // نظيفٌ على الوحدة ١ وملوَّثٌ مكافئ على الوحدة ٣ — المساواة الخامّة (المُفهرَسة) تُرجع النظيف
-      // قبل أن يُدفَع ثمنُ المسار الاحتياطيّ، فلا يتبدّل مالك الباركود بين مسحٍ وآخر.
+    it("يرفض تعارض الصفّ النظيف مع الإرث الملوَّث حتى عند وجود تطابق حرفي", async () => {
       const d = db();
       await d.update(s.productUnits).set({ barcode: "10095" }).where(eq(s.productUnits.id, 1));
       await d.update(s.productUnits).set({ barcode: " 10095 " }).where(eq(s.productUnits.id, 3));
-      expect(await resolveBarcodeOwner(d, "10095")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      expect(await resolveBarcodeOwnerResult(d, "10095")).toEqual({ status: "AMBIGUOUS" });
+      await expect(lookupByBarcode("10095", 1, "RETAIL")).rejects.toMatchObject({ code: "CONFLICT" });
     });
 
     it("الحفظ يُطبّع: assignBarcode/addUnitBarcodeAlias/createProduct تخزّن القيمة مقلَّمةً ومطويّة الأرقام", async () => {

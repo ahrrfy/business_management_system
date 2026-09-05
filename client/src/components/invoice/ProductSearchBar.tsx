@@ -18,6 +18,7 @@ import type { Currency, InvoiceLine, InvoiceType, PriceTier } from "./types";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
+import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -197,16 +198,47 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     inputRef.current?.focus();
   };
 
-  async function resolveExactBarcode(code: string) {
-    // جانب الشراء لا يملك byBarcode؛ نملأ النص المصحّح ليعمل البحث الخادميّ المعتاد.
-    if (isPurchase) {
-      setQuery(code);
-      setShowDrop(true);
-      return;
-    }
+  async function resolveExactBarcode(
+    code: string,
+    options: { quietNotFound?: boolean } = {},
+  ): Promise<ExactProductResolution> {
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
       if (row) {
+        if (isPurchase) {
+          // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
+          // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
+          const purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
+          if (!purchaseRow) {
+            onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
+            return "BLOCKED";
+          }
+          addRow({
+            productId: purchaseRow.productId,
+            variantId: purchaseRow.variantId,
+            productUnitId: purchaseRow.productUnitId,
+            name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+            sku: purchaseRow.sku,
+            barcode: row.barcode ?? null,
+            unitName: purchaseRow.unitName,
+            conversionFactor: purchaseRow.conversionFactor,
+            stockBase: purchaseRow.stockBase ?? 0,
+            stockBranchId: branchId,
+            reservedBase: 0,
+            availableBase: purchaseRow.stockBase ?? 0,
+            isService: false,
+            allowBackorder: false,
+            price: estimatedPurchaseUnitPrice(
+              purchaseRow.costPriceBase,
+              purchaseRow.conversionFactor,
+              purchaseCurrency,
+              purchaseAgreedRate || null,
+            ),
+            costBase: purchaseRow.costPriceBase,
+          });
+          return "FOUND";
+        }
         addRow({
           productId: row.productId,
           variantId: row.variantId,
@@ -225,11 +257,13 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           price: row.price ?? "0",
           costBase: "0",
         });
-        return;
+        return "FOUND";
       }
-      onNotify?.(`الباركود غير معروف: ${code}`, "error");
-    } catch {
-      onNotify?.("تعذّر الاتصال بالخادم", "error");
+      if (!options.quietNotFound) onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      return "NOT_FOUND";
+    } catch (error) {
+      onNotify?.(error instanceof Error ? error.message : "تعذّر الاتصال بالخادم", "error");
+      return "BLOCKED";
     }
   }
 
@@ -246,22 +280,15 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       setSelectedIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (selectedIdx >= 0 && results[selectedIdx]) {
-        addRow(results[selectedIdx]);
-        return;
-      }
-      // أثناء التأجيل/الجلب النتائج قد تعود لاستعلام أقدم ⇒ لا نضيف خطأً (انتظر ~٢٠٠ms واضغط من جديد)
-      if (settled && results.length >= 1) {
-        addRow(results[0]);
-        return;
-      }
-      // Try exact barcode resolution (sale side only — has byBarcode endpoint).
-      // فقط لما يشبه باركوداً (أرقام/لاتيني متصل ≥4) — نصّ بحث عربي عادي لا يُرمى عليه
-      // «باركود غير معروف»؛ رسالة «لا نتائج» تظهر في القائمة نفسها.
       const code = query.trim();
-      const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
-      if (code && !isPurchase && looksLikeBarcode) {
-        await resolveExactBarcode(code);
+      if (code) {
+        const decision = await resolveExactBeforeFuzzy(
+          () => resolveExactBarcode(code, { quietNotFound: true }),
+          () => selectedIdx >= 0
+            ? results[selectedIdx]
+            : settled && results.length === 1 ? results[0] : undefined,
+        );
+        if (decision.status === "NOT_FOUND" && decision.fuzzy) addRow(decision.fuzzy);
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
