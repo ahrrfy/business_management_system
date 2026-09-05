@@ -8,6 +8,7 @@ import { getDb } from "../../db";
 import { createPrintSale } from "../printSaleService";
 import { getShiftReport } from "../shiftService";
 import { withTx } from "../tx";
+import { assertCreditLimit } from "../../lib/credit";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -233,11 +234,14 @@ describe("بيع الطباعة: التقريب النقدي + الذمم + idem
     expect(c.currentBalance).toBe("1250.00");
   });
 
-  it("تجاوز حدّ الائتمان بلا موافقة مدير ⇒ يُرفض", async () => {
+  it("تجاوز حدّ الائتمان بلا موافقة مدير ⇒ يُرفض بالحارس الواحد (server/lib/credit.ts)", async () => {
     await expect(createPrintSale({
       branchId: 1, shiftId: 1, customerId: 2, // سقف 1000
       lines: [{ variantId: 10, productUnitId: 10, quantity: "5" }], // 1250 > 1000
-    }, actor)).rejects.toThrow(/الائتمان/);
+    }, actor)).rejects.toThrow(/تجاوز حدّ الائتمان/);
+    // م١ (PR-1): قناة الطباعة لم تعد تفحص الحدّ بنسخةٍ محلّية — الرفضُ هو رفضُ `assertCreditLimit`
+    // نفسه بنصّه (نفس العميل، نفس الزيادة) ⇒ لا رسالتان لحكمٍ واحد.
+    await expect(withTx((tx) => assertCreditLimit(tx, 2, "1250", 1))).rejects.toThrow(/تجاوز حدّ الائتمان/);
   });
 
   it("نفس clientRequestId ⇒ فاتورة واحدة (إعادة idempotent)", async () => {
