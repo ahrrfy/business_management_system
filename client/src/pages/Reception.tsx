@@ -8,7 +8,6 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowRight,
-  BadgeCheck,
   CalendarClock,
   Check,
   ClipboardList,
@@ -16,7 +15,6 @@ import {
   Globe,
   HandCoins,
   Instagram,
-  LoaderCircle,
   MessageCircle,
   Music2,
   Package,
@@ -28,13 +26,13 @@ import {
   ShoppingCart,
   Store,
   Truck,
-  UserRound,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { SmartCustomerValue } from "@/components/form/SmartCustomerInput";
-import { isValidIqMobile, PhoneDigitsInput, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
+import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
+import { CustomerByPhone } from "@/components/customer/CustomerByPhone";
+import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -354,23 +352,18 @@ export default function Reception() {
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
-  const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
-  const [receptionPhone, setReceptionPhone] = useState("");
-  const [phoneResolution, setPhoneResolution] = useState<"EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR">("EMPTY");
-  /**
-   * أهليّة **البيع الآجل** للعميل المربوط — مصدرها الخادم (`deferredEligible`) لا استنتاجُ
-   * الشاشة (١٩/٨، بلاغ المالك الحيّ): كانت الشارة تَعِد بالآجل لكل عميلٍ مرتبط، ثمّ يرفضه
-   * `assertCreditLimit` لأنّ حدّه صفر — وهو **افتراضي كل عميلٍ جديد** بقرار المالك.
-   */
-  const [customerDeferredEligible, setCustomerDeferredEligible] = useState(false);
-  /**
-   * ٣٠/٨/٢٦ (بلاغ المالك الحيّ): «حدّ ائتمانه 0 ويمنع البيع». الأدمن/المدير يستطيع تحديد حدٍّ عند
-   * الإنشاء (سلطته الأصليّة بقرار المالك ١٢/٨). الكاشير لا يراه (يبقى على "0" الافتراضيّ).
-   * "" (فارغ) = افتراض الخادم "0"، "unlimited" = null (بلا حدّ)، رقم = سقف صريح.
-   */
-  const [newCustomerCreditLimit, setNewCustomerCreditLimit] = useState<string>("");
-  const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
-  const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
+  // م١ PR-B: آلة «العميل بالهاتف» صارت مشتركة مع كاشير التجزئة (`useCustomerByPhone`) — كانت مضمَّنة هنا.
+  // تغيّر الهاتف يُسقط «آجل» (تعلّق بعميلٍ آخر) كما كان؛ الفئة والأهليّة تُسقطهما الآلة نفسها.
+  const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => setDeferred(false) });
+  const customer = phoneCustomer.customer;
+  const setCustomer = phoneCustomer.setCustomer;
+  const receptionPhone = phoneCustomer.phone;
+  const setReceptionPhone = phoneCustomer.setPhone;
+  const phoneResolution = phoneCustomer.resolution;
+  const phoneResolutionError = phoneCustomer.error;
+  const customerDeferredEligible = phoneCustomer.deferredEligible;
+  const resolvedCustomerTier = phoneCustomer.tier;
+  const resolveReceptionCustomer = phoneCustomer.resolve;
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
@@ -424,81 +417,6 @@ export default function Reception() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer.customerId]);
-
-  const resolveReceptionCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
-  const resolveReceptionCustomerByPhone = resolveReceptionCustomerM.mutateAsync;
-  const phoneLookupSequence = useRef(0);
-
-  const resolveReceptionCustomer = useCallback(async (name?: string, announce = false) => {
-    if (!isValidIqMobile(receptionPhone)) return null;
-    const sequence = ++phoneLookupSequence.current;
-    setPhoneResolution("CHECKING");
-    setPhoneResolutionError(null);
-    try {
-      const result = await resolveReceptionCustomerByPhone({
-        phone: receptionPhone,
-        ...(name?.trim() ? { name: name.trim() } : {}),
-        // ٣٠/٨/٢٦: إن كان الدور مدير/أدمن + الحقل مُلىء ⇒ نمرّره (الخادم يرفض غير المرتفعين).
-        // "unlimited" على الواجهة يعني null (بلا حدّ) — نُرسله فارغاً لأنّ الحقل النصّيّ لا يقبل null،
-        // لكنّ الاتّفاق الحاليّ: الخادم يقبل "0"/موجب فقط عبر هذا المسار. "unlimited" يُعالَج
-        // مستقبلاً بإضافة حقل صريح `null`. الآن: قيمة رقمية أو فارغة.
-        // ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): كاشير الاستقبال أيضاً يستطيع تحديد الحدّ عند إنشاء
-        // عميل — القيد على المدير أُلغيَ (الخادم يقبل من كلّ من يملك بوابة الإنشاء).
-        ...(newCustomerCreditLimit.trim() && newCustomerCreditLimit !== "unlimited"
-          ? { creditLimit: newCustomerCreditLimit.trim() }
-          : {}),
-      });
-      if (sequence !== phoneLookupSequence.current) return null;
-      if (result.status === "NEEDS_NAME") {
-        setCustomer((previous) => ({ customerId: null, name: previous.name, phone: receptionPhone, isNew: true }));
-        setResolvedCustomerTier(null);
-        setCustomerDeferredEligible(false);
-        setPhoneResolution("NEEDS_NAME");
-        return result;
-      }
-      setCustomer({
-        customerId: Number(result.customerId),
-        name: result.name ?? name?.trim() ?? "",
-        phone: receptionPhone,
-        isNew: false,
-      });
-      setResolvedCustomerTier(result.defaultPriceTier as Tier);
-      setCustomerDeferredEligible(!!result.deferredEligible);
-      setPhoneResolution("RESOLVED");
-      if (announce) notify.ok(result.created ? "تم إنشاء العميل وربطه بالطلب" : "تم ربط العميل الموجود بالطلب");
-      return result;
-    } catch (error: any) {
-      if (sequence !== phoneLookupSequence.current) return null;
-      const message = error?.message || "تعذّر التحقق من رقم العميل";
-      setPhoneResolutionError(message);
-      setPhoneResolution("ERROR");
-      if (announce) notify.err(message);
-      return null;
-    }
-  }, [receptionPhone, resolveReceptionCustomerByPhone]);
-
-  // لا نبحث قبل اكتمال الخانات الإحدى عشرة. بعد الاكتمال يتحول الهاتف إلى مفتاح هوية واحد:
-  // عميل موجود يُربط فوراً، ورقم جديد يفتح الاسم فقط.
-  useEffect(() => {
-    phoneLookupSequence.current += 1;
-    setDeferred(false);
-    setResolvedCustomerTier(null);
-    if (!receptionPhone) {
-      setPhoneResolution("EMPTY");
-      setPhoneResolutionError(null);
-      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-      return;
-    }
-    if (!isValidIqMobile(receptionPhone)) {
-      setPhoneResolution("INCOMPLETE");
-      setPhoneResolutionError(null);
-      setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: false });
-      return;
-    }
-    setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: true });
-    const timer = window.setTimeout(() => { void resolveReceptionCustomer(); }, 180);
-    return () => window.clearTimeout(timer);
-  }, [receptionPhone, resolveReceptionCustomer]);
 
   const connectPrinter = async () => {
     try {
@@ -2507,42 +2425,14 @@ export default function Reception() {
             )}
           </section>
 
-          {/* ٢ — الهاتف هو مفتاح الهوية في كل القنوات، لا حقل تابع لواتساب وحده. */}
-          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-phone-title">
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٢</span>
-                <h2 id="reception-phone-title" className="text-xs font-black">رقم هاتف العميل</h2>
-                <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[9px] font-black text-destructive">إلزامي</span>
-              </div>
-              {phoneResolution === "CHECKING" && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
-                  <LoaderCircle aria-hidden className="size-3 animate-spin" /> جارٍ التحقق
-                </span>
-              )}
-            </div>
-            <PhoneDigitsInput
-              value={receptionPhone}
-              onChange={setReceptionPhone}
-              ariaLabel="رقم هاتف العميل العراقي"
-              className="max-w-full"
-            />
-            <div className="mt-1.5 min-h-4 text-[10px] font-semibold">
-              {phoneResolution === "EMPTY" && <span className="text-muted-foreground">اكتب ١١ رقماً؛ سنبحث عن العميل تلقائياً.</span>}
-              {phoneResolution === "INCOMPLETE" && <span className="text-[var(--sem-warn)]">أكمل الرقم العراقي الذي يبدأ بـ07.</span>}
-              {phoneResolution === "NEEDS_NAME" && <span className="text-[var(--sem-info)]">الرقم جديد — بقي اسم العميل فقط.</span>}
-              {phoneResolution === "RESOLVED" && <span className="text-money-positive">تم العثور على العميل وربطه بالطلب.</span>}
-              {phoneResolution === "ERROR" && <span className="text-destructive">{phoneResolutionError}</span>}
-            </div>
-          </section>
-
-          {/* ٣ — نتيجة واحدة: بطاقة عميل مرتبطة أو حقل الاسم للرقم الجديد. لا قوائم عائمة فوق البحث. */}
-          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-customer-title">
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٣</span>
-                <h2 id="reception-customer-title" className="text-xs font-black">هوية العميل</h2>
-              </div>
+          {/* ٢+٣ — الهاتف مفتاح الهوية + هوية العميل: المكوّن المشترك مع كاشير التجزئة (م١ PR-B). */}
+          <CustomerByPhone
+            api={phoneCustomer}
+            canCreate={canCreateCustomer}
+            steps={{ phone: "٢", identity: "٣" }}
+            idPrefix="reception"
+            onOpenProfile={canReadCustomerContext ? (id) => setCustomerContextId(id) : undefined}
+            identityHeaderExtra={
               <div className="flex items-center gap-1">
                 <span className="text-[9px] font-semibold text-muted-foreground">فئة السعر</span>
                 <AppSelect
@@ -2556,79 +2446,8 @@ export default function Reception() {
                   <option value="GOVERNMENT">حكومي</option>
                 </AppSelect>
               </div>
-            </div>
-
-            {customer.customerId ? (
-              <div className="flex min-h-12 items-center gap-2 rounded-md border border-money-positive/40 bg-money-positive/10 px-2.5 py-1.5">
-                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-money-positive/15 text-money-positive">
-                  <UserRound aria-hidden className="size-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-xs font-black">{customer.name}</span>
-                    <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
-                  </div>
-                  <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{receptionPhone}</div>
-                  <div className={cn("text-[9px] font-bold", customerDeferredEligible ? "text-money-positive" : "text-[var(--sem-warn)]")}>
-                    {customerDeferredEligible ? "مرتبط · البيع بدون عربون متاح" : "مرتبط · نقديٌّ فقط (حدّ ائتمانه صفر)"}
-                  </div>
-                </div>
-                {canReadCustomerContext && (
-                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setCustomerContextId(customer.customerId)}>
-                    الملف
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="flex min-h-12 items-center gap-1.5">
-                  <Input
-                    value={customer.name}
-                    onChange={(event) => setCustomer((previous) => ({ ...previous, name: event.target.value, phone: receptionPhone, isNew: true }))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && customer.name.trim().length >= 2 && phoneResolution === "NEEDS_NAME") {
-                        event.preventDefault();
-                        void resolveReceptionCustomer(customer.name, true);
-                      }
-                    }}
-                    disabled={!isValidIqMobile(receptionPhone) || phoneResolution === "CHECKING"}
-                    placeholder={isValidIqMobile(receptionPhone) ? "اسم العميل الجديد" : "أكمل الهاتف أولاً"}
-                    aria-label="اسم العميل"
-                    className="h-9 min-w-0 flex-1 text-xs font-bold"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={phoneResolution !== "NEEDS_NAME" || customer.name.trim().length < 2 || resolveReceptionCustomerM.isPending || !canCreateCustomer}
-                    onClick={() => void resolveReceptionCustomer(customer.name, true)}
-                    className="h-9 shrink-0 px-3 text-[11px] font-black"
-                  >
-                    حفظ وربط
-                  </Button>
-                </div>
-                {/* ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): «حدّ الائتمان» عند الإنشاء — لكلّ من يملك
-                    صلاحية إنشاء عميل الاستقبال (كاشير + مدير). الافتراض "0" (نقديّ فقط) لا يُغيَّر
-                    إلّا إذا كتب المستعمل قيمة صراحةً. اتركه فارغاً = يبقى على الافتراض. */}
-                {phoneResolution === "NEEDS_NAME" && canCreateCustomer && (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={newCustomerCreditLimit}
-                      onChange={(e) => setNewCustomerCreditLimit(e.target.value.replace(/[^\d.]/g, ""))}
-                      disabled={!isValidIqMobile(receptionPhone)}
-                      placeholder="حدّ ائتمان اختياريّ (اتركه فارغاً للنقديّ فقط)"
-                      aria-label="حدّ الائتمان للعميل الجديد"
-                      className="h-8 min-w-0 flex-1 text-[11px] tabular-nums"
-                      dir="ltr"
-                    />
-                    <span className="shrink-0 text-[10px] text-muted-foreground">د.ع</span>
-                  </div>
-                )}
-              </div>
-            )}
-            {!canCreateCustomer && (
-              <p className="mt-1 text-[10px] font-bold text-destructive">صلاحية ربط عميل الاستقبال غير مفعّلة لهذا الدور.</p>
-            )}
-          </section>
+            }
+          />
         </div>
 
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">

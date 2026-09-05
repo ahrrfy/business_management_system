@@ -118,7 +118,10 @@ describe("انحدارات واجهة نقطة البيع", () => {
 
   it("يحجز إجراءات الوردية وشارة الأوفلاين في الرأس الموحد", () => {
     const shell = readFileSync("client/src/pages/PointOfSale.tsx", "utf8");
-    const retail = readFileSync("client/src/pages/POS.tsx", "utf8");
+    // م١ PR-B: إجراءات رأس كاشير التجزئة استُخرجت إلى مكوّنها (تُحقَن بـcreatePortal من الشاشة) —
+    // العقد المحروس (createPortal في الشاشة + placement="inline" في الإجراءات) يمتدّ على الملفّين.
+    const retail = readFileSync("client/src/pages/POS.tsx", "utf8")
+      + readFileSync("client/src/components/pos/RetailPosHeaderActions.tsx", "utf8");
     const print = readFileSync("client/src/pages/PrintPOS.tsx", "utf8");
     const offlineChip = readFileSync("client/src/components/offline/OfflineSyncChip.tsx", "utf8");
 
