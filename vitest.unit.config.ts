@@ -312,6 +312,9 @@ export default defineConfig({
       // م٦ ق٤+ق٨ — النموذج الواحد (نتيجة الحفظ المُهيكَلة) واللقطة («ما الذي تغيّر» النقيّ) وتناظر زوج المنتج.
       "shared/productVersionDiff.test.ts",
       "client/src/components/form/__tests__/saveOutcome.test.ts",
+      "client/src/components/form/__tests__/recordForm.test.ts",
+      "client/src/components/form/__tests__/productFormModel.test.ts",
+      "client/src/pages/__tests__/productFormParity.test.ts",
     ],
   },
 });

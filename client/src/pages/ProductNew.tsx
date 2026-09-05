@@ -1,95 +1,46 @@
-import { Button } from "@/components/ui/button";
-import { AppSelect } from "@/components/ui/AppSelect";
+import { Boxes, Layers, Package, Wrench } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
+
 import { PageHeader } from "@/components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { MoneyInput } from "@/components/form/MoneyInput";
-import { MoneyCoach } from "@/components/form/MoneyCoach";
-import { NumberInput } from "@/components/form/NumberInput";
-import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
-import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
-import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
+import { RecordForm } from "@/components/form/RecordForm";
+import { ProductFormFields, type ProductModelPatch } from "@/components/form/product/ProductFormFields";
+import {
+  allBarcodes,
+  buildCreateProductPayload,
+  emptyProductFormModel,
+  productFormSignature,
+  validateProductForm,
+  type ProductFormModel,
+} from "@/components/form/product/productFormModel";
+import BundleForm from "@/components/product/BundleForm";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
-import { NameAssistant } from "@/components/product/NameAssistant";
-import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
-import BundleForm from "@/components/product/BundleForm";
-import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
-import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { trpc } from "@/lib/trpc";
-import { exportRows } from "@/lib/export";
-import { categoryOptionElements } from "@/lib/categoryTree";
-import { checkVariantSanity } from "@shared/priceSanity";
-import {
-  clampInt,
-  deriveSku,
-  genEan13,
-  incEan13,
-  isValidEan13,
-  marginPercent,
-  onlyDigits,
-  syncColorChipsOnRename,
-  toArabicDigits,
-  variantStockTotal,
-  type ClientUnit,
-  type ClientVariant,
-  type ParsedVariantRow,
-} from "@/lib/variants";
-import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
-import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
-import { VariantsTable } from "@/components/product/VariantsTable";
-import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
-import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useMemo, useRef, useState } from "react";
-import { Link, useLocation } from "wouter";
-import { ACTION_LABELS } from "@shared/actionLabels";
+import { trpc } from "@/lib/trpc";
 
 /**
- * إضافة منتج بمتغيّرات — كل لون/قياس منتجٌ مخزنيّ مستقل (product-variants).
+ * إضافة منتج — تبويب البند (بسيطة/بمتغيّرات/خدمة/بكج)، ووضعُ «بمتغيّرات» على النموذج الواحد (م٦ ق٤):
+ * `RecordForm` (Ctrl+S · حارس المغادرة · نتيجة مُهيكَلة) + `ProductFormFields` **نفسُه** الذي تُصيّره
+ * شاشة التعديل — فالإنشاء ⇒ التعديل شاشةٌ واحدة حرفياً، والحالةُ في `ProductFormModel` النقيّ.
  *
- * النموذج: منتج أب (اسم مركّب + تكلفة + قالب وحدات مشترك) → متغيّرات (لون/قياس) كلٌّ
- * بـSKU وباركود مستقل لكل وحدة ورصيد افتتاحي لكل فرع وظهور مستقل في البيع.
- * يستدعي `catalog.createProduct` (يقبل `variants[]` أصلاً) مع الحقول الموسَّعة
- * (reorderPoint/isActive/openingStockByBranch) ويتحقّق من الباركود عبر `catalog.checkBarcodes`.
- *
- * المسح: تركيز خلية باركود يجعل ماسح HID يكتب فيها مباشرةً (لا حاجة لربط خاص)؛
- * زر «المسح» بجانب كل خلية يولّد EAN-13 صالحاً لمن يطبع باركوده ذاتياً.
+ * كانت هذه الصفحة تحمل ~٢٥ `useState` ومتحقِّقاً وبانيَ حمولةٍ خاصَّين بها ينجرفان عن التعديل.
  */
+type ItemMode = "simple" | "variants" | "service" | "bundle";
 
-/**
- * **priceSanity L1.5 (٣٠/٧):** مرافقٌ حيّ أسفل حقل التكلفة في «إضافة منتج». لا زرّ «آخر شراء»
- * لأنّ المنتج ما زال جديداً بلا تاريخ شراء.
- */
-function NewProductCostCoach({
-  costPrice, baseRetail, categoryId, brand, productType,
-}: {
-  costPrice: string;
-  baseRetail: string;
-  categoryId: number | null;
-  brand: string;
-  productType: string;
-}) {
-  const statsQ = trpc.catalog.categoryStats.useQuery(
-    { categoryId, brand: brand.trim() || null, productType: productType.trim() || null },
-    { enabled: categoryId != null || !!brand.trim() || !!productType.trim(), staleTime: 5 * 60 * 1000 }
-  );
-  return (
-    <MoneyCoach
-      className="mt-1"
-      cost={costPrice.trim()}
-      retail={baseRetail.trim()}
-      categoryStats={statsQ.data ? {
-        minCost: statsQ.data.minCost ?? undefined,
-        maxCost: statsQ.data.maxCost ?? undefined,
-        medianCost: statsQ.data.medianCost ?? undefined,
-        n: statsQ.data.n ?? 0,
-      } : undefined}
-    />
-  );
-}
+const MODES: Array<{ v: ItemMode; label: string; Icon: typeof Package; hint: string }> = [
+  { v: "simple", label: "سلعة بسيطة", Icon: Package, hint: "منتج واحد بباركود واحد — كتاب/ملزمة/دفتر مفرد" },
+  { v: "variants", label: "سلعة بمتغيّرات", Icon: Layers, hint: "ألوان/قياسات — كل تركيبة منتج مستقل بباركوده" },
+  { v: "service", label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
+  { v: "bundle", label: "بكج (باندل)", Icon: Boxes, hint: "منتج مركّب من عدّة منتجات يُباع كوحدة — طقم مدرسي/هدية" },
+];
+
+const TITLE: Record<ItemMode, string> = {
+  simple: "إضافة سلعة بسيطة",
+  variants: "إضافة منتج بمتغيّرات",
+  service: "إضافة خِدمة",
+  bundle: "إضافة بكج (باندل)",
+};
 
 export default function ProductNew() {
   const [, navigate] = useLocation();
@@ -97,443 +48,91 @@ export default function ProductNew() {
   const me = trpc.auth.me.useQuery();
   const branchesQ = trpc.branches.list.useQuery();
   const categoriesQ = trpc.catalog.categories.useQuery();
-
-  // ── الاسم المركّب + الرأس المشترك ──
-  const [productName, setProductName] = useState("");
-  const [productType, setProductType] = useState("");
-  const [brand, setBrand] = useState("");
-  const [modelName, setModelName] = useState("");
-  const [description, setDescription] = useState("");
-  const [categoryId, setCategoryId] = useState<number | "">("");
-  const [baseSku, setBaseSku] = useState("");
-
-  // ── التسعير والمخزون المشترك ──
-  const [costPrice, setCostPrice] = useState("");
-  const [defaultMin, setDefaultMin] = useState("0");
-  const [isCustomizable, setIsCustomizable] = useState(false);
-  // بضاعة الأمانة (٢٠/٧): وسم المنتج + مودِعه (وضع «سلعة بمتغيّرات»؛ السلعة البسيطة لها حقلها الخاص).
-  const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
-  // نوع البَند: سلعة بسيطة (منتج واحد بباركود) | سلعة بمتغيّرات (ألوان/قياسات) | خِدمة.
   // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
-  const [mode, setMode] = useState<"simple" | "variants" | "service" | "bundle">("simple");
-  const [isActive, setIsActive] = useState(true);
+  const [mode, setMode] = useState<ItemMode>("simple");
 
-  // ── قالب الوحدات المشترك ──
-  const unitSeq = useRef(2);
-  const [units, setUnits] = useState<ClientUnit[]>([
-    { id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, retail: "", wholesale: "" },
-  ]);
+  // ── النموذج الواحد (وضع المتغيّرات) ──
+  const [model, setModel] = useState<ProductFormModel>(() => emptyProductFormModel());
+  const patch = (p: ProductModelPatch) => setModel((m) => ({ ...m, ...(typeof p === "function" ? p(m) : p) }));
+  /*
+   * لقطةُ الاتّساخ المرجعية: النموذج الفارغ، ثمّ **ما أُرسل فعلاً** بعد حفظٍ ناجح (لا الحالة وقت وصول
+   * الاستجابة — سباق Codex #978: تعديلٌ أثناء انتظار الحفظ كان يُبتلَع فيُغادَر بلا سؤال).
+   */
+  const [savedSignature, setSavedSignature] = useState<string>(() => productFormSignature(emptyProductFormModel()));
+  const isDirty = productFormSignature(model) !== savedSignature;
 
-  // ── المصفوفة + المتغيّرات ──
-  const [colors, setColors] = useState<string[]>([]);
-  const [sizes, setSizes] = useState<string[]>([]);
-  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
-  const [variants, setVariants] = useState<ClientVariant[]>([]);
-
-  // ── الفرع المختار (لعمود المخزون) ──
-  const branches = useMemo(
-    () => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })),
-    [branchesQ.data]
-  );
+  const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
   const myBranch = me.data?.branchId ?? 1;
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
 
-  const [error, setError] = useState("");
-
-  // نوافذ الاستيراد/الطباعة.
-  const [importOpen, setImportOpen] = useState(false);
-  const [printOpen, setPrintOpen] = useState(false);
-
-  const composedName = useMemo(
-    () => [productType, brand, modelName].map((s) => s.trim()).filter(Boolean).join(" "),
-    [productType, brand, modelName]
-  );
-  const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
-  const aiProductFacts = useMemo(() => ({
-    finalProductName: productName.trim() || composedName || null,
-    inputDescription: description.trim() || null,
-    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
-    productType: productType.trim() || null,
-    brand: brand.trim() || null,
-    modelName: modelName.trim() || null,
-    attributes: {},
-    variants: variants.map((v) => ({ color: v.color.trim() || null, size: v.size.trim() || null })),
-    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
-    verifiedClaims: [],
-    audience: null,
-  }), [brand, categoriesQ.data, categoryId, modelName, productType, units, variants]);
-
-  const includedCount = colors.length
-    ? sizes.length
-      ? colors.flatMap((c) => sizes.map((s) => `${c}|${s}`)).filter((k) => !excluded.has(k)).length
-      : colors.length
-    : 0;
-
-  // ── فحص تكرار الباركود ضدّ القاعدة (live، debounced) ──
-  const allCodes = useMemo(() => {
-    const set = new Set<string>();
-    for (const v of variants) for (const u of units) {
-      const c = (v.unitBarcodes[u.id] || "").trim();
-      if (c) set.add(c);
-      // البدائل تتشارك فضاء تفرّد الباركود نفسه (assertCatalogUniqueness) ⇒ نفحصها حيّاً أيضاً.
-      for (const a of v.unitBarcodeAliases?.[u.id] ?? []) {
-        const ac = (a.barcode || "").trim();
-        if (ac) set.add(ac);
-      }
-    }
-    return Array.from(set);
-  }, [variants, units]);
-  // مفتاح نصّيّ مستقرّ: لا يتغيّر إلا بتغيّر الباركودات نفسها (لا عند تعديل المخزون/الحدّ)،
-  // ويستفيد من مسار «الفارغ فوراً» في useDebouncedValue (مسح كل الباركودات يُلغي الفحص حالاً).
-  const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
+  // ── فحص تكرار الباركود ضدّ القاعدة (live، debounced) — يشمل الوحدات وبدائلها ──
+  const codes = useMemo(() => allBarcodes(model), [model]);
+  const debouncedKey = useDebouncedValue(codes.join("\n"), 450);
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
-    { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
+    { enabled: debouncedCodes.length > 0, staleTime: 10_000 },
   );
   const takenInDb = useMemo(() => new Set((checkQ.data ?? []).map((r) => r.code)), [checkQ.data]);
 
-  const create = trpc.catalog.createProduct.useMutation({
-    onSuccess: async () => {
-      await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
-      navigate("/products");
-    },
-    onError: (e) => setError(e.message),
-  });
+  const create = trpc.catalog.createProduct.useMutation();
+  const blockedBy = useMemo(() => validateProductForm(model), [model]);
 
-  /* ── الوحدات ── */
-  const addUnit = () =>
-    setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, retail: "", wholesale: "" }]);
-  const patchUnit = (id: number, patch: Partial<ClientUnit>) =>
-    setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const removeUnit = (id: number) =>
-    setUnits((u) => {
-      if (u.length <= 1) return u;
-      const next = u.filter((x) => x.id !== id);
-      // إن حُذفت وحدة الأساس، رقِّ الأولى الباقية أساساً — وإلّا بقي القالب بلا أساس ويُحجَب الحفظ.
-      if (!next.some((x) => x.isBase)) next[0] = { ...next[0], isBase: true };
-      return next;
-    });
-  const setBaseUnit = (id: number) => setUnits((u) => u.map((x) => ({ ...x, isBase: x.id === id })));
+  // بعد حفظٍ ناجح نغادر إلى القائمة — بعد أن يرى الحارس أنّ النموذج لم يعد متّسخاً (وإلّا سأل).
+  const [leaveTo, setLeaveTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (leaveTo && !isDirty) navigate(leaveTo);
+  }, [leaveTo, isDirty, navigate]);
 
-  /* ── المصفوفة + المتغيّرات ── */
-  const toggleExclude = (key: string) =>
-    setExcluded((s) => {
-      const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
-
-  function makeVariant(color: string, size: string): ClientVariant {
-    return {
-      id: `${color}|${size}|${Math.random().toString(36).slice(2, 8)}`,
-      color,
-      colorHex: null, // تلقائيّ: يُستنتَج من اسم اللون حتى يختار المستخدم لوناً صريحاً
-      size,
-      sku: deriveSku(baseSku, color, size),
-      unitBarcodes: {},
-      stockByBranch: {},
-      minStock: defaultMin || "0",
-      reorderPoint: "0",
-      priceOverride: false,
-      costPrice: "",
-      retail: "",
-      isActive: true,
-      image: null,
-      unitBarcodeAliases: {},
-    };
-  }
-
-  function generate() {
-    const combos: Array<[string, string]> = [];
-    for (const c of colors) {
-      if (sizes.length) {
-        for (const s of sizes) if (!excluded.has(`${c}|${s}`)) combos.push([c, s]);
-      } else combos.push([c, ""]);
-    }
-    setVariants((prev) => {
-      const byKey = new Map(prev.map((v) => [`${v.color}|${v.size}`, v]));
-      // دمج غير متلف: نحفظ تعديلات الصفوف الموجودة عبر مفتاح color|size.
-      return combos.map(([c, s]) => {
-        const ex = byKey.get(`${c}|${s}`);
-        return ex ? { ...ex, sku: ex.sku || deriveSku(baseSku, c, s) } : makeVariant(c, s);
-      });
-    });
-  }
-
-  function applyImport(rows: ParsedVariantRow[]) {
-    setVariants((prev) => {
-      const out = [...prev];
-      const idxByKey = new Map(out.map((v, i) => [`${v.color}|${v.size}`, i]));
-      for (const r of rows) {
-        const key = `${r.color}|${r.size}`;
-        const existingIdx = idxByKey.get(key);
-        if (existingIdx != null) {
-          // دمج غير متلف حقّاً: نطبّق فقط ما يحمله اللصق (SKU/باركود الوحدات/مخزون الفرع) ونُبقي
-          // بقية حقول الصفّ كما هي — البدائل (unitBarcodeAliases) والصورة والسعر الخاص والحدود.
-          // (نسخ makeVariant كاملاً كان يمسح البدائل والحقول الموسَّعة صامتاً — نمط شاشة التعديل.)
-          const cur = out[existingIdx];
-          const unitBarcodes = { ...cur.unitBarcodes };
-          r.barcodes.forEach((b, i) => {
-            const u = units[i];
-            if (u && b) unitBarcodes[u.id] = b;
-          });
-          out[existingIdx] = {
-            ...cur,
-            sku: r.sku || cur.sku,
-            unitBarcodes,
-            stockByBranch: { ...cur.stockByBranch, [branchId]: r.stock || cur.stockByBranch[branchId] || "0" },
-          };
-        } else {
-          const base = makeVariant(r.color, r.size);
-          if (r.sku) base.sku = r.sku;
-          r.barcodes.forEach((b, i) => {
-            const u = units[i];
-            if (u && b) base.unitBarcodes[u.id] = b;
-          });
-          base.stockByBranch = { [branchId]: r.stock || "0" };
-          idxByKey.set(key, out.length);
-          out.push(base);
-        }
-      }
-      return out;
-    });
-  }
-
-  const patchVariant = (id: string, patch: Partial<ClientVariant>) =>
-    setVariants((vs) => vs.map((v) => (v.id === id ? { ...v, ...patch } : v)));
-  const removeVariant = (id: string) => setVariants((vs) => vs.filter((v) => v.id !== id));
-  // إعادة تسمية لون بالصفّ ⇒ مزامنة رقائق المصفوفة كي يبقى «ولّد المتغيّرات» متّسقاً (منطقٌ نقيّ مُختبَر).
-  const commitColorRename = (oldColor: string, newColor: string) =>
-    setColors((cs) => syncColorChipsOnRename(cs, oldColor, newColor, variants.map((v) => v.color)));
-  const onScan = (vid: string, uid: number) =>
-    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("200") } } : v)));
-
-  /* ── أدوات الجملة ── */
-  const bulkMin = (val: string) => setVariants((vs) => vs.map((v) => ({ ...v, minStock: val })));
-  const bulkStock = (val: string) =>
-    setVariants((vs) => vs.map((v) => ({ ...v, stockByBranch: { ...v.stockByBranch, [branchId]: val } })));
-  const bulkSeq = (uid: number, start: string) => {
-    let code = isValidEan13(start) ? start : genEan13("200");
-    setVariants((vs) =>
-      vs.map((v) => {
-        if (v.unitBarcodes[uid]) return v;
-        const next = { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: code } };
-        code = incEan13(code);
-        return next;
-      })
-    );
-  };
-
-  /* ── التحقّق المحليّ قبل الحفظ ── */
-  function validateLocal(): string | null {
-    if (!productName.trim() && !composedName) return "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل).";
-    if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
-    if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
-    // اسم الوحدة مفتاح مطابقة في مسار التعديل (يطابق بالاسم) ⇒ وحدتان بنفس الاسم تتداخلان فيُطمَس
-    // باركود/سعر إحداهما عند التعديل. امنع التكرار عند الإنشاء (نفس حارس السلعة البسيطة).
-    const unitNames = units.map((u) => u.name.trim());
-    const dupUnitName = unitNames.find((n, i) => n && unitNames.indexOf(n) !== i);
-    if (dupUnitName) return `اسم وحدة مكرّر في القالب: «${dupUnitName}» — لكل وحدة اسمٌ فريد.`;
-    if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
-    // الوحدة غير الأساس معاملها أكبر من ١ (درزن=١٢) — بلا ذلك يُخصَم الدرزن قطعةً واحدةً (§٥).
-    if (units.some((u) => !u.isBase && !(Number((u.factor ?? "").trim()) > 1)))
-      return "الوحدة الأكبر من الأساس (درزن/كرتون) تحتاج معامل تحويل أكبر من ١ في قالب الوحدات.";
-    if (!variants.length) return "أضف متغيّراً واحداً على الأقل (اكتب لوناً ثم «ولّد المتغيّرات»).";
-    if (variants.some((v) => !v.sku.trim())) return "كل متغيّر يحتاج SKU.";
-    const skus = variants.map((v) => v.sku.trim());
-    const dupSku = skus.find((s, i) => s && skus.indexOf(s) !== i);
-    if (dupSku) return `SKU مكرّر بين المتغيّرات: ${dupSku} — لكل متغيّر رمز فريد.`;
-    const codes: string[] = [];
-    for (const v of variants) for (const u of units) {
-      const c = (v.unitBarcodes[u.id] || "").trim();
-      if (c) codes.push(c);
-      // البدائل ضمن نفس فضاء التفرّد (أساسيّ + بديل) — تكرارها يُرفَض خادمياً، فنمسكه هنا برسالة واضحة.
-      for (const a of v.unitBarcodeAliases?.[u.id] ?? []) {
-        const ac = (a.barcode || "").trim();
-        if (ac) codes.push(ac);
-      }
-    }
-    const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
-    if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc} — لكل وحدة/لون/بديل باركود فريد.`;
-    // بضاعة الأمانة: التلازم يُتحقَّق خادمياً أيضاً، لكن رسالة أبكر أوضح للمستخدم.
-    if (consignment.isConsignment && !consignment.consignorId)
-      return "منتج الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
-    // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧» (تكلفة أُدخلت 16162 بينما البيع 2000 ⇒
-    // «بيع تحت التكلفة» يوقف كل فاتورة تحوي الصنف). المصدر: shared/priceSanity.ts (يُشارَك خادمياً).
-    for (const v of variants) {
-      const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
-      const unitPricings = units.map((u) => ({
-        unitName: u.name.trim() || (u.isBase ? "الأساس" : "وحدة"),
-        conversionFactor: u.isBase ? 1 : Number((u.factor ?? "").trim()) || 1,
-        retail: u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : (u.retail || null),
-        wholesale: u.wholesale || null,
-        government: u.government || null,
-      }));
-      const issues = checkVariantSanity(overrideCost, unitPricings);
-      const blocker = issues.find((i) => i.level === "blocker");
-      if (blocker) {
-        const label = v.color || v.sku || "متغيّر";
-        return `[${label}] ${blocker.message}`;
-      }
-    }
-    return null;
-  }
-
-  function buildPayload() {
-    return {
-      // الاسم الصريح هو المرجع؛ التركيب من الأجزاء بديل عند فراغه (يطابق composeProductName في الخادم).
-      name: productName.trim() || composedName || undefined,
-      productType: productType.trim() || null,
-      brand: brand.trim() || null,
-      modelName: modelName.trim() || null,
-      description: description.trim() || null,
-      categoryId: categoryId === "" ? undefined : Number(categoryId),
-      isCustomizable,
-      // سلعة بمتغيّرات = دائماً مخزنيّة (الخدمة تُدار في ServiceForm، والبسيطة في SimpleProductForm).
-      isService: false,
-      // بضاعة الأمانة: الوسم + المودِع (الحصة في costPrice لكل متغيّر). التحقّق النهائي خادميّ.
-      isConsignment: consignment.isConsignment,
-      consignorId: consignment.isConsignment ? consignment.consignorId : null,
-      variants: variants.map((v) => {
-        const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
-        return {
-          sku: v.sku.trim(),
-          color: v.color.trim() || undefined,
-          colorHex: v.colorHex || undefined,
-          size: v.size.trim() || undefined,
-          costPrice: overrideCost,
-          minStock: clampInt(v.minStock),
-          reorderPoint: clampInt(v.reorderPoint),
-          isActive: v.isActive,
-          openingStockByBranch: branches
-            .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
-            .filter((x) => x.qty > 0),
-          units: units.map((u) => {
-            const retail = u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : u.retail.trim();
-            const wholesale = u.wholesale.trim();
-            const government = (u.government ?? "").trim();
-            // باركودات بديلة لهذه الوحدة من هذا اللون (وضع محلّي) — تُدرَج ذرّياً مع المنتج.
-            const aliases = (v.unitBarcodeAliases?.[u.id] ?? [])
-              .map((a) => ({ barcode: (a.barcode || "").trim(), note: a.note ?? null }))
-              .filter((a) => a.barcode);
-            return {
-              unitName: u.name.trim(),
-              conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
-              barcode: (v.unitBarcodes[u.id] || "").trim() || undefined,
-              isBaseUnit: u.isBase,
-              isStoreSaleUnit: u.sellInStore,
-              prices: [
-                ...(retail ? [{ priceTier: "RETAIL" as const, price: retail }] : []),
-                ...(wholesale ? [{ priceTier: "WHOLESALE" as const, price: wholesale }] : []),
-                ...(government ? [{ priceTier: "GOVERNMENT" as const, price: government }] : []),
-              ],
-              barcodeAliases: aliases.length ? aliases : undefined,
-            };
-          }),
-        };
-      }),
-    };
-  }
-
-  async function save() {
-    setError("");
-    const err = validateLocal();
-    if (err) {
-      setError(err);
-      // انقل التركيز لأوّل حقل خاطئ شائع (اسم/تكلفة) — WCAG focus-management.
-      if (!productName.trim() && !composedName) document.getElementById("product-name")?.focus();
-      else if (!costPrice.trim()) document.getElementById("product-cost")?.focus();
-      return;
-    }
-    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce). يشمل البدائل — فهي في
-    // فضاء التفرّد نفسه (أساسيّ + بديل)، فباركود بديل محجوز في منتج آخر يجب أن يُمسَك قبل الحفظ.
-    const codes = Array.from(
-      new Set(
-        variants
-          .flatMap((v) =>
-            units.flatMap((u) => [
-              (v.unitBarcodes[u.id] || "").trim(),
-              ...(v.unitBarcodeAliases?.[u.id] ?? []).map((a) => (a.barcode || "").trim()),
-            ])
-          )
-          .filter(Boolean)
-      )
-    );
+  async function save(): Promise<unknown> {
+    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce) — يشمل البدائل.
     if (codes.length) {
+      let taken: Array<{ code: string; takenBy: string }> = [];
       try {
-        const taken = await utils.catalog.checkBarcodes.fetch({ codes });
-        if (taken.length) {
-          setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
-          return;
-        }
+        taken = await utils.catalog.checkBarcodes.fetch({ codes });
       } catch {
         // فشل الفحص المسبق لا يمنع الحفظ — قيد UNIQUE في القاعدة يبقى الحارس الأخير.
       }
+      if (taken.length) throw new Error(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
     }
-    create.mutate(buildPayload());
+    const submitted = productFormSignature(model);
+    const res = await create.mutateAsync(buildCreateProductPayload(model, branches));
+    setSavedSignature(submitted);
+    await Promise.all([utils.catalog.posList.invalidate(), utils.catalog.adminList.invalidate()]);
+    return res;
   }
 
-  /* ── تصدير Excel: صف لكل متغيّر، عمود باركود لكل وحدة (كل لون كأنه منتج مستقل) ── */
-  function exportExcel() {
-    exportRows(variants, {
-      filename: `منتج-${productName.trim() || composedName || "بمتغيرات"}`,
-      sheetName: "المنتجات",
-      columns: [
-        { key: "name", header: "الاسم الكامل", map: (v) => [productName.trim() || composedName, v.color, v.size].filter(Boolean).join(" ") },
-        { key: "color", header: "اللون", map: (v) => v.color },
-        { key: "size", header: "القياس", map: (v) => v.size },
-        { key: "sku", header: "SKU", map: (v) => v.sku },
-        ...units.map((u) => ({
-          key: `bc_${u.id}`,
-          header: `باركود ${u.name || "وحدة"}`,
-          map: (v: ClientVariant) => v.unitBarcodes[u.id] || "",
-        })),
-        { key: "stock", header: "المخزون (كل الفروع)", map: (v) => variantStockTotal(v.stockByBranch) },
-        { key: "price", header: "سعر البيع", map: (v) => (v.priceOverride && v.retail.trim() ? v.retail.trim() : baseRetail) },
-        { key: "active", header: "الحالة", map: (v) => (v.isActive ? "مفعّل" : "معطّل") },
-      ],
-    });
+  async function saveAndClose() {
+    const res = await save();
+    setLeaveTo("/products");
+    return res;
   }
 
-  const activeCount = variants.filter((v) => v.isActive).length;
-  const totalStock = variants.reduce((s, v) => s + variantStockTotal(v.stockByBranch), 0);
-
-  // حارس فقدان البيانات + اختصار Ctrl+S — مقصور على وضع «المتغيّرات» (الأوضاع الأخرى نماذجُ أبناءٍ
-  // لها حفظها المستقلّ). enabled=(mode==="variants") يمنع تصادم مستمعَي keydown حين يُعرَض نموذجٌ ابن.
-  useSaveShortcuts({ onSave: save, enabled: mode === "variants" && !create.isPending });
-  useUnsavedGuard(mode === "variants" && (modelName.trim() !== "" || variants.length > 0));
+  async function saveAndNew() {
+    const res = await save();
+    const fresh = emptyProductFormModel();
+    setModel(fresh);
+    setSavedSignature(productFormSignature(fresh));
+    return res;
+  }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-4 pb-28">
+    <div className="mx-auto max-w-6xl space-y-4 pb-28">
       <PageHeader
-        title={
-          mode === "service"
-            ? "إضافة خِدمة"
-            : mode === "simple"
-              ? "إضافة سلعة بسيطة"
-              : mode === "bundle"
-                ? "إضافة بكج (باندل)"
-                : "إضافة منتج بمتغيّرات"
-        }
+        title={TITLE[mode]}
         breadcrumbs={[{ label: "المنتجات", href: "/products" }, { label: "إضافة منتج" }]}
         backHref="/products"
         backLabel="رجوع للمنتجات"
       />
 
-      {/* ── نوع البَند: سلعة بسيطة / بمتغيّرات / خِدمة / بكج ── */}
-      <div className="inline-flex flex-wrap rounded-lg border bg-muted/40 p-1 gap-1">
-        {[
-          { v: "simple", label: "سلعة بسيطة", Icon: Package, hint: "منتج واحد بباركود واحد — كتاب/ملزمة/دفتر مفرد" },
-          { v: "variants", label: "سلعة بمتغيّرات", Icon: Layers, hint: "ألوان/قياسات — كل تركيبة منتج مستقل بباركوده" },
-          { v: "service", label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
-          { v: "bundle", label: "بكج (باندل)", Icon: Boxes, hint: "منتج مركّب من عدّة منتجات يُباع كوحدة — طقم مدرسي/هدية" },
-        ].map((t) => (
+      {/* ── نوع البَند ── */}
+      <div className="inline-flex flex-wrap gap-1 rounded-lg border bg-muted/40 p-1">
+        {MODES.map((t) => (
           <button
             key={t.v}
             type="button"
-            onClick={() => setMode(t.v as typeof mode)}
+            onClick={() => setMode(t.v)}
             className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
               mode === t.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
             }`}
@@ -553,285 +152,32 @@ export default function ProductNew() {
       ) : mode === "bundle" ? (
         <BundleForm />
       ) : (
-      <>
-      {/* ── اسم مركّب + معاينة الكاتالوج ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">اسم المنتج وبياناته</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Field
-              label="اسم المنتج"
-              required
-              hint="يظهر في البيع والفواتير والتقارير. اكتبه مباشرةً أو ركّبه من النوع/الماركة/الموديل."
-              className="md:col-span-3"
-            >
-              <div className="flex items-center gap-2">
-                <Input id="product-name" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="اسم المنتج الكامل" dir="auto" />
-                {composedName && composedName !== productName.trim() && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 whitespace-nowrap"
-                    onClick={() => setProductName(composedName)}
-                    title="تركيب الاسم من النوع/الماركة/الموديل"
-                  >
-                    ↻ تركيب من الحقول
-                  </Button>
-                )}
-              </div>
-              <NameAssistant name={productName.trim() || composedName} onApply={setProductName} warnColors />
-              <AiProductContentAssistant
-                facts={aiProductFacts}
-                onApply={(draft) => {
-                  setProductName(draft.seoTitle);
-                  setDescription(draft.description);
-                }}
-              />
-            </Field>
-            <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
-              <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" />
-            </Field>
-            <Field label="الماركة (اختياري)">
-              <Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" />
-            </Field>
-            <Field label="الموديل (اختياري)">
-              <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" />
-            </Field>
-            <Field label="الفئة / التصنيف">
-              <AppSelect
-                value={String(categoryId)}
-                onValueChange={(next) => setCategoryId(next === "" ? "" : Number(next))}
-                className="h-9 border-input px-3 text-sm"
-              >
-                <option value="">— بلا فئة —</option>
-                {categoryOptionElements(categoriesQ.data ?? [])}
-              </AppSelect>
-            </Field>
-            <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">
-              <Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" />
-            </Field>
-          </CardContent>
-        </Card>
-
-        <ConsignmentField value={consignment} onChange={setConsignment} />
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">معاينة الكاتالوج</CardTitle></CardHeader>
-          <CardContent>
-            <div className="rounded-lg border bg-muted/30 overflow-hidden">
-              <div className="aspect-[4/3] bg-card flex items-center justify-center text-muted-foreground text-xs">
-                <span className="px-3 text-center font-mono text-[11px]">— تُضاف الصورة بعد الحفظ عبر الاستوديو —</span>
-              </div>
-              <div className="p-3 space-y-2">
-                <div className="text-sm font-semibold">
-                  {productName.trim() || composedName || <span className="text-muted-foreground">— اسم المنتج —</span>}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {baseSku && <Badge variant="outline" dir="ltr">{baseSku}</Badge>}
-                </div>
-                {variants.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t">
-                    <span className="text-[11px] text-muted-foreground">{toArabicDigits(variants.length)} متغيّر:</span>
-                    {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} hex={v.colorHex} />)}
-                  </div>
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── التسعير والمخزون المشترك ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">التسعير والمخزون · مشترك</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field
-            label={consignment.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"}
-            required
-            hint={consignment.isConsignment ? "المبلغ الذي يستحقه المودِع عند بيع القطعة." : "سعر شراء موحّد لكل الألوان."}
-          >
-            <MoneyInput id="product-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
-            <NewProductCostCoach
-              costPrice={costPrice}
-              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
-              categoryId={categoryId === "" ? null : Number(categoryId)}
-              brand={brand}
-              productType={productType}
-            />
-          </Field>
-          <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
-            <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />
-          </Field>
-          <Field label="قابل للتخصيص">
-            <div className="flex items-center gap-2 h-9">
-              <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
-              <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
-            </div>
-          </Field>
-          <Field label="الحالة (المنتج كاملاً)">
-            <div className="flex items-center gap-2 h-9">
-              <Switch checked={isActive} onCheckedChange={setIsActive} />
-              <span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span>
-            </div>
-          </Field>
-        </CardContent>
-      </Card>
-
-      {/* ── قالب الوحدات والأسعار المشترك ── */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle className="text-base">قالب الوحدات والأسعار · مشترك</CardTitle>
-            <p className="text-xs text-muted-foreground mt-1">
-              يُطبَّق على كل المتغيّرات. ولكل وحدة من كل لون <b>باركودها المستقل</b> (يُدخَل في جدول المتغيّرات).
-            </p>
-          </div>
-          <Button type="button" variant="outline" size="sm" onClick={addUnit}>+ وحدة</Button>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="hidden md:grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold text-muted-foreground">
-            <span className="col-span-2">الوحدة</span>
-            <span className="col-span-1">معامل</span>
-            <span className="col-span-2">سعر المفرد</span>
-            <span className="col-span-2">سعر الجملة</span>
-            <span className="col-span-2">سعر الحكومي</span>
-            <span className="col-span-2">الهامش</span>
-            <span className="col-span-1 text-center">أساس / متجر</span>
-          </div>
-          {units.map((u) => {
-            const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
-            const unitCost = (parseFloat(costPrice) || 0) * factor;
-            return (
-              <div key={u.id} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
-                <Input className="md:col-span-2 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن" />
-                <NumberInput className="md:col-span-1 h-8 text-sm" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(v) => patchUnit(u.id, { factor: v })} placeholder="12" decimals={4} />
-                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
-                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
-                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.government ?? ""} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />
-                <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
-                <div className="md:col-span-1 flex items-center justify-center gap-2">
-                  <input type="radio" name="baseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />
-                  <input type="checkbox" checked={u.sellInStore} onChange={(e) => patchUnit(u.id, { sellInStore: e.target.checked })} title="متاحة للبيع في المتجر الإلكتروني" aria-label="متاحة للبيع في المتجر الإلكتروني" />
-                  <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="text-muted-foreground hover:text-destructive disabled:opacity-30" aria-label="حذف الوحدة"><X aria-hidden className="size-4" /></button>
-                </div>
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
-
-      {/* ── المتغيّرات ── */}
-      <Card>
-        <CardHeader className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-base flex items-center gap-2">
-              المتغيّرات (الألوان والقياسات)
-              <Badge variant="secondary" className="bg-primary/10 text-primary">{toArabicDigits(variants.length)}</Badge>
-            </CardTitle>
-            <p className="text-xs text-muted-foreground mt-1">
-              كل صفّ منتج مخزنيّ مستقل: SKU ورصيد لكل فرع وظهور منفصل في البيع — <b>وباركود مستقل لكل وحدة</b>.
-              افتح تفاصيل الصفّ (السهم) لإضافة <b>«بدائل»</b> (باركودات إضافية لنفس الوحدة).
-            </p>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              الفرع:
-              <AppSelect
-                value={String(branchId)}
-                onValueChange={(next) => setPickedBranch(Number(next))}
-                className="h-8 border-input px-2 text-xs text-foreground"
-              >
-                {branches.map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </AppSelect>
-            </label>
-            <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>استيراد / لصق</Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => setPrintOpen(true)} disabled={!variants.length}>طباعة الملصقات</Button>
-            <Button type="button" variant="outline" size="sm" onClick={exportExcel} disabled={!variants.length}>تصدير Excel</Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <MatrixGenerator
-            colors={colors}
-            setColors={setColors}
-            sizes={sizes}
-            setSizes={setSizes}
-            excluded={excluded}
-            toggleExclude={toggleExclude}
-            onGenerate={generate}
-            includedCount={includedCount}
-            existingCount={variants.length}
-          />
-          {variants.length > 0 && (
-            <BulkTools
-              units={units}
-              branchName={branches.find((b) => b.id === branchId)?.name ?? "الفرع"}
-              onMinAll={bulkMin}
-              onStockAll={bulkStock}
-              onSeq={bulkSeq}
-            />
-          )}
-          <VariantsTable
-            variants={variants}
-            units={units}
+        <RecordForm
+          mode="create"
+          isDirty={isDirty}
+          blockedBy={blockedBy}
+          isPending={create.isPending}
+          onSave={saveAndClose}
+          onSaveAndNew={saveAndNew}
+          saveLabel="حفظ المنتج والمتغيّرات"
+          savedMessage="تم حفظ المنتج ومتغيّراته"
+          barHint={
+            <>
+              سيُحفظ <b className="text-foreground" dir="ltr">{model.variants.length}</b> منتج مخزنيّ مستقل تحت منتج واحد — كلٌّ بباركوداته ورصيده لكل فرع.
+            </>
+          }
+        >
+          <ProductFormFields
+            mode="create"
+            model={model}
+            onChange={patch}
             branches={branches}
             branchId={branchId}
-            costPrice={costPrice}
-            baseName={composedName}
+            onBranchChange={setPickedBranch}
+            categories={categoriesQ.data ?? []}
             takenInDb={takenInDb}
-            patchVariant={patchVariant}
-            removeVariant={removeVariant}
-            onScan={onScan}
-            onColorCommit={commitColorRename}
-            localAliases
           />
-          {variants.length > 0 && (
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground px-1">
-              <span>الإجمالي: <b className="text-foreground">{toArabicDigits(variants.length)}</b> منتج ({toArabicDigits(activeCount)} مفعّل)</span>
-              <span>مخزون كلّي (كل الفروع): <b className="text-foreground">{toArabicDigits(totalStock)}</b> قطعة</span>
-              <span>سعر البيع الأساس: <b className="text-foreground" dir="ltr">{baseRetail || "—"}</b> د.ع</span>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <ProductMediaContentSection
-        description={description}
-        onDescriptionChange={setDescription}
-      />
-
-      {error && (
-        <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span className="whitespace-pre-wrap break-words">{error}</span>
-        </div>
-      )}
-
-      {/* ── شريط الحفظ الثابت ── */}
-      <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
-        <div className="text-xs text-muted-foreground hidden sm:block">
-          سيُحفظ <b className="text-foreground">{toArabicDigits(variants.length)}</b> منتج مخزنيّ مستقل تحت منتج واحد — كلٌّ بباركوداته ورصيده لكل فرع.
-        </div>
-        <div className="flex gap-2">
-          <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
-          <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
-            {create.isPending ? ACTION_LABELS.saving : "حفظ المنتج والمتغيّرات"}
-          </Button>
-        </div>
-      </div>
-
-      <ImportModal open={importOpen} onOpenChange={setImportOpen} units={units} onImport={applyImport} />
-      <LabelPrintModal
-        open={printOpen}
-        onOpenChange={setPrintOpen}
-        variants={variants}
-        units={units}
-        baseName={composedName}
-        baseRetail={baseRetail}
-      />
-      </>
+        </RecordForm>
       )}
     </div>
   );

@@ -15,12 +15,7 @@
       "productName"
     ],
     "onlyEdit": [
-      "allowAutoCartRecommendations",
-      "allowBackorder",
-      "isService",
-      "originalName",
-      "showInPrintPos",
-      "showInReception"
+      "originalName"
     ]
   },
   "client/src/pages/Purchase": {

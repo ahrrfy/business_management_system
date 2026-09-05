@@ -42,7 +42,7 @@
  * ⚠️ **مكوّنٌ واحد لكل شاشة:** `Ctrl+S` عالميّ على النافذة، فشريطان مُصيَّران معاً يحفظان مرّتين.
  */
 import * as React from "react";
-import { AlertTriangle, CheckCheck, Plus, Save, X } from "lucide-react";
+import { AlertTriangle, CheckCheck, Lock, Plus, Save, X } from "lucide-react";
 
 import { Kbd } from "@/components/ui/kbd";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -50,6 +50,8 @@ import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { KEYBOARD_SHORTCUTS, formatShortcut } from "@shared/keyboardShortcuts";
+import { SaveOutcomeNotice } from "./SaveOutcomeNotice";
+import type { SaveOutcome } from "./saveOutcome";
 
 /** «Ctrl+S» — يُشتقّ من قاموس الاختصارات لا يُكتب نصّاً ثابتاً (يتغيّر معه إن تغيّر). */
 const SAVE_SHORTCUT_HINT = formatShortcut(KEYBOARD_SHORTCUTS.saveForm);
@@ -65,6 +67,20 @@ export type SaveBarProps = {
   isPending?: boolean;
   /** شروطٌ تمنع الحفظ — كلٌّ بنصّه. الزرُّ يُعطَّل **ويقول أيُّها فشل**. */
   blockedBy?: string[];
+  /**
+   * سببُ منعٍ واحد يملكه **الخادم/السجلّ** لا النموذج (مقفولٌ بطلبٍ معلّق، صلاحيةٌ ناقصة…) — يُعطّل
+   * الحفظ ويُعرض بنصّه تحت رأس «الحفظ متوقّف». يختلف عن `blockedBy` (شروطُ إدخالٍ يصلحها المستخدم).
+   */
+  disabledReason?: string | null;
+  /** `Esc` ⇒ إلغاء (اختياريّ) — بحراسة الطبقات المتراكبة في `useSaveShortcuts`. */
+  onCancel?: () => void;
+  /**
+   * نتيجةُ آخر حفظٍ **مُهيكَلة** (م٦ ق٤، Codex FP-04): SAVED/REQUESTED/CONFLICT/FAILED تُعرض بجوار الأزرار —
+   * فلا «نجاح أخضر» بعد إنشاء طلبٍ معلّق. يُشتقّها `RecordForm` من مآل `onSave`.
+   */
+  outcome?: SaveOutcome | null;
+  /** نصٌّ صغير في الشريط (ملخّص ما سيُحفظ) — يُخفى على الشاشات الضيّقة. */
+  hint?: React.ReactNode;
   /** نصّ الزرّ الرئيسيّ. الافتراضي «حفظ» من `ACTION_LABELS`. */
   saveLabel?: string;
   className?: string;
@@ -83,26 +99,32 @@ export function SaveBar({
   onSaveAndClose,
   isPending = false,
   blockedBy,
+  disabledReason,
+  onCancel,
+  outcome,
+  hint,
   saveLabel,
   className,
 }: SaveBarProps) {
   /*
    * تنظيفُ الأسباب: نُسقط الفارغ ونُزيل التكرار مع حفظ الترتيب. مصدرُ التكرار عمليّ لا نظريّ —
    * مُتحقِّقان مختلفان (النموذج والخادم) يصوغان الشرط نفسه، فتظهر «اختر العميل» مرّتين.
+   * `disabledReason` يُدمج في القائمة نفسها (سببٌ واحد يقوله الخادم) كي يُعرض بالمسار الظاهر ذاته.
    */
   const reasons = React.useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const raw of blockedBy ?? []) {
+    for (const raw of [...(blockedBy ?? []), disabledReason]) {
       const text = (raw ?? "").trim();
       if (!text || seen.has(text)) continue;
       seen.add(text);
       out.push(text);
     }
     return out;
-  }, [blockedBy]);
+  }, [blockedBy, disabledReason]);
 
   const blocked = reasons.length > 0;
+  const lockedByRecord = !!(disabledReason ?? "").trim();
 
   /** أيُّ زرٍّ يعمل الآن — ليظهر الدوّار على الزرّ المضغوط لا على الثلاثة. */
   const [running, setRunning] = React.useState<BarAction | null>(null);
@@ -175,6 +197,7 @@ export function SaveBar({
    */
   useSaveShortcuts({
     onSave: () => run("save", onSave),
+    onCancel,
   });
 
   const savePending = running === "save" || (isPending && running === null);
@@ -206,8 +229,12 @@ export function SaveBar({
           )}
         >
           <p className="flex items-center gap-1.5 font-bold">
-            <AlertTriangle aria-hidden className="size-4 shrink-0" />
-            <span>تعذّر الحفظ — شروطٌ لم تتحقّق بعد</span>
+            {lockedByRecord ? (
+              <Lock aria-hidden className="size-4 shrink-0" />
+            ) : (
+              <AlertTriangle aria-hidden className="size-4 shrink-0" />
+            )}
+            <span>{lockedByRecord ? "الحفظ متوقّف الآن" : "تعذّر الحفظ — شروطٌ لم تتحقّق بعد"}</span>
             <span className="ms-auto rounded-full border border-current px-1.5 py-px text-[10px] font-black tabular-nums">
               {reasons.length}
             </span>
@@ -221,6 +248,13 @@ export function SaveBar({
             ))}
           </ul>
         </div>
+      )}
+
+      {/* نتيجةُ آخر حفظ — فوق الأزرار وبنفس شكلها في كلّ الشاشات (لا توستٌ يختفي قبل أن يُقرأ). */}
+      <SaveOutcomeNotice outcome={outcome} />
+
+      {hint != null && hint !== false && (
+        <div className="hidden text-xs text-muted-foreground sm:block">{hint}</div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
