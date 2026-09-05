@@ -86,6 +86,22 @@ function describeContextError(
 }
 
 /**
+ * أيُّ استعلامٍ يُعاد جلبه عند «إعادة المحاولة»؟ — مسندٌ نقيّ لاختبار الحافّة بلا React.
+ *
+ * العطبُ الذي يغلقه (تدقيق Codex، م٤): الزرّ كان يُعيد جلبَ `sessionContext.get` وحده. لكنّ ذلك
+ * الاستعلام **مُعطَّلٌ** (`enabled: signedIn`) ما لم تُقرأ الهويّة؛ فإن فشل `auth.me` ابتدائياً بقيَ
+ * `meError`/`signedIn===false` وظلّت الشاشاتُ الثلاث محجوبةً ولو نجحت إعادةُ جلب السياق. المخرج:
+ * حين يكون الساقطُ هو الهويّة، نُعيد جلبَ `me` أوّلاً — ومتى قُرئت الهويّةُ فعّلت استعلامَ السياق
+ * فجُلب تلقائياً؛ وإلّا فالسياقُ هو الساقط فنُعيد جلبَه مباشرةً.
+ */
+export function retryTarget(opts: {
+  meError: boolean;
+  signedIn: boolean;
+}): "me" | "context" {
+  return opts.meError || !opts.signedIn ? "me" : "context";
+}
+
+/**
  * سياقُ الجلسة كما اشتقّه الخادم — للشاشات التي تحتاج أكثر من الفرع (اليوم التشغيليّ، طرق القبض،
  * الفئة السعرية، سلطة العبور). يُستدعى من أيّ شاشة؛ الاستعلامُ مشترَكٌ ومخبَّأ.
  */
@@ -120,12 +136,19 @@ export function useSessionContext(): SessionContextState {
   }, [identity, utils]);
 
   const refetch = contextQuery.refetch;
+  const meRefetch = me.refetch;
   const { isLoading: meLoading, isError: meError } = me;
   const { isPending, isError, error, data } = contextQuery;
 
   return useMemo<SessionContextState>(() => {
     const retry = () => {
-      void refetch();
+      // نُعيد جلبَ الاستعلام الذي فشل فعلاً: `me` حين تسقط الهويّة (وإلّا بقيت الشاشاتُ محجوبةً
+      // ولو نجح السياق — راجع `retryTarget`)، والسياقَ حين تكون الهويّةُ حاضرةً وهو الساقط.
+      if (retryTarget({ meError, signedIn }) === "me") {
+        void meRefetch();
+      } else {
+        void refetch();
+      }
     };
     const failed = (message: string): SessionContextState => ({
       status: "error",
@@ -158,7 +181,7 @@ export function useSessionContext(): SessionContextState {
       message: null,
       retry,
     };
-  }, [meLoading, meError, signedIn, isPending, isError, error, data, refetch]);
+  }, [meLoading, meError, signedIn, isPending, isError, error, data, refetch, meRefetch]);
 }
 
 /**

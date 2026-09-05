@@ -132,6 +132,11 @@ export const voucherRouter = router({
             action: input.voucherType === "RECEIPT" ? "voucher.receipt.create" : "voucher.payment.create",
             entityType: "receipt",
             entityId: res.receiptId,
+            // تدقيق Codex (م٤): الأدمنُ عابرُ الفروع بلا فرعٍ مُسنَد يُصدر السندَ على `voucherBranchId`
+            // الذي اختاره صراحةً، لكنّ `logAudit(ctx)` يشتقّ الفرعَ من `ctx.user.branchId` (= null)
+            // ⇒ صفُّ تدقيقٍ بفرعٍ NULL يختفي من استعلامات التدقيق المفلترة بالفرع (auditRouter). نُثبّت
+            // فرعَ السند صراحةً على الأثر كي يظهر في تدقيق الفرع الذي تحرّك فيه المال فعلاً.
+            branchId: voucherBranchId,
             newValue: {
               voucherNumber: res.voucherNumber,
               amount: input.amount,

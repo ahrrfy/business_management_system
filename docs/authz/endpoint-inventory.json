@@ -19980,7 +19980,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:307"
+      "loc": "server/routers/voucherRouter.ts:312"
     },
     {
       "surface": "trpc",
@@ -19997,7 +19997,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:162"
+      "loc": "server/routers/voucherRouter.ts:167"
     },
     {
       "surface": "trpc",
@@ -20014,7 +20014,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:763"
+      "loc": "server/routers/voucherRouter.ts:768"
     },
     {
       "surface": "trpc",
@@ -20031,7 +20031,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:263"
+      "loc": "server/routers/voucherRouter.ts:268"
     },
     {
       "surface": "trpc",
@@ -20065,7 +20065,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:446"
+      "loc": "server/routers/voucherRouter.ts:451"
     },
     {
       "surface": "trpc",
@@ -20082,7 +20082,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:315"
+      "loc": "server/routers/voucherRouter.ts:320"
     },
     {
       "surface": "trpc",
@@ -20099,7 +20099,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:287"
+      "loc": "server/routers/voucherRouter.ts:292"
     },
     {
       "surface": "trpc",
@@ -20116,7 +20116,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:417"
+      "loc": "server/routers/voucherRouter.ts:422"
     },
     {
       "surface": "trpc",
@@ -20133,7 +20133,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:640"
+      "loc": "server/routers/voucherRouter.ts:645"
     },
     {
       "surface": "trpc",
@@ -20150,7 +20150,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:326"
+      "loc": "server/routers/voucherRouter.ts:331"
     },
     {
       "surface": "trpc",
@@ -20167,7 +20167,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:192"
+      "loc": "server/routers/voucherRouter.ts:197"
     },
     {
       "surface": "trpc",
@@ -20184,7 +20184,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:502"
+      "loc": "server/routers/voucherRouter.ts:507"
     },
     {
       "surface": "trpc",
@@ -20201,7 +20201,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:221"
+      "loc": "server/routers/voucherRouter.ts:226"
     },
     {
       "surface": "trpc",
@@ -20218,7 +20218,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:601"
+      "loc": "server/routers/voucherRouter.ts:606"
     },
     {
       "surface": "trpc",
@@ -20252,7 +20252,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:711"
+      "loc": "server/routers/voucherRouter.ts:716"
     },
     {
       "surface": "trpc",
@@ -20269,7 +20269,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:518"
+      "loc": "server/routers/voucherRouter.ts:523"
     },
     {
       "surface": "trpc",
