@@ -23,6 +23,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 
 import { recordVersions, type InsertRecordVersion, type RecordVersion } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
+import { isDupEntry } from "@shared/errorMap.ar";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import type { Actor } from "../tx";
@@ -225,33 +226,72 @@ export async function snapshotBeforeUpdate(
 
   const payload = normalizePayload(input.payloadJson);
 
-  // رقمُ الإصدار = MAX + 1 داخل المعاملة. UNIQUE(entityType,entityId,versionNumber)
-  // يحرس التزامن: سباقٌ نادر يُلقي `ER_DUP_ENTRY` فيسقط الـTx كاملاً — والسبب المكشوف
-  // للمستدعي أفضل من كتابةٍ متأخّرة بمعرّفٍ خاطئ.
-  const [{ maxVersion }] = await tx
-    .select({ maxVersion: sql<number | null>`COALESCE(MAX(${recordVersions.versionNumber}), 0)` })
-    .from(recordVersions)
-    .where(
-      and(
-        eq(recordVersions.entityType, entityType),
-        eq(recordVersions.entityId, input.entityId),
-      ),
-    );
-  const versionNumber = Number(maxVersion ?? 0) + 1;
+  // رقمُ الإصدار = MAX + 1 داخل المعاملة — **بقراءةٍ قافلة** (`FOR UPDATE`) ثمّ **إعادةٌ على التصادم**.
+  // ⚠️ أمسكته الجولة البصريّة لـم٦: تعديلان متزامنان على المنتج نفسه يتسلسلان على أقفال صفوفه،
+  // لكنّ الثاني — بعد انتظار القفل — كان يقرأ MAX بلقطة REPEATABLE READ التي ثبّتها أوّلُ SELECT عاديّ
+  // في معاملته (قبل التزام الأوّل) فيرى صفراً ويُعيد الرقم 1 ⇒ `ER_DUP_ENTRY` ويسقط تعديلٌ سليم.
+  // القراءةُ القافلة تتجاوز اللقطةَ وتقرأ آخرَ ما التُزم، وتُسلسِل قفلَ صفوف الكيان القائمة.
+  //
+  // Codex #1008 P2: لكنّ `FOR UPDATE` وحده **لا يكفي لأوّل نسخة** (لا صفَّ للكيان بعد): قفلُ الفجوة
+  // في InnoDB **مُشترَك** لا حصريّ، فمعاملتان تُخصّصان الرقم 1 معاً ثمّ تفشل الثانية بـ`ER_DUP_ENTRY`.
+  // مسارُ المنتج يقفل صفَّ `products` أوّلاً فيُسلسَل، لكنّ هذه الخدمةَ مشتركةٌ (عميل/مورّد/…) وقد لا
+  // يقفل المستدعي صفّاً مستقرّاً — فنجعل الخدمةَ نفسَها مُحصَّنة: نُعيد تخصيصَ الرقم على تصادم المفتاح
+  // الفريد وحده. القراءةُ القافلة في الإعادة تتخطّى لقطةَ REPEATABLE READ فترى الصفَّ المُلتزَم للتوّ
+  // وتُخصّص التالي. `uniq_entity_version` يبقى الحارسَ الأخير الذي يجعل الإعادةَ حتميّةَ الصحّة.
+  const MAX_ALLOC_ATTEMPTS = 5;
+  for (let attempt = 1; attempt <= MAX_ALLOC_ATTEMPTS; attempt++) {
+    const [{ maxVersion }] = await tx
+      .select({ maxVersion: sql<number | null>`COALESCE(MAX(${recordVersions.versionNumber}), 0)` })
+      .from(recordVersions)
+      .where(
+        and(
+          eq(recordVersions.entityType, entityType),
+          eq(recordVersions.entityId, input.entityId),
+        ),
+      )
+      .for("update");
+    const versionNumber = Number(maxVersion ?? 0) + 1;
 
-  const row: InsertRecordVersion = {
-    entityType,
-    entityId: input.entityId,
-    versionNumber,
-    payloadJson: payload as InsertRecordVersion["payloadJson"],
-    reason,
-    actorUserId: actor.userId,
-    branchId: actor.branchId ?? null,
-  };
+    const row: InsertRecordVersion = {
+      entityType,
+      entityId: input.entityId,
+      versionNumber,
+      payloadJson: payload as InsertRecordVersion["payloadJson"],
+      reason,
+      actorUserId: actor.userId,
+      branchId: actor.branchId ?? null,
+    };
 
-  const insertResult = await tx.insert(recordVersions).values(row);
-  const id = extractInsertId(insertResult);
-  return { id, versionNumber };
+    try {
+      const insertResult = await tx.insert(recordVersions).values(row);
+      const id = extractInsertId(insertResult);
+      return { id, versionNumber };
+    } catch (err) {
+      // نُعيد على تصادم `uniq_entity_version` **وحده**. ⛔ لا نُعيد على deadlock (1213): يُدحرِج
+      // المعاملةَ كلَّها فلا تصلح للإكمال هنا — يُرمى ليتراجع المستدعي (أو تُعيده حلقةُ الراوتر).
+      if (isDupEntry(err) && attempt < MAX_ALLOC_ATTEMPTS) continue;
+      if (isDupEntry(err)) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل لقطة",
+            why: `تعذّر تخصيص رقم نسخةٍ فريد بعد ${MAX_ALLOC_ATTEMPTS} محاولاتٍ — ضغطُ حفظٍ متزامنٌ غير معتاد على الكيان نفسه`,
+            doThis: "أعد حفظ التعديل بعد لحظة، وأبلغ المدير إن تكرّر",
+          }),
+        });
+      }
+      throw err;
+    }
+  }
+  // غيرُ قابلٍ للوصول — الحلقةُ إمّا تُرجِع أو ترمي في كلّ مسار؛ يُرضي مُحلّلَ التدفّق فقط.
+  throw new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: appErrorMessage({
+      what: "تعذّر تسجيل لقطة",
+      why: "خرجت حلقةُ تخصيص رقم النسخة دون نتيجة",
+      doThis: "أعد المحاولة وأبلغ المدير",
+    }),
+  });
 }
 
 /**
@@ -286,6 +326,8 @@ export async function readVersion(
   versionNumber: number,
 ): Promise<RecordVersion> {
   assertIsTransaction(tx);
+  // قراءةٌ قافلة (`FOR SHARE`) لا عاديّة: هي أوّلُ ما تقرأه معاملةُ الاستعادة، والقراءةُ العاديّة كانت
+  // ستُثبّت لقطةَ المعاملة **قبل** أقفال التعديل فتصير قراءاتُ «الحالة قبل الاستعادة» بائتة.
   const rows = await tx
     .select()
     .from(recordVersions)
@@ -296,7 +338,8 @@ export async function readVersion(
         eq(recordVersions.versionNumber, versionNumber),
       ),
     )
-    .limit(1);
+    .limit(1)
+    .for("share");
   const row = rows[0];
   if (!row) {
     throw new TRPCError({
