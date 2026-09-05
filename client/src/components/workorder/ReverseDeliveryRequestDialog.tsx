@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
-import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -15,6 +14,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorState, LoadingState } from "@/components/PageState";
+import { RefundRailPicker, type RefundRailPickerState } from "@/components/ui/RefundRailPicker";
 import { D, fmtAr } from "@/lib/money";
 import { newClientRequestId } from "@/lib/countQueue";
 import { notify } from "@/lib/notify";
@@ -120,6 +120,8 @@ export default function ReverseDeliveryRequestDialog({
   const [reason, setReason] = useState("");
   const [reopen, setReopen] = useState(false);
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
+  /** حالةُ منتقي الروافد الموحَّد — الدرجُ وسببُ الحجب من الخادم لا من قائمةٍ محلّيّة. */
+  const [rail, setRail] = useState<RefundRailPickerState | null>(null);
   const [attempt, setAttempt] = useState<PendingReverseDeliveryAttempt | null>(null);
   const [submitError, setSubmitError] = useState("");
   const attemptRef = useRef<PendingReverseDeliveryAttempt | null>(null);
@@ -202,14 +204,6 @@ export default function ReverseDeliveryRequestDialog({
     setRefundShiftId(recovered.input.payload.refundShiftId ?? null);
   }, [open, workOrderId]);
 
-  useEffect(() => {
-    if (!open || !preflight?.eligible || attemptRef.current) return;
-    setRefundShiftId((current) => {
-      if (current != null && preflight.openReceptionShifts.some((shift) => shift.id === current)) return current;
-      return preflight.openReceptionShifts.length === 1 ? preflight.openReceptionShifts[0]!.id : null;
-    });
-  }, [open, preflight]);
-
   const eligiblePreflight = preflight?.eligible ? preflight : null;
   const cashRefundRequired = eligiblePreflight?.refundSources.some((source) => source.refundMethod === "CASH") ?? false;
   const plannedRefundTotal = useMemo(
@@ -218,10 +212,17 @@ export default function ReverseDeliveryRequestDialog({
   );
   const liveConsignment = eligiblePreflight ? !consignmentReadyForReverse(eligiblePreflight) : false;
   const unsupportedRefundSource = eligiblePreflight?.refundSources.some((source) => !isRequestableReverseRefundSource(source)) ?? false;
+  /**
+   * الدرجُ من المنتقي الموحَّد: يُحجَب الإرسال بسبب المنتقي المقروء (لا درجَ · تعدّدٌ بلا اختيار ·
+   * درجٌ أُغلق) — لا بعدِّ الورديات محلّياً. والمحاولةُ المحفوظة تُبذَر في المنتقي فيُحترَم درجُها.
+   */
+  const railReady = rail != null && !rail.loading && rail.error == null && rail.preflight != null;
+  const pickedRail = railReady ? rail.selection?.rail ?? null : null;
+  // الدرجُ يلزمه رقمٌ؛ والخزينةُ (المفتاح الناقص، ق١٠) اختيارٌ صريح بلا درج يُنفَّذ عند الاعتماد.
   const shiftRequiredButMissing = cashRefundRequired
-    && (eligiblePreflight?.openReceptionShifts.length ?? 0) > 0
-    && refundShiftId == null;
-  const cashShiftUnavailable = cashRefundRequired && eligiblePreflight?.openReceptionShifts.length === 0;
+    && (!railReady || rail.blockReason != null || pickedRail == null || (pickedRail === "DRAWER" && refundShiftId == null));
+  const cashShiftUnavailable = cashRefundRequired && railReady
+    && rail.preflight!.drawers.length === 0 && !rail.preflight!.rails.TREASURY.available;
 
   const submitFreshAttempt = () => {
     if (!eligiblePreflight || reason.trim().length < 3 || liveConsignment || unsupportedRefundSource || shiftRequiredButMissing || cashShiftUnavailable) return;
@@ -341,29 +342,39 @@ export default function ReverseDeliveryRequestDialog({
 
               {cashRefundRequired && (
                 <div className="space-y-2 rounded-md border p-3">
-                  <Label htmlFor={`reverse-refund-shift-${workOrderId}`}>وردية الاسترداد النقدي</Label>
+                  <Label>وردية الاسترداد النقدي</Label>
                   <p className="text-xs text-muted-foreground">
                     يخرج الرد النقدي من درج استقبال مفتوح في فرع الأمر، ويظهر في مطابقة اليوم.
                   </p>
-                  {eligiblePreflight.openReceptionShifts.length === 0 ? (
+                  {/*
+                    المنتقي الموحَّد (ق١٠): الأدراجُ وكفايتُها من الخادم. بلا وردية استقبال مفتوحة تُعرَض
+                    **الخزينة** رافداً (المفتاح الناقص — `WORK_ORDER_REVERSE_DELIVERY_COMPENSATION`): الطلبُ
+                    يُرسَل بلا درج، والمعتمِدُ يصرف من الخزينة بصفته؛ وإن فُتحت وردية استقبال قبل الاعتماد
+                    خرج النقد من درجها. والبطاقةُ تُعلَن غيرَ متاحة بسببها لا تُخفى.
+                  */}
+                  <RefundRailPicker
+                    context={{ sourceDocType: "WORKORDER_REVERSE_DELIVERY", sourceDocId: workOrderId }}
+                    mode="embedded"
+                    onStateChange={(next) => {
+                      setRail(next);
+                      setRefundShiftId(next.selection?.refundShiftId ?? null);
+                    }}
+                    initialSelection={attempt?.input.payload.refundShiftId != null ? { rail: "DRAWER", refundShiftId: attempt.input.payload.refundShiftId } : null}
+                    drawerLabel="درج الاسترداد النقدي"
+                    drawerHint="النقد يخرج فوراً من درج الاستقبال المختار عند اعتماد الطلب."
+                    submitting={attempt != null || request.isPending}
+                  />
+                  {cashShiftUnavailable ? (
                     <p role="alert" className="text-xs font-bold text-destructive">
-                      لا توجد وردية استقبال مفتوحة؛ افتح ورديةً قبل إرسال الطلب.
+                      لا توجد وردية استقبال مفتوحة ولا خزينةٌ متاحة؛ افتح ورديةً قبل إرسال الطلب.
                     </p>
-                  ) : (
-                    <AppSelect
-                      id={`reverse-refund-shift-${workOrderId}`}
-                      value={refundShiftId == null ? "" : String(refundShiftId)}
-                      onValueChange={(value) => setRefundShiftId(Number(value))}
-                      disabled={attempt != null || request.isPending}
-                    >
-                      <option value="">اختر الوردية التي سيخرج منها النقد…</option>
-                      {eligiblePreflight.openReceptionShifts.map((shift) => (
-                        <option key={shift.id} value={String(shift.id)}>
-                          #{shift.id} — {shift.userName ?? "مستخدم غير معروف"} — المتوقع {shift.expectedCash == null ? "غير متاح" : `${fmtAr(shift.expectedCash)} د.ع`}
-                        </option>
-                      ))}
-                    </AppSelect>
-                  )}
+                  ) : pickedRail === "TREASURY" ? (
+                    <p className="text-xs text-muted-foreground">
+                      لا وردية استقبال مفتوحة — يُصرَف الردّ من خزينة الفرع عند اعتماد الطلب بصفة المعتمِد.
+                    </p>
+                  ) : railReady && rail.blockReason ? (
+                    <p className="text-xs font-bold text-[var(--sem-warn)]">{rail.blockReason}</p>
+                  ) : null}
                 </div>
               )}
 

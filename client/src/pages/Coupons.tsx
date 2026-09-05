@@ -283,11 +283,17 @@ export default function Coupons() {
     {
       id: "redemption",
       header: "الاستخدام / الفاتورة",
-      accessorFn: (r) => (r.lastInvoiceNumber ? `${r.lastInvoiceNumber} · ${displayDate(r.lastRedeemedAt)}` : "—"),
+      // استبدالٌ حيٌّ أوّلاً؛ فإن لم يوجد وكان ثمّة استبدالٌ أُلغيت فاتورتُه أظهرناه «ملغى» كي
+      // يتتبّع الموظّف الإلغاء بدل رؤية الكوبون كأنّه لم يُستبدَل قطّ (Codex P2).
+      accessorFn: (r) => (r.lastInvoiceNumber
+        ? `${r.lastInvoiceNumber} · ${displayDate(r.lastRedeemedAt)}`
+        : r.reversedRedemptionCount ? `${r.lastReversedInvoiceNumber ?? "—"} · مُلغاة` : "—"),
       meta: { width: "wide" },
       cell: ({ row }) => row.original.lastInvoiceNumber
         ? <div className="text-xs"><div>{row.original.lastInvoiceNumber}</div><div className="text-muted-foreground">{displayDate(row.original.lastRedeemedAt)}</div></div>
-        : "—",
+        : row.original.reversedRedemptionCount
+          ? <div className="text-xs"><div>{row.original.lastReversedInvoiceNumber ?? "—"}</div><div className="text-muted-foreground">استُبدل ثمّ أُلغي · {displayDate(row.original.lastReversedRedeemedAt)}</div></div>
+          : "—",
     },
     { id: "discount", header: "الخصم", accessorFn: (r) => formatIqd(r.redeemedDiscount), meta: { kind: "money" }, cell: ({ row }) => formatIqd(row.original.redeemedDiscount) },
     {

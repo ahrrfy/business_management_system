@@ -295,6 +295,7 @@ export default defineConfig({
       "shared/hr.test.ts",
       // برنامج v2 (٣/٩/٢٦) — سجلّاتٌ نقيّة بلا قاعدة بيانات: لا تُشغَّل حتى تُسجَّل هنا.
       "shared/nextAction.test.ts",
+      "shared/documentActions.test.ts",
       "shared/automationRegistry.test.ts",
       "shared/decisionRegistry.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
