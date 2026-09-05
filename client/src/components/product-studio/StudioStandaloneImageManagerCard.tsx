@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Image as ImageIcon, ScanLine } from "lucide-react";
 import { useState } from "react";
 import { ProductImageGallery } from "./ProductImageGallery";
@@ -25,32 +27,39 @@ export function StudioStandaloneImageManagerCard() {
   const [productName, setProductName] = useState<string | null>(null);
   const [isLooking, setIsLooking] = useState(false);
 
-  async function openByQuery() {
-    const clean = query.trim();
+  async function openByQuery(raw = query) {
+    // تقليم الحافتين فقط؛ المسافة الداخلية جزءٌ من هوية Code39 (مثل `1  0095`).
+    const clean = raw.trim();
     if (!clean) return;
     setIsLooking(true);
     try {
-      // نجرّب أوّلاً حلَّ الباركود عبر مسار الاستوديو (يفهم الباركودات القياسيّة).
-      // إن فشل، نُفسّر الحقلَ رقماً كمعرّف منتج.
+      // نجرّب أوّلاً حلَّ الباركود عبر مسار الاستوديو. لا نحوّل رقماً مجهولاً صامتاً
+      // إلى productId: الباركود 000123 كان يفتح المنتج #123 عند فشل الشبكة أو عدم الربط.
       try {
         const resolved = await utils.productStudio.resolveBarcode.fetch({ barcode: clean });
         setProductId(Number(resolved.productId));
         setProductName(resolved.productName);
         return;
-      } catch {
-        // خطأ حلّ الباركود قد يعني أنّه معرّفٌ عدديّ أو اسم — نجرّب.
+      } catch (barcodeError) {
+        const explicitId = /^#([1-9]\d*)$/.exec(clean);
+        if (explicitId) {
+          const asNumber = Number(explicitId[1]);
+          if (Number.isSafeInteger(asNumber)) {
+            setProductId(asNumber);
+            setProductName(`المنتج #${asNumber}`);
+            return;
+          }
+        }
+        notify.err(barcodeError);
       }
-      const asNumber = Number(clean);
-      if (Number.isSafeInteger(asNumber) && asNumber > 0) {
-        setProductId(asNumber);
-        setProductName(`المنتج #${asNumber}`);
-        return;
-      }
-      notify.err("لم أعثر على المنتج — امسح باركوداً أو أدخل معرّفاً عددياً.");
     } finally {
       setIsLooking(false);
     }
   }
+  const barcodeInput = useBarcodeInput((barcode) => {
+    setQuery(barcode);
+    void openByQuery(barcode);
+  });
 
   return (
     <Card>
@@ -61,24 +70,30 @@ export function StudioStandaloneImageManagerCard() {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          امسح باركود المنتج أو أدخل معرّفه ليُفتح معرضُ صوره — لحذف، ترتيب، أو تعيين رئيسيّة. لا حاجة لإنشاء مهمّةٍ في قائمة الاستوديو.
+          امسح باركود المنتج، أو اكتب معرّفه مسبوقاً بـ#، ليُفتح معرضُ صوره — لحذف، ترتيب، أو تعيين رئيسيّة. لا حاجة لإنشاء مهمّةٍ في قائمة الاستوديو.
         </p>
         {productId == null ? (
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-56 flex-1 space-y-1.5">
-              <Label htmlFor="studio-standalone-lookup">باركود أو معرّف المنتج</Label>
-              <Input
-                id="studio-standalone-lookup"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="امسح الباركود أو اكتب المعرّف ثم Enter"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void openByQuery();
-                  }
-                }}
-              />
+              <Label htmlFor="studio-standalone-lookup">باركود أو معرّف المنتج بصيغة #123</Label>
+              <div className="relative">
+                <Input
+                  id="studio-standalone-lookup"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="امسح الباركود أو اكتب # ثم المعرّف"
+                  className={barcodeSearchInputClass}
+                  onKeyDown={(e) => {
+                    barcodeInput.handleKeyDown(e, setQuery);
+                    if (e.defaultPrevented) return;
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void openByQuery();
+                    }
+                  }}
+                />
+                <BarcodeSearchCue />
+              </div>
             </div>
             <Button type="button" className="min-h-11" disabled={isLooking || !query.trim()} onClick={() => void openByQuery()}>
               <ScanLine aria-hidden className="size-4" /> افتح المعرض

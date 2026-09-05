@@ -23,7 +23,7 @@ import { appendDeliveryEvent } from "../delivery/lifecycle";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { appliedCollectionsForWorkOrder } from "../reception/deposits";
+import { appliedCollectionsForWorkOrder } from "../deposits";
 import { reverseWorkOrderDeliveryEffectsInTx } from "../reversal/workOrderDeliveryReversal";
 import { type Actor, withTx } from "../tx";
 import { recordWorkOrderEvent } from "../workOrderEvents";

@@ -7,6 +7,8 @@ import { createLatestBarcodeResolutionGate } from "@/lib/productStudio/barcodeRe
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Camera, Loader2, Package, Search } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { StudioUnknownBarcodeResolver } from "./StudioUnknownBarcodeResolver";
+import { isUnknownStudioBarcodeFailure } from "./studioUnknownBarcode";
 
 type StudioProduct = RouterOutputs["productStudio"]["products"]["rows"][number];
 const CameraScanner = lazy(() => import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })));
@@ -27,6 +29,8 @@ export function StudioProductPicker({
   const [includeInactive, setIncludeInactive] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [unknownBarcode, setUnknownBarcode] = useState("");
+  const [unknownBarcodeValue, setUnknownBarcodeValue] = useState("");
+  const [linkAllowed, setLinkAllowed] = useState(false);
   const [isResolvingBarcode, setIsResolvingBarcode] = useState(false);
   const utils = trpc.useUtils();
   const barcodeResolutionGate = useRef(createLatestBarcodeResolutionGate());
@@ -43,10 +47,15 @@ export function StudioProductPicker({
   const resolveBarcode = async (barcode: string) => {
     const token = barcodeResolutionGate.current.next();
     setIsResolvingBarcode(true);
+    // المسحُ حلّ هوية قاطع؛ لا نعرض أثناءه نتائج LIKE قد تسمح باختيار منتجٍ آخر
+    // يحمل الرقم مصادفةً في اسمه.
+    setOpen(false);
     try {
       const match = await utils.productStudio.resolveBarcode.fetch({ barcode });
       if (!barcodeResolutionGate.current.isCurrent(token)) return;
       if (!match.isActive) {
+        setUnknownBarcodeValue(barcode);
+        setLinkAllowed(false);
         setUnknownBarcode("المنتج معطّل ولا يمكن إسناد مهمة له.");
         return;
       }
@@ -54,8 +63,17 @@ export function StudioProductPicker({
       setQuery("");
       setOpen(false);
       setUnknownBarcode("");
-    } catch {
-      if (barcodeResolutionGate.current.isCurrent(token)) setUnknownBarcode("الباركود غير معروف. راجعه أو ابحث بالاسم.");
+      setUnknownBarcodeValue("");
+      setLinkAllowed(false);
+    } catch (error) {
+      if (barcodeResolutionGate.current.isCurrent(token)) {
+        const failure = error as { data?: { code?: string }; message?: string };
+        const message = failure.message ?? "الباركود غير معروف. راجعه أو ابحث بالاسم.";
+        setOpen(false);
+        setUnknownBarcode(message);
+        setUnknownBarcodeValue(barcode);
+        setLinkAllowed(isUnknownStudioBarcodeFailure(failure.data?.code, message));
+      }
     } finally {
       if (barcodeResolutionGate.current.isCurrent(token)) setIsResolvingBarcode(false);
     }
@@ -64,6 +82,8 @@ export function StudioProductPicker({
     setQuery(barcode);
     setOpen(true);
     setUnknownBarcode("");
+    setUnknownBarcodeValue("");
+    setLinkAllowed(false);
     void resolveBarcode(barcode);
   });
 
@@ -83,6 +103,8 @@ export function StudioProductPicker({
     setQuery("");
     setOpen(false);
     setUnknownBarcode("");
+    setUnknownBarcodeValue("");
+    setLinkAllowed(false);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     barcodeInput.handleKeyDown(event, setQuery);
@@ -116,6 +138,8 @@ export function StudioProductPicker({
               setQuery(event.target.value);
               setOpen(true);
               setUnknownBarcode("");
+              setUnknownBarcodeValue("");
+              setLinkAllowed(false);
             }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
@@ -148,7 +172,14 @@ export function StudioProductPicker({
           )}
         </p>
       )}
-      {unknownBarcode && <p className="text-xs text-destructive" role="status">{unknownBarcode}</p>}
+      {unknownBarcode && (
+        <StudioUnknownBarcodeResolver
+          barcode={unknownBarcodeValue || query}
+          error={unknownBarcode}
+          linkAllowed={linkAllowed}
+          onLinked={resolveBarcode}
+        />
+      )}
       {open && (
         <div id="studio-product-results" className="max-h-64 overflow-auto rounded-md border bg-popover shadow-sm" role="listbox">
           {(search.isFetching || isResolvingBarcode) && rows.length === 0 ? (
@@ -200,6 +231,8 @@ export function StudioProductPicker({
               setQuery(barcode);
               setOpen(true);
               setUnknownBarcode("");
+              setUnknownBarcodeValue("");
+              setLinkAllowed(false);
               void resolveBarcode(barcode);
             }}
           />
