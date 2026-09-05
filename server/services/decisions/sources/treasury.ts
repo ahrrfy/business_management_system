@@ -65,6 +65,7 @@ export const voucherSource: DecisionSource = {
       .leftJoin(users, eq(users.id, receipts.createdBy))
       .where(
         and(
+          eq(receipts.status, "PENDING"),
           eq(receipts.approvalStatus, "PENDING_APPROVAL"),
           isNotNull(receipts.voucherNumber),
           isNull(receipts.invoiceId),
@@ -100,7 +101,14 @@ export const voucherSource: DecisionSource = {
   },
   freshness: (id) =>
     freshnessFrom(
-      async () => (await requireDb().select({ status: receipts.approvalStatus }).from(receipts).where(eq(receipts.id, id)).limit(1))[0]?.status,
+      async () => {
+        const [row] = await requireDb()
+          .select({ status: receipts.status, approvalStatus: receipts.approvalStatus })
+          .from(receipts)
+          .where(eq(receipts.id, id))
+          .limit(1);
+        return row?.status === "PENDING" ? row.approvalStatus : undefined;
+      },
       ["PENDING_APPROVAL"],
     ),
   async decide(input, actor) {

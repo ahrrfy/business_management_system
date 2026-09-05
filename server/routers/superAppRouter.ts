@@ -522,6 +522,7 @@ export const superAppRouter = router({
             .from(receipts)
             .where(
               and(
+                eq(receipts.status, "PENDING"),
                 eq(receipts.approvalStatus, "PENDING_APPROVAL"),
                 notExists(
                   db
@@ -1716,6 +1717,7 @@ export const superAppRouter = router({
                 .from(receipts)
                 .where(
                   and(
+                    eq(receipts.status, "PENDING"),
                     eq(receipts.approvalStatus, "PENDING_APPROVAL"),
                     notExists(
                       db
@@ -2101,6 +2103,7 @@ export const superAppRouter = router({
           .where(
             and(
               eq(receipts.id, input.id),
+              eq(receipts.status, "PENDING"),
               eq(receipts.approvalStatus, "PENDING_APPROVAL"),
               notExists(
                 db
