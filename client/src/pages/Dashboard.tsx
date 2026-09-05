@@ -13,6 +13,7 @@ import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { motion } from "framer-motion";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -825,7 +826,15 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
           const abd = s.isAlert ? `color-mix(in oklch, ${s.alertC} 42%, ${T.statBord})` : T.statBord;
           const card = (
-            <div key={i} className="group" style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}>
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 10, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ delay: i * 0.04, duration: 0.3, ease: "easeOut" }}
+              whileHover={{ y: -2, boxShadow: "0 4px 12px oklch(0 0 0 / 0.08)" }}
+              className="group"
+              style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}
+            >
               <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
               <div>
                 <div style={{ fontSize: "1.0625rem", fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
@@ -844,7 +853,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
               >
                 <CopyButton value={s.copyText} title={`نسخ ${s.label}`} successMessage={`نُسخت ${s.label}`} />
               </div>
-            </div>
+            </motion.div>
           );
           return s.href ? (
             <Link key={i} href={s.href} style={{ display: "block", minWidth: 0, textDecoration: "none" }}>
@@ -1599,19 +1608,7 @@ function TileGroup({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: "1rem", fontWeight: 700, color: Tk.text }}>{t.name}</span>
               {!!t.badge && t.badge > 0 && (
-                <span
-                  title={t.badgeHint}
-                  style={{
-                    minWidth: 22,
-                    padding: "1px 7px",
-                    borderRadius: 999,
-                    background: "var(--sem-warn-bg)",
-                    color: "var(--sem-warn)",
-                    fontSize: "0.75rem",
-                    fontWeight: 800,
-                    textAlign: "center",
-                  }}
-                >
+                <span title={t.badgeHint} style={{ minWidth: 22, padding: "1px 7px", borderRadius: 999, background: "var(--sem-warn-bg)", color: "var(--sem-warn)", fontSize: "0.75rem", fontWeight: 800, textAlign: "center" }}>
                   {t.badge}
                 </span>
               )}
@@ -1632,11 +1629,9 @@ export default function Dashboard() {
   // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
   if (me.data?.role === "cashier") return <CashierHome />;
   const isAdmin = me.data?.role === "admin";
-  const branchScope = isAdmin
-    ? adminBranchScope
-    : dashboardActionBranchId(me.data?.branchId);
+  const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data?.branchId);
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
       <MetricsBar branchScope={branchScope} />
       <MorningBrief branchScope={branchScope} isAdmin={isAdmin} />
@@ -1646,10 +1641,8 @@ export default function Dashboard() {
           <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 900, color: T.text }}>وحدات النظام</h2>
           <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
         </header>
-        {SECTIONS.map((sec) => (
-          <SectionRow key={sec.id} sec={sec} />
-        ))}
+        {SECTIONS.map((sec) => <SectionRow key={sec.id} sec={sec} />)}
       </div>
-    </div>
+    </motion.div>
   );
 }
