@@ -289,6 +289,8 @@ export default defineConfig({
       "shared/nextAction.test.ts",
       "shared/automationRegistry.test.ts",
       "shared/decisionRegistry.test.ts",
+      // م٧ ق٢ — محوِّلات صندوق «مطلوب مني الآن» ومرآة بوّاباته (نقيّة، بلا قاعدة).
+      "server/services/decisions/__tests__/rows.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
