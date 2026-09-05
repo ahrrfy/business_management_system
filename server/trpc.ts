@@ -5,6 +5,12 @@ import {
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
 import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import {
+  capabilitiesEnabled,
+  capabilityModuleDecision,
+  deriveCapabilityGrants,
+  moduleGateShadowDecision,
+} from "@shared/capabilities";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -287,6 +293,43 @@ function requireRole(...allowed: string[]) {
   });
 }
 
+/**
+ * تحقّق القدرات الظِلّيّ (RBAC ش٥ / م٨) — يُستشار **فقط** حين `RBAC_CAPABILITIES=1` (معطَّل افتراضياً)،
+ * ولا يغيّر قرار البوّابة القائمة إطلاقاً. حين يخالف نموذجُ القدرات القرارَ الحاليّ (والوحدة مُغطّاة بالكتالوج)
+ * يُسجَّل تباينٌ بنيويّ في pino ليُبنى عليه التضييقُ الواعي لاحقاً — دونما مسٍّ بالقرار (لا توسيع، لا تضييق).
+ * ملفوفٌ بـtry/catch: التحقّق الظِلّيّ **لا يُسقط طلباً أبداً**، فحتى خطأٌ فيه لا يُغيّر السلوك القائم.
+ */
+function auditCapabilityShadow(
+  ctx: { user?: { id?: number | string; role?: string } | null },
+  gate: "requireModule" | "requireModuleGate",
+  moduleKey: string,
+  minLevel: AccessLevel,
+  moduleMap: Record<string, AccessLevel>,
+  gateAllowed: boolean,
+): void {
+  try {
+    const grants = deriveCapabilityGrants(moduleMap);
+    const capabilityAllowed = capabilityModuleDecision(moduleMap, grants, moduleKey, minLevel);
+    const { divergence } = moduleGateShadowDecision(gateAllowed, capabilityAllowed, true);
+    if (divergence) {
+      logger.warn(
+        {
+          gate,
+          moduleKey,
+          minLevel,
+          gateAllowed,
+          capabilityAllowed,
+          userId: ctx.user?.id ?? null,
+          role: ctx.user?.role ?? null,
+        },
+        `RBAC capability shadow divergence: ${moduleKey}/${minLevel}`,
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, gate, moduleKey, minLevel }, "RBAC capability shadow check failed (ignored)");
+  }
+}
+
 /** إنفاذ وحدة بمستوى وصول — يستخدم الخريطة المحسوبة (قالب + override). */
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   return t.middleware(async ({ ctx, next }) => {
@@ -296,6 +339,8 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
     const allowed = level === "FULL" || (minLevel === "READ" && level === "READ");
+    // م٨: تحقّق القدرات الظِلّيّ خلف علَمٍ معطَّلٍ افتراضياً — لا يغيّر `allowed` (صفر انحدار حين OFF/ON).
+    if (capabilitiesEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
@@ -318,7 +363,14 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
       | Record<string, AccessLevel>
       | null
       | undefined;
-    if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
+    const gateAllowed = moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles);
+    // م٨: تحقّق القدرات الظِلّيّ خلف علَمٍ معطَّلٍ افتراضياً — لا يغيّر `gateAllowed` (صفر انحدار). admin
+    // مُستثنى (يعبُر البوّابة دائماً وقدراتُه مُطابِقة تلقائياً، فلا معنى لبناء خريطته للمقارنة).
+    if (capabilitiesEnabled() && ctx.user.role !== "admin") {
+      const map = resolvePermissions(ctx.user.role as RoleKey, override);
+      auditCapabilityShadow(ctx, "requireModuleGate", moduleKey, minLevel, map, gateAllowed);
+    }
+    if (!gateAllowed) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     assertTwoFactorEnrolled(ctx.user, path);
