@@ -25,7 +25,7 @@ import { escLike } from "../../lib/sqlLike";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { isBackgroundOperationActive, runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
-import { heldNetOfDraft } from "./deposits";
+import { heldNetOfDraft } from "../deposits";
 
 export interface DraftLineInput {
   lineKind: "GOODS" | "PRINT" | "CUSTOM";

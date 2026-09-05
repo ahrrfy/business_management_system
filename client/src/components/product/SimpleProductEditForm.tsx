@@ -26,6 +26,11 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
+import {
+  findForeignBarcodeUsages,
+  findTakenEditableBarcodeCodes,
+  type EditableBarcodeField,
+} from "@/lib/productBarcodeOwnership";
 import { checkVariantSanity } from "@shared/priceSanity";
 import { normalizeConversionFactor } from "@shared/productContentAi";
 
@@ -134,6 +139,7 @@ export default function SimpleProductEditForm({
 
   const unitSeq = useRef(1);
   const [units, setUnits] = useState<EditUnit[]>([]);
+  const originalBarcodeCodes = useRef(new Map<string, string | null>());
   // معرّف المتغيّر الوحيد + رصيده الحالي (قراءة فقط). صورة اللون (variant.image) تُترَك دون مساس؛
   // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
@@ -179,6 +185,9 @@ export default function SimpleProductEditForm({
       wholesale: u.wholesale,
       government: u.government,
     }));
+    originalBarcodeCodes.current = new Map(
+      tmpl.map((unit) => [String(unit.id), unit.barcode || null] as const),
+    );
     unitSeq.current = tmpl.length + 1;
     setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
     setImages(hydrateProductImages(d.images));
@@ -241,21 +250,24 @@ export default function SimpleProductEditForm({
   };
 
   // ── فحص تكرار الباركود ضدّ القاعدة (live) — نستثني باركودات هذا المنتج نفسه ──
-  const allCodes = useMemo(() => {
-    const set = new Set<string>();
-    for (const u of units) { const c = u.barcode.trim(); if (c) set.add(c); }
-    return Array.from(set);
+  const barcodeFields = useMemo<EditableBarcodeField[]>(() => {
+    return units.flatMap((unit) => {
+      const code = unit.barcode.trim();
+      if (!code) return [];
+      const fieldKey = String(unit.id);
+      return [{ fieldKey, code }];
+    });
   }, [units]);
+  const allCodes = useMemo(() => Array.from(new Set(barcodeFields.map((field) => field.code))), [barcodeFields]);
   const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
   const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
   const checkQ = trpc.catalog.checkBarcodes.useQuery(
     { codes: debouncedCodes },
     { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
   );
-  const ownCodes = useMemo(() => new Set(allCodes), [allCodes]);
   const takenInDb = useMemo(
-    () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
-    [checkQ.data, ownCodes]
+    () => findTakenEditableBarcodeCodes(checkQ.data ?? [], barcodeFields, originalBarcodeCodes.current),
+    [checkQ.data, barcodeFields]
   );
 
   const update = trpc.catalog.updateProductVariants.useMutation({
@@ -328,7 +340,11 @@ export default function SimpleProductEditForm({
     const codes = Array.from(new Set(units.map((u) => u.barcode.trim()).filter(Boolean)));
     if (codes.length) {
       try {
-        const taken = (await utils.catalog.checkBarcodes.fetch({ codes })).filter((t) => !ownCodes.has(t.code));
+        const taken = findForeignBarcodeUsages(
+          await utils.catalog.checkBarcodes.fetch({ codes }),
+          barcodeFields,
+          originalBarcodeCodes.current,
+        );
         if (taken.length) {
           setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`);
           return;

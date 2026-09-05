@@ -29,6 +29,9 @@
 
 ## ٢. بناء الـAAB الموقّع (عبر CI)
 
+إصدار معالجة باركود المورد والجرد المجهّز في ٥/٩/٢٠٢٦: **versionCode 17 · versionName 1.0.3**.
+تجهيز المصدر أو نجاح GitHub Actions لا يعني نشره إلى المختبرين؛ يلزم رفع AAB إلى Internal testing.
+
 البناء الموقّع في workflow **`Native Android release artifacts`** (`.github/workflows/android-release.yml`،
 تشغيلٌ يدويّ `workflow_dispatch`). يشترط أوّلاً أن تكون فحوص `main` كلّها خضراء (CI + Security Audit +
 Native Android CI) على نفس الـSHA الجاري إصداره.

@@ -230,6 +230,27 @@ describe("globalSearch — توجيه حسب النمط", () => {
     expect(products[0].rank).toBe(0);
   });
 
+  it("يجد باركود المورد القصير أو الحرفي أو UPC حتى إن صنّفه الموجّه وثيقةً أو نصاً", async () => {
+    const d = db();
+    const [unit] = await d
+      .select({ id: s.productUnits.id })
+      .from(s.productUnits)
+      .innerJoin(s.productVariants, eq(s.productVariants.id, s.productUnits.variantId))
+      .where(eq(s.productVariants.sku, "PEN-BLUE"))
+      .limit(1);
+    await d.insert(s.productUnitBarcodes).values([
+      { productUnitId: unit.id, barcode: "10095" },
+      { productUnitId: unit.id, barcode: "NASR-6A" },
+      { productUnitId: unit.id, barcode: "0036000291452" },
+    ]);
+
+    for (const query of ["10095", "nasr-6a", "036000291452"]) {
+      const out = await globalSearch({ query, branchId: refs.branchMain, role: "admin", scopes: ["PRODUCT"] });
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({ type: "PRODUCT", id: refs.productPen, rank: 0 });
+    }
+  });
+
   it("DOC_NUMBER كامل ⇒ يطابق الفاتورة بالضبط", async () => {
     const out = await globalSearch({ query: "INV-2606-1001", branchId: refs.branchMain, role: "admin" });
     const invs = out.filter((r) => r.type === "INVOICE");
