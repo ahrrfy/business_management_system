@@ -244,6 +244,25 @@ describe("الاستعادة = تعديلٌ جديد بحمولةٍ قديمة �
     expect(await versionsOf(2)).toHaveLength(1);
   });
 
+  it("٩) تعديلان متزامنان على المنتج نفسه يتسلسلان: نسختان 1 و2، والثانيةُ تحمل ما التزمه الأوّل (لا لقطةً بائتة ولا ER_DUP_ENTRY)", async () => {
+    // أمسكته الجولة البصريّة: ضغطةُ Ctrl+S أطلقت حفظَين في دفعةٍ واحدة ⇒ الثاني كان يسقط على UNIQUE النسخ.
+    const [a, b] = await Promise.allSettled([
+      updateProductWithVariants({ ...header1, name: "دفتر — أ", unitTemplate: template(), variants: [variant1] }, actor),
+      updateProductWithVariants({ ...header1, name: "دفتر — ب", unitTemplate: template(), variants: [variant1] }, actor),
+    ]);
+    expect(a.status).toBe("fulfilled");
+    expect(b.status).toBe("fulfilled");
+    const rows = await versionsOf(1);
+    expect(rows.map((r) => r.versionNumber)).toEqual([1, 2]);
+    const names = rows.map((r) => (r.payloadJson as ProductSnapshotDocument).name);
+    expect(names[0]).toBe("دفتر 100 ورقة");
+    const finalName = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0].name;
+    // اللقطةُ الثانية = حالةُ المنتج بعد التعديل الأوّل (لا الأصل) — فالاستعادةُ إليها تُعيد ما كتبه الأوّل فعلاً.
+    expect(["دفتر — أ", "دفتر — ب"]).toContain(names[1]);
+    expect(["دفتر — أ", "دفتر — ب"]).toContain(finalName);
+    expect(names[1]).not.toBe(finalName);
+  });
+
   it("٨) لقطةٌ بصيغةٍ غير معروفة أو لمنتجٍ آخر تُرفض قبل أيّ كتابة", async () => {
     await db().insert(s.recordVersions).values({ entityType: "product", entityId: 1, versionNumber: 1, payloadJson: { foo: 1 }, reason: "x", actorUserId: 1 });
     await expect(restoreProductVersion({ productId: 1, versionNumber: 1 }, actor)).rejects.toThrow(/الصيغة المعروفة/);
