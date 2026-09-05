@@ -32,15 +32,16 @@ import {
   type ExtractedProductFacts,
   type ProductFacts,
 } from "../../shared/productContentAi";
+import { normalizeGeminiModelName } from "../../shared/imageStudio/aiPrompt";
 
 const GEMINI_API_BASE = (
-  process.env.GEMINI_API_BASE ??
+  process.env.GEMINI_API_BASE?.trim() ||
   "https://generativelanguage.googleapis.com/v1beta"
 ).replace(/\/+$/, "");
 
 // ── نماذج المحتوى (نصّ/بصريّ) — منفصلةٌ صراحةً عن نماذج توليد الصور ────────────────
 // السبب: `runtime.model` من إعدادات الاستوديو يشير في العادة إلى نموذج **توليد صور**
-// (aiPrompt.ts: gemini-2.5-flash-image). الاستعمال هنا مختلف: نطلب مخرَج JSON مُهيكَلاً
+// (aiPrompt.ts: gemini-3.1-flash-lite-image). الاستعمال هنا مختلف: نطلب مخرَج JSON مُهيكَلاً
 // (نصّاً/بصريّاً). النماذج الصوريّة لا تلبّي هذا العقد ⇒ نتجاوزها بمجموعةٍ صريحة، لا
 // بمطابقة نصّيّة هشّة كـ`.includes("image")` كانت تفوت imagen-3.0 أو نماذج مستقبليّة.
 //
@@ -60,6 +61,10 @@ const CONTENT_MODEL_FALLBACK =
 const IMAGE_GENERATION_MODELS = new Set<string>([
   "gemini-2.5-flash-image",
   "gemini-2.5-flash-image-preview",
+  "gemini-3.1-flash-image",
+  "gemini-3.1-flash-lite-image",
+  "gemini-3-pro-image",
+  "gemini-3-pro-image-preview",
   "imagen-3.0-generate-001",
   "imagen-3.0-generate-002",
 ]);
@@ -74,7 +79,7 @@ const DEPRECATED_CONTENT_MODELS = new Set<string>([
 
 /** يحلّ نموذج المحتوى المستعمَل — يتجاوز نماذج الصور والنماذج المهجورة إلى الافتراضيّ. */
 function resolveContentModel(configuredModel: string | null | undefined): string {
-  const normalized = (configuredModel ?? "").trim();
+  const normalized = normalizeGeminiModelName(configuredModel);
   if (!normalized) return DEFAULT_CONTENT_MODEL;
   if (IMAGE_GENERATION_MODELS.has(normalized)) return DEFAULT_CONTENT_MODEL;
   if (DEPRECATED_CONTENT_MODELS.has(normalized)) return DEFAULT_CONTENT_MODEL;
@@ -685,10 +690,7 @@ export async function generateProductContentDraft(
   } catch (error) {
     if (error instanceof ImageStudioGuardError) {
       throw new TRPCError({
-        code:
-          error.kind === "DAILY_BUDGET_EXHAUSTED"
-            ? "PRECONDITION_FAILED"
-            : "TOO_MANY_REQUESTS",
+        code: "TOO_MANY_REQUESTS",
         message: imageStudioGuardErrorMessageAr(error.kind),
       });
     }
@@ -903,10 +905,7 @@ export async function extractProductFactsFromImage(
   } catch (error) {
     if (error instanceof ImageStudioGuardError) {
       throw new TRPCError({
-        code:
-          error.kind === "DAILY_BUDGET_EXHAUSTED"
-            ? "PRECONDITION_FAILED"
-            : "TOO_MANY_REQUESTS",
+        code: "TOO_MANY_REQUESTS",
         message: imageStudioGuardErrorMessageAr(error.kind),
       });
     }
