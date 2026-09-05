@@ -45,6 +45,8 @@ export const ACTION_LABELS = {
 
   // حالات الأفعال الجاهزة (idle) — للأزرار قبل الضغط.
   save: "حفظ",
+  /** زرُّ شاشة التعديل — كان نصّاً محلّياً في كلّ `XEdit.tsx`؛ صار من القاموس (م٦، `RecordForm`). */
+  saveChanges: "حفظ التعديلات",
   send: "إرسال",
   delete: "حذف",
   cancel: "إلغاء",

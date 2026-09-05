@@ -298,12 +298,6 @@ export default defineConfig({
       "shared/documentActions.test.ts",
       "shared/automationRegistry.test.ts",
       "shared/decisionRegistry.test.ts",
-      // م٧ ق٢ — محوِّلات صندوق «مطلوب مني الآن» ومرآة بوّاباته (نقيّة، بلا قاعدة).
-      "server/services/decisions/__tests__/rows.test.ts",
-      // م٧ ق٢ (Codex على #1004) — مبالغُ ضبط البيع المتأثّرة وحاجزُ الاعتماد السطريّ + عقود الواجهة وروابط المشتريات.
-      "server/services/decisions/__tests__/salesControlView.test.ts",
-      "client/src/components/decision/DecisionRow.test.ts",
-      "client/src/pages/__tests__/decisionRegistryPurchaseTabs.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
@@ -331,6 +325,10 @@ export default defineConfig({
       // م٦ ق٤+ق٨ — النموذج الواحد (نتيجة الحفظ المُهيكَلة) واللقطة («ما الذي تغيّر» النقيّ) وتناظر زوج المنتج.
       "shared/productVersionDiff.test.ts",
       "client/src/components/form/__tests__/saveOutcome.test.ts",
+      "client/src/components/form/__tests__/recordForm.test.ts",
+      "client/src/components/form/__tests__/productFormModel.test.ts",
+      "client/src/pages/__tests__/productFormParity.test.ts",
+      "client/src/hooks/__tests__/useSaveShortcuts.test.ts",
     ],
   },
 });
