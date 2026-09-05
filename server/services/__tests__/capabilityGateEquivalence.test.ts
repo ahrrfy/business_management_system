@@ -13,6 +13,8 @@ import {
   CAPABILITIES,
   capabilitiesEnabled,
   capabilityModuleDecision,
+  capabilityShadowEnabled,
+  classifyCapabilityShadow,
   deriveCapabilityGrants,
   deriveGrantsForRole,
   hasCapability,
@@ -244,6 +246,70 @@ describe("م٨ · دلالةُ العلَم", () => {
         const gateAllowed = currentGateDecision(role, gate);
         const cap = capDecision(role, gate);
         expect(moduleGateShadowDecision(gateAllowed, cap, false).divergence).toBe(false);
+      }
+    }
+  });
+});
+
+// ── تصحيحُ مراجعة Codex على PR #1026 (تتبّع الظلّ لا مسار القرار) ────────────────────────────────
+describe("م٨ · وضعُ الظلّ الموثَّق يُشغَّل بـAUTHZ_ENGINE=shadow (تصحيح Codex P1 · #1026)", () => {
+  it("capabilityShadowEnabled: مفعَّلٌ بـshadow (حتى بحالةٍ/فراغٍ)، معطَّلٌ في غيره", () => {
+    expect(capabilityShadowEnabled({})).toBe(false);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: "shadow" })).toBe(true);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: "SHADOW" })).toBe(true);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: " shadow " })).toBe(true);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: "off" })).toBe(false);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: "dual" })).toBe(false);
+    expect(capabilityShadowEnabled({ AUTHZ_ENGINE: "on" })).toBe(false);
+  });
+
+  it("الظلّ منفصلٌ عن الإنفاذ: RBAC_CAPABILITIES لا يُشغّل الظلّ، وshadow لا يُشغّل الإنفاذ", () => {
+    // جوهرُ التصحيح: كان الظلّ مربوطاً بـRBAC_CAPABILITIES (الممنوع رفعُه) ⇒ لا مسارَ تتبّعٍ قابلاً للتنفيذ.
+    expect(capabilityShadowEnabled({ RBAC_CAPABILITIES: "1" })).toBe(false);
+    expect(capabilityShadowEnabled({ RBAC_CAPABILITIES: "true" })).toBe(false);
+    // والعكس: وضعُ الظلّ لا يفعّل علَمَ الإنفاذ المستقبليّ — مساران منفصلان.
+    expect(capabilitiesEnabled({ AUTHZ_ENGINE: "shadow" })).toBe(false);
+    expect(capabilitiesEnabled({ RBAC_CAPABILITIES: "1" })).toBe(true);
+  });
+});
+
+describe("م٨ · تصنيفُ الظلّ يُميّز «فوات التغطية» عن «التطابق» (تصحيح Codex P1 · #1026)", () => {
+  it("classifyCapabilityShadow: null⇒uncovered · متساوٍ⇒match · مختلف⇒divergence", () => {
+    expect(classifyCapabilityShadow(true, null)).toBe("uncovered");
+    expect(classifyCapabilityShadow(false, null)).toBe("uncovered");
+    expect(classifyCapabilityShadow(true, true)).toBe("match");
+    expect(classifyCapabilityShadow(false, false)).toBe("match");
+    expect(classifyCapabilityShadow(true, false)).toBe("divergence");
+    expect(classifyCapabilityShadow(false, true)).toBe("divergence");
+  });
+
+  it("البوّاباتُ غيرُ المُغطّاة (purchases كلّها · expenses/READ · reports/FULL) ⇒ uncovered لا match", () => {
+    // هذه بالضبط الحالات التي كانت تُحسَب «تطابقاً مُتحقَّقاً» زوراً قبل التصحيح (divergence=false بلا حدث).
+    const uncoveredGates: Gate[] = [
+      { name: "purchasesReadProcedure", moduleKey: "purchases", minLevel: "READ", allowedRoles: null },
+      { name: "purchasesManagerProcedure", moduleKey: "purchases", minLevel: "FULL", allowedRoles: ["manager", "purchasing"] },
+      { name: "expensesReadProcedure", moduleKey: "expenses", minLevel: "READ", allowedRoles: null },
+      { name: "reportsManagerProcedure", moduleKey: "reports", minLevel: "FULL", allowedRoles: ["manager"] },
+    ];
+    for (const gate of uncoveredGates) {
+      for (const role of ALL_ROLES) {
+        const cap = capDecision(role, gate);
+        expect(cap, `${role} · ${gate.name} — مُتوقَّعٌ غير مُغطّى`).toBeNull();
+        expect(classifyCapabilityShadow(currentGateDecision(role, gate), cap)).toBe("uncovered");
+      }
+    }
+  });
+
+  it("كلُّ بوّابةٍ مُغطّاة (cap!==null) ⇒ match أو divergence، ولا uncovered", () => {
+    for (const gate of ALL_GATES) {
+      for (const role of ALL_ROLES) {
+        const cap = capDecision(role, gate);
+        if (cap === null) continue;
+        const outcome = classifyCapabilityShadow(currentGateDecision(role, gate), cap);
+        expect(outcome === "uncovered", `${role} · ${gate.name}`).toBe(false);
+        // التصنيف يتّسق مع moduleGateShadowDecision (المصدر المُثبَّت للـallow-invariant): divergence⇔divergence.
+        const shadow = moduleGateShadowDecision(currentGateDecision(role, gate), cap, true);
+        expect(outcome === "divergence").toBe(shadow.divergence);
       }
     }
   });

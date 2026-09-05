@@ -144,6 +144,21 @@ export function capabilitiesEnabled(env?: Record<string, string | undefined>): b
   return e?.RBAC_CAPABILITIES === "1" || e?.RBAC_CAPABILITIES === "true";
 }
 
+/**
+ * هل يعمل **تحقّق القدرات الظِلّيّ** (م٨)؟ مصدره وضعُ الظلّ الموثَّق `AUTHZ_ENGINE=shadow` («يحسب
+ * ويسجّل بلا إنفاذ» — docs/authz/15-rollout-plan.md §15.2). **آمنُ التفعيل**: الظلّ لا يغيّر قرار
+ * البوّابة إطلاقاً (يسجّل التباين/فوات التغطية فقط)، فتفعيلُه لا يُفعّل أيّ سقالةِ إنفاذٍ ناقصة.
+ *
+ * ⚠️ منفصلٌ **عمداً** عن `capabilitiesEnabled()` (علَم الإنفاذ `RBAC_CAPABILITIES` الذي **يبقى معطَّلاً**
+ * — §15.2): كان الظلّ مربوطاً بذاك العلَم فصار جمعُ التتبّع يتطلّب علَماً يُمنَع المشغّلون من رفعه (سقالةٌ
+ * ناقصةٌ بلا عمود `capabilityGrants`). تصحيحُ مراجعة Codex على PR #1026: الظلّ الآن على `AUTHZ_ENGINE=shadow`،
+ * والإنفاذُ المستقبليّ يبقى على `RBAC_CAPABILITIES` منفصلاً ⇒ مسارُ جمع التتبّع الموثَّق قابلٌ للتنفيذ فعلاً.
+ */
+export function capabilityShadowEnabled(env?: Record<string, string | undefined>): boolean {
+  const e = env ?? (typeof process !== "undefined" ? process.env : undefined);
+  return (e?.AUTHZ_ENGINE ?? "").trim().toLowerCase() === "shadow";
+}
+
 /* ════════════════════════ م٨ — وصلُ القدرات كتحقّقٍ ظِلّيّ (صفر انحدار) ════════════════════════
  * الهدف: أن يُعيد نموذجُ القدرات إنتاجَ **قرار اليوم بالضبط** على مستوى الوحدة، فيُصبح جاهزاً للتفعيل
  * الواعي لاحقاً بلا مفاجآت. الوصلُ في الخادم يبقى **ظِلّاً**: يُستشار خلف علَمٍ معطَّلٍ افتراضياً ولا
@@ -220,4 +235,26 @@ export function moduleGateShadowDecision(
 ): ShadowGateDecision {
   const divergence = flagEnabled && capabilityAllowed !== null && capabilityAllowed !== gateAllowed;
   return { allow: gateAllowed, divergence };
+}
+
+/** ثلاثُ نتائجَ **متمايزة** للتحقّق الظِلّيّ لبوّابةٍ مفردة — تُميّز «فوات التغطية» عن «التطابق». */
+export type CapabilityShadowOutcome = "uncovered" | "match" | "divergence";
+
+/**
+ * يصنّف نتيجة الظلّ لبوّابةٍ مفردة، ويستهلكه `auditCapabilityShadow` (server/trpc.ts) لإصدار الحدث
+ * المناسب لكلٍّ منها:
+ *  - `uncovered` — `capabilityAllowed===null`: الوحدة/المستوى **خارج كتالوج القدرات** (كلّ `purchases`،
+ *    أو زوجٌ بلا فعلٍ ممثِّل مثل `expenses/READ` و`reports/FULL`) ⇒ لا مقارنةَ ممكنة. نُميّزه صراحةً كي
+ *    لا يُحسَب غيرُ المُغطّى **تطابقاً مُتحقَّقاً** (فوات تغطية، لا نجاح) — المصفوفة تُغطّي جزءاً من المرور
+ *    وحده، فتشغيلُ ظلٍّ قد يبدو نظيفاً وأغلبُ المرور لم يُقارَن قطّ.
+ *  - `divergence` — القدراتُ تخالف البوّابة (الوحدة مُغطّاة) ⇒ يُسجَّل للتضييق الواعي لاحقاً.
+ *  - `match` — القدراتُ تطابق البوّابة.
+ * دالّةٌ نقيّةٌ يختبرها التكافؤ. لا تُغيّر أيَّ قرار (م٨ ظِلٌّ لا إنفاذ).
+ */
+export function classifyCapabilityShadow(
+  gateAllowed: boolean,
+  capabilityAllowed: boolean | null,
+): CapabilityShadowOutcome {
+  if (capabilityAllowed === null) return "uncovered";
+  return capabilityAllowed === gateAllowed ? "match" : "divergence";
 }
