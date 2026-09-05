@@ -38,6 +38,7 @@ import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
+import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -54,7 +55,6 @@ import {
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
 import { cn } from "@/lib/utils";
-import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
@@ -88,31 +88,6 @@ type InTransitRow = RouterOutputs["delivery"]["inTransit"]["rows"][number];
 type TransitRow = InTransitRow & { viewKey: ConsignmentViewKey };
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
-
-/** إيصال تسوية توصيل حراري عند التوريد. */
-function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string | null; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string; courierCommissionAmount?: string | null }) {
-  if (!r.remittanceNumber) return; // كشف إثبات محض بلا سند توريد ⇒ لا إيصال.
-  // Slice H (٢٩/٨/٢٦): سطرُ العمولة يظهر على الإيصال حين تكون للجهة قاعدةٌ فعّالة — إعلاميّ للمقارنة.
-  const totals: Array<{ label: string; value: string }> = [
-    { label: "إجمالي التحصيل", value: `${fmt(r.collectedTotal)} د.ع` },
-    { label: "مستحقات الجهة (الأجور)", value: `${fmt(r.feesTotal)} د.ع` },
-  ];
-  if (r.courierCommissionAmount != null) {
-    totals.push({ label: "عمولة القاعدة (تقديريّة)", value: `${fmt(r.courierCommissionAmount)} د.ع` });
-  }
-  totals.push(
-    { label: "صافٍ للمكتبة", value: `${fmt(r.netRemitted)} د.ع` },
-    { label: "عجز يبقى عهدة", value: `${fmt(r.shortfallTotal)} د.ع` },
-  );
-  void printDoc({
-    kind: "zreport",
-    title: "إيصال تسوية توصيل",
-    subtitle: r.remittanceNumber,
-    meta: [`الجهة: ${partyName}`, fmtDateTime(new Date())],
-    totals,
-    footer: "تسوية تحصيلات المندوب",
-  });
-}
 
 const tabBtn = (active: boolean) =>
   cn(
@@ -499,7 +474,9 @@ function InTransitTab() {
   useEffect(() => {
     if (rows.hasNextPage && !rows.isFetchingNextPage) void rows.fetchNextPage();
   }, [rows.hasNextPage, rows.isFetchingNextPage, rows.fetchNextPage]);
-  const [query, setQuery] = useState("");
+  // م١ PR-C: لوحة الجهات تفتح هذا التبويب بفلترٍ وبحثٍ من الرابط (?view=…&q=…) — يُقرآن مرّةً عند التركيب.
+  const transitSearch = useSearch();
+  const [query, setQuery] = useState(() => new URLSearchParams(transitSearch).get("q") ?? "");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [failTarget, setFailTarget] = useState<{ ids: number[] } | null>(null);
@@ -582,7 +559,10 @@ function InTransitTab() {
   });
 
   // ── Filtering ──
-  const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">("ALL");
+  const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">(() => {
+    const v = new URLSearchParams(transitSearch).get("view");
+    return v && (CONSIGNMENT_VIEW_ORDER as readonly string[]).includes(v) ? (v as ConsignmentViewKey) : "ALL";
+  });
   const rowsWithView = useMemo(() => {
     const flat = (rows.data?.pages ?? []).flatMap((p) => p.rows);
     return flat.map((r) => ({
