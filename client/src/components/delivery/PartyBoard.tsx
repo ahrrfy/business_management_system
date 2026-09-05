@@ -5,7 +5,7 @@
  * يحمل فعله: «سوِّ اليوم» (التسوية اليوميّة بتأكيدٍ واحد) و«استيراد كشف» لشركات التوصيل.
  * البيانات تصل عبر props (`delivery.partyBoard`) — المنطق النقيّ في `partyBoard.ts`.
  */
-import { useMemo } from "react";
+import { useMemo, type ComponentProps } from "react";
 import { Link } from "wouter";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, Clock3, FileCheck2, Truck, Wallet } from "lucide-react";
@@ -49,6 +49,11 @@ export interface PartyBoardProps {
   /** غيابه = لا صلاحية تسوية (مرآة deliveryCashierProcedure) ⇒ الفعل مخفيّ. */
   onSettleToday?: (row: PartyBoardRow) => void;
   onOpenDetail: (row: PartyBoardRow) => void;
+  /** أفعال جهات التوصيل القائمة (تسوية العهدة السائبة · طلب شطب) — تبقى لمن يملكها؛ غيابها يخفيها. */
+  onSettleLoose?: (row: PartyBoardRow) => void;
+  onWriteOff?: (row: PartyBoardRow) => void;
+  /** تواصل واتساب من الصفّ (الهاتف عند الأب من `listParties`؛ اللوحة لا تحمله). */
+  contactFor?: (row: PartyBoardRow) => ComponentProps<typeof RowActions>["contact"] | null;
 }
 
 function BucketCell({ row, col }: { row: PartyBoardRow; col: BoardBucketColumn }) {
@@ -67,7 +72,7 @@ function BucketCell({ row, col }: { row: PartyBoardRow; col: BoardBucketColumn }
   );
 }
 
-export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, onSettleToday, onOpenDetail }: PartyBoardProps) {
+export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, onSettleToday, onOpenDetail, onSettleLoose, onWriteOff, contactFor }: PartyBoardProps) {
   const visible = useMemo(() => {
     const base = sortBoardRows(rows ?? []);
     return outstandingOnly ? filterOutstanding(base) : base;
@@ -165,6 +170,7 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
         return (
           <RowActions
             mode="menu"
+            contact={contactFor?.(r) ?? undefined}
             actions={[
               {
                 key: "settle-today",
@@ -190,6 +196,27 @@ export function PartyBoard({ rows, loading, isError, onRetry, outstandingOnly, o
                 label: "تفاصيل وكشف",
                 href: partyDetailLinkFor(r),
                 gate: { module: "store", level: "READ" },
+              },
+              {
+                key: "settle-loose",
+                kind: "pay",
+                label: "تسوية عهدة سائبة",
+                hidden: !onSettleLoose,
+                disabled: toNum(r.cashInHandStored) <= 0,
+                disabledReason: "لا عهدة سائبة على الجهة",
+                onSelect: () => onSettleLoose?.(r),
+                gate: { roles: ["cashier", "manager"] },
+              },
+              {
+                key: "write-off",
+                kind: "reverse",
+                label: "طلب شطب عجز",
+                variant: "destructive",
+                hidden: !onWriteOff,
+                disabled: toNum(r.cashInHandStored) <= 0,
+                disabledReason: "لا عجز قابل للشطب",
+                onSelect: () => onWriteOff?.(r),
+                gate: { roles: ["admin"] },
               },
             ]}
           />
