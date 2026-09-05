@@ -32,7 +32,7 @@ import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   auditLogs,
   branchStock,
@@ -619,7 +619,8 @@ export interface CostRevaluationRow {
  * مربوطةً بمستندها وفاعلها). `scopedBranchId` يأتي من الراوتر: مدير الفرع يرى طلبات فرعه.
  */
 export async function listCostRevaluations(
-  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  filter: { status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED"; branchId?: number | null; limit?: number; order?: "ASC" | "DESC" },
   _actor: Actor,
 ): Promise<CostRevaluationRow[]> {
   return withTx(async (tx) => {
@@ -655,7 +656,7 @@ export async function listCostRevaluations(
       .leftJoin(branches, eq(branches.id, costRevaluationRequests.branchId))
       .leftJoin(users, eq(users.id, costRevaluationRequests.createdBy))
       .where(conds.length ? and(...conds) : undefined)
-      .orderBy(desc(costRevaluationRequests.id))
+      .orderBy(filter.order === "ASC" ? asc(costRevaluationRequests.id) : desc(costRevaluationRequests.id))
       .limit(Math.min(Math.max(filter.limit ?? 100, 1), 200));
 
     return rows.map((r) => ({

@@ -17,6 +17,8 @@ const read = (relative: string) =>
 
 const RETURN_ROUTER = read("routers/returnRouter.ts");
 const SALES_CONTROL_ROUTER = read("routers/salesControlRouter.ts");
+const SALES_CONTROL_AUDIT = read("services/sale/controlAudit.ts");
+const DECISION_SALES_SOURCE = read("services/decisions/sources/sales.ts");
 const ANOMALY_WATCH = read("services/reports/anomalyWatch.ts");
 
 describe("عقد فعل تدقيق تنفيذ المرتجع", () => {
@@ -25,17 +27,26 @@ describe("عقد فعل تدقيق تنفيذ المرتجع", () => {
     expect(RETURN_EXECUTED_AUDIT_ACTION).toBe("return.execute");
   });
 
-  it("كلُّ مسارات التنفيذ الثلاثة تكتب الفعل من المصدر المشترك لا بنصٍّ ثابت", () => {
+  it("كلُّ مسارات التنفيذ تكتب الفعل من المصدر المشترك لا بنصٍّ ثابت", () => {
     // مسارا `returnRouter`: المالك الفوريّ + اعتماد طلب المحطة.
     const returnRouterWrites = RETURN_ROUTER.match(/action:\s*RETURN_EXECUTED_AUDIT_ACTION/g) ?? [];
     expect(returnRouterWrites.length).toBe(2);
     expect(RETURN_ROUTER).toContain('from "../services/returns/auditActions"');
 
-    // مسارُ الاعتماد المحكوم.
-    expect(SALES_CONTROL_ROUTER).toMatch(/action:\s*RETURN_EXECUTED_AUDIT_ACTION/);
-    expect(SALES_CONTROL_ROUTER).toContain('from "../services/returns/auditActions"');
+    // مسارُ الاعتماد المحكوم — كاتبٌ **واحد** (`sale/controlAudit.ts`) يستدعيه الراوترُ وصندوقُ
+    // القرارات معاً: كان الراوتر وحده يكتبه فيتخطّاه اعتمادُ الصندوق (Codex على #1004).
+    expect(SALES_CONTROL_AUDIT).toMatch(/action:\s*RETURN_EXECUTED_AUDIT_ACTION/);
+    expect(SALES_CONTROL_AUDIT).toContain('from "../returns/auditActions"');
     // ولا يكتبه إلّا لمرتجعٍ فعلاً — لا لكلّ أنواع طلبات التحكّم.
-    expect(SALES_CONTROL_ROUTER).toContain('requestType === "SALES_RETURN"');
+    expect(SALES_CONTROL_AUDIT).toContain('requestType !== "SALES_RETURN"');
+    for (const [name, source] of [
+      ["salesControlRouter", SALES_CONTROL_ROUTER],
+      ["decisions/sources/sales", DECISION_SALES_SOURCE],
+    ] as const) {
+      expect(source, `${name} لا يستدعي الكاتب المشترك`).toContain("recordGovernedReturnExecution(");
+      // ⛔ لا نسخةَ ثانية للكتابة خارج الكاتب المشترك — النسختان تنجرفان.
+      expect(source, `${name} يكتب الفعل بنفسه`).not.toMatch(/action:\s*RETURN_EXECUTED_AUDIT_ACTION/);
+    }
   });
 
   it("رقيبُ الشذوذ يقرأ الفعل من المصدر نفسه — لا نصّاً ثابتاً في SQL", () => {
@@ -46,6 +57,8 @@ describe("عقد فعل تدقيق تنفيذ المرتجع", () => {
       ["anomalyWatch", ANOMALY_WATCH],
       ["returnRouter", RETURN_ROUTER],
       ["salesControlRouter", SALES_CONTROL_ROUTER],
+      ["controlAudit", SALES_CONTROL_AUDIT],
+      ["decisions/sources/sales", DECISION_SALES_SOURCE],
     ] as const) {
       expect(source, `${name} يحمل الفعل الميت 'return.create'`).not.toContain("'return.create'");
       expect(source, `${name} يحمل الفعل الميت "return.create"`).not.toContain('"return.create"');

@@ -21,7 +21,7 @@ import {
 } from "@shared/decisionRegistry";
 import { appErrorMessage } from "@shared/errors";
 import { assertGate, gatePasses } from "./gate";
-import { decided, defaultMessage } from "./rows";
+import { assertActionSupported, decided, defaultMessage } from "./rows";
 import { OTHER_SOURCES } from "./sources/others";
 import { PURCHASING_SOURCES } from "./sources/purchasing";
 import { SALES_SOURCES } from "./sources/sales";
@@ -114,6 +114,7 @@ function subjectOf(input: DecideInput): string {
   return `${decisionSpec(input.kind)?.title ?? input.kind} (رقم ${input.id})`;
 }
 
+
 /**
  * يحسم طلباً في مكانه: بوّابةُ المصدر ← طزاجةُ الطلب ← دالّةُ الحسم القائمة داخل خدمتها.
  * `CONFLICT` من الخدمة يُترجَم إلى `STALE` مُهيكَل (تغيّرُ المستند/حُسم من غيرك) لا إلى خطأٍ أحمر.
@@ -141,6 +142,7 @@ export async function decideDecision(input: DecideInput, actor: DecisionActor, o
     throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حسم القرار", why: `الفعل «${String(input.action)}» غير معروف`, doThis: "استعمل اعتماداً أو رفضاً أو سحباً" }) });
   }
   const subject = subjectOf(input);
+  assertActionSupported(source, input, subject);
   assertGate(source.gate, actor, subject);
 
   const freshness = await source.freshness(input.id);

@@ -1,14 +1,17 @@
 /**
  * مصادرُ التوصيل والموارد البشرية والعمولات والإقفال والهدايا — كلٌّ ببوّابة راوتره وخدمته.
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { decisionSubkindLabel } from "@shared/decisionRegistry";
+import { TRPCError } from "@trpc/server";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { decisionSubkindLabel, type DecisionSummaryItem } from "@shared/decisionRegistry";
+import { appErrorMessage } from "@shared/errors";
 import {
   commissionRunApprovalRequests,
   commissionRuns,
   deliveryCodWriteOffRequests,
   employeeAdvanceRepaymentRequests,
   employees,
+  giftVoucherLines,
   giftVouchers,
   leaveRequests,
   monthCloseRequests,
@@ -21,16 +24,16 @@ import { approveCommissionRunRequest, listCommissionRunApprovalRequests, rejectC
 import { commissionReadScope } from "../../commissions/scope";
 import { approveDeliveryCodWriteOff, listDeliveryCodWriteOffRequests, rejectDeliveryCodWriteOff } from "../../delivery/writeoffRequests";
 import { approveGift } from "../../gifts/outbound";
-import { decideLeave } from "../../leaveService";
+import { decideLeaveAndNotify } from "../../leaveService";
 import { approveAdvanceRepaymentRequest, listAdvanceRepaymentRequests, rejectAdvanceRepaymentRequest } from "../../payroll/advanceRepayment";
 import { approveRemittanceRequest, listRemittanceRequests, rejectRemittanceRequest } from "../../payroll/remittance";
 import { approveMonthClose, listMonthCloseRequests, rejectMonthClose } from "../../reports/monthCloseRequest";
 import { requireDb, withGovernanceTx, withTx } from "../../tx";
 import { approveYearEndReopen, listYearEndReopenRequests, rejectYearEndReopen } from "../../yearEndService";
-import { serviceActor } from "../gate";
-import { buildRow, decided, decisionKeyFor, defaultMessage, outcomeFor, statusOf } from "../rows";
+import { scopedBranchIdFor, serviceActor } from "../gate";
+import { buildRow, decided, decisionKeyFor, defaultMessage, itemLabel, outcomeFor, statusOf } from "../rows";
 import type { DecisionSource } from "../types";
-import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, userNames } from "./common";
+import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, unitNames, userNames, variantLabels } from "./common";
 
 // ───────────────────────────── التوصيل: شطب عهدة COD ─────────────────────────────
 
@@ -43,10 +46,11 @@ export const codWriteOffSource: DecisionSource = {
   key: "delivery.codWriteOff",
   kinds: ["delivery.codWriteOff.approve", "delivery.codWriteOff.reject"],
   gate: { type: "MODULE", moduleKey: "store", roles: ["manager"] },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listDeliveryCodWriteOffRequests({ ...serviceActor(actor), reviewAuthorized: true }, { status: "PENDING", branchId });
+    const rows = await listDeliveryCodWriteOffRequests({ ...serviceActor(actor), reviewAuthorized: true }, { status: "PENDING", branchId, order: "ASC" });
     const branches = await branchNames(requireDb(), ids(rows.map((r) => r.branchId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "MONEY_OUT" }))
@@ -98,13 +102,16 @@ export const codWriteOffSource: DecisionSource = {
 // ───────────────────────────── الموارد البشرية: الإجازات ─────────────────────────────
 
 /**
- * [`leaveRouter.ts:180`](../../../routers/leaveRouter.ts) ⇐ `decideLeave` (hr:FULL على
- * `branchScopedProcedure`). فصلُ المهام في الخدمة: لا يبتّ المرءُ في إجازة حسابه؛ ولا سببَ للرفض.
+ * [`leaveRouter.ts:180`](../../../routers/leaveRouter.ts) ⇐ `decideLeaveAndNotify` (hr:FULL على
+ * `branchScopedProcedure` ⇒ البوّابة `branchScoped`: غيرُ العابر بلا فرعٍ مُسنَد يُرفَض كما في
+ * الأصل). فصلُ المهام في الخدمة: لا يبتّ المرءُ في إجازة حسابه. الرفضُ مدعومٌ (الخدمة تقبل
+ * `rejected`) وسببُه اختياريّ — الطلبُ لا يحمل عمودَ سببٍ. الأقدمُ أوّلاً قبل القصّ (200).
  */
 export const leaveSource: DecisionSource = {
   key: "hr.leave",
   kinds: ["hr.leave.decide"],
-  gate: { type: "MODULE_MAP", moduleKey: "hr" },
+  gate: { type: "MODULE_MAP", moduleKey: "hr", branchScoped: true },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -127,7 +134,8 @@ export const leaveSource: DecisionSource = {
       .from(leaveRequests)
       .innerJoin(employees, eq(leaveRequests.employeeId, employees.id))
       .where(and(eq(leaveRequests.status, "pending"), branchId == null ? undefined : eq(employees.branchId, branchId)))
-      .orderBy(desc(leaveRequests.requestedAt))
+      // الأقدمُ أوّلاً: القصّ بالأحدث كان يُسقط أكثر الطلبات تأخّراً بالضبط حين يكثر المعلَّق.
+      .orderBy(asc(leaveRequests.requestedAt), asc(leaveRequests.id))
       .limit(200);
     const branches = await branchNames(db, ids(rows.map((r) => r.employeeBranchId)));
     return rows
@@ -147,7 +155,7 @@ export const leaveSource: DecisionSource = {
             requestedAt: r.requestedAt,
             summaryItems: [{ label: `من ${r.fromDate} الى ${r.toDate}`, qty: r.days, unit: "يوم" }],
             reason: r.reason,
-            rejectReason: "NOT_SUPPORTED",
+            rejectReason: "OPTIONAL",
             trigger: null,
           },
           scope.now,
@@ -159,9 +167,10 @@ export const leaveSource: DecisionSource = {
   async decide(input, actor) {
     const subject = `طلب الاجازة رقم ${input.id}`;
     const decision = input.action === "REJECT" ? "rejected" : "approved";
-    await decideLeave(input.id, decision, { userId: actor.userId, scopedBranchId: actor.crossBranch ? null : actor.branchId });
+    // `scopedBranchIdFor` مرآةُ `branchScopedProcedure`: لا `null` لغير العابر أبداً.
+    await decideLeaveAndNotify(input.id, decision, { userId: actor.userId, scopedBranchId: scopedBranchIdFor(actor) });
     const outcome = decision === "approved" ? "EXECUTED" : "REJECTED";
-    return decided(input, outcome, defaultMessage(outcome, subject));
+    return decided(input, outcome, decision === "approved" ? `${subject}: اعتُمد وأُشعر الموظف.` : `${subject}: رُفض وأُشعر الموظف.`);
   },
 };
 
@@ -175,6 +184,7 @@ export const payrollRemittanceSource: DecisionSource = {
   key: "payroll.remittance",
   kinds: ["payroll.remittance.approve", "payroll.remittance.reject"],
   gate: { type: "OWNER", moduleKey: "hr" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -227,6 +237,7 @@ export const advanceRepaymentSource: DecisionSource = {
   key: "payroll.advanceRepayment",
   kinds: ["payroll.advanceRepayment.approve", "payroll.advanceRepayment.reject"],
   gate: { type: "OWNER", moduleKey: "hr" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -286,6 +297,7 @@ export const commissionRunSource: DecisionSource = {
   key: "commissions.run",
   kinds: ["commissions.run.approve", "commissions.run.reject"],
   gate: { type: "MODULE_MAP", moduleKey: "commissions" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     let companyScope: number | null;
     try {
@@ -294,7 +306,7 @@ export const commissionRunSource: DecisionSource = {
       return [];
     }
     if (companyScope != null) return []; // مراجعةُ الاعتماد سلطةُ شركة — مدير الفرع لا يراها هنا.
-    const rows = await listCommissionRunApprovalRequests(serviceActor(actor), null, { status: "PENDING" });
+    const rows = await listCommissionRunApprovalRequests(serviceActor(actor), null, { status: "PENDING", order: "ASC" });
     const db = requireDb();
     const runs = rows.length ? await db.select({ id: commissionRuns.id, totalCommission: commissionRuns.totalCommission, employeeCount: commissionRuns.employeeCount }).from(commissionRuns).where(inArray(commissionRuns.id, ids(rows.map((r) => r.runId)))) : [];
     const runById = new Map(runs.map((x) => [Number(x.id), x]));
@@ -350,9 +362,10 @@ export const monthCloseSource: DecisionSource = {
   key: "closing.monthClose",
   kinds: ["closing.monthClose.approve", "closing.monthClose.reject"],
   gate: { type: "REPORTS_ADMIN" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     if (scope.branchIds) return []; // قرارٌ شركيّ — لا فرعَ له، فمرشَّحُ الفرع يستبعده بصدق.
-    const rows = await withTx((tx) => listMonthCloseRequests(tx, { pendingOnly: true }), { gate: "NONE" });
+    const rows = await withTx((tx) => listMonthCloseRequests(tx, { pendingOnly: true, order: "ASC" }), { gate: "NONE" });
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "ERASE_EFFECT" }))
       .map((r) =>
@@ -393,9 +406,10 @@ export const yearEndReopenSource: DecisionSource = {
   key: "closing.yearEndReopen",
   kinds: ["closing.yearEndReopen.approve", "closing.yearEndReopen.reject"],
   gate: { type: "REPORTS_ADMIN" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     if (scope.branchIds) return [];
-    const rows = await withTx((tx) => listYearEndReopenRequests(tx, { pendingOnly: true }), { gate: "NONE" });
+    const rows = await withTx((tx) => listYearEndReopenRequests(tx, { pendingOnly: true, order: "ASC" }), { gate: "NONE" });
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy], actor, trigger: "ERASE_EFFECT" }))
       .map((r) =>
@@ -433,14 +447,22 @@ export const yearEndReopenSource: DecisionSource = {
 
 // ───────────────────────────── الهدايا الصادرة ─────────────────────────────
 
+/** الهديةُ بلا أسطر لا تُعتمَد سطرياً — لا يُعرَف ما سيخرج من المخزون. */
+const GIFT_NO_LINES_REASON = "الهدية بلا اسطر — لا يُعرَف ما سيخرج من المخزون؛ افتح شاشة الهدايا الصادرة";
+
 /**
- * [`giftsRouter.ts:217`](../../../routers/giftsRouter.ts) ⇐ `approveGift` (gifts:FULL، والخدمة
- * تشترط مديراً أو أدمن ومعتمِداً غيرَ المنشئ). لا رفضَ في مكانه — الإلغاءُ مسارُ الطالب.
+ * [`giftsRouter.ts:217`](../../../routers/giftsRouter.ts) ⇐ `approveGift` (`giftsWrite` =
+ * `branchScopedProcedure.use(requireModule("gifts","FULL"))` ⇒ البوّابة `MODULE_MAP` + `branchScoped`؛
+ * والخدمة تشترط مديراً أو أدمن ومعتمِداً غيرَ المنشئ). لا رفضَ في مكانه — الإلغاءُ مسارُ الطالب.
+ *
+ * **الأسطرُ جزءٌ من القرار** (`decidesOn` في السجلّ): الاعتمادُ يُخرج أصنافاً بكمّياتها من المخزون
+ * فوراً، فالصفُّ يعرضها من `giftVoucherLines`؛ وهديةٌ بلا أسطر تُحجَب لا تُعتمَد (Codex على #1004).
  */
 export const giftSource: DecisionSource = {
   key: "gifts.request",
   kinds: ["gifts.request.approve"],
-  gate: { type: "MODULE", moduleKey: "gifts", roles: ["manager"] },
+  gate: { type: "MODULE_MAP", moduleKey: "gifts", branchScoped: true },
+  supportedActions: ["APPROVE"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -462,13 +484,42 @@ export const giftSource: DecisionSource = {
       .from(giftVouchers)
       .leftJoin(users, eq(users.id, giftVouchers.createdBy))
       .where(and(eq(giftVouchers.status, "PENDING_APPROVAL"), eq(giftVouchers.direction, "OUT"), branchId == null ? undefined : eq(giftVouchers.branchId, branchId)))
-      .orderBy(desc(giftVouchers.createdAt))
+      // الأقدمُ أوّلاً قبل القصّ — الأحدثُ أوّلاً كان يُسقط أكثر الطلبات تأخّراً.
+      .orderBy(asc(giftVouchers.createdAt), asc(giftVouchers.id))
       .limit(200);
-    const [branches, customers] = await Promise.all([branchNames(db, ids(rows.map((r) => r.branchId))), customerNames(db, ids(rows.map((r) => r.customerId)))]);
+    if (!rows.length) return [];
+    const lines = await db
+      .select({
+        giftVoucherId: giftVoucherLines.giftVoucherId,
+        variantId: giftVoucherLines.variantId,
+        productUnitId: giftVoucherLines.productUnitId,
+        quantity: giftVoucherLines.quantity,
+        baseQuantity: giftVoucherLines.baseQuantity,
+        unitCostSnapshot: giftVoucherLines.unitCostSnapshot,
+        lineCost: giftVoucherLines.lineCost,
+      })
+      .from(giftVoucherLines)
+      .where(inArray(giftVoucherLines.giftVoucherId, ids(rows.map((r) => r.id))));
+    const [branches, customers, variants, units] = await Promise.all([
+      branchNames(db, ids(rows.map((r) => r.branchId))),
+      customerNames(db, ids(rows.map((r) => r.customerId))),
+      variantLabels(db, ids(lines.map((l) => l.variantId))),
+      unitNames(db, ids(lines.map((l) => l.productUnitId))),
+    ]);
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "MONEY_OUT" }))
-      .map((r) =>
-        buildRow(
+      .map((r) => {
+        const mine = lines.filter((l) => Number(l.giftVoucherId) === Number(r.id));
+        const lineItems: DecisionSummaryItem[] = mine.map((l) => {
+          const v = variants.get(Number(l.variantId));
+          return {
+            label: itemLabel([v?.productName, v?.variantName]) || `صنف #${l.variantId}`,
+            qty: String(l.quantity),
+            unit: `${units.get(Number(l.productUnitId)) ?? ""} (${l.baseQuantity} بالوحدة الأساس)`.trim(),
+            unitPrice: l.unitCostSnapshot,
+          };
+        });
+        return buildRow(
           {
             kind: "gifts.request.approve",
             id: Number(r.id),
@@ -481,19 +532,28 @@ export const giftSource: DecisionSource = {
             requestedBy: Number(r.createdBy),
             requestedByName: r.createdByName ?? null,
             requestedAt: r.createdAt,
-            summaryItems: [{ label: "تكلفة الاصناف المهداة", unitPrice: r.totalCost }],
+            summaryItems: [...lineItems, { label: "تكلفة الاصناف المهداة", unitPrice: r.totalCost }],
             reason: r.reason,
             allowedActions: ["APPROVE"],
             rejectReason: "NOT_SUPPORTED",
+            approveBlockedReason: mine.length ? null : GIFT_NO_LINES_REASON,
             trigger: "MONEY_OUT",
           },
           scope.now,
-        ),
-      );
+        );
+      });
   },
   freshness: (id) =>
     freshnessFrom(async () => (await requireDb().select({ status: giftVouchers.status }).from(giftVouchers).where(eq(giftVouchers.id, id)).limit(1))[0]?.status, ["PENDING_APPROVAL"]),
   async decide(input, actor) {
+    if (input.action !== "APPROVE") {
+      // يحرسه `supportedActions` قبل الوصول؛ يبقى دفاعاً ثانياً: لا فعلَ هنا يعني اعتماداً.
+      throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({ what: "تعذّر حسم طلب الهدية", why: "الهدية الصادرة تُعتمَد فقط من الصندوق، والرفض ليس مساراً لها", doThis: "اطلب من الطالب إلغاء طلبه من شاشة الهدايا الصادرة" }) });
+    }
+    const [{ lineCount }] = await requireDb().select({ lineCount: sql<number>`COUNT(*)` }).from(giftVoucherLines).where(eq(giftVoucherLines.giftVoucherId, input.id));
+    if (!Number(lineCount)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: appErrorMessage({ what: `تعذّر اعتماد الهدية رقم ${input.id} من الصندوق`, why: GIFT_NO_LINES_REASON, doThis: "افتح شاشة الهدايا الصادرة وراجع السند قبل اعتماده" }) });
+    }
     const res = await approveGift(input.id, serviceActor(actor));
     return decided(input, "EXECUTED", `الهدية رقم ${res.giftVoucherId}: اعتُمدت وسُلّمت بتكلفة ${res.totalCost}.`);
   },

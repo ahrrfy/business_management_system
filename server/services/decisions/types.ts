@@ -42,13 +42,17 @@ export interface DecisionActor {
 /**
  * وصفُ بوّابة الإجراء الأصليّ بمفردات `server/trpc.ts` نفسها:
  *  · `MODULE`        ⇐ `moduleProcedure(roles, moduleKey, "FULL")` (بوّابة وحدة + فرعٌ مُسنَد لغير العابر)
- *  · `MODULE_MAP`    ⇐ `protectedProcedure.use(requireModule(moduleKey, "FULL"))` (بلا قائمة أدوار)
+ *  · `MODULE_MAP`    ⇐ `protectedProcedure.use(requireModule(moduleKey, "FULL"))` (بلا قائمة أدوار)؛
+ *                      و`branchScoped: true` حين يكون الأصلُ `branchScopedProcedure.use(requireModule(…))`
+ *                      — تلك ترفض غيرَ العابر بلا فرعٍ مُسنَد («لا فرع مُسنَد لهذا المستخدم»)، فبلا
+ *                      هذا المتغيّر كان `hr:FULL` بلا فرعٍ يبلغ `decideLeave` بـ`scopedBranchId: null`
+ *                      = بلا قيدِ فرعٍ إطلاقاً (Codex على #1004).
  *  · `OWNER`         ⇐ `ownerProcedure` (+ وحدةٌ اختيارية حين يُركَّب عليها `requireModule`)
  *  · `REPORTS_ADMIN` ⇐ `reportsAdminProcedure` (reports:FULL ثمّ admin)
  */
 export type DecisionGate =
   | { type: "MODULE"; moduleKey: string; roles: readonly string[] }
-  | { type: "MODULE_MAP"; moduleKey: string }
+  | { type: "MODULE_MAP"; moduleKey: string; branchScoped?: boolean }
   | { type: "OWNER"; moduleKey?: string }
   | { type: "REPORTS_ADMIN" };
 
@@ -63,6 +67,8 @@ export interface DecideInput {
   expectedVersion?: number | null;
   confirmations?: Record<string, boolean>;
   reference?: string | null;
+  /** صيغةُ الاعتماد المختارة حين يعلن الصفُّ `approveVariants` (مفتاحٌ من تلك القائمة). */
+  variant?: string | null;
 }
 
 /** نطاقُ السرد: الفروع التي يراها الفاعل (`null` = كلّ الفروع) ولحظة «الآن». */
@@ -81,15 +87,30 @@ export interface DecisionSource {
   key: string;
   kinds: readonly DecisionKind[];
   gate: DecisionGate;
+  /**
+   * الأفعالُ التي يحسمها هذا المصدر فعلاً. ⛔ يُفحَص في `decideDecision` **قبل** `decide`:
+   * كان الراوتر يقبل أيَّ فعلٍ من `DECISION_ACTIONS` ثمّ يعامل أغلبُ المصادر «غيرَ الرفض»
+   * اعتماداً — فـ`gifts.request.approve` بفعل `REJECT` كان **ينفّذ الاعتماد** ويُسجَّل في
+   * التدقيق رفضاً (Codex على #1004). المصدرُ يعلن، والصندوق يرفض ما لم يُعلَن.
+   */
+  supportedActions: readonly DecisionAction[];
   list(actor: DecisionActor, scope: DecisionScope): Promise<DecisionRowModel[]>;
   freshness(id: number): Promise<DecisionFreshness>;
   decide(input: DecideInput, actor: DecisionActor, options: DecideOptions): Promise<DecisionDecideResult>;
 }
 
 /**
- * ملحقاتُ الحسم التي لا تقرؤها الخدمة من `ctx` بل تُسلَّم صراحةً. `audit` يلزم دالّةً واحدة
- * قائمة (`approveWorkOrderCancellationRefund`) تكتب أثرَ تدقيقها بنفسها — يُمرَّر كما هو.
+ * لقطةُ التدقيق كما تُسلَّم من الراوتر (لا تُقرأ من `ctx` داخل الخدمة): إمّا سياقُ الطلب
+ * `{ user, req }` وإمّا بياناتٌ محايدة `{ userId, branchId, … }` — وهما ما يقبله `logAudit`.
+ */
+export type DecisionAuditSource = Parameters<typeof import("../auditService").logAudit>[0];
+
+/**
+ * ملحقاتُ الحسم التي لا تقرؤها الخدمة من `ctx` بل تُسلَّم صراحةً. `audit` تلزم دالّةً قائمة
+ * (`approveWorkOrderCancellationRefund`) تكتب أثرَ تدقيقها بنفسها، وتلزم كتابةَ حدث
+ * `RETURN_EXECUTED_AUDIT_ACTION` عند اعتماد مرتجعٍ محكوم من الصندوق — الحدثُ الذي يقرؤه رقيبُ
+ * الشذوذ D3-ب ولا يُكتَب في أيّ مكانٍ آخر.
  */
 export interface DecideOptions {
-  audit?: unknown;
+  audit?: DecisionAuditSource;
 }

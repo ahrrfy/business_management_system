@@ -8,8 +8,9 @@
  * الرفضُ بسببٍ إلزاميّ حيث تشترطه الخدمة، ثمّ حوارُ `confirm` (لا `window.confirm`).
  */
 import { useId, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock, ExternalLink, Info, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, ExternalLink, Info, MessageSquarePlus, XCircle } from "lucide-react";
 import { Link } from "wouter";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -71,7 +72,10 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
   const [reason, setReason] = useState("");
   const [reference, setReference] = useState("");
   const [confirmations, setConfirmations] = useState<Record<string, boolean>>({});
+  /** `APPROVE` = «اعتماد بملاحظة»: يُظهر حقلَ الملاحظة الاختياريّة قبل الإرسال (كان مخفيّاً والزرّ يرسل فوراً). */
   const [mode, setMode] = useState<"IDLE" | "REJECT" | "APPROVE">("IDLE");
+  /** صيغةُ الاعتماد المختارة حين يعلن الصفُّ `approveVariants` — بلا اختيارٍ لا يُرسَل اعتماد. */
+  const [variant, setVariant] = useState("");
   const [result, setResult] = useState<DecisionDecideResult | null>(initialResult);
 
   const decide = trpc.decisions.decide.useMutation({
@@ -94,6 +98,9 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
   const referenceOk = !row.requiredReference || reference.trim().length >= row.requiredReference.minLength;
   const approveReasonOk = row.approveReason !== "REQUIRED" || reason.trim().length >= row.reasonMinLength;
   const rejectReasonOk = row.rejectReason !== "REQUIRED" || reason.trim().length >= row.reasonMinLength;
+  const hasVariants = row.approveVariants.length > 0;
+  const variantOk = !hasVariants || row.approveVariants.some((v) => v.key === variant);
+  const variantLabel = hasVariants ? (row.approveVariants.find((v) => v.key === variant)?.label ?? null) : null;
 
   const amountText = useMemo(() => (row.amount ? `${fmtAr(row.amount)} ${row.currency === "USD" ? "$" : "د.ع"}` : null), [row.amount, row.currency]);
 
@@ -106,7 +113,8 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
         <div className="space-y-1 text-xs">
           {row.party && <div>الطرف: {row.party}</div>}
           {amountText && <div dir="ltr" className="font-bold tabular-nums">{amountText}</div>}
-          {reason.trim() && <div>السبب: {reason.trim()}</div>}
+          {action === "APPROVE" && variantLabel && <div>صيغة الاعتماد: {variantLabel}</div>}
+          {reason.trim() && <div>{action === "REJECT" ? "السبب" : "الملاحظة"}: {reason.trim()}</div>}
           {action === "APPROVE" && row.trigger && <div className="text-[var(--sem-warn)]">لحظة الخطر: {APPROVAL_TRIGGER_LABEL_AR[row.trigger]}</div>}
         </div>
       ),
@@ -122,6 +130,7 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
       expectedVersion: row.expectedVersion ?? undefined,
       confirmations: row.confirmations.length ? confirmations : undefined,
       reference: reference.trim() || undefined,
+      variant: action === "APPROVE" && hasVariants ? variant : undefined,
     });
   }
 
@@ -236,6 +245,16 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
                 <Input id={`${formId}-ref`} value={reference} onChange={(e) => setReference(e.target.value)} className="h-9 text-xs" dir="ltr" maxLength={100} />
               </div>
             )}
+            {canApprove && hasVariants && mode !== "REJECT" && (
+              <div className="space-y-1">
+                <label htmlFor={`${formId}-variant`} className="text-2xs font-bold">صيغة الاعتماد (إلزامي — لهذا القرار أكثر من نتيجة)</label>
+                <AppSelect id={`${formId}-variant`} className="h-9 text-xs" value={variant} onValueChange={setVariant} placeholder="اختر صيغة الاعتماد" aria-label="صيغة الاعتماد">
+                  {row.approveVariants.map((v) => (
+                    <option key={v.key} value={v.key}>{v.label}</option>
+                  ))}
+                </AppSelect>
+              </div>
+            )}
             {(mode !== "IDLE" || row.approveReason === "REQUIRED") && (
               <div className="space-y-1">
                 <label htmlFor={`${formId}-reason`} className="text-2xs font-bold">
@@ -249,10 +268,16 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
               {canApprove && mode !== "REJECT" && (
                 <Button
                   size="sm"
-                  disabled={decide.isPending || !confirmationsOk || !referenceOk || !approveReasonOk}
+                  disabled={decide.isPending || !confirmationsOk || !referenceOk || !approveReasonOk || !variantOk}
                   onClick={() => submit("APPROVE")}
                 >
                   {decide.isPending ? ACTION_LABELS.approving : DECISION_ACTION_LABEL_AR.APPROVE}
+                </Button>
+              )}
+              {/* ملاحظةُ الاعتماد الاختياريّة كانت مخفيّةً بلا مدخلٍ إليها — «اعتماد بملاحظة» يُظهر الحقل قبل الإرسال. */}
+              {canApprove && mode === "IDLE" && row.approveReason !== "REQUIRED" && (
+                <Button size="sm" variant="ghost" disabled={decide.isPending} onClick={() => setMode("APPROVE")}>
+                  <MessageSquarePlus aria-hidden className="size-3.5 me-1" /> اعتماد بملاحظة
                 </Button>
               )}
               {canReject && mode !== "REJECT" && (
@@ -270,14 +295,20 @@ export function DecisionRow({ row, onDecided, initialResult = null, onDismiss }:
                   </Button>
                 </>
               )}
+              {mode === "APPROVE" && (
+                <Button size="sm" variant="ghost" disabled={decide.isPending} onClick={() => { setMode("IDLE"); setReason(""); }}>
+                  {ACTION_LABELS.cancel}
+                </Button>
+              )}
               {canWithdraw && (
                 <Button size="sm" variant="ghost" disabled={decide.isPending} onClick={() => submit("WITHDRAW")}>
                   {DECISION_ACTION_LABEL_AR.WITHDRAW}
                 </Button>
               )}
-              <Button size="sm" variant="link" asChild className="ms-auto">
+              {/* الصفُّ المحجوب يقود إلى الشاشة الكاملة التي تحمل المدخلات الناقصة (توجيه النقد مثلاً). */}
+              <Button size="sm" variant={row.approveBlockedReason ? "outline" : "link"} asChild className="ms-auto">
                 <Link href={row.href}>
-                  <ExternalLink aria-hidden className="size-3.5 me-1" /> افتح المستند
+                  <ExternalLink aria-hidden className="size-3.5 me-1" /> {row.approveBlockedReason ? "افتح الشاشة الكاملة" : "افتح المستند"}
                 </Link>
               </Button>
             </div>

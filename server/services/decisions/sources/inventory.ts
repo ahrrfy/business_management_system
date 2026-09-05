@@ -30,10 +30,11 @@ export const stockAdjustmentSource: DecisionSource = {
   key: "inventory.adjustment",
   kinds: ["inventory.adjustment.approve", "inventory.adjustment.reject"],
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listStockAdjustmentRequests({ branchId, status: "PENDING_APPROVAL" });
+    const rows = await listStockAdjustmentRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC" });
     const names = await branchNames(requireDb(), ids(rows.map((r) => r.branchId)));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "ERASE_EFFECT" }))
@@ -97,10 +98,11 @@ export const costRevaluationSource: DecisionSource = {
   key: "inventory.costRevaluation",
   kinds: ["inventory.costRevaluation.approve", "inventory.costRevaluation.reject"],
   gate: { type: "MODULE", moduleKey: "inventory", roles: ["manager"] },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
-    const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200 }, serviceActor(actor));
+    const rows = await listCostRevaluations({ status: "PENDING_APPROVAL", branchId, limit: 200, order: "ASC" }, serviceActor(actor));
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, adminExempt: true, trigger: "ERASE_EFFECT" }))
       .map((r) =>

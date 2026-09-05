@@ -195,6 +195,9 @@ const PURCHASING: Record<string, DecisionSpec> = {
    * [`purchaseReturnGovernanceRouter.ts:21`](../server/routers/purchaseReturnGovernanceRouter.ts#L21)
    * ⇐ [`purchase/returnGovernance.ts:499`](../server/services/purchase/returnGovernance.ts#L499).
    * مصنَّفٌ `ERASE_EFFECT`: `applyMovement` باتّجاه `OUT` + `postEntry` + إنقاصُ ذمّة المورّد.
+   * `href` ⇐ **طابور الحوكمة** لا `/purchase-returns/:id`: المعرّفُ هنا معرّفُ **الطلب**
+   * (`purchaseReturnRequests.id`) والمرتجعُ نفسه (`purchaseReturns`) لا يُنشأ إلّا عند
+   * الاعتماد — فرابطٌ بمعرّف الطلب كان يفتح صفحةَ مرتجعٍ لا وجودَ له (Codex على #1004).
    */
   "purchase.return.decide": spec({
     kind: "purchase.return.decide",
@@ -211,7 +214,7 @@ const PURCHASING: Record<string, DecisionSpec> = {
     approver: "INDEPENDENT_REVIEWER",
     withdrawable: false,
     procedure: { router: "purchaseReturnGovernance", name: "decideReturn" },
-    href: (id) => `/purchase-returns/${id}`,
+    href: () => "/purchases?tab=returns-governance",
   }),
 
   /**
@@ -289,7 +292,9 @@ const PURCHASING: Record<string, DecisionSpec> = {
    * [`purchase/goodsReceipts.ts:1077`](../server/services/purchase/goodsReceipts.ts#L1077).
    * كان **آخر موضعٍ في المشتريات خارج السجلّ** (D3 = 1 على هذا الراوتر وحده). الاعتماد
    * يُخرج البضاعة من المخزون ويعكس GRNI ويُعيد الاستلام إلى ما قبل التوريد — محوُ أثرٍ
-   * مخزنيّ قائم. `href` ⇐ تبويب الاستلامات (المعرّف هو معرّف طلب العكس وليس له مسارٌ مستقلّ).
+   * مخزنيّ قائم. `href` ⇐ تبويب **عكس الاستلامات** في `PurchasesHub` (`goods-receipt-reversals`
+   * حرفياً — تبويبٌ غيرُ مُسجَّل يُسقط `PageTabs` إلى أوّل تبويبٍ مرئيّ بصمت؛ Codex على #1004).
+   * المعرّف معرّفُ طلب العكس وليس له مسارٌ مستقلّ.
    */
   "purchase.goodsReceipt.reversal": spec({
     kind: "purchase.goodsReceipt.reversal",
@@ -305,7 +310,7 @@ const PURCHASING: Record<string, DecisionSpec> = {
     approver: "INDEPENDENT_REVIEWER",
     withdrawable: false,
     procedure: { router: "goodsReceiptReversal", name: "decideReversal" },
-    href: () => "/purchases?tab=goods-receipts",
+    href: () => "/purchases?tab=goods-receipt-reversals",
   }),
 
   /**
@@ -313,7 +318,8 @@ const PURCHASING: Record<string, DecisionSpec> = {
    * [`purchase/supplierInvoices.ts:827`](../server/services/purchase/supplierInvoices.ts#L827).
    * الراوتر يقبل `REVERSE_INVOICE` وحده عمداً (مراجعة Codex على #1001) — الترحيلُ الاعتياديّ
    * يقع آلياً داخل سلسلة `purchases.decideControl`. الاعتماد يعكس قيد AP ويُنقص ذمة المورد
-   * ويعيد فاتورة مرحلة إلى ما قبل الترحيل. `href` ⇐ تبويب فواتير الموردين.
+   * ويعيد فاتورة مرحلة إلى ما قبل الترحيل. `href` ⇐ تبويب **اعتمادات فواتير الموردين**
+   * (`supplier-invoice-approvals` حرفياً كما في `PurchasesHub`).
    */
   "purchase.supplierInvoice.reversal": spec({
     kind: "purchase.supplierInvoice.reversal",
@@ -330,7 +336,7 @@ const PURCHASING: Record<string, DecisionSpec> = {
     approver: "INDEPENDENT_REVIEWER",
     withdrawable: false,
     procedure: { router: "supplierInvoiceApproval", name: "decideApproval" },
-    href: () => "/purchases?tab=supplier-invoices",
+    href: () => "/purchases?tab=supplier-invoice-approvals",
   }),
 };
 
@@ -1739,6 +1745,13 @@ export interface DecisionRowModel {
    * حين لا يكون `null` يُخفي الصفُّ زرَّ الاعتماد ويعرض السبب مع رابط الشاشة.
    */
   approveBlockedReason: string | null;
+  /**
+   * صيغُ الاعتماد حين يكون للاعتماد **أكثرُ من نتيجةٍ واحدة** (قضيةُ السلامة: «حُلّت» أو
+   * «تُصرَف»). فارغةٌ = اعتمادٌ واحد. حين لا تكون فارغةً يلزم المُقرِّرَ اختيارُ واحدةٍ صراحةً
+   * وتُرسَل `variant` مع الحسم — ⛔ لا افتراضَ صامتٌ لأولاها: كان الصندوق يحوّل كلَّ اعتمادٍ
+   * إلى «حُلّت» فيُمحى «تُصرَف» من الشيفرة (Codex على #1004).
+   */
+  approveVariants: Array<{ key: string; label: string }>;
   trigger: DecisionTrigger | null;
 }
 

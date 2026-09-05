@@ -299,6 +299,10 @@ export default defineConfig({
       "shared/decisionRegistry.test.ts",
       // م٧ ق٢ — محوِّلات صندوق «مطلوب مني الآن» ومرآة بوّاباته (نقيّة، بلا قاعدة).
       "server/services/decisions/__tests__/rows.test.ts",
+      // م٧ ق٢ (Codex على #1004) — مبالغُ ضبط البيع المتأثّرة وحاجزُ الاعتماد السطريّ + عقود الواجهة وروابط المشتريات.
+      "server/services/decisions/__tests__/salesControlView.test.ts",
+      "client/src/components/decision/DecisionRow.test.ts",
+      "client/src/pages/__tests__/decisionRegistryPurchaseTabs.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",

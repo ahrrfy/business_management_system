@@ -26,7 +26,7 @@ import { approveVoucher, rejectVoucher } from "../../voucher/approval";
 import { serviceActor } from "../gate";
 import { buildRow, decided, defaultMessage } from "../rows";
 import type { DecisionSource } from "../types";
-import { branchNames, freshnessFrom, ids, scopeBranch, sodHidden, userNames } from "./common";
+import { branchIdsFor, branchNames, freshnessFrom, ids, scopeBranch, serviceBranchScopedIds, sodHidden, userNames } from "./common";
 
 const TREASURY_GATE = { type: "MODULE", moduleKey: "treasury", roles: ["manager", "accountant"] } as const;
 
@@ -41,6 +41,7 @@ export const voucherSource: DecisionSource = {
   key: "treasury.voucher",
   kinds: ["treasury.voucher.approve", "treasury.voucher.reject"],
   gate: { type: "OWNER", moduleKey: "treasury" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -124,6 +125,7 @@ export const expenseSource: DecisionSource = {
   key: "expense",
   kinds: ["expense.approve", "expense.reject"],
   gate: { type: "OWNER" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -219,6 +221,7 @@ export const accrualCorrectionSource: DecisionSource = {
   key: "expense.accrualCorrection",
   kinds: ["expense.accrualCorrection.approve", "expense.accrualCorrection.reject"],
   gate: { type: "OWNER" },
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
@@ -287,24 +290,29 @@ export const accrualCorrectionSource: DecisionSource = {
  * [`cashVarianceRouter.ts:116`](../../../routers/cashVarianceRouter.ts) ⇐ `approveCashVarianceCase`.
  * فصلُ المهام في الخدمة: مقترحُ التسوية لا يعتمدها. القفلُ التفاؤليّ `expectedVersion` = نسخةُ
  * آخر حدث. سببُ الرفض عشرةُ محارف فأكثر.
+ *
+ * **الفروع:** الخدمة تسرد فرعاً واحداً وتقصر غيرَ الأدمن على فرعه (`assertBranchScope`)، فالأدمن
+ * على «كلّ الفروع» يُعدِّد الفروعَ النشطة كلَّها ويسرد لكلٍّ (كما مصادر المشتريات) — كان المصدر
+ * يستبدل `actor.branchId` فتختفي قضايا الفروع الأخرى من صندوق الأدمن (Codex على #1004).
  */
 export const cashVarianceSource: DecisionSource = {
   key: "cash.variance",
   kinds: ["cash.variance.approve", "cash.variance.reject"],
   gate: TREASURY_GATE,
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
-    const branchId = scopeBranch(actor, scope);
-    if (branchId === "NONE") return [];
     const db = requireDb();
     const a = serviceActor(actor);
-    const targetBranch = branchId ?? actor.branchId;
-    if (targetBranch == null) return [];
-    const page = await listCashVarianceCases({ branchId: targetBranch, status: "PROPOSED", limit: 100 }, a);
+    const all = actor.role === "admin" ? await branchIdsFor(db, actor, scope) : [];
+    const branchIds = serviceBranchScopedIds(actor, scope.branchIds, all);
+    if (!branchIds.length) return [];
+    const pages = await Promise.all(branchIds.map((b) => listCashVarianceCases({ branchId: b, status: "PROPOSED", limit: 100 }, a)));
+    const rows = pages.flatMap((p) => p.rows);
     const [names, people] = await Promise.all([
-      branchNames(db, ids(page.rows.map((r) => r.branchId))),
-      userNames(db, ids(page.rows.map((r) => r.proposedByUserId))),
+      branchNames(db, ids(rows.map((r) => r.branchId))),
+      userNames(db, ids(rows.map((r) => r.proposedByUserId))),
     ]);
-    return page.rows
+    return rows
       .filter((r) => !sodHidden({ blocked: [r.proposedByUserId], actor, trigger: "ERASE_EFFECT" }))
       .map((r) => {
         const shortage = Number(r.variance) < 0;

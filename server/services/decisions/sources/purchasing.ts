@@ -75,7 +75,7 @@ import {
 } from "../../purchase/supplierPayments";
 import { requireDb } from "../../tx";
 import { serviceActor } from "../gate";
-import { buildRow, decided, decisionKeyFor, defaultMessage, itemLabel, moneyText, outcomeFor, statusOf, type RowInput } from "../rows";
+import { buildRow, decided, decisionKeyFor, defaultMessage, itemLabel, moneyText, outcomeFor, pickApproveVariant, statusOf, type RowInput } from "../rows";
 import type { DecideInput, DecisionActor, DecisionScope, DecisionSource } from "../types";
 import {
   branchIdsFor,
@@ -93,6 +93,18 @@ import {
 const PURCHASES_GATE = { type: "MODULE", moduleKey: "purchases", roles: ["manager", "purchasing"] } as const;
 const TREASURY_GATE = { type: "MODULE", moduleKey: "treasury", roles: ["manager", "accountant"] } as const;
 const LIST_LIMIT = 200;
+/** كلُّ مصادر الحوكمة الشرائية تحسم بالاعتماد أو الرفض — لا سحبَ من طرف المعتمِد. */
+const APPROVE_OR_REJECT = ["APPROVE", "REJECT"] as const;
+
+/**
+ * قضيةُ السلامة لها **نتيجتا اعتماد** في الخدمة (`APPROVE_RESOLVED`/`APPROVE_DISMISSED`) عدا الرفض؛
+ * كان الصندوق يحوّل كلَّ اعتمادٍ إلى «حُلّت» فيضيع «تُصرَف» (بلاغٌ غير مؤثّر يُغلق بلا معالجة).
+ * المُقرِّر يختار صراحةً — بلا افتراضٍ صامت (`pickApproveVariant`).
+ */
+const INTEGRITY_APPROVE_VARIANTS = [
+  { key: "APPROVE_RESOLVED", label: "حلت — المعالجة المقترحة مقبولة" },
+  { key: "APPROVE_DISMISSED", label: "تصرف — البلاغ غير مؤثر ويغلق بلا معالجة" },
+] as const;
 
 /** الحقولُ المشتركة بين مصادر الحوكمة الشرائية: سببٌ إلزاميّ على القرارين (3–500 محرفاً). */
 const GOVERNANCE_DEFAULTS = {
@@ -128,9 +140,11 @@ export const purchaseOrderControlSource: DecisionSource = {
   key: "purchase.order.control",
   kinds: ["purchase.order.control"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const raw = await listPendingPurchaseOrderControls(serviceActor(actor), { limit: LIST_LIMIT });
+    // الأقدمُ أوّلاً قبل قصّ الخدمة: الأحدثُ أوّلاً كان يُسقط أكثر الطلبات تأخّراً حين يكثر المعلَّق.
+    const raw = await listPendingPurchaseOrderControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC" });
     const rows = raw.slice(0, LIST_LIMIT).filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
     const poIds = ids(rows.map((r) => r.purchaseOrderId));
@@ -238,9 +252,10 @@ export const purchaseRequisitionControlSource: DecisionSource = {
   key: "purchase.requisition.control",
   kinds: ["purchase.requisition.control"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const raw = await listPendingPurchaseRequisitionControls(serviceActor(actor), { limit: LIST_LIMIT });
+    const raw = await listPendingPurchaseRequisitionControls(serviceActor(actor), { limit: LIST_LIMIT, order: "ASC" });
     const rows = raw.slice(0, LIST_LIMIT).filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
     const reqIds = ids(rows.map((r) => r.requisitionId));
@@ -306,6 +321,7 @@ export const purchaseChargeControlSource: DecisionSource = {
   key: "purchase.charge.control",
   kinds: ["purchase.charge.control"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingPurchaseChargeControls(b, serviceActor(actor)));
@@ -366,9 +382,10 @@ export const purchaseIntegritySource: DecisionSource = {
   key: "purchase.integrity.resolution",
   kinds: ["purchase.integrity.resolution"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
-    const rows = await perBranch(db, actor, scope, (b) => listPurchaseIntegrityCases({ branchId: b, status: "PENDING_RESOLUTION", limit: LIST_LIMIT }, serviceActor(actor)));
+    const rows = await perBranch(db, actor, scope, (b) => listPurchaseIntegrityCases({ branchId: b, status: "PENDING_RESOLUTION", limit: LIST_LIMIT, order: "ASC" }, serviceActor(actor)));
     if (!rows.length) return [];
     const look = await lookups(db, { suppliers: rows.map((r) => r.supplierId), users: rows.map((r) => r.resolutionRequestedBy), branches: rows.map((r) => r.branchId) });
     return rows
@@ -393,6 +410,7 @@ export const purchaseIntegritySource: DecisionSource = {
               ...(r.resolutionEvidenceReference ? [{ label: `الدليل: ${r.resolutionEvidenceReference}` }] : []),
             ],
             reason: r.resolutionReason ?? null,
+            approveVariants: [...INTEGRITY_APPROVE_VARIANTS],
             trigger: purchaseIntegrityResolutionTrigger(),
           },
           scope.now,
@@ -405,12 +423,15 @@ export const purchaseIntegritySource: DecisionSource = {
       ["PENDING_RESOLUTION"],
     ),
   async decide(input, actor) {
+    const subject = `قضية السلامة رقم ${input.id}`;
+    const variant = input.action === "APPROVE" ? pickApproveVariant(INTEGRITY_APPROVE_VARIANTS, input.variant, subject) : null;
     const res = await decidePurchaseIntegrityResolution(
-      { caseId: input.id, decisionKey: decisionKeyFor(input.clientRequestId), decision: input.action === "APPROVE" ? "APPROVE_RESOLVED" : "REJECT", reason: input.reason ?? "" },
+      { caseId: input.id, decisionKey: decisionKeyFor(input.clientRequestId), decision: variant ?? "REJECT", reason: input.reason ?? "" },
       serviceActor(actor),
     );
     const outcome = input.action === "APPROVE" ? "EXECUTED" : "REJECTED";
-    return decided(input, outcome, `${defaultMessage(outcome, `قضية السلامة رقم ${input.id}`)} الحالة الآن ${res.status}.`);
+    const chosen = variant ? INTEGRITY_APPROVE_VARIANTS.find((v) => v.key === variant)?.label : null;
+    return decided(input, outcome, `${defaultMessage(outcome, subject)}${chosen ? ` الصيغة: ${chosen}.` : ""} الحالة الآن ${res.status}.`);
   },
 };
 
@@ -420,6 +441,7 @@ export const purchaseReturnSource: DecisionSource = {
   key: "purchase.return.decide",
   kinds: ["purchase.return.decide"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingPurchaseReturnRequests(b, serviceActor(actor)));
@@ -456,7 +478,7 @@ export const purchaseReturnSource: DecisionSource = {
               { label: `الدليل: ${r.evidenceType} — ${r.evidenceReference}` },
             ],
             reason: r.reason,
-            hrefId: Number(r.id),
+            // لا `hrefId`: المرتجعُ (`purchaseReturns`) لا يُنشأ إلّا بالاعتماد، والرابطُ طابورُ الحوكمة.
             expectedVersion: Number(r.baseInvoiceVersion),
             trigger: purchaseReturnTrigger("APPROVE"),
           },
@@ -484,6 +506,7 @@ export const purchaseReturnReversalSource: DecisionSource = {
   key: "purchase.return.reversal",
   kinds: ["purchase.return.reversal"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingPurchaseReturnReversalRequests(b, serviceActor(actor)));
@@ -556,6 +579,7 @@ export const supplierPaymentSource: DecisionSource = {
   key: "supplier.payment.decide",
   kinds: ["supplier.payment.decide"],
   gate: TREASURY_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingSupplierPaymentRequests(b, serviceActor(actor)));
@@ -622,6 +646,7 @@ export const supplierPaymentRefundSource: DecisionSource = {
   key: "supplier.payment.refund",
   kinds: ["supplier.payment.refund"],
   gate: TREASURY_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const pages = await perBranch(db, actor, scope, async (b) => (await listPendingSupplierPaymentRefundRequests({ branchId: b, limit: LIST_LIMIT }, serviceActor(actor))).rows);
@@ -682,6 +707,7 @@ export const goodsReceiptReversalSource: DecisionSource = {
   key: "purchase.goodsReceipt.reversal",
   kinds: ["purchase.goodsReceipt.reversal"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingGoodsReceiptReversals(b, serviceActor(actor)));
@@ -761,6 +787,7 @@ export const supplierInvoiceApprovalSource: DecisionSource = {
   key: "purchase.supplierInvoice.reversal",
   kinds: ["purchase.supplierInvoice.reversal"],
   gate: PURCHASES_GATE,
+  supportedActions: APPROVE_OR_REJECT,
   async list(actor, scope) {
     const db = requireDb();
     const rows = await perBranch(db, actor, scope, (b) => listPendingSupplierInvoiceApprovals(b, serviceActor(actor)));

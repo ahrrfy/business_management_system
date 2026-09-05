@@ -55,6 +55,8 @@ export const decisionsRouter = router({
         expectedVersion: z.number().int().positive().nullish(),
         confirmations: z.record(z.string().max(60), z.boolean()).optional(),
         reference: z.string().trim().max(100).optional(),
+        /** صيغةُ الاعتماد حين يعلن الصفُّ `approveVariants` — بلا اختيارٍ صريح يرفض المصدر. */
+        variant: z.string().trim().min(1).max(60).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -67,7 +69,7 @@ export const decisionsRouter = router({
         action: `decisions.${input.action.toLowerCase()}`,
         entityType: input.kind,
         entityId: input.id,
-        newValue: { outcome: res.outcome, reason: input.reason?.slice(0, 200) ?? null, clientRequestId: input.clientRequestId },
+        newValue: { outcome: res.outcome, reason: input.reason?.slice(0, 200) ?? null, clientRequestId: input.clientRequestId, variant: input.variant ?? null },
       });
       return res;
     }),

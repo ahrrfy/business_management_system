@@ -2,7 +2,10 @@
  * بناءُ صفّ الصندوق — **دوالّ نقيّة** بلا قاعدةٍ ولا `Date.now()`: كلُّ مصدرٍ يمرّر ما قرأه
  * ولحظةَ «الآن»، فتُختبَر المحوِّلات حتميّاً بلا قاعدة (`vitest.unit.config.ts`).
  */
+import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import {
+  DECISION_ACTION_LABEL_AR,
   decisionAgeHours,
   decisionSla,
   decisionSpec,
@@ -41,6 +44,8 @@ export interface RowInput {
   approveReason?: "REQUIRED" | "OPTIONAL";
   reasonMinLength?: number;
   approveBlockedReason?: string | null;
+  /** صيغُ الاعتماد حين يتعدّد (انظر `DecisionRowModel.approveVariants`). */
+  approveVariants?: Array<{ key: string; label: string }>;
   trigger?: DecisionTrigger | null;
 }
 
@@ -90,8 +95,57 @@ export function buildRow(input: RowInput, now: Date): DecisionRowModel {
     approveReason: input.approveReason ?? "OPTIONAL",
     reasonMinLength: input.reasonMinLength ?? 3,
     approveBlockedReason: input.approveBlockedReason ?? null,
+    approveVariants: input.approveVariants ?? [],
     trigger,
   };
+}
+
+/**
+ * ⛔ الفعلُ غيرُ المُعلَن يُرفَض **قبل** بلوغ `source.decide`: أغلبُ المصادر تعامل «غيرَ الرفض»
+ * اعتماداً، فـ`REJECT` على نوعٍ لا يدعم الرفض كان ينفّذ الاعتماد ويُدوَّن رفضاً (Codex على #1004).
+ * الرسالةُ تسمّي المدعوم وتقود إلى الشاشة الأصلية لما ليس مدعوماً هنا.
+ */
+export function assertActionSupported(
+  source: { supportedActions: readonly DecisionAction[] },
+  input: { kind: DecisionKind; id: number; action: DecisionAction },
+  subject: string,
+): void {
+  if (source.supportedActions.includes(input.action)) return;
+  const label = DECISION_ACTION_LABEL_AR[input.action];
+  const supported = source.supportedActions.map((a) => DECISION_ACTION_LABEL_AR[a]).join(" · ");
+  const href = decisionSpec(input.kind)?.href(input.id);
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: appErrorMessage({
+      what: `تعذّر ${label} ${subject}`,
+      why: `هذا النوع لا يدعم فعل «${label}» من الصندوق — المدعوم هنا: ${supported || "لا شيء"}`,
+      doThis: href ? `اختر فعلاً مدعوماً، أو افتح شاشته (${href}) لما عداه` : "اختر فعلاً مدعوماً",
+    }),
+  });
+}
+
+/**
+ * يختار صيغةَ الاعتماد من مدخل الحسم حين يعلن الصفُّ صيغاً — ⛔ لا افتراضَ صامتٌ لأولاها:
+ * الاعتمادُ بلا اختيارٍ صريح يُرفَض برسالةٍ تسمّي الصيغ. `variants` فارغةٌ ⇒ `null` (اعتمادٌ واحد).
+ */
+export function pickApproveVariant<K extends string>(
+  variants: ReadonlyArray<{ key: K; label: string }>,
+  chosen: string | null | undefined,
+  subject: string,
+): K | null {
+  if (!variants.length) return null;
+  const hit = variants.find((v) => v.key === chosen);
+  if (hit) return hit.key;
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message: appErrorMessage({
+      what: `تعذّر اعتماد ${subject}`,
+      why: chosen
+        ? `صيغة الاعتماد «${chosen}» ليست من الصيغ المتاحة لهذا القرار`
+        : "لهذا القرار أكثر من نتيجة اعتماد ولم تُختر واحدة منها",
+      doThis: `اختر صيغة الاعتماد صراحةً: ${variants.map((v) => v.label).join(" · ")}`,
+    }),
+  });
 }
 
 /** نتيجةُ الحسم من حالةٍ أعادتها الخدمة — لا «نجاح» على `STALE` ولا على `PENDING`. */

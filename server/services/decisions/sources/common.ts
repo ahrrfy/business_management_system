@@ -89,6 +89,8 @@ export async function branchIdsFor(db: Db, actor: DecisionActor, scope: Decision
   return rows.map((r) => Number(r.id));
 }
 
+export { serviceBranchScopedIds } from "./branchScope";
+
 /**
  * فرعٌ واحد للمصادر التي تسرد بفرعٍ أو بلا فرع: مرشَّحُ الشاشة إن وُجد، وإلّا `null` للعابر
  * وفرعُ الفاعل لغيره. يُرجع `"NONE"` حين لا فرعَ للفاعل غير العابر — فيسرد المصدرُ لا شيء

@@ -1,19 +1,35 @@
 /**
  * مصادرُ المبيعات وأوامر الشغل: ضبطُ البيع، طلباتُ المرتجع، ضبطُ أمر الشغل، ردُّ عربون الإلغاء.
  */
+import { TRPCError } from "@trpc/server";
 import { and, eq, inArray } from "drizzle-orm";
-import { decisionSubkindLabel } from "@shared/decisionRegistry";
+import { decisionSpec, decisionSubkindLabel, type DecisionSummaryItem } from "@shared/decisionRegistry";
+import { appErrorMessage } from "@shared/errors";
 import { SALES_CONTROL_TYPE_LABELS, type SalesControlType } from "@shared/salesControl";
-import { invoices, receipts, returnRequests, salesControlRequests, workOrderControlRequests, workOrders } from "../../../../drizzle/schema";
+import { salesControlFacts, type SalesControlFactsType } from "@shared/salesControlFacts";
+import {
+  invoiceItems,
+  invoices,
+  receipts,
+  returnRequests,
+  salesControlRequests,
+  shifts,
+  workOrderControlRequests,
+  workOrders,
+} from "../../../../drizzle/schema";
+import { MATERIALIZED_RECEIPT_STATUSES } from "../../cash/cashAvailability";
+import { money } from "../../money";
 import { listReturnRequests, rejectReturnRequest } from "../../returns/requests";
+import { recordGovernedReturnExecution } from "../../sale/controlAudit";
 import { approveSalesControlRequest, listSalesControlRequests, rejectSalesControlRequest } from "../../sale/controlRequests";
 import { requireDb } from "../../tx";
 import { approveWorkOrderCancellationRefund, listPendingWorkOrderCancellationRefunds } from "../../workOrder/cancel";
 import { approveWorkOrderControlRequest, listPendingWorkOrderControls, rejectWorkOrderControlRequest } from "../../workOrder/controlRequests";
 import { serviceActor } from "../gate";
-import { buildRow, decided, defaultMessage, outcomeFor, statusOf } from "../rows";
+import { buildRow, decided, defaultMessage, itemLabel, outcomeFor, statusOf } from "../rows";
 import type { DecisionSource } from "../types";
-import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden } from "./common";
+import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, variantLabels, type Db } from "./common";
+import { salesControlAffectedAmount, salesControlInlineBlock, salesControlShiftIds, type SalesControlItemView } from "./salesControlView";
 
 const SALES_GATE = { type: "MODULE", moduleKey: "sales", roles: ["manager"] } as const;
 const WORKORDERS_GATE = { type: "MODULE", moduleKey: "workorders", roles: ["manager"] } as const;
@@ -28,35 +44,134 @@ function linesOf(payload: unknown): RefundLine[] {
   return lines.filter((l): l is RefundLine => !!l && typeof l === "object");
 }
 
+const asRecord = (value: unknown): Record<string, unknown> => (value && typeof value === "object" ? (value as Record<string, unknown>) : {});
+
 // ───────────────────────────── ١) ضبط البيع ─────────────────────────────
+
+/** حالاتُ الأدراج التي تحملها حمولاتُ المرتجعات — ليُعرَف أيُّها أُقفل بعد الطلب. */
+async function shiftStatuses(db: Db, payloads: unknown[]): Promise<Map<number, string | null>> {
+  const shiftIds = ids(payloads.flatMap((p) => salesControlShiftIds(p)));
+  if (!shiftIds.length) return new Map();
+  const rows = await db.select({ id: shifts.id, status: shifts.status }).from(shifts).where(inArray(shifts.id, shiftIds));
+  return new Map(rows.map((s) => [Number(s.id), s.status ?? null]));
+}
+
+/**
+ * المقبوضُ القابل للردّ لكلّ فاتورة = إيصالاتُ القبض المُتحقّقة − ما رُدّ منها — الأساسُ نفسه الذي
+ * يحسب به `cancelSaleInTx` مبلغَ الاسترداد (لا `paidAmount` وحده: سندُ قبضٍ مربوطٌ بفاتورة يُنقص
+ * ذمّة العميل ولا يرفع `paidAmount`).
+ */
+async function refundableByInvoice(db: Db, invoiceIds: number[]): Promise<Map<number, string>> {
+  if (!invoiceIds.length) return new Map();
+  const rows = await db
+    .select({ invoiceId: receipts.invoiceId, direction: receipts.direction, amount: receipts.amount })
+    .from(receipts)
+    .where(and(inArray(receipts.invoiceId, invoiceIds), inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]), eq(receipts.approvalStatus, "APPROVED")));
+  const sums = new Map<number, ReturnType<typeof money>>();
+  for (const r of rows) {
+    const key = Number(r.invoiceId);
+    const current = sums.get(key) ?? money(0);
+    sums.set(key, r.direction === "IN" ? current.plus(money(r.amount)) : current.minus(money(r.amount)));
+  }
+  return new Map(Array.from(sums, ([k, v]) => [k, v.toFixed(2)]));
+}
+
+/**
+ * إنفاذُ حاجز الاعتماد السطريّ **خادمياً** — إخفاءُ الزرّ في الشاشة لا يكفي (الطلبُ قد يصل من
+ * أيّ عميل). التنفيذُ بلا `cashRouting` فاشلٌ حتماً لهذه الحالات، فيُرفَض قبل أن يبلغ الخدمة.
+ */
+async function assertInlineApprovable(requestId: number, subject: string): Promise<void> {
+  const db = requireDb();
+  const [req] = await db
+    .select({ requestType: salesControlRequests.requestType, payload: salesControlRequests.payload })
+    .from(salesControlRequests)
+    .where(eq(salesControlRequests.id, requestId))
+    .limit(1);
+  if (!req) return; // الخدمةُ ترفع NOT_FOUND بنفسها.
+  const block = salesControlInlineBlock(req.requestType, req.payload, await shiftStatuses(db, [req.payload]));
+  if (!block) return;
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: `تعذّر اعتماد ${subject} من الصندوق`,
+      why: block,
+      doThis: `افتح شاشة طلبات ضبط البيع (${decisionSpec("sales.control.approve")?.href(requestId) ?? "/invoices?tab=controls"}) واعتمده منها بتوجيه النقد`,
+    }),
+  });
+}
 
 /**
  * [`salesControlRouter.ts:124`](../../../routers/salesControlRouter.ts) ⇐ `approveSalesControlRequest`.
  * فصلُ المهام في الخدمة **بلا استثناء للأدمن**: الطالبُ ومنشئُ الفاتورة لا يراجعان.
+ *
+ *  · **المبلغُ = ما يمسّه القرار** لا إجماليَّ الفاتورة (`salesControlAffectedAmount`).
+ *  · **الاعتمادُ السطريّ يُحجَب** حين يلزم توجيهُ نقدٍ لحظةَ الاعتماد (`salesControlInlineBlock`)
+ *    — الصفُّ يحمل السبب ورابطَ الشاشة الكاملة، والحسمُ يُنفِذه خادمياً أيضاً.
+ *  · اعتمادُ مرتجعٍ يكتب `RETURN_EXECUTED_AUDIT_ACTION` عبر المسار المشترك مع الراوتر.
  */
 export const salesControlSource: DecisionSource = {
   key: "sales.control",
   kinds: ["sales.control.approve", "sales.control.reject"],
   gate: SALES_GATE,
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const db = requireDb();
-    const raw = await listSalesControlRequests(serviceActor(actor), { status: "PENDING" });
+    const raw = await listSalesControlRequests(serviceActor(actor), { status: "PENDING", order: "ASC" });
     const rows = raw.filter((r) => (scope.branchIds ? scope.branchIds.includes(Number(r.branchId)) : true));
     if (!rows.length) return [];
-    const invoiceRows = await db
-      .select({ id: invoices.id, customerId: invoices.customerId, contactName: invoices.contactName })
-      .from(invoices)
-      .where(inArray(invoices.id, ids(rows.map((r) => r.invoiceId))));
+    const invoiceIds = ids(rows.map((r) => r.invoiceId));
+    const [invoiceRows, itemRows, refundable, shiftStatus] = await Promise.all([
+      db
+        .select({ id: invoices.id, customerId: invoices.customerId, contactName: invoices.contactName, total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal })
+        .from(invoices)
+        .where(inArray(invoices.id, invoiceIds)),
+      db
+        .select({ id: invoiceItems.id, invoiceId: invoiceItems.invoiceId, variantId: invoiceItems.variantId, total: invoiceItems.total, baseQuantity: invoiceItems.baseQuantity, unitPrice: invoiceItems.unitPrice })
+        .from(invoiceItems)
+        .where(inArray(invoiceItems.invoiceId, invoiceIds)),
+      refundableByInvoice(db, invoiceIds),
+      shiftStatuses(db, rows.map((r) => r.payload)),
+    ]);
     const invoiceById = new Map(invoiceRows.map((i) => [Number(i.id), i]));
-    const [customers, branches] = await Promise.all([
+    const itemsByInvoice = new Map<number, typeof itemRows>();
+    for (const it of itemRows) {
+      const key = Number(it.invoiceId);
+      itemsByInvoice.set(key, [...(itemsByInvoice.get(key) ?? []), it]);
+    }
+    const itemById = new Map(itemRows.map((i) => [Number(i.id), i]));
+    const reissueVariantIds = rows.flatMap((r) => (r.requestType === "SALES_REISSUE" || r.requestType === "SALES_EXCHANGE" ? linesOf(r.payload).map((l) => Number(asRecord(l).variantId)) : []));
+    const [customers, branches, variants] = await Promise.all([
       customerNames(db, ids(invoiceRows.map((i) => i.customerId))),
       branchNames(db, ids(rows.map((r) => r.branchId))),
+      variantLabels(db, ids([...itemRows.map((i) => i.variantId), ...reissueVariantIds])),
     ]);
     return rows
       .filter((r) => !sodHidden({ blocked: [r.requestedBy, r.invoiceCreatedBy], actor, trigger: "ERASE_EFFECT" }))
       .map((r) => {
-        const inv = invoiceById.get(Number(r.invoiceId));
-        const label = SALES_CONTROL_TYPE_LABELS[r.requestType as SalesControlType] ?? r.requestType;
+        const invoiceId = Number(r.invoiceId);
+        const inv = invoiceById.get(invoiceId);
+        const type = r.requestType as SalesControlType;
+        const label = SALES_CONTROL_TYPE_LABELS[type] ?? r.requestType;
+        const items: SalesControlItemView[] = (itemsByInvoice.get(invoiceId) ?? []).map((i) => ({ id: Number(i.id), total: i.total, baseQuantity: Number(i.baseQuantity) }));
+        const affected = salesControlAffectedAmount({ requestType: r.requestType, payload: r.payload, invoice: inv, items, refundable: refundable.get(invoiceId) ?? "0" });
+        // أسطرُ الأصناف: للمرتجع بندُ الفاتورة (بالوحدة الأساس)، ولإعادة الإصدار/الاستبدال أسطرُ الفاتورة البديلة.
+        const productLines: DecisionSummaryItem[] =
+          type === "SALES_RETURN"
+            ? linesOf(r.payload).map((l) => {
+                const line = asRecord(l);
+                const item = itemById.get(Number(line.invoiceItemId));
+                const v = item ? variants.get(Number(item.variantId)) : undefined;
+                return { label: itemLabel([v?.productName, v?.variantName]) || `بند #${String(line.invoiceItemId ?? "?")}`, qty: line.baseQuantity == null ? null : Number(line.baseQuantity), unit: "بالوحدة الأساس", unitPrice: item?.unitPrice ?? null };
+              })
+            : type === "SALES_REISSUE" || type === "SALES_EXCHANGE"
+              ? linesOf(r.payload).map((l) => {
+                  const line = asRecord(l);
+                  const v = variants.get(Number(line.variantId));
+                  return { label: itemLabel([v?.productName, v?.variantName]) || `صنف #${String(line.variantId ?? "?")}`, qty: line.quantity == null ? null : String(line.quantity), unitPrice: line.unitPriceOverride == null ? null : String(line.unitPriceOverride) };
+                })
+              : [];
+        const facts = salesControlFacts(type as SalesControlFactsType, r.payload).map((f) => ({ label: `${f.label}: ${f.value}` }));
+        const block = salesControlInlineBlock(r.requestType, r.payload, shiftStatus);
         return buildRow(
           {
             kind: "sales.control.approve",
@@ -64,15 +179,21 @@ export const salesControlSource: DecisionSource = {
             title: `${label} · فاتورة ${r.invoiceNumber ?? `#${r.invoiceId}`}`,
             subkind: label,
             party: (inv?.customerId != null ? customers.get(Number(inv.customerId)) : null) ?? inv?.contactName ?? null,
-            amount: r.invoiceTotal,
+            amount: affected.amount,
             branchId: Number(r.branchId),
             branchName: branches.get(Number(r.branchId)) ?? null,
             requestedBy: Number(r.requestedBy),
             requestedByName: r.requestedByName ?? null,
             requestedAt: r.createdAt,
-            summaryItems: linesOf(r.payload).map((l) => ({ label: l.productName ?? l.name ?? "بند", qty: l.quantity ?? null, unitPrice: l.unitPrice ?? l.total ?? null })),
+            summaryItems: [
+              ...productLines,
+              { label: affected.label, unitPrice: affected.amount },
+              { label: "اجمالي الفاتورة (للسياق)", unitPrice: inv?.total ?? r.invoiceTotal ?? null },
+              ...facts,
+            ],
             reason: r.reason,
             hrefId: Number(r.invoiceId),
+            approveBlockedReason: block,
             trigger: "ERASE_EFFECT",
           },
           scope.now,
@@ -84,13 +205,16 @@ export const salesControlSource: DecisionSource = {
       async () => (await requireDb().select({ status: salesControlRequests.status }).from(salesControlRequests).where(eq(salesControlRequests.id, id)).limit(1))[0]?.status,
       ["PENDING"],
     ),
-  async decide(input, actor) {
+  async decide(input, actor, options) {
     const subject = `طلب ضبط البيع رقم ${input.id}`;
     if (input.action === "REJECT") {
       await rejectSalesControlRequest(input.id, input.reason ?? "", serviceActor(actor));
       return decided(input, "REJECTED", defaultMessage("REJECTED", subject));
     }
+    await assertInlineApprovable(input.id, subject);
     const res = await approveSalesControlRequest(input.id, serviceActor(actor), input.reason ?? null, null);
+    // حدثُ تنفيذ المرتجع الذي يقرؤه رقيبُ الشذوذ — المسارُ نفسه الذي يكتبه الراوتر الأصليّ.
+    await recordGovernedReturnExecution(options.audit ?? { userId: actor.userId, branchId: actor.branchId }, { requestId: input.id, result: res, cashRouting: null });
     const outcome = outcomeFor("APPROVE", statusOf(res));
     return decided(input, outcome, defaultMessage(outcome, subject));
   },
@@ -101,17 +225,18 @@ export const salesControlSource: DecisionSource = {
 /**
  * [`returnRouter.ts:258`](../../../routers/returnRouter.ts). الاعتمادُ يحتاج قرارَ **رافد الردّ**
  * (نقد/بطاقة/ذمّة) والدرج والمرجع من المعتمِد لحظةَ الاعتماد — مدخلٌ لا يحمله الصفّ، فيُفتح
- * من شاشته؛ والرفضُ بسببه يقع هنا.
+ * من شاشته؛ والرفضُ بسببه يقع هنا. الأقدمُ أوّلاً قبل قصّ الخدمة (200).
  */
 export const returnRequestSource: DecisionSource = {
   key: "sales.returnRequest",
   kinds: ["sales.returnRequest.approve", "sales.returnRequest.reject"],
   gate: SALES_GATE,
+  supportedActions: ["REJECT"],
   async list(actor, scope) {
     const branchId = scopeBranch(actor, scope);
     if (branchId === "NONE") return [];
     const db = requireDb();
-    const rows = await listReturnRequests({ branchId, status: "PENDING_APPROVAL" });
+    const rows = await listReturnRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC" });
     const [customers, branches] = await Promise.all([customerNames(db, ids(rows.map((r) => r.customerId))), branchNames(db, ids(rows.map((r) => r.branchId)))]);
     return rows
       .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, trigger: "MONEY_OUT" }))
@@ -146,7 +271,11 @@ export const returnRequestSource: DecisionSource = {
     ),
   async decide(input, actor) {
     if (input.action !== "REJECT") {
-      throw Object.assign(new Error("اعتماد المرتجع يقع من شاشة الفاتورة (يلزم اختيار رافد الرد)"), { code: "BAD_REQUEST" });
+      // يحرسه `supportedActions` قبل الوصول؛ يبقى دفاعاً ثانياً لا يعتمد بالخطأ.
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({ what: "تعذّر اعتماد طلب المرتجع من الصندوق", why: "اعتماد المرتجع يقع من شاشة الفاتورة (يلزم اختيار رافد الرد)", doThis: "افتح الفاتورة واعتمد المرتجع منها بعد اختيار الرافد والدرج والمرجع" }),
+      });
     }
     await rejectReturnRequest(input.id, input.reason ?? "", serviceActor(actor));
     return decided(input, "REJECTED", defaultMessage("REJECTED", `طلب المرتجع رقم ${input.id}`));
@@ -165,6 +294,7 @@ export const workOrderControlSource: DecisionSource = {
   key: "workOrder.control",
   kinds: ["workOrder.control.approve", "workOrder.control.reject"],
   gate: WORKORDERS_GATE,
+  supportedActions: ["APPROVE", "REJECT"],
   async list(actor, scope) {
     const db = requireDb();
     const raw = await listPendingWorkOrderControls(serviceActor(actor));
@@ -239,6 +369,7 @@ export const workOrderCancellationRefundSource: DecisionSource = {
   key: "workOrder.cancellationRefund",
   kinds: ["workOrder.cancellationRefund.approve"],
   gate: { type: "OWNER" },
+  supportedActions: ["APPROVE"],
   async list(actor, scope) {
     const rows = await listPendingWorkOrderCancellationRefunds(serviceActor(actor));
     const db = requireDb();

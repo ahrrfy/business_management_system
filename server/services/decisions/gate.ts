@@ -22,8 +22,12 @@ export function gatePasses(gate: DecisionGate, actor: DecisionActor): boolean {
       // `requireOwnBranch`: غيرُ العابر بلا فرعٍ مُسنَد يُرفَض.
       return actor.crossBranch || actor.branchId != null;
     }
-    case "MODULE_MAP":
-      return hasModuleAccess(actor.role, actor.permissionsOverride, gate.moduleKey, "FULL");
+    case "MODULE_MAP": {
+      if (!hasModuleAccess(actor.role, actor.permissionsOverride, gate.moduleKey, "FULL")) return false;
+      // `branchScopedProcedure`: غيرُ العابر بلا فرعٍ مُسنَد يُرفَض («لا فرع مُسنَد لهذا المستخدم»)
+      // — بلا هذا كان يصل `decideLeave` بـ`scopedBranchId: null` أي بلا قيدِ فرعٍ إطلاقاً.
+      return gate.branchScoped ? actor.crossBranch || actor.branchId != null : true;
+    }
     case "OWNER":
       if (!actor.isOwner) return false;
       return gate.moduleKey ? hasModuleAccess(actor.role, actor.permissionsOverride, gate.moduleKey, "FULL") : true;
@@ -45,6 +49,26 @@ export function assertGate(gate: DecisionGate, actor: DecisionActor, subject: st
       doThis: "اطلب من صاحب الصلاحية حسمه من صندوقه، أو من المالك منحك صلاحية الوحدة",
     }),
   });
+}
+
+/**
+ * `scopedBranchId` كما تحقنه `branchScopedProcedure`: `null` للعابر، وفرعُ الفاعل لغيره.
+ * ⛔ غيرُ العابر بلا فرعٍ لا يصل هنا أصلاً (ترفضه البوّابة `branchScoped`)، وإن وصل من مسارٍ
+ * آخر يُرفَض بالرسالة نفسها التي ترفعها البوّابة الأصلية — لا `null` يعني «كلّ الفروع».
+ */
+export function scopedBranchIdFor(actor: DecisionActor): number | null {
+  if (actor.crossBranch) return null;
+  if (actor.branchId == null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "تعذّر حسم القرار",
+        why: "لا فرع مُسنَد لهذا المستخدم — والإجراء الأصليّ مقيَّدٌ بالفرع (branchScopedProcedure)",
+        doThis: "اطلب من المالك إسناد فرعٍ لحسابك، أو حسمَه من حسابٍ عابرٍ للفروع",
+      }),
+    });
+  }
+  return actor.branchId;
 }
 
 /** يحوّل فاعلَ الصندوق إلى `Actor` الخدمات — الفرعُ الغائب يُمرَّر صفراً كما تفعل الراوترات. */

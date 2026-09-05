@@ -5,8 +5,9 @@
  * «نجاحاً» على `STALE`/`PENDING`، وأنّ بوّابة المصدر تُقيَّم بمفردات الصلاحيات نفسها.
  */
 import { describe, expect, it } from "vitest";
-import { gatePasses, serviceActor } from "../gate";
-import { buildRow, decisionKeyFor, isoOf, itemLabel, moneyText, outcomeFor, statusOf } from "../rows";
+import { gatePasses, scopedBranchIdFor, serviceActor } from "../gate";
+import { assertActionSupported, buildRow, decisionKeyFor, isoOf, itemLabel, moneyText, outcomeFor, pickApproveVariant, statusOf } from "../rows";
+import { serviceBranchScopedIds } from "../sources/branchScope";
 import type { DecisionActor } from "../types";
 
 const NOW = new Date("2026-09-05T12:00:00.000Z");
@@ -107,6 +108,74 @@ describe("gatePasses — مرآة بوابة الاجراء الاصلي", () =>
   it("serviceActor يمرر الفرع الغائب صفرا كما تفعل الراوترات", () => {
     expect(serviceActor(actor({ branchId: null, isOwner: true })).branchId).toBe(0);
     expect(serviceActor(actor()).isOwner).toBe(false);
+  });
+
+  // Codex على #1004 (P1): `MODULE_MAP` كان فحصَ صلاحيةٍ مجرّداً بينما الأصل `branchScopedProcedure`
+  // يرفض غيرَ العابر بلا فرع — فكان hr:FULL بلا فرعٍ يبلغ `decideLeave` بلا قيد فرعٍ إطلاقاً.
+  it("MODULE_MAP branchScoped: غير العابر بلا فرع لا يعبر، والعابر يعبر، والمجرد لا يشترط فرعا", () => {
+    const scoped = { type: "MODULE_MAP", moduleKey: "hr", branchScoped: true } as const;
+    expect(gatePasses(scoped, actor({ role: "manager", branchId: null }))).toBe(false);
+    expect(gatePasses(scoped, actor({ role: "manager", branchId: 1 }))).toBe(true);
+    expect(gatePasses(scoped, actor({ role: "admin", branchId: null, crossBranch: true }))).toBe(true);
+    expect(gatePasses({ type: "MODULE_MAP", moduleKey: "hr" }, actor({ role: "manager", branchId: null }))).toBe(true);
+    expect(gatePasses(scoped, actor({ role: "cashier", branchId: 1 }))).toBe(false);
+  });
+
+  it("scopedBranchIdFor مرآة branchScopedProcedure: null للعابر، فرع الفاعل لغيره، ورفض بلا فرع", () => {
+    expect(scopedBranchIdFor(actor({ crossBranch: true, branchId: null }))).toBeNull();
+    expect(scopedBranchIdFor(actor({ branchId: 3 }))).toBe(3);
+    expect(() => scopedBranchIdFor(actor({ branchId: null }))).toThrow(/لا فرع مُسنَد لهذا المستخدم/);
+  });
+});
+
+describe("assertActionSupported — لا فعل غير معلن يبلغ الحسم", () => {
+  const input = { kind: "gifts.request.approve", id: 9, action: "REJECT", clientRequestId: "req-1" } as const;
+  it("الرفض على مصدر يعتمد فقط يرفض برسالة تسمي المدعوم وتقود الى الشاشة", () => {
+    let message = "";
+    try {
+      assertActionSupported({ supportedActions: ["APPROVE"] }, input, "الهدية (رقم 9)");
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/لا يدعم فعل «رفض»/);
+    expect(message).toMatch(/المدعوم هنا: اعتماد/);
+    expect(message).toContain("/gifts");
+  });
+  it("الفعل المعلن يمر بصمت", () => {
+    expect(() => assertActionSupported({ supportedActions: ["APPROVE", "REJECT"] }, input, "x")).not.toThrow();
+    expect(() => assertActionSupported({ supportedActions: ["REJECT"] }, { ...input, action: "WITHDRAW" }, "x")).toThrow(/لا يدعم فعل «سحب الطلب»/);
+  });
+});
+
+describe("pickApproveVariant — لا افتراض صامت لصيغة الاعتماد", () => {
+  const variants = [
+    { key: "APPROVE_RESOLVED", label: "حلت" },
+    { key: "APPROVE_DISMISSED", label: "تصرف" },
+  ] as const;
+  it("بلا اختيار يرفض ويسمي الصيغ؛ والصيغة الغريبة ترفض؛ والصحيحة تعود", () => {
+    expect(() => pickApproveVariant(variants, undefined, "القضية")).toThrow(/اختر صيغة الاعتماد صراحةً: حلت · تصرف/);
+    expect(() => pickApproveVariant(variants, "BOGUS", "القضية")).toThrow(/ليست من الصيغ المتاحة/);
+    expect(pickApproveVariant(variants, "APPROVE_DISMISSED", "القضية")).toBe("APPROVE_DISMISSED");
+  });
+  it("بلا صيغ معلنة = اعتماد واحد (null) والصف يحمل قائمة فارغة افتراضا", () => {
+    expect(pickApproveVariant([], "anything", "x")).toBeNull();
+    const row = buildRow({ kind: "purchase.integrity.resolution", id: 1, title: "قضية", requestedAt: NOW }, NOW);
+    expect(row.approveVariants).toEqual([]);
+    const withVariants = buildRow({ kind: "purchase.integrity.resolution", id: 1, title: "قضية", requestedAt: NOW, approveVariants: [...variants] }, NOW);
+    expect(withVariants.approveVariants.map((v) => v.key)).toEqual(["APPROVE_RESOLVED", "APPROVE_DISMISSED"]);
+  });
+});
+
+describe("serviceBranchScopedIds — فروع مصدر تقصر خدمته غير الادمن على فرعه", () => {
+  it("الادمن يعدد كل فروع النطاق، والمرشح يقيده", () => {
+    expect(serviceBranchScopedIds({ role: "admin", branchId: null }, null, [1, 2, 3])).toEqual([1, 2, 3]);
+    expect(serviceBranchScopedIds({ role: "admin", branchId: 1 }, [2], [1, 2, 3])).toEqual([2]);
+  });
+  it("غير الادمن فرعه وحده، ولا شيء بلا فرع او خارج فرعه", () => {
+    expect(serviceBranchScopedIds({ role: "manager", branchId: 1 }, null, [1, 2])).toEqual([1]);
+    expect(serviceBranchScopedIds({ role: "manager", branchId: 1 }, [2], [1, 2])).toEqual([]);
+    expect(serviceBranchScopedIds({ role: "manager", branchId: 1 }, [1], [1, 2])).toEqual([1]);
+    expect(serviceBranchScopedIds({ role: "accountant", branchId: null }, null, [1, 2])).toEqual([]);
   });
 });
 
