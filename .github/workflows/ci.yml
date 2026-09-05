@@ -17,31 +17,54 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # المسار السريع محصورٌ عمداً في PR توثيقي خالص. أي push إلى main، أو ملف غير معروف،
+  # أو فشل في التصنيف يعود fail-closed إلى الحزمة الكاملة. لا نستخدم paths-ignore لأنّه
+  # قد يترك الفحص المطلوب Pending إلى الأبد؛ بوابة check-test-build تصدر نتيجة دائماً.
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: classify
+        name: تصنيف نطاق التغيير (docs/** فقط = مسار سريع)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # السكربت يستخدم diff -z (أسماء ملفات آمنة) و--no-renames (النقل = حذف+إضافة)،
+        # ويعود للحزمة الكاملة عند push أو SHA/فرق مفقود أو ملف خارج القائمة البيضاء.
+        run: node scripts/ci-policy.mjs scope
+
   # Vitest يشغّل ملفات التكامل تسلسلياً عمداً (fileParallelism:false) لأنّ كل ملف ينظّف
   # قاعدة الاختبار. بعد #626 تجاوزت الحزمة الواحدة ٨٣:٥٤ ولم تكتمل ضمن سقف ٩٠ دقيقة.
   # نقسم *الملفات* عبر مشغّلين، لكلّ واحد MySQL مستقلة؛ يبقى التنفيذ داخل كل قاعدة
   # تسلسلياً، واتحاد الشرائح هو الحزمة الكاملة بلا تداخل وفق عقد Vitest --shard.
   #
-  # ورُفعت من شريحتين إلى **أربع** (٢/٩/٢٦) بدليلٍ لا بتخمين: شاردةٌ من اثنتين سقطت
+  # ورُفعت من شريحتين إلى أربع ثم إلى **ثمانٍ** (٦/٩/٢٦) بدليلٍ لا بتخمين: شاردةٌ سقطت
   # بانتهاء المهلة عند ١٥٠ دقيقة، وسجلُّها يُظهر اختباراتِ حسابٍ محضة (`sumMoney`،
-  # `computeLineTotal`) تفصل بينها **دقائق** — أي مشغّلٌ مُجوَّعٌ لا كودٌ بطيء. أربعُ
-  # شرائح تُنصّف الحمل لكلٍّ منها، والسقف ١٨٠ دقيقة يحتمل التذبذب. وحارسُ عدد الملفّات
-  # المُشغَّلة في نفس الخطوة عُوير إلى ٤٠٪ ليطابق القسمة الجديدة.
+  # `computeLineTotal`) تفصل بينها **دقائق** — أي مشغّلٌ مُجوَّعٌ لا كودٌ بطيء. ثماني
+  # شرائح تخفّض المسار الحرج مع بقاء كل قاعدة معزولة، وtmpfs تزيل I/O القرص المؤقت.
   test-shards:
-    name: test-shard-${{ matrix.shard }}-of-4
+    name: test-shard-${{ matrix.shard }}-of-${{ matrix.total }}
+    needs: scope
+    if: ${{ needs.scope.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
-    # ⏱️ **أربع شوارد لا اثنتان، والمهلة ١٨٠ لا ١٥٠** (٢/٩/٢٦): أُلغيت الشريحة ٢/٢ عند
+    # ⏱️ **ثماني شوارد** (٦/٩/٢٦): أُلغيت الشريحة ٢/٢ سابقاً عند
     # سقف ١٥٠ بعد ساعتين ونصف. والسجلّ يحسم السبب: عند ١٦:٥٠ و١٦:٥٦ و١٦:٥٧ كانت ما زالت
     # تُمرّر اختباراتٍ **حسابيةً محضة** (computeDeliveryFee · sumMoney · computeLineTotal)
     # — دوالُّ نقيّة بلا قاعدة بيانات — وبين توكيدٍ وآخر **دقائق**. أي مشغّلٌ مخنوقُ الموارد
     # لا اختبارٌ معلَّق ولا عطبٌ في الشيفرة (الشريحة ١ على نفس الالتزام مرّت في ٥٧ د).
     #
     # ولمّا كان تفاوتُ المشغّلات ~٤× (موثَّقٌ أدناه) فرفعُ المهلة وحده يُطيل الانتظار ولا
-    # يُنقص التعرّض: العلاجُ الأنفع **تقليصُ نصيب الشاردة الواحدة**. أربع شوارد ⇒ ~٢١٠ ملفاً
-    # لكلٍّ بدل ~٤١٧، فيهبط زمنُ أبطأ شاردةٍ إلى النصف ويصير سقفُ ١٨٠ فسيحاً حتى على أبطأ
+    # يُنقص التعرّض: العلاجُ الأنفع **تقليصُ نصيب الشاردة الواحدة**. ثماني شوارد ⇒ ~١٠٥ ملفات
+    # لكلٍّ بدل ~٢١٠، فيهبط زمنُ أبطأ شاردةٍ إلى النصف ويصير سقفُ ١٨٠ فسيحاً حتى على أبطأ
     # مشغّل. والمصفوفةُ تُشغّلها متوازيةً فزمنُ الجدار ينقص أيضاً.
     #
-    # ⚠️ تغييرُ عدد الشوارد يُغيّر **أسماء وظائفها** (test-shard-N-of-4) — وهو آمنٌ هنا
+    # ⚠️ تغييرُ عدد الشوارد يُغيّر **أسماء وظائفها** (test-shard-N-of-8) — وهو آمنٌ هنا
     # لأنّ الفحص المطلوب في حماية الفرع هو `check-test-build` وحده (انظر تعليقها أدناه)،
     # وهي `needs: test-shards` فتنتظر المصفوفة كلَّها وتفشل صراحةً إن أُلغيت أيُّ شاردة.
     # ⛔ فلا تجعل أيّاً من `test-shard-*` فحصاً مطلوباً، وإلّا انكسرت الحماية بأوّل تغييرِ عدد.
@@ -59,7 +82,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        total: [8]
     services:
       mysql:
         image: mysql:8.0
@@ -70,6 +94,7 @@ jobs:
         ports:
           - 3306:3306
         options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1g
           --health-cmd="mysqladmin ping -h localhost -uroot"
           --health-interval=10s --health-timeout=5s --health-retries=10
     env:
@@ -98,7 +123,7 @@ jobs:
         run: node scripts/bootstrap-control-db.mjs
         env:
           CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
-      - name: الاختبارات — الشريحة ${{ matrix.shard }}/4
+      - name: الاختبارات — الشريحة ${{ matrix.shard }}/${{ matrix.total }}
         # ⚠️ pnpm يبتلع الخيارات **بالصيغتين**: `pnpm test --shard=…` يطبع نسخة pnpm نفسها،
         # و`pnpm run test -- --shard=…` لا يُمرّرها أيضاً (مثبَّت: `pnpm run test -- --version`
         # يشغّل الحزمة كاملةً بدل طباعة النسخة). فكانت **كلتا الشريحتين تشغّلان الحزمة كاملة**
@@ -108,23 +133,24 @@ jobs:
         run: |
           set -o pipefail
           total="$(git ls-files "*.test.ts" | grep -cE "^(server|client/src|shared)/")"
-          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/4 2>&1 | tee /tmp/shard.log
+          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/${{ matrix.total }} 2>&1 | tee /tmp/shard.log
           # ⚠️ مخرَج vitest ملوَّن: سطر النتيجة مسبوقٌ برموز ANSI، فمرساةُ "^ *Test Files" لا
           # تطابقه ويَخرج $ran فارغاً فتسقط الوظيفة **رغم خضرة الاختبارات** (وقع فعلاً هنا).
           line="$(grep -aE "Test Files" /tmp/shard.log | tail -1)"
           ran="$(printf "%s" "$line" | grep -oE "[(][0-9]+[)]" | tail -1 | tr -d "()")"
           if [ -z "$ran" ]; then echo "تعذّر استخراج عدد الملفات من مخرَج vitest" >&2; exit 1; fi
-          echo "الشريحة ${{ matrix.shard }}/4 شغّلت $ran ملفاً من أصل $total"
-          # حارسٌ ضدّ عودة العطل صامتاً: مع أربع شوارد تُشغّل كلٌّ ~٢٥٪ من الملفات؛ تجاوز
-          # ٤٠٪ يعني أنّ `--shard` لم يصل vitest (وعندها تُشغَّل الحزمة كاملةً = ١٠٠٪).
-          # العتبة ضُيّقت من ٧٠٪ (يوم كانت شاردتان) لتبقى كاشفةً بعد رفع العدد إلى أربع.
+          echo "الشريحة ${{ matrix.shard }}/${{ matrix.total }} شغّلت $ran ملفاً من أصل $total"
+          # حارسٌ ضدّ عودة العطل صامتاً: مع ثماني شوارد تُشغّل كلٌّ ~١٢.٥٪ من الملفات؛ تجاوز
+          # ٢٥٪ يعني أنّ `--shard` لم يصل vitest (وعندها تُشغَّل الحزمة كاملةً = ١٠٠٪).
           # لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة أقلّ قليلاً من الملفات
           # المتعقَّبة فتمرّ المقارنة الصارمة كاذبةً.
-          test "$((ran * 10))" -lt "$((total * 4))"
+          test "$((ran * 100))" -lt "$((total * 25))"
 
   # يعمل بالتوازي مع شرائح الاختبار: كان وضعه بعدها يضيف ٥-٧ دقائق كاملة إلى المسار
   # الحرج لكل PR ناجح، مع أن عمله مستقل تماماً عن نتائج Vitest.
   quality-build:
+    needs: scope
+    if: ${{ needs.scope.outputs.heavy == 'true' }}
     runs-on: ubuntu-latest
     # الاختبارات في شرائحها أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
     timeout-minutes: 45
@@ -328,18 +354,17 @@ jobs:
   # اسم الفحص محميّ في إعدادات main؛ يبقى ثابتاً كبوابة تجميع سريعة تصدر فشلاً صريحاً
   # بدل skipped إذا فشلت أو أُلغيت أي شريحة أو وظيفة الجودة.
   check-test-build:
-    needs: [test-shards, quality-build]
+    needs: [scope, test-shards, quality-build]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: تأكيد نجاح الاختبارات والجودة والبناء
         env:
+          HEAVY: ${{ needs.scope.outputs.heavy }}
           TEST_SHARDS_RESULT: ${{ needs.test-shards.result }}
           QUALITY_BUILD_RESULT: ${{ needs.quality-build.result }}
-        run: |
-          test "$TEST_SHARDS_RESULT" = "success"
-          test "$QUALITY_BUILD_RESULT" = "success"
+        run: node scripts/ci-policy.mjs gate
 
   # حارس الصلاحيات (T-12) — **مقارنة قاعدة الدمج (merge-base)**، وظيفةٌ مستقلّة سريعة (node فقط، بلا
   # قاعدة/تثبيت). يمسح شجرة الأساس (origin/<base>) وشجرة الـhead ويفشل فقط على انتهاكٍ **يُدخِله الـPR**
