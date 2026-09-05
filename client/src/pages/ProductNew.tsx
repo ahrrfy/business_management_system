@@ -1,5 +1,5 @@
 import { Boxes, Layers, Package, Wrench } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
 import { PageHeader } from "@/components/PageHeader";
@@ -54,6 +54,9 @@ export default function ProductNew() {
   // ── النموذج الواحد (وضع المتغيّرات) ──
   const [model, setModel] = useState<ProductFormModel>(() => emptyProductFormModel());
   const patch = (p: ProductModelPatch) => setModel((m) => ({ ...m, ...(typeof p === "function" ? p(m) : p) }));
+  // مرجعٌ للنموذج الحيّ — يُقرأ بعد انتظار الحفظ لكشف تعديلٍ وقع أثناء الانتظار (Codex #1010 P1، بلا لقطةٍ بائتة).
+  const modelRef = useRef(model);
+  modelRef.current = model;
   /*
    * لقطةُ الاتّساخ المرجعية: النموذج الفارغ، ثمّ **ما أُرسل فعلاً** بعد حفظٍ ناجح (لا الحالة وقت وصول
    * الاستجابة — سباق Codex #978: تعديلٌ أثناء انتظار الحفظ كان يُبتلَع فيُغادَر بلا سؤال).
@@ -110,10 +113,16 @@ export default function ProductNew() {
   }
 
   async function saveAndNew() {
+    // بصمةُ ما نبدأ به قبل الحفظ. إن عدّل المستخدم النموذج **أثناء انتظار** الطفرة فلا نطمس تعديله
+    // بنموذجٍ فارغ (Codex #1010 P1، نمط CP-U02) — نبدأ فارغاً فقط إن بقي النموذج كما أُرسِل.
+    const submitted = productFormSignature(model);
     const res = await save();
-    const fresh = emptyProductFormModel();
-    setModel(fresh);
-    setSavedSignature(productFormSignature(fresh));
+    if (productFormSignature(modelRef.current) === submitted) {
+      const fresh = emptyProductFormModel();
+      setModel(fresh);
+      setSavedSignature(productFormSignature(fresh));
+    }
+    // إن عُدّل أثناء الانتظار: `save()` ثبّت savedSignature على ما أُرسل، فيبقى تعديلُ المستخدم متّسخاً وظاهراً.
     return res;
   }
 

@@ -207,7 +207,11 @@ export function SaveBar({
       data-slot="save-bar"
       data-blocked={blocked || undefined}
       className={cn(
-        "sticky bottom-0 z-10 flex flex-col gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80",
+        // Codex #1010: `fixed` لا `sticky`. `app-shell` بـ`min-h-screen` يجعل **الجسمَ** هو المُمرَّر لا `main`،
+        // فـ`sticky bottom-0` على آخر عنصرٍ لا يُسحَب إلى العرض في النماذج الطويلة (تحقّقٌ بصريّ) ⇒ لا أزرارَ
+        // حفظٍ ولا أسبابُ منعٍ مرئيّة حتى التمرير للنهاية. `fixed` يُبقيه ظاهراً دائماً (استعادةُ الأشرطة الثابتة
+        // السابقة)؛ `lg:start-64` يُخلي الشريطَ الجانبيّ (w-64) في RTL، والحاوياتُ تحجز `pb-28` أسفلها.
+        "fixed inset-x-0 bottom-0 z-30 lg:start-64 flex flex-col gap-2 border-t bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:px-6",
         className,
       )}
     >

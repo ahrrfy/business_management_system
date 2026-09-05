@@ -286,13 +286,15 @@ export function buildCreateProductPayload(m: ProductFormModel, branches: Readonl
     categoryId: m.categoryId === "" ? undefined : Number(m.categoryId),
     isCustomizable: m.isCustomizable,
     isService: m.isService,
-    allowBackorder: m.isService ? false : m.allowBackorder,
+    // Codex #1010 (دفاعٌ في العمق مع مسحِ التبديل في الشاشة): «يُباع بالطلب» يرفضه الخادمُ مع الخدمة **والأمانة**،
+    // والخدمةُ لا تكون أمانة — نُصفّر التركيباتِ المرفوضة عند بناء الحمولة فلا يفشل حفظٌ يبدو صالحاً.
+    allowBackorder: m.isService || m.consignment.isConsignment ? false : m.allowBackorder,
     showInReception: m.showInReception,
     showInPrintPos: m.showInPrintPos,
     allowAutoCartRecommendations: m.allowAutoCartRecommendations,
     isActive: m.isActive,
-    isConsignment: m.consignment.isConsignment,
-    consignorId: m.consignment.isConsignment ? m.consignment.consignorId : null,
+    isConsignment: m.isService ? false : m.consignment.isConsignment,
+    consignorId: !m.isService && m.consignment.isConsignment ? m.consignment.consignorId : null,
     variants: m.variants.map((v) => {
       const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : m.costPrice.trim();
       return {
@@ -304,9 +306,13 @@ export function buildCreateProductPayload(m: ProductFormModel, branches: Readonl
         minStock: clampInt(v.minStock),
         reorderPoint: clampInt(v.reorderPoint),
         isActive: v.isActive,
-        openingStockByBranch: branches
-          .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
-          .filter((x) => x.qty > 0),
+        // Codex #1010: الخدمةُ بلا مخزون — `setStock` يتجاهل صنفَ الخدمة صامتاً، فيختفي ما أدخله المستخدم
+        // بلا أثر. نُسقط الرصيد الافتتاحيّ من الحمولة للخدمة (نظير `allowBackorder: false` أعلاه) فلا نُرسل ما يُبتلَع.
+        openingStockByBranch: m.isService
+          ? []
+          : branches
+              .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
+              .filter((x) => x.qty > 0),
         units: m.units.map((u) => {
           const retail = u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : u.retail.trim();
           const aliases = (v.unitBarcodeAliases?.[u.id] ?? [])
@@ -341,12 +347,13 @@ export function buildUpdateProductPayload(m: ProductFormModel, productId: number
     allowAutoCartRecommendations: m.allowAutoCartRecommendations,
     isService: m.isService,
     // التبديل معطَّلٌ بصرياً على الخدمة، لكن قيمةً قديمة قد تبقى في الحالة ⇒ نُصفّرها فلا تصل تركيبةٌ يرفضها CHECK.
-    allowBackorder: m.isService ? false : m.allowBackorder,
+    // Codex #1010: الأمانةُ أيضاً تمنع «يُباع بالطلب»، والخدمةُ تمنع الأمانة — نُصفّر المرفوضَ (نظير حمولة الإنشاء).
+    allowBackorder: m.isService || m.consignment.isConsignment ? false : m.allowBackorder,
     isActive: m.isActive,
     showInReception: m.showInReception,
     showInPrintPos: m.showInPrintPos,
-    isConsignment: m.consignment.isConsignment,
-    consignorId: m.consignment.consignorId,
+    isConsignment: m.isService ? false : m.consignment.isConsignment,
+    consignorId: m.isService || !m.consignment.isConsignment ? null : m.consignment.consignorId,
     unitTemplate: m.units.map((u) => ({
       unitName: u.name.trim(),
       conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
@@ -415,11 +422,17 @@ export function generateVariants(m: ProductFormModel): ClientVariant[] {
   for (const c of m.colors) {
     if (m.sizes.length) {
       for (const s of m.sizes) if (!excluded.has(`${c}|${s}`)) combos.push([c, s]);
-    } else combos.push([c, ""]);
+    } else if (!excluded.has(`${c}|`)) combos.push([c, ""]); // Codex #1010: المستبعَد يُحترَم بلا مقاسٍ أيضاً.
   }
   const byKey = new Map(m.variants.map((v) => [`${v.color}|${v.size}`, v]));
   const genKeys = new Set(combos.map(([c, s]) => `${c}|${s}`));
-  const kept = m.variants.filter((v) => !genKeys.has(`${v.color}|${v.size}`));
+  // Codex #1010: الصفوفُ المستبعَدة صراحةً (نقرُ خليّةٍ في المصفوفة) تسقط من `combos` فتغيب عن `genKeys`؛
+  // بلا إسقاطها من `kept` تبقى محفوظة، ناقضةً وعدَ المصفوفة «النقرُ يُلغي التركيبة». نُسقطها هنا، ونُبقي
+  // الصفوفَ غيرَ المتّصلة بالمصفوفة (بدائل/يدويّ: لونٌ خارج `colors`) لأنّ مفتاحها ليس في المستبعَد أصلاً.
+  const kept = m.variants.filter((v) => {
+    const key = `${v.color}|${v.size}`;
+    return !genKeys.has(key) && !excluded.has(key);
+  });
   const generated = combos.map(([c, s]) => {
     const ex = byKey.get(`${c}|${s}`);
     return ex ? { ...ex, sku: ex.sku || deriveSku(m.baseSku, c, s) } : makeVariant(m, c, s);

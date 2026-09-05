@@ -155,7 +155,8 @@ export function ProductFormFields({
       {!facts?.isBundle && !model.isService && (
         <ConsignmentField
           value={model.consignment}
-          onChange={(consignment) => set({ consignment })}
+          // Codex #1010: تفعيلُ الأمانة يمسح «يُباع بالطلب» (التبديلُ يُعطَّل فلا يبلغه المستخدم، والخادم يرفض التركيبة).
+          onChange={(consignment) => set({ consignment, ...(consignment.isConsignment ? { allowBackorder: false } : {}) })}
           disabled={consignmentLocked}
           disabledHint="لا يمكن تغيير وسم الأمانة والرصيد غير صفري — صفِّر المخزون أولاً."
         />
@@ -256,7 +257,9 @@ export function ProductFormFields({
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint={isEdit ? "لا يَخصُم مَخزوناً ولا يَنزل سالباً. تحويلُ سلعةٍ برصيد إلى خدمة يُرفَض." : "لخدمةٍ بوصفةٍ وموادّ استعمل تبويب «خِدمة»؛ هنا التبديل للتصنيف فقط."}>
             <div className="flex h-9 items-center gap-2">
-              <Switch checked={model.isService} onCheckedChange={(isService) => set({ isService, ...(isService ? { allowBackorder: false } : {}) })} />
+              {/* Codex #1010: تفعيلُ الخدمة يمسح «يُباع بالطلب» **والأمانة** معاً — حقلُ الأمانة يختفي (لا خدمةَ أمانة)
+                  لكنّ علمَه يبقى في النموذج فيرسله الحفظ ويرفضه `assertConsignmentValid`. */}
+              <Switch checked={model.isService} onCheckedChange={(isService) => set({ isService, ...(isService ? { allowBackorder: false, consignment: { isConsignment: false, consignorId: null } } : {}) })} />
               <span className="text-xs text-muted-foreground">{model.isService ? "خِدمة" : "سِلعة"}</span>
             </div>
           </Field>

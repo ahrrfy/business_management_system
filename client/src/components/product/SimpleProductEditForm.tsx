@@ -226,8 +226,10 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, units, imagesSig]
+    // Codex #1010: هويّةُ الأمانة (الوسم + المودِع) جزءٌ من الحالة القابلة للتحرير — بلا إدراجها كان تغييرُها
+    // وحده يُبقي `dirty=false` فتضيع بلا تحذيرٍ عند المغادرة. (`consignorName` عرضٌ فلا يدخل البصمة.)
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, isConsignment: consignment.isConsignment, consignorId: consignment.consignorId, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, allowBackorder, consignment.isConsignment, consignment.consignorId, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;

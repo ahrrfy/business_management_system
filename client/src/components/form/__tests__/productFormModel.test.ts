@@ -113,6 +113,23 @@ describe("الحمولتان — الحقولُ التي كانت منحرفة �
     // الخدمة تُصفّر «يُباع بالطلب» فلا تصل تركيبةٌ يرفضها CHECK.
     expect(buildUpdateProductPayload({ ...m, isService: true }, 7).allowBackorder).toBe(false);
   });
+
+  it("Codex #1010: الخدمةُ لا تُرسل رصيداً افتتاحياً (setStock يبتلعه صامتاً)", () => {
+    const m = productFormModelFromDocument(serverDoc()); // المتغيّر ٢١ برصيد فرعٍ 40
+    expect(buildCreateProductPayload(m, [{ id: 1 }]).variants[0].openingStockByBranch).toEqual([{ branchId: 1, qty: 40 }]);
+    expect(buildCreateProductPayload({ ...m, isService: true }, [{ id: 1 }]).variants[0].openingStockByBranch).toEqual([]);
+  });
+
+  it("Codex #1010: الحمولةُ تُصفّر تركيباتِ الأمانة/الخدمة/«يُباع بالطلب» المرفوضة", () => {
+    const m = productFormModelFromDocument(serverDoc()); // allowBackorder=true، بلا أمانة
+    // أمانة + «يُباع بالطلب» ⇒ يُصفَّر backorder، والأمانةُ تبقى.
+    const consign = { ...m, allowBackorder: true, consignment: { isConsignment: true, consignorId: 5 } };
+    expect(buildCreateProductPayload(consign, [{ id: 1 }])).toMatchObject({ allowBackorder: false, isConsignment: true, consignorId: 5 });
+    // خدمة + أمانة ⇒ الأمانةُ والمودِعُ وbackorder تُصفَّر كلُّها (create + update).
+    const svcConsign = { ...m, isService: true, allowBackorder: true, consignment: { isConsignment: true, consignorId: 5 } };
+    expect(buildCreateProductPayload(svcConsign, [{ id: 1 }])).toMatchObject({ isService: true, isConsignment: false, consignorId: null, allowBackorder: false });
+    expect(buildUpdateProductPayload(svcConsign, 7)).toMatchObject({ isConsignment: false, consignorId: null, allowBackorder: false });
+  });
 });
 
 describe("generateVariants — دمجٌ غير متلف في الوضعين", () => {
@@ -122,6 +139,14 @@ describe("generateVariants — دمجٌ غير متلف في الوضعين", ()
     expect(out.map((v) => v.color)).toEqual(["أحمر", "أسود", "أزرق"]);
     expect(out.find((v) => v.color === "أسود")?.id).toBe("db:21"); // الموجود بقي بمعرّفه
     expect(out.find((v) => v.color === "أزرق")?.sku).toBe("PG-G2-BLU");
+  });
+
+  it("Codex #1010: إعادةُ التوليد تُسقط متغيّراً مُستبعَداً صراحةً وتُبقي غيرَ المتّصل بالمصفوفة", () => {
+    // «أسود» موجودٌ (db:21) لكنّه مُستبعَدٌ بنقر الخليّة ⇒ يُسقَط؛ «أحمر» (db:22) خارج المصفوفة ⇒ يبقى.
+    const m = { ...productFormModelFromDocument(serverDoc()), colors: ["أسود"], sizes: [], excluded: ["أسود|"] };
+    const colors = generateVariants(m).map((v) => v.color);
+    expect(colors).not.toContain("أسود");
+    expect(colors).toContain("أحمر");
   });
 
   it("التوقيعُ يتغيّر بتغيّر أيّ حقل ويتجاهل بايتات الصور", () => {
