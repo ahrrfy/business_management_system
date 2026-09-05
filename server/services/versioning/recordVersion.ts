@@ -225,9 +225,12 @@ export async function snapshotBeforeUpdate(
 
   const payload = normalizePayload(input.payloadJson);
 
-  // رقمُ الإصدار = MAX + 1 داخل المعاملة. UNIQUE(entityType,entityId,versionNumber)
-  // يحرس التزامن: سباقٌ نادر يُلقي `ER_DUP_ENTRY` فيسقط الـTx كاملاً — والسبب المكشوف
-  // للمستدعي أفضل من كتابةٍ متأخّرة بمعرّفٍ خاطئ.
+  // رقمُ الإصدار = MAX + 1 داخل المعاملة — **بقراءةٍ قافلة** (`FOR UPDATE`).
+  // ⚠️ أمسكته الجولة البصريّة لـم٦: تعديلان متزامنان على المنتج نفسه يتسلسلان على أقفال صفوفه،
+  // لكنّ الثاني — بعد انتظار القفل — كان يقرأ MAX بلقطة REPEATABLE READ التي ثبّتها أوّلُ SELECT عاديّ
+  // في معاملته (قبل التزام الأوّل) فيرى صفراً ويُعيد الرقم 1 ⇒ `ER_DUP_ENTRY` ويسقط تعديلٌ سليم.
+  // القراءةُ القافلة تتجاوز اللقطةَ وتقرأ آخرَ ما التُزم، ويُسلسِل قفلُ الفجوة أيَّ مُدرِجٍ متزامن.
+  // UNIQUE(entityType,entityId,versionNumber) يبقى الحارسَ الأخير: تصادمٌ بعد كلّ هذا يُسقط الـTx كاملاً.
   const [{ maxVersion }] = await tx
     .select({ maxVersion: sql<number | null>`COALESCE(MAX(${recordVersions.versionNumber}), 0)` })
     .from(recordVersions)
@@ -236,7 +239,8 @@ export async function snapshotBeforeUpdate(
         eq(recordVersions.entityType, entityType),
         eq(recordVersions.entityId, input.entityId),
       ),
-    );
+    )
+    .for("update");
   const versionNumber = Number(maxVersion ?? 0) + 1;
 
   const row: InsertRecordVersion = {
@@ -286,6 +290,8 @@ export async function readVersion(
   versionNumber: number,
 ): Promise<RecordVersion> {
   assertIsTransaction(tx);
+  // قراءةٌ قافلة (`FOR SHARE`) لا عاديّة: هي أوّلُ ما تقرأه معاملةُ الاستعادة، والقراءةُ العاديّة كانت
+  // ستُثبّت لقطةَ المعاملة **قبل** أقفال التعديل فتصير قراءاتُ «الحالة قبل الاستعادة» بائتة.
   const rows = await tx
     .select()
     .from(recordVersions)
@@ -296,7 +302,8 @@ export async function readVersion(
         eq(recordVersions.versionNumber, versionNumber),
       ),
     )
-    .limit(1);
+    .limit(1)
+    .for("share");
   const row = rows[0];
   if (!row) {
     throw new TRPCError({

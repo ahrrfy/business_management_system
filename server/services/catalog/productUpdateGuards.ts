@@ -67,8 +67,14 @@ export function productNotFoundError(productId: number): TRPCError {
   });
 }
 
+/**
+ * ⚠️ قراءةٌ **قافلة** (`FOR UPDATE`) وهي أوّلُ قراءةٍ في المعاملة — عمداً (أمسكته الجولة البصريّة لـم٦):
+ * القراءةُ العاديّة تُثبّت لقطةَ REPEATABLE READ للمعاملة كلّها، فتعديلٌ ثانٍ ينتظر على أقفال المتغيّرات
+ * ثمّ يمضي بقراءاتٍ بائتة (رقمُ النسخة، وحمولةُ «قبل»، وحقولُ `p` التي تُقارَن بها الحرّاس). القراءةُ
+ * القافلة لا تُثبّت لقطة، فتُسلسِل التعديلَين عند الباب ويرى الثاني ما التزمه الأوّل.
+ */
 export async function loadProductForUpdateOrThrow(tx: Tx, productId: number): Promise<ProductRow> {
-  const p = (await tx.select().from(products).where(eq(products.id, productId)).limit(1))[0];
+  const p = (await tx.select().from(products).where(eq(products.id, productId)).limit(1).for("update"))[0];
   if (!p) throw productNotFoundError(productId);
   return p;
 }
