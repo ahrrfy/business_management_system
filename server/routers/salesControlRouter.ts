@@ -9,8 +9,7 @@ import {
   withdrawSalesControlRequest,
 } from "../services/sale/controlRequests";
 import { router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
-import { logAudit } from "../services/auditService";
-import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
+import { recordGovernedReturnExecution } from "../services/sale/controlAudit";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 const paymentMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -155,24 +154,11 @@ export const salesControlRouter = router({
        * رقيبُ الشذوذ D3-ب. التدقيقُ التلقائيّ يكتب `rpc.salesControl.approve` لكلّ الأنواع
        * معاً (إلغاء/استبدال/استحقاق) فلا يُميّز المرتجع؛ وتركيزُ المرتجعات على شخصٍ بعينه
        * لا يُقاس بفعلٍ يخلط أربع عملياتٍ مختلفة.
+       *
+       * الكتابةُ في `sale/controlAudit.ts` **مشتركةٌ** مع صندوق القرارات (`decisions.decide`):
+       * كان هذا الراوتر وحده يكتبها فيتخطّاها اعتمادُ الصندوق (Codex على #1004).
        */
-      // ⛔ `replayed` = اعتمادٌ سابقٌ يُعاد تشغيله بلا أثرٍ ثانٍ. كتابةُ فعل التنفيذ له تُضخّم
-      // عدّاد «معالجي الإرجاع» في رقيب D3 بإعادة محاولةٍ شبكية (تصويب مراجعة Codex، P2).
-      const replayedApproval = "replayed" in result && result.replayed === true;
-      if (!replayedApproval && "request" in result && result.request?.requestType === "SALES_RETURN") {
-        await logAudit(ctx, {
-          action: RETURN_EXECUTED_AUDIT_ACTION,
-          entityType: "invoice",
-          entityId: Number(result.request.invoiceId),
-          newValue: {
-            mode: "GOVERNED_APPROVAL" satisfies ReturnExecutionMode,
-            requestId: input.requestId,
-            requestedBy: Number(result.request.requestedBy),
-            reason: result.request.reason,
-            cashRouting: input.cashRouting ?? null,
-          },
-        });
-      }
+      await recordGovernedReturnExecution(ctx, { requestId: input.requestId, result, cashRouting: input.cashRouting ?? null });
       return result;
     }),
 
