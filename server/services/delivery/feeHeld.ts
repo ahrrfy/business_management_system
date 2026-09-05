@@ -20,6 +20,7 @@ import { receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
 
@@ -75,12 +76,28 @@ export interface RecordDeliveryFeeHeldInput {
   description: string;
 }
 
-/** يكتب إيصال الأمانة وقيدها داخل معاملة المستدعي. `amount` موجبٌ حتماً (المستدعي يتحقّق). */
+/**
+ * يكتب إيصال الأمانة وقيدها داخل معاملة المستدعي. `amount` موجبٌ حتماً (المستدعي يتحقّق).
+ *
+ * **الكاتبُ يحرس نفسه** (م١ PR-3، أمسكه `cashDayClosedWriteGate`/`cashNonnegativeCore`): الإيصالُ
+ * نقدُ درجٍ ماديّ ⇒ بوّابةُ المصدر/اليوم (`lockMaterializedCashReceiptSourceForWrite`) تُقتنى هنا
+ * قبل الـINSERT لا في المستدعي وحده — فمن يستدعيه من قناةٍ أخرى (استقبال/استيراد) لا يفلت من
+ * قفل الوردية ولا من رفض اليوم المُغلَق. المستدعي القائم (`sale/create.ts`) يقفل الصفَّ نفسه قبلها؛
+ * إعادةُ القفل داخل المعاملة نفسها لا تحجب ولا تُغيّر الترتيب (source → day → receipt).
+ */
 export async function recordDeliveryFeeHeldInTx(
   tx: Tx,
   input: RecordDeliveryFeeHeldInput,
 ): Promise<{ receiptId: number }> {
   const amount = round2(input.amount);
+  await lockMaterializedCashReceiptSourceForWrite(tx, {
+    branchId: input.branchId,
+    shiftId: input.shiftId,
+    cashBucket: "DRAWER",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+  });
   const feeRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     shiftId: input.shiftId,

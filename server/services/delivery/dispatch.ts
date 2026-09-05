@@ -30,7 +30,7 @@ import { assertFloatLimitTx, assertNoStaleOpenParcelsTx } from "./parties";
 import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryWorkOrderSaleIntent } from "./posting";
 import { titleForChannel } from "@shared/productChannelTitles";
 import { workOrderInvoiceSourceId } from "../workOrder/helpers";
@@ -449,6 +449,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // إعادة التنشيط: تحديثُ الصفّ الملغى في مكانه (سابقة dispatchInvoice.ts) — يحفظ سلسلة
     // أحداثه وتاريخه، ويُبقي القيدَين الفريدَين حارسَين بنيويَّين بلا هجرة ولا شواهد قبور.
     if (reusableCn) {
+      assertConsignmentStatusTransition(reusableCn.status, "DISPATCHED");
       await tx.update(deliveryConsignments).set({
         branchId: Number(wo.branchId),
         partyId: input.partyId,

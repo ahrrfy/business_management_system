@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, lt, sql } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import {
   branches,
@@ -1433,7 +1433,8 @@ export async function getPurchaseRequisition(
 
 export async function listPendingPurchaseRequisitionControls(
   actor: Actor,
-  page: { limit: number; cursor?: number | null },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات (القصّ بالأحدث يُسقط أكثر الطلبات تأخّراً). */
+  page: { limit: number; cursor?: number | null; order?: "ASC" | "DESC" },
 ) {
   const branchCondition =
     actor.role === "admin"
@@ -1474,6 +1475,6 @@ export async function listPendingPurchaseRequisitionControls(
           : lt(purchaseRequisitionControlRequests.id, page.cursor),
       ),
     )
-    .orderBy(desc(purchaseRequisitionControlRequests.id))
+    .orderBy(page.order === "ASC" ? asc(purchaseRequisitionControlRequests.id) : desc(purchaseRequisitionControlRequests.id))
     .limit(page.limit + 1);
 }

@@ -410,7 +410,7 @@ export function WorkOrderControlDecisionDialog({
                   </Button>
                 </div>
               ) : (
-                <ApprovalRefundRailPicker preflight={refundPreflight.data ?? null} choice={refundChoice} />
+                <ApprovalRefundRailPicker preflight={refundPreflight.data ?? null} choice={refundChoice} workOrderId={Number(cancelRequest?.workOrderId ?? 0)} />
               )
             )}
 

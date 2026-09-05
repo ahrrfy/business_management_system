@@ -19,7 +19,7 @@
  *  ⑧ قناة الطباعة بلا توصيل تحفظ سلوكها بعد توحيد الحارس: حدّ «0» يُرفض، وتجاوز السقف يُرفض،
  *     وبلا حدّ يمرّ ذمّةً على العميل.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -30,6 +30,7 @@ import { checkoutReception } from "../receptionCheckoutService";
 import { openShift } from "../shiftService";
 import { withTx } from "../tx";
 import { assertCreditLimit } from "../../lib/credit";
+import { idempotencyHash } from "../idempotency";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
@@ -338,5 +339,106 @@ describe("قناة الطباعة بلا توصيل — سلوك حدّ الائ
     expect(inv.status).toBe("PENDING");
     expect(inv.paymentMode).toBe("PREPAID");
     expect(await customerBalance(UNCAPPED_CUSTOMER)).toBe("2000.00");
+  });
+});
+
+describe("مراجعة Codex #1006 — إصلاحاتٌ خادميّة", () => {
+  // Codex #1006 P2 = #1012 P2 (3938980790 / 3940317909)
+  it("COUNTER بأجرةٍ محذوفة (null ⇒ الافتراضية 1500) وأمانةٍ = الافتراضية ⇒ ينجح والأجرة محلولة", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "0" }, { userId: 2, branchId: 1 });
+    const res = await caller().sales.create({
+      branchId: 1, shiftId: shift.shiftId, customerId: NEW_CUSTOMER, lines: [LINE],
+      // `fee` محذوف ⇒ يُحلّ إلى defaultFee للجهة (1500) قبل فحص الأمانة والإسناد.
+      delivery: { partyId: 1, feeCollection: "COUNTER", recipientPhone: "07701234567", address: "بغداد" },
+      deliveryFeeHeld: "1500",
+      clientRequestId: "note2-counter-default",
+    });
+    const held = (await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `DLV-FEE-INV-${res.invoiceId}`)))[0];
+    expect(held?.amount).toBe("1500.00");
+    const cn = await consignmentByInvoice(res.invoiceId);
+    expect(cn.feeCollection).toBe("COUNTER");
+    expect(cn.deliveryFee).toBe("1500.00"); // الأجرة المحلولة لا صفر
+  });
+
+  // Codex #1006 P1 (3938980796) — أمانةٌ يتيمة عند الإلغاء
+  it("أمانةُ أجرةٍ بلا توصيلٍ في نفس البيع ⇒ ترتدّ المعاملة (لا أمانةٌ محجوزةٌ بلا إرساليّة)", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "0" }, { userId: 2, branchId: 1 });
+    await expect(
+      caller().sales.create({
+        branchId: 1, shiftId: shift.shiftId, customerId: NEW_CUSTOMER, lines: [LINE],
+        deliveryFeeHeld: "1500", // بلا delivery
+        clientRequestId: "note4-orphan",
+      }),
+    ).rejects.toThrow(/بلا إسناد توصيل/);
+    expect(await invoiceCount()).toBe(0);
+    expect((await db().select().from(s.receipts)).length).toBe(0);
+  });
+
+  // Codex #1006 P1 (3938980799) — بوّابة وحدة التوصيل على الإسناد المضمَّن
+  it("كاشير بـsales:FULL لكنّ store مُنِع ⇒ لا يُنشئ إرساليّة بحمولة delivery (FORBIDDEN)", async () => {
+    const storeDenied = appRouter.createCaller({
+      req: { headers: {} }, res: { cookie() {}, clearCookie() {} },
+      user: { id: 2, role: "cashier", branchId: 1, permissionsOverride: { store: "NONE" } },
+    } as any);
+    await expect(
+      storeDenied.sales.create({
+        branchId: 1, customerId: NEW_CUSTOMER, lines: [LINE], delivery: DELIVERY,
+        clientRequestId: "note5-gate",
+      }),
+    ).rejects.toThrow(/المتجر الإلكتروني/);
+    expect(await invoiceCount()).toBe(0);
+    expect(await consignmentCount()).toBe(0);
+  });
+
+  // Codex #1006 P2 (3938980800) — COD يُشتقّ من المتبقّي لا من وجود التوصيل
+  it("بيعٌ بتوصيلٍ مدفوعٌ كاملاً عند الإنشاء ⇒ PREPAID لا COD، وcodAmount صفر", async () => {
+    const shift = await openShift({ branchId: 1, openingBalance: "0" }, { userId: 2, branchId: 1 });
+    const res = await createSale({
+      branchId: 1, shiftId: shift.shiftId, lines: [LINE],
+      delivery: { partyId: 1, fee: "1500", recipientPhone: "07701234567" },
+      payment: { amount: "2000", method: "CASH" },
+      clientRequestId: "note6-prepaid",
+    } as any, CASHIER);
+    const inv = await invoiceOf(res.invoiceId);
+    expect(inv.paidAmount).toBe("2000.00");
+    expect(inv.paymentMode).toBe("PREPAID"); // كان COD خطأً
+    const cn = await consignmentByInvoice(res.invoiceId);
+    expect(cn.codAmount).toBe("0.00");
+    expect(cn.moneyStatus).toBe("NOT_APPLICABLE");
+  });
+
+  // Codex #1006 P1 (3938980794) — عقدُ رمز PrintPOS: حجبُ الائتمان PRECONDITION_FAILED لا FORBIDDEN
+  it("قناةُ المطبعة: حجبُ الائتمان يرمي PRECONDITION_FAILED مع «موافقة مدير» (يفتح حوار الاعتماد)", async () => {
+    // تجاوزُ السقف الموجب.
+    await expect(
+      createPrintSale({ branchId: 1, customerId: CAPPED_CUSTOMER, lines: [{ ...PRINT_LINE, quantity: "8" }] }, CASHIER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: expect.stringContaining("موافقة مدير") });
+    // وعميلٌ نقديٌّ فقط (حدّ 0) كذلك ⇒ PRECONDITION_FAILED (لا FORBIDDEN نهائيّ).
+    await expect(
+      createPrintSale({ branchId: 1, customerId: NEW_CUSTOMER, lines: [{ ...PRINT_LINE, quantity: "8" }] }, CASHIER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await invoiceCount()).toBe(0);
+  });
+
+  // Codex #1006 P1 (3938980787) — بصمةُ idempotency لا تعتمد paymentMode
+  it("بصمةُ idempotency للبيع بتوصيل تستبعد paymentMode (تكرارٌ عبر النشر لا يرتدّ CONFLICT)", async () => {
+    const saleInput = {
+      branchId: 1, customerId: NEW_CUSTOMER, lines: [LINE],
+      delivery: { partyId: 1, fee: "1500", recipientPhone: "07701234567" },
+      clientRequestId: "note1-fp",
+    };
+    const res = await createSale(saleInput as any, CASHIER);
+    const stored = (await db().select().from(s.idempotencyKeys).where(and(
+      eq(s.idempotencyKeys.operation, "sale.create"),
+      eq(s.idempotencyKeys.clientRequestId, "note1-fp"),
+    )))[0];
+    expect(stored?.payloadHash).toBeTruthy();
+    // المسار يضيف codDispatchPending + paymentMode للتوصيل؛ البصمةُ المخزَّنة تستبعد paymentMode وحده.
+    const expected = idempotencyHash({ ...saleInput, codDispatchPending: true });
+    expect(stored.payloadHash).toBe(expected);
+    // برهانٌ مباشر: إدراجُ paymentMode كان يغيّر البصمة (فيرتدّ التكرار CONFLICT بلا الإصلاح).
+    expect(idempotencyHash({ ...saleInput, codDispatchPending: true, paymentMode: "COD" })).not.toBe(expected);
+    expect(res.consignmentId).toEqual(expect.any(Number));
   });
 });

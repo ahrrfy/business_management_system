@@ -25,6 +25,17 @@ import {
   getProductForVariantEdit,
   updateProductWithVariants,
 } from "../services/productEditService";
+// م٦ (D5): حارسا حدّ العقد صارا مشتركَين في الخدمة كي يمرّ بهما مسارُ الاستعادة أيضاً.
+import {
+  assertCostChangeReasonOrThrow,
+  assertVariantSanityOrThrow,
+} from "../services/catalog/productUpdateGuards";
+// م٦ (ق٨): سجلّ النسخ و«ما الذي تغيّر» والاستعادة.
+import {
+  getProductVersionDiff,
+  listProductVersions,
+  restoreProductVersion,
+} from "../services/catalog/productVersioning";
 import {
   addUnitBarcodeAlias,
   listUnitBarcodes,
@@ -53,11 +64,7 @@ import {
 } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { barcodeString, optionalBarcodeString } from "../lib/schemas";
-import {
-  checkVariantSanity,
-  classifySeverity,
-  type UnitPricing,
-} from "../../shared/priceSanity";
+import type { UnitPricing } from "../../shared/priceSanity";
 import {
   extractProductFactsFromImage,
   generateProductContentDraft,
@@ -265,53 +272,12 @@ const editImageSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
 });
 
-/**
- * حرّاس عقلانية على تكلفة/سعر/معامل — دفاعٌ في العمق ضدّ أيّ عميل يتجاوز حرّاس الواجهة
- * (حادثة SINARLINE ٣٠/٧: تكلفة 16162 vs بيع 2000 ⇒ توقّف كاشير ساعات). يُطبَّق قبل استدعاء
- * الخدمة في المسارات الثلاثة (createProduct/updateProduct/updateProductVariants) — يرمي
- * TRPCError بـBAD_REQUEST بلا تعديل الحالة. المصدر مشترك: shared/priceSanity.ts.
- *
- * الاستعمال:
- *   assertVariantSanityOrThrow(variantLabel, costPriceStr, unitsForCheck);
- *   حيث unitsForCheck: صفيف {unitName, conversionFactor:number, retail?, wholesale?, government?}
+/*
+ * حرّاس عقلانية التكلفة/السعر (`assertVariantSanityOrThrow`) وحارسُ سبب تغيير التكلفة
+ * (`assertCostChangeReasonOrThrow`, priceSanity L1.7) كانا هنا؛ نُقلا حرفياً إلى
+ * `services/catalog/productUpdateGuards.ts` (م٦ — D5) كي يمرّ بهما مسارُ الاستعادة كما يمرّ بهما
+ * التعديل من هذا الراوتر. الاستعمال هنا لم يتغيّر.
  */
-function assertVariantSanityOrThrow(
-  variantLabel: string,
-  costPrice: string,
-  units: UnitPricing[],
-): void {
-  const issues = checkVariantSanity(costPrice, units);
-  const blocker = issues.find((i) => i.level === "blocker");
-  if (blocker) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `[${variantLabel}] ${blocker.message}`,
-    });
-  }
-}
-
-/**
- * **priceSanity L1.7 (٣٠/٧):** حارس السبب الإلزاميّ. عند تغيير التكلفة بنسبة ≥ ٥× مقارنةً بالقيمة
- * السابقة (blocker حسب `classifySeverity`)، يجب أن يمرَّر `costChangeReason` بمحارف ≥ ١٠.
- * يمنع تغييرات صامتة كارثيّة (حالة SINARLINE) من الاستيراد أو استعادات المسودّات.
- */
-function assertCostChangeReasonOrThrow(
-  variantLabel: string,
-  oldCost: string | number | null | undefined,
-  newCost: string | number,
-  reason: string | null | undefined,
-): void {
-  const sev = classifySeverity(newCost, { oldCost: oldCost ?? null });
-  if (sev === "blocker" || sev === "catastrophic") {
-    const r = (reason ?? "").trim();
-    if (r.length < 10) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `[${variantLabel}] تغيير التكلفة كبير جداً (من ${oldCost ?? "؟"} إلى ${newCost}). يرجى إضافة سبب مكتوب (≥ ١٠ محارف) في حقل «سبب تغيير التكلفة».`,
-      });
-    }
-  }
-}
 
 /**
  * توفيق بدائل الباركود (productUnitBarcodes) بعد نجاح `updateProductWithVariants` — عمداً
@@ -732,6 +698,11 @@ export const catalogRouter = router({
         isService: z.boolean().optional(),
         printService: z.boolean().optional(),
         showInReception: z.boolean().optional(),
+        // م٦ (تناظر الإنشاء/التعديل): ثلاثةُ حقولٍ كانت في شاشة التعديل وحدها — الظهورُ في شبكة الطباعة
+        // مستقلّاً عن `printService`، والتوصيات الآلية، وحالة المنتج. غيابُها يُبقي افتراض المخطّط.
+        showInPrintPos: z.boolean().optional(),
+        allowAutoCartRecommendations: z.boolean().optional(),
+        isActive: z.boolean().optional(),
         recipe: z
           .array(
             z.object({
@@ -1057,6 +1028,8 @@ export const catalogRouter = router({
         variants: z.array(editVariantSchema).min(1),
         // product-image-edit: صور المنتج العامّة (variantId=NULL). غياب الحقل ⇒ لا تُمَسّ؛ مصفوفة ⇒ توفيق.
         images: z.array(editImageSchema).max(10).optional(),
+        // م٦ ق٨: سببُ التعديل — يُلحق بلقطة `recordVersions` ويظهر في سجلّ النسخ. اختياريّ.
+        updateReason: z.string().max(500).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1162,6 +1135,54 @@ export const catalogRouter = router({
         },
       });
       return { ...res, aliasWarnings };
+    }),
+
+  // ═══ م٦ ق٨ — سجلّ النسخ والاستعادة (تكشف التكلفة ⇒ مدير فأعلى، كـgetForVariantEdit) ═══
+  /** النسخ الأحدث أوّلاً، مع «الحقول المتغيّرة» لكلٍّ. */
+  productVersions: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), limit: z.number().int().positive().max(200).optional() }))
+    .query(({ input }) => listProductVersions(input.productId, input.limit)),
+
+  /** «ما الذي تغيّر» حقلاً بحقل بين نسخةٍ والتي تليها (أو الحالة الحاليّة للأحدث). */
+  productVersionDiff: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), versionNumber: z.number().int().positive() }))
+    .query(({ input }) => getProductVersionDiff(input.productId, input.versionNumber)),
+
+  /**
+   * الاستعادة = تعديلٌ جديد بحمولةٍ قديمة يمرّ بكلّ حرّاس التعديل (التكلفة/ثبات الأساس/العقلانية/…)،
+   * ويكتب لقطةً للحالة قبل الاستعادة فتبقى هي أيضاً قابلةً للتراجع. الصورُ خارج نطاقها.
+   */
+  restoreProductVersion: productsManagerProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        versionNumber: z.number().int().positive(),
+        reason: z.string().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // الاستعادةُ تعديلٌ ⇒ تُنسب إلى الفرع كما يُنسب `updateProductVariants` أعلاه حرفياً (الأدمن/المالك
+      // يعبُر البوّابة بلا فرعٍ مُسنَد). الفرعُ هنا **إسنادٌ** فقط (`recordVersions.branchId`/`auditLogs.branchId`)
+      // — لا مخزونَ يتحرّك بالاستعادة، والدَّينُ الموروث (الافتراض ١ للأدمن بلا فرع) يُغلَق مع أخواته الإحدى عشرة معاً.
+      const res = await restoreProductVersion(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      });
+      // الاستعادة قد تُعيد تفعيل متغيّرٍ أو تُغيّر تصنيفاً ⇒ نفس مزامنة الجرد الشامل الحيّ بعد أيّ تعديل.
+      await syncActiveFullStocktakeScopes();
+      await logAudit(ctx, {
+        action: "product.restoreVersion",
+        entityType: "product",
+        entityId: input.productId,
+        newValue: {
+          restoredFromVersion: res.restoredFromVersion,
+          snapshotVersion: res.versionNumber,
+          reason: input.reason ?? null,
+        },
+      });
+      return res;
     }),
 
   assignBarcode: productsManagerProcedure

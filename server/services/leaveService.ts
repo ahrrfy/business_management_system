@@ -23,6 +23,7 @@ import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { assertPeriodOpen } from "./periodLockService";
+import { createAppNotification } from "./appNotificationService";
 
 /** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
 function daysInclusive(from: string, to: string): number {
@@ -290,6 +291,41 @@ export async function decideLeave(
       .set({ status: decision, decidedBy: actor.userId, decidedAt: new Date() })
       .where(eq(leaveRequests.id, id));
   }).then(async () => (await listLeavesByIds(id))[0] ?? null); // القراءة بعد الـcommit (listLeavesByIds عبر الاتصال العام).
+}
+
+/**
+ * البتُّ **مع إشعار الموظّف** — المسارُ الواحد الذي يستدعيه راوتر الإجازات وصندوق القرارات معاً.
+ *
+ * كان الإشعار مكتوباً في `leaveRouter.decide` وحده، فحين صار البتّ ممكناً من صندوق «مطلوب
+ * مني الآن» (`decisions.decide` ⇐ `decideLeave` مباشرةً) تحدّث الطلبُ ولم يصل الموظّفَ شيء
+ * (Codex على #1004). الإشعارُ best-effort: فشلُه لا يُرجع البتَّ الذي التُزم.
+ */
+export async function decideLeaveAndNotify(
+  id: number,
+  decision: "approved" | "rejected",
+  actor: { userId: number; scopedBranchId?: number | null },
+) {
+  const lv = await decideLeave(id, decision, actor);
+  if (lv?.employeeId) {
+    const [employee] = await requireDb()
+      .select({ userId: employees.userId })
+      .from(employees)
+      .where(eq(employees.id, Number(lv.employeeId)))
+      .limit(1);
+    if (employee?.userId) {
+      await createAppNotification({
+        userId: Number(employee.userId),
+        kind: "LEAVE_STATUS",
+        title: decision === "approved" ? "تمت الموافقة على الإجازة" : "تم تحديث طلب الإجازة",
+        body: `${lv.leaveType} · ${lv.fromDate} — ${lv.toDate}`,
+        route: "/hr?tab=leaves",
+        eventKey: `leave:${id}:${decision}`,
+        entityType: "leaveRequest",
+        entityId: id,
+      }).catch(() => undefined);
+    }
+  }
+  return lv;
 }
 
 /**

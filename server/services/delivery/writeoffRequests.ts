@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import {
   deliveryCodWriteOffRequests,
   deliveryConsignments,
@@ -589,7 +589,8 @@ export async function rejectDeliveryCodWriteOff(
 
 export async function listDeliveryCodWriteOffRequests(
   actor: DeliveryWriteOffReviewActor,
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; branchId?: number | null },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (300) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; branchId?: number | null; order?: "ASC" | "DESC" },
 ) {
   assertReviewWriteOffAuthority(actor);
   if (options?.branchId != null) assertBranch(Number(options.branchId), actor);
@@ -627,6 +628,6 @@ export async function listDeliveryCodWriteOffRequests(
       options?.status ? eq(deliveryCodWriteOffRequests.status, options.status) : undefined,
       effectiveBranchId != null ? eq(deliveryCodWriteOffRequests.branchId, effectiveBranchId) : undefined,
     ))
-    .orderBy(desc(deliveryCodWriteOffRequests.id))
+    .orderBy(options?.order === "ASC" ? asc(deliveryCodWriteOffRequests.id) : desc(deliveryCodWriteOffRequests.id))
     .limit(300);
 }

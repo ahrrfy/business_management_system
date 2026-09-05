@@ -28,6 +28,14 @@
 
 import { WORK_ORDER_STATUSES, type WorkOrderStatus } from "./workOrderStatus";
 import { INVOICE_STATUSES, type InvoiceStatus } from "./invoiceStatus";
+import {
+  DELIVERY_CONSIGNMENT_STATUSES,
+  DELIVERY_MONEY_STATUSES,
+  DELIVERY_PARCEL_STATUSES,
+  type DeliveryConsignmentStatus,
+  type DeliveryMoneyStatus,
+  type DeliveryParcelStatus,
+} from "./deliveryStatuses";
 
 /**
  * طبيعةُ الانتقال.
@@ -41,14 +49,38 @@ export type AutomationMode =
 /** مثال: `"workOrder:IN_PROGRESS->DELIVERED"`. */
 export type TransitionKey = `${string}:${string}->${string}`;
 
-/** الكيانات المُغطّاة اليوم. إضافةُ كيانٍ ثالثٍ تلزمها إضافةُ قاموسه هنا وفي الحارس معاً. */
-export const AUTOMATION_ENTITIES = ["workOrder", "invoice"] as const;
+/**
+ * الكيانات المُغطّاة. إضافةُ كيانٍ تلزمها إضافةُ قاموسه هنا وفي الحارس (`ENTITIES` في
+ * `scripts/check-automation-registry.mjs`) معاً.
+ *
+ * م١ (PR-4، ٥/٩/٢٦): الإرساليةُ كيانٌ بثلاث حالاتٍ متعامدة (`shared/deliveryStatuses.ts`)، فتُسجَّل
+ * ثلاثةَ كياناتٍ لا واحداً — انتقالُ الطرد فيزيائياً غيرُ انتقال نقده غيرُ إغلاق مستنده.
+ * وإسنادُ البيع للتوصيل (`sales.create.delivery` — PR-1) **إنشاءٌ** لا انتقال: الطرد يولد
+ * `ASSIGNED/UNSETTLED/DISPATCHED` في معاملة البيع بقرار الكاشير (اختيارُ الجهة)، ويقترحه النظام
+ * بالمنطقة (`suggestPartyForZoneTx`) ولا يفرضه — فلا مفتاحَ له هنا لأنّ «من» لا تُوجد.
+ */
+export const AUTOMATION_ENTITIES = [
+  "workOrder",
+  "invoice",
+  "deliveryParcel",
+  "deliveryMoney",
+  "deliveryConsignment",
+] as const;
 export type AutomationEntity = (typeof AUTOMATION_ENTITIES)[number];
 
 export type WorkOrderTransitionKey = `workOrder:${WorkOrderStatus}->${WorkOrderStatus}`;
 export type InvoiceTransitionKey = `invoice:${InvoiceStatus}->${InvoiceStatus}`;
+export type DeliveryParcelTransitionKey = `deliveryParcel:${DeliveryParcelStatus}->${DeliveryParcelStatus}`;
+export type DeliveryMoneyTransitionKey = `deliveryMoney:${DeliveryMoneyStatus}->${DeliveryMoneyStatus}`;
+export type DeliveryConsignmentTransitionKey =
+  `deliveryConsignment:${DeliveryConsignmentStatus}->${DeliveryConsignmentStatus}`;
 /** ⭐ الاتحادُ الضيّق: كلّ طرفٍ من قاموسه. مفتاحٌ خارجه = خطأُ ترجمة، لا اكتشافٌ متأخّر. */
-export type KnownTransitionKey = WorkOrderTransitionKey | InvoiceTransitionKey;
+export type KnownTransitionKey =
+  | WorkOrderTransitionKey
+  | InvoiceTransitionKey
+  | DeliveryParcelTransitionKey
+  | DeliveryMoneyTransitionKey
+  | DeliveryConsignmentTransitionKey;
 
 /**
  * الحدّ الأدنى لطول التبرير. ليس مقياسَ جودة — **مقياسُ وجود**: يمنع `because: "يدويّ"`.
@@ -204,6 +236,188 @@ export const AUTOMATION_REGISTRY: Record<TransitionKey, AutomationMode> = {
     evidence:
       "نفسُ دليل `correctedByInvoiceId` في sale/correct.ts — والأصلُ يخرج من الإيراد بـ`VOIDED_INVOICE_STATUSES` فلا يُحتسب البيعُ مرّتين.",
   },
+
+  // ───────────────── الطرد فيزيائياً (deliveryConsignments.parcelStatus) — م١ PR-4 ─────────────────
+  // سلسلةُ البوّابة (قبول ⇒ استلام ⇒ خروج ⇒ تسليم) شهاداتُ المندوب على وقائع ميدانيّة؛ والكشفُ
+  // المستنديّ/تأكيدُ الكاشير يقفزان إلى DELIVERED بدليلٍ خارجيّ يُدخله بشر. الأتمتةُ الوحيدة هنا
+  // «تعذّرٌ بانقضاء SLA» (`staleSweep.autoFailStaleParcels`، خلف علَم `deliveryAutoFailSla`) —
+  // وتراجعُها إعادةُ الإسناد FAILED→ASSIGNED القائمة.
+
+  "deliveryParcel:ASSIGNED->ACCEPTED": {
+    kind: "MANUAL",
+    because:
+      "قبولُ الطرد إقرارُ المندوب في بوّابته (`courier.transitionConsignmentParcel`) بأنّه صار مسؤولاً عن طردٍ بعينه — لا حقلَ في النظام يُثبت أنّ الطرد صار بيده قبل أن يقول ذلك بنفسه.",
+  },
+  "deliveryParcel:ACCEPTED->PICKED_UP": {
+    kind: "MANUAL",
+    because:
+      "الاستلامُ الفعليّ للطرد من الرفّ مناولةٌ ماديّة يشهدها المندوب وحده؛ تسجيلُها آلياً عند القبول يُنتج طروداً «مستلَمة» ما زالت في المكتبة.",
+  },
+  "deliveryParcel:PICKED_UP->OUT_FOR_DELIVERY": {
+    kind: "MANUAL",
+    because:
+      "الخروجُ للتوصيل قرارُ المندوب بترتيب جولته؛ طردٌ استُلم صباحاً قد يخرج مساءً، ولا حدثَ في النظام يميّز الحالتين إلّا إعلانُه.",
+  },
+  "deliveryParcel:ASSIGNED->OUT_FOR_DELIVERY": {
+    kind: "MANUAL",
+    because:
+      "مناولةُ الموظّف للطرد يداً بيد (`staffTransition.staffHandoverConsignments`) لجهةٍ بلا بوّابة — الموظّف يشهد الخروج نفسه، وبلا شهادته لا يُعرف أخرج الطردُ أم بقي على الطاولة.",
+  },
+  "deliveryParcel:OUT_FOR_DELIVERY->DELIVERED": {
+    kind: "MANUAL",
+    because:
+      "ختمُ التسليم في بوّابة المندوب (`courier.confirmConsignmentDelivery`) يعني قبضَ COD من الزبون فعلاً؛ واقعةٌ ميدانيّة يشهدها المندوب، وختمُها آلياً يُقيّد نقداً لم يُقبض.",
+  },
+  "deliveryParcel:ASSIGNED->DELIVERED": {
+    kind: "MANUAL",
+    because:
+      "إثباتُ التسليم بكشف شركة التوصيل أو تأكيد الكاشير (`companyStatement.ts`) لطردٍ لم تسجّل الشركة له خطواتٍ وسيطة — الدليلُ مستندٌ خارجيّ يُدخله بشر ويُراجعه.",
+  },
+  "deliveryParcel:ACCEPTED->DELIVERED": {
+    kind: "MANUAL",
+    because:
+      "الدليلُ المستنديّ نفسه (كشف الشركة/تأكيد الكاشير) على طردٍ قُبل في البوّابة ثمّ صمتت — الكشفُ يسبق بقيّة السلسلة ولا يُختصر بدونه.",
+  },
+  "deliveryParcel:PICKED_UP->DELIVERED": {
+    kind: "MANUAL",
+    because:
+      "الكشفُ المستنديّ لطردٍ استُلم ولم يُعلَن خروجُه للتوصيل — إثباتُ الوصول يأتي من ورقة الشركة لا من حدثٍ في النظام.",
+  },
+  "deliveryParcel:ASSIGNED->FAILED": {
+    kind: "AUTO",
+    evidence:
+      "`staleSweep.autoFailStaleParcels`: `TIMESTAMPDIFF(DAY, dispatchedAt, NOW()) > deliveryParties.maxOpenParcelAgeDays` ولا `COD_COLLECTED` في `deliveryLedgerEntries` ولا إعلانَ رجوع ⇒ يُوسَم FAILED بحدث `AUTO_FAILED_SLA` ومهمّةٍ للمالك، والتراجعُ إعادةُ الإسناد FAILED→ASSIGNED. (تقريرُ المندوب الميدانيّ برفض الزبون يسبقه على المفتاح نفسه بسببه.)",
+  },
+  "deliveryParcel:ACCEPTED->FAILED": {
+    kind: "AUTO",
+    evidence:
+      "نفسُ دليل `staleSweep.autoFailStaleParcels` (عمرُ الطرد فوق `maxOpenParcelAgeDays` بلا قبض) على طردٍ قُبل في البوّابة ثمّ صمتت؛ الحدث `AUTO_FAILED_SLA` يحمل العمر والعتبة.",
+  },
+  "deliveryParcel:PICKED_UP->FAILED": {
+    kind: "AUTO",
+    evidence:
+      "دليل `staleSweep.autoFailStaleParcels` ذاته على طردٍ استُلم ولم يُختم تسليمُه ولا رجوعُه خلال `maxOpenParcelAgeDays` — الطردُ ضائعٌ حكماً حتى يُعاد إسناده.",
+  },
+  "deliveryParcel:OUT_FOR_DELIVERY->FAILED": {
+    kind: "AUTO",
+    evidence:
+      "دليل `staleSweep.autoFailStaleParcels` على طردٍ خرج للتوصيل وتجاوز `maxOpenParcelAgeDays` بلا `COD_COLLECTED`؛ وتعذّرُ التسليم من الميدان (`courier.failCourierDelivery`/`staffMarkFailed`) يسبقه بسببٍ مكتوب.",
+  },
+  "deliveryParcel:FAILED->ASSIGNED": {
+    kind: "MANUAL",
+    because:
+      "إعادةُ الإسناد بعد التعذّر (`parties.reassignDeliveryConsignment`) تختار جهةً أخرى أو محاولةً ثانية — قرارٌ يوازن سببَ التعذّر بتكلفة المحاولة، ولا يشتقّه حقل.",
+  },
+  "deliveryParcel:FAILED->RETURNED": {
+    kind: "MANUAL",
+    because:
+      "استلامُ الطرد الراجع وفحصُه (`returns.returnConsignment`) يُعيد المخزون ويردّ العربون — لا يُسجَّل قبل أن يرى الموظّف البضاعة بيده ويحكم على سلامتها.",
+  },
+  "deliveryParcel:ASSIGNED->RETURNED": {
+    kind: "MANUAL",
+    because:
+      "إرجاعُ طردٍ لم يخرج مع المندوب (`returns.returnConsignment` من ASSIGNED) قرارُ الموظّف بعد فحص البضاعة على الطاولة — لا حدثَ آليّ يعرف أنّ الطرد عاد.",
+  },
+  "deliveryParcel:ASSIGNED->CANCELLED": {
+    kind: "MANUAL",
+    because:
+      "إلغاءُ الإسناد (`cancellation.cancelDeliveryAssignment`) بسببٍ إلزاميّ: أخطأ الموظّفُ الجهةَ أم تراجع الزبون؟ التمييزُ يحدّد مسار الفاتورة بعده ولا يشتقّه حقل.",
+  },
+  "deliveryParcel:FAILED->CANCELLED": {
+    kind: "MANUAL",
+    because:
+      "إلغاءُ إسنادٍ متعذّر بدل إعادة إسناده — حكمٌ بأنّ الطلب انتهى (زبونٌ لا يُجيب) لا أنّ الجهة أخفقت؛ يحرّر التعرّض بـ`COD_RELEASED` بقرارٍ مكتوب.",
+  },
+
+  // ───────────────── نقدُ الطرد (deliveryConsignments.moneyStatus) — م١ PR-4 ─────────────────
+  // محورُ المال آليٌّ كالفاتورة: الحالةُ تُشتقّ من مبالغ التوريد/السداد، والقرارُ البشريّ الوحيد
+  // هو الشطب (خسارةٌ تُثبَت باعتماد).
+
+  "deliveryMoney:UNSETTLED->PARTIAL": {
+    kind: "AUTO",
+    evidence:
+      "`remittance.ts`: سطرُ توريدٍ مُحصَّلُه أقلُّ من المتبقّي الحيّ (`codAmount − collectedAmount − counterSettledAmount − عجزِ التسليم المُقيَّد`) ⇒ `moneyStatus='PARTIAL'` وحدث `MONEY_PARTIAL` — الحسابُ من الأسطر لا من زرّ.",
+  },
+  "deliveryMoney:UNSETTLED->SETTLED": {
+    kind: "AUTO",
+    evidence:
+      "`remittance.ts`: مجموعُ التوريد + المسدَّد كاونترياً + عجزُ التسليم المُقيَّد ≥ `codAmount` ⇒ `SETTLED` وحدث `MONEY_SETTLED`؛ أو سدادٌ كاونتريّ يُصفّر المتبقّي بلا عهدةٍ معلّقة في الدفتر (`counterCollection.ts`).",
+  },
+  "deliveryMoney:PARTIAL->SETTLED": {
+    kind: "AUTO",
+    evidence:
+      "توريدٌ متمِّم يرفع `collectedAmount` حتى يبلغ `codAmount` (`remittance.ts`، شرطُ الإغلاق نفسه) — الإغلاقُ نتيجةٌ حسابيّة لتوريدٍ اعتمده بشر.",
+  },
+  "deliveryMoney:UNSETTLED->CANCELLED": {
+    kind: "AUTO",
+    evidence:
+      "يتبع إلغاءَ الإسناد أو إرجاعَ الطرد (`cancellation.ts`/`returns.ts`) المشروطَين بـ`collectedAmount = 0`: لا مالَ يُسوَّى فتُغلق حالةُ النقد مع الطرد بلا قرارٍ ثانٍ.",
+  },
+  "deliveryMoney:UNSETTLED->WRITTEN_OFF": {
+    kind: "MANUAL",
+    because:
+      "شطبُ عهدة طردٍ (`settle.writeOffDeliveryShortfallInTx`) خسارةٌ على المكتبة تُثبَت بمحضرٍ ومرفق واعتمادٍ ثانٍ — قرارُ إقرارٍ بضياع نقدٍ لا يشتقّه أيّ حقل.",
+  },
+  "deliveryMoney:PARTIAL->WRITTEN_OFF": {
+    kind: "MANUAL",
+    because:
+      "شطبُ ما تبقّى من طردٍ وُرِّد جزئياً — نفسُ مستند الإثبات والاعتماد (`settle.ts`)، والحكمُ بأنّ الباقي لن يعود حكمٌ بشريّ.",
+  },
+
+  // ───────────────── إغلاقُ المستند (deliveryConsignments.status) — م١ PR-4 ─────────────────
+  // الجدولُ الحاكم في الخادم `CONSIGNMENT_STATUS_TRANSITIONS` (`delivery/lifecycle.ts`)؛ يحرس تطابقَه
+  // مع هذه المفاتيح `deliveryConsignmentTransitions.test.ts` في الاتّجاهين.
+  // ⚠️ **أتمتةٌ على الدفتر لا على العمود**: الإرجاعُ المُعلَن (`declaredReturn.ts`) يحرّر تعرّضَ الطرد
+  // بقيد `COD_RELEASED` آلياً لحظة الإعلان **بلا أيّ انتقال حالة** (الطردُ ما زال بالطريق حتى يصل)
+  // — فلا مفتاحَ له هنا لأنّ السجلّ يُفهرَس بالانتقالات؛ أثرُه الماليّ مشروحٌ في دليل
+  // `deliveryMoney:UNSETTLED->CANCELLED` الذي يتبعه عند الاستلام. وكذلك إسنادُ البيع للتوصيل لا
+  // يُغيّر حالةَ الفاتورة (تبقى PENDING بجذر ائتمانٍ `paymentMode=COD` — PR-1) فلا مفتاحَ `invoice:*`.
+
+  "deliveryConsignment:DISPATCHED->PARTIAL": {
+    kind: "AUTO",
+    evidence:
+      "`remittance.ts`: توريدٌ لا يبلغ `codAmount` ⇒ `status='PARTIAL'` مع `moneyStatus` — الإرسالية تبقى حيّةً في طابور التوريد بحكم الأرقام.",
+  },
+  "deliveryConsignment:DISPATCHED->DELIVERED": {
+    kind: "AUTO",
+    evidence:
+      "`remittance.ts` حين يكتمل التوريد، أو `counterCollection.ts` حين يُصفّر السدادُ الكاونتريّ المتبقّي بلا عهدةٍ معلّقة، أو `courier.confirmConsignmentDelivery` لطردٍ `codAmount = 0` — الإغلاقُ الماليّ مشتقٌّ من المبالغ.",
+  },
+  "deliveryConsignment:PARTIAL->DELIVERED": {
+    kind: "AUTO",
+    evidence:
+      "توريدٌ متمِّم يُكمل `codAmount` (`remittance.ts`) ⇒ الإغلاقُ الماليّ للمستند يتبع الأرقام لا زرّاً.",
+  },
+  "deliveryConsignment:DISPATCHED->CANCELLED": {
+    kind: "MANUAL",
+    because:
+      "إلغاءُ الإسناد (`cancellation.ts`) قرارٌ بسببٍ مكتوب يحرّر التعرّض — والسببُ يحدّد ما يلي للفاتورة (إعادةُ إسنادٍ أم إلغاءُ بيع).",
+  },
+  "deliveryConsignment:DISPATCHED->RETURNED": {
+    kind: "MANUAL",
+    because:
+      "استلامُ المرتجع وفحصُه (`returns.returnConsignment`) يُعيد المخزون ويعكس البيع ويردّ العربون — لا يقع قبل أن يحكم الموظّف على البضاعة الراجعة.",
+  },
+  "deliveryConsignment:DISPATCHED->WRITTEN_OFF": {
+    kind: "MANUAL",
+    because:
+      "الشطبُ الموجَّه لإرساليةٍ (`settle.ts`) يُقفلها بخسارةٍ مُثبَتة — قرارُ اعتمادٍ ثانٍ لا حكمٌ آليّ.",
+  },
+  "deliveryConsignment:PARTIAL->WRITTEN_OFF": {
+    kind: "MANUAL",
+    because:
+      "شطبُ متبقّي إرساليةٍ وُرِّدت جزئياً (`settle.ts`) بعد أن تعذّر توريدُ الباقي — إقرارٌ بشريّ بالخسارة.",
+  },
+  "deliveryConsignment:CANCELLED->DISPATCHED": {
+    kind: "MANUAL",
+    because:
+      "إعادةُ تنشيط إرساليةٍ ملغاة بإسناد الفاتورة نفسها من جديد (`dispatchInvoice.ts` مسار `already`) — اختيارُ الجهة والأجرة قرارُ الكاشير.",
+  },
+  "deliveryConsignment:RETURNED->DISPATCHED": {
+    kind: "MANUAL",
+    because:
+      "إعادةُ إسناد أمر شغلٍ أُرجع طردُه بلا تحصيل (`dispatch.ts` مسار `reusableCn`): الصفُّ المرتجَع يُعاد تنشيطه في مكانه بجهةٍ وأجرةٍ يختارهما الموظّف — قرارُ محاولةٍ ثانية بعد فحص البضاعة، لا اشتقاقٌ من حقل.",
+  },
 } satisfies Partial<Record<KnownTransitionKey, AutomationMode>>;
 
 /**
@@ -211,10 +425,19 @@ export const AUTOMATION_REGISTRY: Record<TransitionKey, AutomationMode> = {
  * الحالةُ غير المُغطّاة تمرّ بالصمت وهو بالضبط ما بُني السجلّ ليمنعه.
  */
 export const STATES_WITHOUT_TRANSITIONS: Partial<
-  Record<`workOrder:${WorkOrderStatus}` | `invoice:${InvoiceStatus}`, string>
+  Record<
+    | `workOrder:${WorkOrderStatus}`
+    | `invoice:${InvoiceStatus}`
+    | `deliveryParcel:${DeliveryParcelStatus}`
+    | `deliveryMoney:${DeliveryMoneyStatus}`
+    | `deliveryConsignment:${DeliveryConsignmentStatus}`,
+    string
+  >
 > = {
   "invoice:CONFIRMED":
     "قيمةٌ باقيةٌ في الـenum لا يكتبها أيّ مسارِ بيعٍ اليوم: حالةُ الفاتورة مشتقّةٌ من المال وحده (PENDING/PARTIALLY_PAID/PAID) أو من إبطالٍ موثَّق. وُصفت في Invoices.tsx بـ«رمزٌ ميت»، وتبقى في INVOICE_STATUS_AR كي لا يتسرّب رمزٌ إنجليزيّ لو ظهرت في بياناتٍ قديمة.",
+  "deliveryMoney:NOT_APPLICABLE":
+    "قيمةٌ ابتدائيّة تُضبط لحظة الإسناد لطردٍ بلا COD (`codAmount = 0`: فاتورةٌ مدفوعةٌ سلفاً — `dispatchInvoice.ts`/`dispatch.ts`)؛ لا مالَ يتحرّك فلا انتقالَ منها ولا إليها، ويُغلق المستندُ DELIVERED عند ختم التسليم.",
 };
 
 /** يُفكّك المفتاح إلى أطرافه، أو `null` إن لم يكن على الشكل `كيان:من->إلى`. */
@@ -264,6 +487,9 @@ export function autoTransitionsWithoutEvidence(): TransitionKey[] {
 export const ENTITY_STATUSES: Record<AutomationEntity, readonly string[]> = {
   workOrder: WORK_ORDER_STATUSES,
   invoice: INVOICE_STATUSES,
+  deliveryParcel: DELIVERY_PARCEL_STATUSES,
+  deliveryMoney: DELIVERY_MONEY_STATUSES,
+  deliveryConsignment: DELIVERY_CONSIGNMENT_STATUSES,
 };
 
 /** حالاتُ الكيان التي لا يذكرها أيُّ مفتاحٍ (طرفاً أوّلَ أو ثانياً) ولا مُبرَّرٌ غيابُها. */

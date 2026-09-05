@@ -29,7 +29,8 @@
  *    أو بذرةٍ أو جدولٍ آخر). ⇒ انتقالٌ حقيقيٌّ في خدمةٍ غيرُ مُسجَّلٍ هنا **يمرّ** ما لم يُدخِل
  *    حالةً جديدة أو زوجاً في `WO_NEXT_STATUS`. هذه حدودُ الحارس، لا تُبنَ عليه ثقةٌ أوسع.
  *  · **لا يتحقّق أنّ ما سُجّل `AUTO` منفَّذٌ آلياً فعلاً** في الشيفرة — تعاقدُ نيّةٍ لا تعاقدُ تنفيذ.
- *  · **ولا يُغطّي غير الكيانَين** أمرِ الشغل وفاتورةِ البيع (`ENTITIES` أدناه).
+ *  · **ولا يُغطّي غير الكيانات المُدرَجة** في `ENTITIES` أدناه (أمرُ الشغل، فاتورةُ البيع،
+ *    وحالاتُ الإرسالية الثلاث منذ م١ PR-4).
  *
  * ## ويفشل **مغلقاً** عند تعذّر التحليل
  * حارسٌ يمرّ صامتاً حين لا يفهم مُدخَله أسوأُ من غيابه: يمنح ثقةً ويأخذ انتباهاً. فإن عاد
@@ -47,10 +48,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SELFTEST_ONLY = process.argv.slice(2).includes("--selftest");
 
-/** الكيانات المُغطّاة ومصدرُ حالات كلٍّ منها. إضافةُ كيانٍ تُعدَّل هنا وفي السجلّ معاً. */
+/**
+ * الكيانات المُغطّاة ومصدرُ حالات كلٍّ منها. إضافةُ كيانٍ تُعدَّل هنا وفي السجلّ معاً.
+ * م١ (PR-4، ٥/٩/٢٦): الإرساليةُ بثلاث حالاتٍ متعامدة (`shared/deliveryStatuses.ts` — مرآةُ
+ * تعدادات المخطّط يحرسها `deliveryStatuses.test.ts`).
+ */
 const ENTITIES = {
   workOrder: { file: "shared/workOrderStatus.ts", array: "WORK_ORDER_STATUSES" },
   invoice: { file: "shared/invoiceStatus.ts", array: "INVOICE_STATUSES" },
+  deliveryParcel: { file: "shared/deliveryStatuses.ts", array: "DELIVERY_PARCEL_STATUSES" },
+  deliveryMoney: { file: "shared/deliveryStatuses.ts", array: "DELIVERY_MONEY_STATUSES" },
+  deliveryConsignment: { file: "shared/deliveryStatuses.ts", array: "DELIVERY_CONSIGNMENT_STATUSES" },
 };
 const REGISTRY_FILE = "shared/automationRegistry.ts";
 

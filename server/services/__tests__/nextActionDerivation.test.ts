@@ -61,7 +61,9 @@ describe("nextActionDerivation — SALE_INVOICE", () => {
       NOW,
     );
     expect(na?.owner).toEqual({ kind: "COUNTERPARTY", label: "فارس السرعة" });
-    expect(na?.href).toBe("/delivery");
+    // LC02: الهدفُ مُهيكَل والرابطُ مشتقٌّ منه — بلا رقم إرسالية في الصفّ يفتح تبويب «قيد التوصيل».
+    expect(na?.target).toEqual({ docType: "DELIVERY_CONSIGNMENT", docId: null, action: "COLLECT_ON_DELIVERY" });
+    expect(na?.href).toBe("/delivery?tab=transit");
   });
 
   it("SUPERSEDED مع بديلٍ ⇒ الرابط يقود إلى الفاتورة البديلة بلا حجب", () => {
@@ -143,7 +145,9 @@ describe("nextActionDerivation — WORK_ORDER", () => {
       blockingTaskLabel: null,
     });
     expect(na?.owner.kind).toBe("COUNTERPARTY");
-    expect(na?.href).toBe("/delivery");
+    // LC02: رقمُ الإرسالية محمولٌ في الهدف والرابط — يفتح الطردَ بعينه لا الشاشة العامّة.
+    expect(na?.target).toEqual({ docType: "DELIVERY_CONSIGNMENT", docId: 501, action: "TRACK" });
+    expect(na?.href).toBe("/delivery?tab=transit&consignment=501");
   });
 
   it("CANCELLED ⇒ نهائيّة بسببٍ مُعلَن", () => {

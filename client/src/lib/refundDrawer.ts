@@ -7,6 +7,8 @@
  * [`shared/refundPreflight.ts`](../../../shared/refundPreflight.ts) ونقطتَي التمهيد الخادميّتين.
  *
  * الباقي هنا **عرضٌ خالص**: أيُّ درجٍ يُختار افتراضاً، ومتى يُحجَب الإرسال، ومتى يُحذَّر من عجز.
+ * يستهلكه `useRefundDrawer`/`RefundDrawerField` داخل المنتقي الموحَّد
+ * [`components/ui/RefundRailPicker.tsx`](../components/ui/RefundRailPicker.tsx) وحده (م٢ ق١٠ب).
  */
 import { D } from "@/lib/money";
 

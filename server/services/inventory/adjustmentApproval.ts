@@ -8,7 +8,7 @@ import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   branchStock,
   openingModeSettings,
@@ -544,6 +544,8 @@ export async function rejectStockAdjustment(id: number, actor: Actor, reason: st
 export async function listStockAdjustmentRequests(scope: {
   branchId?: number | null;
   status?: "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
+  /** `ASC` = الأقدم أوّلاً لصندوق القرارات — القصّ (500) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  order?: "ASC" | "DESC";
 }) {
   const db = requireDb();
   const creator = users;
@@ -583,7 +585,7 @@ export async function listStockAdjustmentRequests(scope: {
       and(eq(branchStock.variantId, stockAdjustmentRequests.variantId), eq(branchStock.branchId, stockAdjustmentRequests.branchId)),
     )
     .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(stockAdjustmentRequests.id))
+    .orderBy(scope.order === "ASC" ? asc(stockAdjustmentRequests.id) : desc(stockAdjustmentRequests.id))
     .limit(500);
   return rows.map((row) => ({
     ...row,

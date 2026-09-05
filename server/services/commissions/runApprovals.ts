@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import {
   commissionRunApprovalRequests,
   commissionRunLines,
@@ -482,7 +482,8 @@ export async function rejectCommissionRunRequest(
 export async function listCommissionRunApprovalRequests(
   actor: Actor,
   readableScope: number | null,
-  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number },
+  /** `order: "ASC"` = الأقدم أوّلاً لصندوق القرارات — القصّ (300) بالأحدث يُسقط أكثر الطلبات تأخّراً. */
+  options?: { status?: "PENDING" | "APPROVED" | "REJECTED" | "STALE"; runId?: number; order?: "ASC" | "DESC" },
 ) {
   void actor;
   const db = requireDb();
@@ -513,6 +514,6 @@ export async function listCommissionRunApprovalRequests(
         ? undefined
         : eq(commissionRunApprovalRequests.scopeBranchId, readableScope),
     ))
-    .orderBy(desc(commissionRunApprovalRequests.id))
+    .orderBy(options?.order === "ASC" ? asc(commissionRunApprovalRequests.id) : desc(commissionRunApprovalRequests.id))
     .limit(300);
 }

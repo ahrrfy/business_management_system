@@ -2,7 +2,7 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { couponRedemptions, coupons, customers, deliveryConsignments, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { couponRedemptions, coupons, customers, deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
 import { assertDeliveryFeeHeldConsistent, recordDeliveryFeeHeldInTx } from "../delivery/feeHeld";
 import {
@@ -90,7 +90,20 @@ function withDeliveryDefaults(input: CreateSaleInput): CreateSaleInput {
       }),
     });
   }
-  if (!hasDelivery) return input;
+  // Codex #1006 P1 — أمانةُ أجرةٍ بلا توصيلٍ في نفس البيع = أمانةٌ يتيمة: لا إرساليّةَ تُبرّئها،
+  // فإلغاءُ الفاتورة قبل أيّ إسنادٍ لاحق يعاملها `cancelSaleInTx` إيصالَ بيعٍ عاديّاً فيردّها
+  // `PAYMENT_OUT` ويترك التزام `DELIVERY_FEE_HELD` غير معكوسٍ ويُفسِد `customers.currentBalance`.
+  // نُلزم الإسنادَ في نفس البيع فلا تبقى أمانةٌ محجوزةٌ بلا مسار تبرئة (نصّ المالك: لا دينار بلا مسار).
+  if (!hasDelivery) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر قبض أمانة أجرة التوصيل بلا إسناد توصيل",
+        why: "أرسلت مبلغ أمانة أجرة توصيل دون بيانات توصيلٍ في نفس البيع؛ الأمانة المحجوزة تبقى بلا إرساليّةٍ تُبرّئها، فيعلق مالُ الزبون بلا مسار ردٍّ عند أيّ إلغاء",
+        doThis: "أرسل بيانات التوصيل (الجهة والأجرة) مع الأمانة في نفس الطلب، أو احذف مبلغ الأمانة",
+      }),
+    });
+  }
   return { ...input, codDispatchPending: true, paymentMode: "COD" };
 }
 
@@ -101,7 +114,12 @@ export async function createSaleInTx(
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
     const input = withDeliveryDefaults(rawInput);
-    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
+    // Codex #1006 P1 — `paymentMode` مُشتقٌّ من وجود `delivery` (COD) لا معلومةٌ مستقلّة، فإدراجُه في
+    // بصمة idempotency يكسر تكرارَ بيعٍ التزم قبل نشر م١ (بصمتُه المخزَّنة بلا paymentMode) بـCONFLICT
+    // بدل replay عبر النشر ⇒ يعيد الموظّف البيعَ بمفتاحٍ جديد = فاتورةٌ مكرَّرة. نستبعده من البصمة
+    // وحدها؛ `delivery` نفسها فيها تحفظ التمييز، فحمايةُ «نفس المفتاح بحمولةٍ مختلفة» تبقى.
+    const { paymentMode: _fingerprintExcludedPaymentMode, ...fingerprintInput } = input;
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(fingerprintInput) : null;
     // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
     if (input.payment) {
       assertPosPaymentMethodEnabled(input.payment.method);
@@ -906,7 +924,10 @@ export async function createSaleInTx(
       paymentMethod: input.payment?.method ?? null,
       // paymentMode (٢٨/٨/٢٦، هجرة 0276): افتراضي PREPAID للحفاظ على السلوك الحاليّ لكلّ فاتورةٍ
       // بلا مسار COD صريح. يُمرَّر من `checkoutReception` عند طلب توصيلٍ نقديٍّ عند التسليم.
-      paymentMode: input.paymentMode ?? "PREPAID",
+      // ⚠️ Codex #1006 P2 — COD يعني «تحصيلٌ عند التسليم»؛ فبيعٌ بتوصيلٍ **مدفوعٍ كاملاً** عند الإنشاء
+      // (لا متبقٍّ تحمله الإرساليّة، ومنه فاتورةُ المطبعة المدفوعة في السلّة المختلطة) هو PREPAID لا COD.
+      // نشتقّه من وجود متبقٍّ فعليّ لا من وجود التوصيل وحده (`withDeliveryDefaults` يختمه COD تفاؤلياً).
+      paymentMode: input.paymentMode === "COD" && unpaid.lte(0) ? "PREPAID" : (input.paymentMode ?? "PREPAID"),
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
       // ٥/٨ — زبونٌ عابر: مرجعٌ نصّيّ على الفاتورة بلا إنشاء عميل (customerId يبقى NULL ⇒ لا AR).
@@ -1367,9 +1388,29 @@ export async function createSaleInTx(
     // (قرار المالك ٦/٨): متبقّي فاتورة التوصيل عهدةٌ على المندوب تُرفع في اللحظة التي تُنشأ فيها
     // الفاتورة — لا لحظةَ واحدة يكون فيها مالٌ بلا مالك: إمّا (فاتورة + إرسالية) معاً وإمّا لا شيء.
     // الترتيب مقصود: إيصال الأمانة أوّلاً — `dispatchInvoiceInTx` يشترط وجوده لقبول COUNTER.
+    // Codex #1006/#1012 P2 — احلل أجرةَ الجهة الافتراضيّة مرّةً هنا لتقرأها بوّابةُ الأمانة والإسناد
+    // معاً: `delivery.fee = null` يعني `deliveryParties.defaultFee`؛ والمقارنةُ بصفرٍ قبل الحلّ كانت
+    // ترفض أمانةً = الأجرة الافتراضية (بوّابة الأمانة)، ثمّ ترفض الأمانة الغائبة (بوّابة COUNTER في الإسناد).
+    let resolvedDeliveryFee: string | null = null;
+    if (input.delivery) {
+      resolvedDeliveryFee = input.delivery.fee ?? null;
+      if (resolvedDeliveryFee == null) {
+        const dp = (
+          await tx
+            .select({ defaultFee: deliveryParties.defaultFee })
+            .from(deliveryParties)
+            .where(eq(deliveryParties.id, input.delivery.partyId))
+            .limit(1)
+        )[0];
+        resolvedDeliveryFee = dp?.defaultFee ?? "0";
+      }
+    }
     const feeHeldD = round2(money(input.deliveryFeeHeld ?? "0"));
     if (feeHeldD.gt(0)) {
-      assertDeliveryFeeHeldConsistent(feeHeldD, input.delivery ?? null);
+      assertDeliveryFeeHeldConsistent(
+        feeHeldD,
+        input.delivery ? { fee: resolvedDeliveryFee, feeCollection: input.delivery.feeCollection ?? null } : null,
+      );
       await recordDeliveryFeeHeldInTx(tx, {
         branchId: input.branchId,
         shiftId: input.shiftId ?? null,
@@ -1386,8 +1427,9 @@ export async function createSaleInTx(
         {
           invoiceId,
           partyId: input.delivery.partyId,
-          // `null` ⇒ الأجرة الافتراضية للجهة (`deliveryParties.defaultFee`) لا صفراً صامتاً.
-          deliveryFee: input.delivery.fee ?? null,
+          // م١: الأجرة المحلولة (الافتراضية إن غابت `delivery.fee`) — تقرأها بوّابةُ COUNTER وسطرُ
+          // الأجرة معاً، فلا تختلف قيمةُ الفحص عن قيمة الإسناد (Codex #1006/#1012 P2).
+          deliveryFee: resolvedDeliveryFee,
           feeCollection: input.delivery.feeCollection ?? "COURIER",
           recipientName: input.delivery.recipientName ?? input.contactName ?? null,
           recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,

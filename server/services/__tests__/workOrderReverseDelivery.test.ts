@@ -25,6 +25,7 @@ import { dispatchToDelivery } from "../delivery/dispatch";
 import { money, round2 } from "../money";
 
 const TABLES = [
+  "documentEffects",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties",
   "workOrderControlRequests", "workOrderDesignApprovals", "workOrderDesignRevisions",
@@ -171,6 +172,26 @@ async function requestReverse(args: {
   return { preflight, request };
 }
 
+/** Σ لكلّ نوعٍ في نطاق `delivery` على مستند أمر الشغل — يجب أن يكون صفراً لما عُكس كاملاً. */
+async function deliveryEffectSums(workOrderId: number): Promise<Record<string, { amount: string; rows: number }>> {
+  const rows = await db()
+    .select({
+      kind: s.documentEffects.effectKind,
+      amount: sql<string>`SUM(${s.documentEffects.signedAmount})`,
+      rows: sql<number>`COUNT(*)`,
+    })
+    .from(s.documentEffects)
+    .where(and(
+      eq(s.documentEffects.documentType, "WORK_ORDER"),
+      eq(s.documentEffects.documentId, workOrderId),
+      eq(s.documentEffects.scope, "delivery"),
+    ))
+    .groupBy(s.documentEffects.effectKind);
+  const out: Record<string, { amount: string; rows: number }> = {};
+  for (const r of rows) out[r.kind] = { amount: money(r.amount ?? 0).toFixed(4), rows: Number(r.rows ?? 0) };
+  return out;
+}
+
 async function approveReverse(workOrderId: number, reopen = false, reviewer = REVIEWER) {
   const { preflight, request } = await requestReverse({ workOrderId, reopen });
   const approval = await approveWorkOrderControlRequest(Number(request.id), reviewer, "تمت مراجعة الدليل");
@@ -262,6 +283,56 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]!.currentBalance).toBe("0.00");
     const out = await db().select().from(s.receipts).where(and(eq(s.receipts.invoiceId, order.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED")));
     expect(round2(out.reduce((sum, row) => sum.plus(money(row.amount)), money(0))).toFixed(2)).toBe("10000.00");
+    // ⭐ ق٧: العكسُ مرّ بمحرّك العكس منفِّذاً — سجلُّ الأثر متوازنٌ نوعاً نوعاً (المصدرُ ذو الردّ
+    // السابق صُولح بابنِ فرقٍ ثمّ عُكس متبقّيه)، وصفُّ REVERSE للردّ يشير إلى إيصال صرفٍ حقيقيّ.
+    const sums = await deliveryEffectSums(order.workOrderId);
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(sums.PAID_AMOUNT!.rows).toBeGreaterThanOrEqual(2);
+    expect(sums.CUSTOMER_BALANCE!.amount).toBe("0.0000");
+    const refundReverse = (await db().select().from(s.documentEffects).where(and(
+      eq(s.documentEffects.documentType, "WORK_ORDER"), eq(s.documentEffects.documentId, order.workOrderId),
+      eq(s.documentEffects.effectKind, "PAID_AMOUNT"), eq(s.documentEffects.phase, "REVERSE"),
+      sql`JSON_EXTRACT(${s.documentEffects.payloadJson}, '$.reconciled') IS NULL`,
+    )))[0]!;
+    expect(refundReverse.effectTable).toBe("receipts");
+    expect(out.map((r) => Number(r.id))).toContain(Number(refundReverse.effectRowId));
+  });
+
+  it("⭐ بلا وردية استقبال مفتوحة عند الاعتماد: الردّ النقديّ يخرج من الخزينة بصفة المعتمِد (المفتاح الناقص) ولا يسقط الاعتماد", async () => {
+    const order = await deliveredOrder({ key: "treasury-fallback", deposit: "10000.00" });
+    // تمويلُ الخزينة ثمّ إقفالُ وردية الاستقبال الوحيدة (قُبض العربون فيها) قبل الطلب.
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "100000.00", paymentMethod: "CASH",
+      status: "COMPLETED", approvalStatus: "APPROVED", referenceNumber: "TREASURY-FUND-REVERSE", createdBy: 1,
+    } as never);
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await approveReverse(order.workOrderId);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
+    expect(invoice.status).toBe("RETURNED");
+    expect(invoice.paidAmount).toBe("0.00");
+    const out = await db().select().from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, order.invoiceId), eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "COMPLETED"),
+    ));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.cashBucket).toBe("TREASURY");
+    expect(out[0]!.shiftId).toBeNull();
+    expect(out[0]!.amount).toBe("10000.00");
+    // الأثرُ متوازن: المقبوضُ رُدّ كاملاً من الخزينة، والقيدُ والذمّةُ صفر.
+    const sums = await deliveryEffectSums(order.workOrderId);
+    expect(sums.PAID_AMOUNT!.amount).toBe("0.0000");
+    expect(sums.LEDGER_ENTRY!.amount).toBe("0.0000");
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]!.currentBalance).toBe("0.00");
+  });
+
+  it("درجٌ صريحٌ أُغلق بين الطلب والاعتماد لا يسقط إلى الخزينة صامتاً — يُرفض بسببه", async () => {
+    const order = await deliveredOrder({ key: "explicit-closed-drawer", deposit: "10000.00" });
+    // الطلبُ يسمّي الدرج 1 وهو مفتوح؛ ثمّ يُقفل قبل الاعتماد (بوّابةُ الطلب نفسها ترفض درجاً مغلقاً مسبقاً).
+    const { request } = await requestReverse({ workOrderId: order.workOrderId, refundShiftId: 1 });
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, 1));
+    await expect(approveWorkOrderControlRequest(Number(request.id), REVIEWER, "مراجعة"))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
   });
 
   it("وردّيتان نقديتان تفرضان اختيار درج صريح", async () => {
@@ -283,6 +354,11 @@ describe("حوكمة عكس تسليم أمر الشغل", () => {
     await approveReverse(order.workOrderId, reopen);
     let invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, order.invoiceId)))[0]!;
     expect(invoice.paidAmount).toBe("10000.00");
+    // ق٧: المالُ لم يخرج ⇒ أثرُ المقبوض يبقى مفتوحاً **بإعلان** (APPLY بلا REVERSE) لا Σ=0 كاذباً.
+    const sumsPending = await deliveryEffectSums(order.workOrderId);
+    expect(sumsPending.PAID_AMOUNT!.amount).toBe("10000.0000");
+    expect(sumsPending.PAID_AMOUNT!.rows).toBe(1);
+    expect(sumsPending.LEDGER_ENTRY!.amount).toBe("0.0000");
     const pending = (await db().select().from(s.receipts).where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING"))))[0]!;
     await approveWorkOrderCancellationRefund(Number(pending.id), OWNER, `CARD-${reopen}`, {
       user: { id: OWNER.userId, branchId: null } as never,

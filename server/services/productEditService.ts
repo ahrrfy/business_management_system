@@ -9,22 +9,27 @@
  * (متغيّر×وحدة)**. لا يلمس المخزون — أرصدة الفروع تُدار عبر شاشات الجرد/الحركات.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
 import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import type { VariantKind } from "../../shared/variantDisplay";
-import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
-import { postCostRevaluation } from "./costRevaluation";
-import { lockInventoryVariants } from "./inventory/stockLock";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
+// م٦ (D5): الحرّاس السبعة مصدرُها الواحد `./catalog/productUpdateGuards` — يتشاركها هذا المسار (القالب
+// المشترك) ومسارُ معرّف الوحدة في `catalog/productUpdate.ts`. لا حارسَ يُكتب هنا بيدٍ بعد اليوم.
 import {
-  assertNoActiveOnlineOrderUnitChanges,
-  lockProductUnitsForOnlineAllocation,
-} from "./catalog/variantAvailability";
+  assertBaseUnitStableAndRevalueCost,
+  assertBundleEditShape,
+  assertHasVariants,
+  loadProductForUpdateOrThrow,
+  lockUnitsAndAssertNoActiveOnlineOrderChanges,
+  lockVariantsForUpdate,
+  logUnitPriceChanges,
+  snapshotProductBeforeUpdate,
+} from "./catalog/productUpdateGuards";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
@@ -32,255 +37,15 @@ import { extractInsertId } from "../lib/insertId";
 import { rejectLegacyCatalogMediaWrite } from "./catalog/mediaWriteGuard";
 
 /* ============================ القراءة (للتعديل) ============================ */
-
-export interface VariantEditUnit {
-  unitName: string;
-  conversionFactor: string;
-  isBaseUnit: boolean;
-  isStoreSaleUnit: boolean;
-  retail: string; // سعر المفرد (RETAIL) — فارغ إن لم يُعرَّف
-  wholesale: string; // سعر الجملة (WHOLESALE)
-  government: string; // سعر الحكومي (GOVERNMENT) — يجب أن يُعاد إرساله عند الحفظ وإلّا حُذف (upsert يمسح ثم يُدرِج)
-}
-
-export interface VariantEditRow {
-  id: number;
-  sku: string;
-  /** نوع المتغيّر (م٣): تنويعة لون/قياس أو بديلٌ مستقلّ. */
-  variantKind: VariantKind;
-  /** اسم البديل (للبدائل) أو الاسم الوصفيّ (اختياريّ للتنويعات). */
-  variantName: string | null;
-  color: string | null;
-  /** لون العرض الحقيقي «#RRGGBB» (اختيار صريح) أو null ⇒ يُستنتَج من الاسم. */
-  colorHex: string | null;
-  size: string | null;
-  costPrice: string;
-  /** سعر مفرد وحدة الأساس لهذا المتغيّر — لكشف «السعر الخاص» عند التحميل (يمنع طمسه عند الحفظ). */
-  baseRetail: string;
-  reorderPoint: number;
-  minStock: number;
-  isActive: boolean;
-  /** باركود مستقل لكل وحدة, مفتاحه اسم الوحدة. */
-  unitBarcodes: Record<string, string>;
-  /** رصيد الفرع الحالي لكل فرع (قراءة فقط في التعديل). */
-  stockByBranch: Record<number, number>;
-  /** صورة هذا اللون (data URL) أو null. */
-  image: string | null;
-}
-
-/** صورة على مستوى المنتج (variantId=NULL) — مشتركة لكل المتغيّرات، تُحرَّر في شاشة التعديل. */
-export interface ProductImageRow {
-  id: number;
-  /** data URL مضغوط (نفس ما يُخدَم عبر /api/img/product) — يُعرَض مباشرةً في رافع الصور. */
-  url: string;
-  isPrimary: boolean;
-  sortOrder: number;
-}
-
-export interface ProductForVariantEdit {
-  id: number;
-  name: string;
-  productType: string | null;
-  brand: string | null;
-  modelName: string | null;
-  description: string | null;
-  internalName: string | null;
-  storeTitle: string | null;
-  seoTitle: string | null;
-  shortTitle: string | null;
-  posLabel: string | null;
-  invoiceLabel: string | null;
-  marketingCopy: string | null;
-  categoryId: number | null;
-  isCustomizable: boolean;
-  allowAutoCartRecommendations: boolean;
-  isService: boolean;
-  /** «يُباع بالطلب» (0318): يُسمح ببيعه قبل توريده؛ يُغذَّى بشراءٍ من مورّد أو إنتاجٍ داخليّ. */
-  allowBackorder: boolean;
-  /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
-  isBundle: boolean;
-  isActive: boolean;
-  // ٢٤/٨ — متابعةُ PR #755 (هجرة 0262): توجيهُ العرض في نقاط البيع قابلٌ للتحرير بعد الإنشاء.
-  // كان مُقتصراً على ServiceForm ⇒ لا وسيلةَ لإخفاء خدمةٍ عن كاشير معيّن دون تعطيلها كلياً.
-  // ProductEdit يعرضهما تبديلَين مماثلَين لتبديلَي ServiceForm للاتساق.
-  showInReception: boolean;
-  showInPrintPos: boolean;
-  // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض) — للبانر العلوي وإعادة تسمية «التكلفة»→«حصة المودِع».
-  isConsignment: boolean;
-  consignorId: number | null;
-  consignorName: string | null;
-  /** قالب الوحدات المشترك — مُشتقّ من وحدات أوّل متغيّر فعّال (النموذج يصنعها موحّدة). */
-  unitTemplate: VariantEditUnit[];
-  variants: VariantEditRow[];
-  /** صور المنتج العامّة (variantId=NULL) — مشتركة، تُحرَّر بشاشة التعديل (منفصلة عن صورة كل لون). */
-  images: ProductImageRow[];
-}
-
-/**
- * يُطبّع معامل التحويل المخزَّن (`decimal(15,4)` ⇒ «12.0000») إلى عددٍ صحيحٍ نصّيّ نظيف («12»).
- *
- * **لماذا (إصلاح حاصر لتعديل متعدّد الوحدات):** العمود عشريّ، فالقراءة تُعيد «12.0000»، والنموذج يُبقيها
- * في الحالة إلى أن يُركِّز المستخدم حقل المعامل ويغادره (NumberInput يُطبّع عند blur فقط) ⇒ حفظٌ بلا لمس
- * الحقل يُرسل «12.0000» فيرفضها `assertValidUnitFactors` (`/^[1-9]\d*$/`) برسالة «معامل التحويل… عدد صحيح
- * موجب» — أي تعذّرُ تعديل أيّ منتجٍ بوحدةٍ أكبر (درزن/كرتون) بلا سببٍ يخصّ ما عُدِّل. التطبيع هنا يجعل
- * الحالة تبدأ نظيفةً «12». (المعاملات كلّها صحيحةٌ بحكم الحارس، فالتطبيع بلا فقدِ معنى.)
- */
-function normalizeFactor(f: string): string {
-  const s = (f ?? "").trim();
-  if (!s.includes(".")) return s;
-  const trimmed = s.replace(/0+$/, "").replace(/\.$/, "");
-  return trimmed || "0";
-}
-
-/** يقرأ منتجاً بكامل متغيّراته/وحداته/أسعاره/أرصدته لتعبئة شاشة التعديل. */
-export async function getProductForVariantEdit(productId: number): Promise<ProductForVariantEdit | null> {
-  const db = getDb();
-  if (!db) return null;
-  const p = (await db.select().from(products).where(eq(products.id, productId)).limit(1))[0];
-  if (!p) return null;
-
-  // بضاعة الأمانة: اسم المودِع للعرض (قراءة واحدة عند وجود ربط فقط).
-  let consignorName: string | null = null;
-  if (p.consignorId != null) {
-    const [c] = await db.select({ name: suppliers.name }).from(suppliers).where(eq(suppliers.id, Number(p.consignorId))).limit(1);
-    consignorName = c?.name ?? null;
-  }
-  const consignFields = {
-    isConsignment: !!p.isConsignment,
-    consignorId: p.consignorId != null ? Number(p.consignorId) : null,
-    consignorName,
-  };
-
-  // صور المنتج العامّة (variantId=NULL) — مشتركة لكل المتغيّرات؛ منفصلة عن صور الألوان (variantId مضبوط).
-  // تُقرأ هنا لكلا مسارَي الإرجاع (بمتغيّرات أو بلا) بترتيب العرض (الرئيسية أولاً).
-  const productImageRows = await db
-    .select({ id: productImages.id, url: productImages.url, isPrimary: productImages.isPrimary, sortOrder: productImages.sortOrder })
-    .from(productImages)
-    .where(and(eq(productImages.productId, productId), isNull(productImages.variantId)))
-    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
-  const images: ProductImageRow[] = productImageRows.map((r) => ({
-    id: Number(r.id),
-    url: r.url,
-    isPrimary: !!r.isPrimary,
-    sortOrder: r.sortOrder ?? 0,
-  }));
-
-  const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
-  if (!variants.length) {
-    return {
-      id: Number(p.id),
-      name: p.name,
-      productType: p.productType,
-      brand: p.brand,
-      modelName: p.modelName,
-      description: p.description,
-      internalName: p.internalName ?? null,
-      storeTitle: p.storeTitle ?? null,
-      seoTitle: p.seoTitle ?? null,
-      shortTitle: p.shortTitle ?? null,
-      posLabel: p.posLabel ?? null,
-      invoiceLabel: p.invoiceLabel ?? null,
-      marketingCopy: p.marketingCopy ?? null,
-      categoryId: p.categoryId != null ? Number(p.categoryId) : null,
-      isCustomizable: !!p.isCustomizable,
-      allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
-      isService: !!p.isService,
-      allowBackorder: !!p.allowBackorder,
-      isBundle: !!p.isBundle,
-      isActive: !!p.isActive,
-      showInReception: !!p.showInReception,
-      showInPrintPos: !!p.showInPrintPos,
-      ...consignFields,
-      unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
-      variants: [],
-      images,
-    } satisfies ProductForVariantEdit;
-  }
-  const variantIds = variants.map((v) => Number(v.id));
-  const units = (await db.select().from(productUnits).where(inArray(productUnits.variantId, variantIds))).filter(
-    (u) => u.isActive
-  );
-  const unitIds = units.map((u) => Number(u.id));
-  const prices = unitIds.length ? await db.select().from(productPrices).where(inArray(productPrices.productUnitId, unitIds)) : [];
-  const stocks = await db.select().from(branchStock).where(inArray(branchStock.variantId, variantIds));
-  // product-variants: صور المتغيّرات (variantId مضبوط) — صور المنتج العامّة (variantId=NULL) تُستثنى.
-  const vImages = await db.select().from(productImages).where(inArray(productImages.variantId, variantIds));
-
-  const priceOf = (unitId: number, tier: PriceTier) =>
-    prices.find((pr) => Number(pr.productUnitId) === unitId && pr.priceTier === tier)?.price ?? "";
-
-  const variantRows: VariantEditRow[] = variants.map((v) => {
-    const myUnits = units.filter((u) => Number(u.variantId) === Number(v.id));
-    const unitBarcodes: Record<string, string> = {};
-    for (const u of myUnits) if (u.barcode) unitBarcodes[u.unitName] = u.barcode;
-    const baseUnit = myUnits.find((u) => u.isBaseUnit);
-    const baseRetail = baseUnit ? priceOf(Number(baseUnit.id), "RETAIL") : "";
-    const stockByBranch: Record<number, number> = {};
-    for (const s of stocks.filter((s) => Number(s.variantId) === Number(v.id))) stockByBranch[Number(s.branchId)] = s.quantity;
-    const image = vImages.find((im) => Number(im.variantId) === Number(v.id))?.url ?? null;
-    return {
-      id: Number(v.id),
-      sku: v.sku,
-      variantKind: (v.variantKind as VariantKind) ?? "VARIANT",
-      variantName: v.variantName ?? null,
-      color: v.color,
-      colorHex: v.colorHex ?? null,
-      size: v.size,
-      costPrice: v.costPrice,
-      baseRetail,
-      reorderPoint: v.reorderPoint ?? 0,
-      minStock: v.minStock ?? 0,
-      isActive: !!v.isActive,
-      unitBarcodes,
-      stockByBranch,
-      image,
-    };
-  });
-
-  // القالب المشترك = وحدات أوّل متغيّر (مرتّبة: الأساس أولاً) — النموذج يصنع وحدات موحّدة عبر المتغيّرات.
-  const firstUnits = units
-    .filter((u) => Number(u.variantId) === variantIds[0])
-    .sort((a, b) => Number(b.isBaseUnit) - Number(a.isBaseUnit));
-  const unitTemplate: VariantEditUnit[] = (firstUnits.length ? firstUnits : []).map((u) => ({
-    unitName: u.unitName,
-    // «12.0000» ⇒ «12»: يمنع رفض assertValidUnitFactors عند حفظٍ لا يلمس حقل المعامل (إصلاح حاصر).
-    conversionFactor: normalizeFactor(u.conversionFactor),
-    isBaseUnit: !!u.isBaseUnit,
-    isStoreSaleUnit: !!u.isStoreSaleUnit,
-    retail: priceOf(Number(u.id), "RETAIL"),
-    wholesale: priceOf(Number(u.id), "WHOLESALE"),
-    government: priceOf(Number(u.id), "GOVERNMENT"),
-  }));
-
-  return {
-    id: Number(p.id),
-    name: p.name,
-    productType: p.productType,
-    brand: p.brand,
-    modelName: p.modelName,
-    description: p.description,
-    internalName: p.internalName ?? null,
-    storeTitle: p.storeTitle ?? null,
-    seoTitle: p.seoTitle ?? null,
-    shortTitle: p.shortTitle ?? null,
-    posLabel: p.posLabel ?? null,
-    invoiceLabel: p.invoiceLabel ?? null,
-    marketingCopy: p.marketingCopy ?? null,
-    categoryId: p.categoryId != null ? Number(p.categoryId) : null,
-    isCustomizable: !!p.isCustomizable,
-    allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
-    isService: !!p.isService,
-    allowBackorder: !!p.allowBackorder,
-    isBundle: !!p.isBundle,
-    isActive: !!p.isActive,
-    showInReception: !!p.showInReception,
-    showInPrintPos: !!p.showInPrintPos,
-    ...consignFields,
-    unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }],
-    variants: variantRows,
-    images,
-  };
-}
+// نُقلت إلى `./catalog/productEditDocument.ts` (م٦ ق٨ — مستندُ التعديل صار مصدرَ اللقطة). يُعاد تصديرها هنا
+// كي يبقى كلُّ مستورِدٍ قائم (الراوتر/الاختبارات) على حاله.
+export {
+  getProductForVariantEdit,
+  type ProductForVariantEdit,
+  type ProductImageRow,
+  type VariantEditRow,
+  type VariantEditUnit,
+} from "./catalog/productEditDocument";
 
 /* ============================ الكتابة (التعديل) ============================ */
 
@@ -356,6 +121,8 @@ export interface UpdateProductVariantsInput {
   /** صور المنتج العامّة (variantId=NULL). `undefined` ⇒ لا تُمَسّ؛ المعرّفات القائمة تُعاد ترتيباتها،
    *  والمُزال يُحذف. الإضافة/الاستبدال المباشر مرفوضان لصالح Product Studio/R2. */
   images?: UpdateProductImageInput[];
+  /** سببُ التعديل — يُلحق بلقطة `recordVersions` ويظهر في سجلّ النسخ (م٦ ق٨). اختياريّ. */
+  updateReason?: string | null;
 }
 
 // الاسم الصريح (input.name) هو المرجع الأول: المنتجات المستوردة تحمل اسماً كاملاً في `name`
@@ -401,7 +168,8 @@ async function upsertVariantUnits(
   variantId: number,
   template: UpdateUnitTemplate[],
   unitBarcodes: Record<string, string>,
-  baseRetailOverride?: string
+  baseRetailOverride: string | undefined,
+  actor: Actor,
 ) {
   const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, variantId));
   const keep = new Set<number>();
@@ -432,6 +200,8 @@ async function upsertVariantUnits(
     const barcode = canonicalizeBarcodeInput(unitBarcodes[name] ?? "") || null;
     const match = existing.find((u) => u.unitName === name);
     let unitId: number;
+    // أسعارُ الوحدة القائمة **قبل** المسح — لسجلّ تغيّر السعر (Codex INV-05: هذا المسار لم يكن يكتبه).
+    let previousByTier: Map<string, string> | null = null;
     if (match) {
       unitId = Number(match.id);
       await tx
@@ -445,6 +215,11 @@ async function upsertVariantUnits(
           isActive: true,
         })
         .where(eq(productUnits.id, unitId));
+      const previous = await tx
+        .select({ priceTier: productPrices.priceTier, price: productPrices.price })
+        .from(productPrices)
+        .where(eq(productPrices.productUnitId, unitId));
+      previousByTier = new Map(previous.map((row) => [row.priceTier, row.price] as const));
       await tx.delete(productPrices).where(eq(productPrices.productUnitId, unitId));
     } else {
       const res = await tx.insert(productUnits).values({
@@ -459,11 +234,17 @@ async function upsertVariantUnits(
       inserted.push({ unitId, barcode });
     }
     keep.add(unitId);
+    const nextPrices: Array<{ priceTier: PriceTier; price: string }> = [];
     for (const pr of t.prices) {
       // سعر خاص لمفرد وحدة الأساس يَجُبّ سعر القالب لهذا المتغيّر.
       const price = t.isBaseUnit && pr.priceTier === "RETAIL" && override ? override : pr.price;
-      if (price.trim()) priceRows.push({ productUnitId: unitId, priceTier: pr.priceTier, price: toDbMoney(price) });
+      if (price.trim()) {
+        priceRows.push({ productUnitId: unitId, priceTier: pr.priceTier, price: toDbMoney(price) });
+        nextPrices.push({ priceTier: pr.priceTier, price });
+      }
     }
+    // الوحدة القائمة وحدها لها «قبل» يُقارَن به (الجديدة بلا سابق — كما في مسار المعرّف).
+    if (previousByTier) await logUnitPriceChanges(tx, { productUnitId: unitId, previousByTier, next: nextPrices, actor });
   }
   if (priceRows.length) await tx.insert(productPrices).values(priceRows);
   // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف).
@@ -524,12 +305,20 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
 export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: Actor) {
-  return withTx(async (tx) => {
-    const p = (await tx.select().from(products).where(eq(products.id, input.productId)).limit(1))[0];
-    if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
-    if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
+  return withTx((tx) => updateProductWithVariantsTx(tx, input, actor));
+}
+
+/**
+ * الجسم داخل معاملةٍ يملكها المستدعي — كي يضمّه مسارُ **الاستعادة** (`catalog/productVersioning.ts`) إلى
+ * معاملته فتمرّ الاستعادةُ بالحرّاس نفسها وتكتب لقطتها في نفس المعاملة. لا تستدعِه من راوترٍ مباشرةً.
+ */
+export async function updateProductWithVariantsTx(tx: Tx, input: UpdateProductVariantsInput, actor: Actor) {
+    const p = await loadProductForUpdateOrThrow(tx, input.productId);
+    assertHasVariants(input.variants.length);
     const baseUnits = input.unitTemplate.filter((u) => u.isBaseUnit).length;
     if (baseUnits !== 1) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد وحدة أساس واحدة فقط في قالب الوحدات" });
+    // gstack B12: بكج = متغيّرٌ واحد + وحدةُ أساسٍ واحدة — كان في مسار المعرّف وحده، فكان هذا المسار ثقباً.
+    assertBundleEditShape(p, input.variants.length, baseUnits);
     if (input.unitTemplate.some((u) => !u.unitName.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل وحدة في القالب تحتاج اسماً" });
     // Codex جولة٧ P1: ارفض اسمَ وحدةٍ مكرّراً في القالب — `upsertVariantUnits` يطابق بالاسم فيُعالج المكرّر
     // مرّتين (يُدرِج/يُحدِّث الصفّ نفسه) فقد يُفقَد الأساس أو يلتبس، متجاوزاً حارس ثبات الأساس.
@@ -611,17 +400,13 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
           .where(inArray(productUnits.variantId, existingVariantIds)))
           .map((unit) => Number(unit.id))
       : [];
-    const lockedUnits = await lockProductUnitsForOnlineAllocation(tx, existingUnitIds);
     const desiredTemplateByName = new Map(input.unitTemplate.map((unit) => [unit.unitName.trim(), unit] as const));
-    const protectedUnitIds = lockedUnits
-      .filter((unit) => {
-        const desired = desiredTemplateByName.get(unit.unitName);
-        if (!desired) return true;
-        const desiredFactor = desired.isBaseUnit ? 1 : Number(desired.conversionFactor);
-        return desiredFactor !== Number(unit.conversionFactor);
-      })
-      .map((unit) => unit.id);
-    await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
+    await lockUnitsAndAssertNoActiveOnlineOrderChanges(tx, existingUnitIds, (unit) => {
+      const desired = desiredTemplateByName.get(unit.unitName);
+      if (!desired) return true;
+      const desiredFactor = desired.isBaseUnit ? 1 : Number(desired.conversionFactor);
+      return desiredFactor !== Number(unit.conversionFactor);
+    });
 
     // Codex P1 (٢٤/٨ على PR #757): تفعيلُ `showInPrintPos` بلا مزامنة `productType` كان يجعل البند
     // يظهر في شبكة كاشير الطباعة عبر `listPrintServices` لكنّ `createPrintSale` يرفضه بـ«هذه
@@ -633,7 +418,9 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     const requestedProductType = input.productType?.trim() || null;
     const effectiveProductType = effectiveShowInPrintPos ? "PRINT_SERVICE" : requestedProductType;
 
-    await lockInventoryVariants(tx, existingVariantIds);
+    await lockVariantsForUpdate(tx, existingVariantIds);
+    // م٦ ق٨: «لا لقطة ⇒ لا تعديل» — تُقرأ الحالة بعد الأقفال وقبل أوّل كتابة، في نفس المعاملة.
+    await snapshotProductBeforeUpdate(tx, input.productId, input.updateReason, actor);
     await tx
       .update(products)
       .set({
@@ -724,15 +511,16 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
         // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
         // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
-        await assertBaseUnitStable(tx, variantId, { by: "name", unitName: newBaseName });
-        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor, v.costChangeReason);
+        await assertBaseUnitStableAndRevalueCost(
+          tx, variantId, { by: "name", unitName: newBaseName }, owned.costPrice, vals.costPrice, actor, v.costChangeReason,
+        );
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);
         added++;
       }
-      await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail);
+      await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail, actor);
 
       // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
       if (v.image !== undefined) {
@@ -764,5 +552,4 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     }
 
     return { productId: input.productId, added };
-  });
 }
