@@ -524,6 +524,21 @@ export const saleRouter = router({
         // إفصاح التوصيل المجّاني (0152): يميّز «أُهديت أجرته» عن «بلا توصيل». بلا أثر ماليّ.
         deliveryFree: z.boolean().optional(),
         deliveryWaivedAmount: nonNegMoneyString.optional(),
+        // م١ (PR-1): إسنادُ البيع لجهة توصيل داخل معاملة البيع نفسها — نفس عقد
+        // `receptionCheckout.delivery` (workOrderRouter) + `governorate` للإسناد التلقائيّ بالمنطقة.
+        // وجودُه يجعل الفاتورة COD خادمياً: المتبقّي عهدةٌ على الجهة (`COD_ASSIGNED`) وسقفُ ائتمان
+        // العميل لا يُفحَص (المال يأتي مع المندوب — `server/lib/credit.ts`). مرفوضٌ من طابور الأوفلاين.
+        delivery: z.object({
+          partyId: z.number().int().positive(),
+          fee: nonNegMoneyString.nullish(),
+          feeCollection: z.enum(["COURIER", "COUNTER", "SHOP"]).nullish(),
+          recipientName: z.string().trim().max(255).nullish(),
+          recipientPhone: z.string().trim().max(32).nullish(),
+          address: z.string().trim().max(500).nullish(),
+          governorate: z.string().trim().max(40).nullish(),
+        }).nullish(),
+        // أجرة التوصيل المقبوضة الآن أمانةً للمندوب (COUNTER) — نقداً في الدرج حتماً، وتساوي `delivery.fee`.
+        deliveryFeeHeld: positiveMoneyString.nullish(),
         payment: z.object({
           amount: positiveMoneyString,
           method: posPaymentMethod,
@@ -596,6 +611,8 @@ export const saleRouter = router({
           // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
           if (!res.idempotentReplay) {
             await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy,
+                // م١ (PR-1): الإسناد وقع في معاملة البيع — أثرُه يُقرأ من سطر البيع نفسه.
+                ...(res.consignmentId != null ? { consignmentId: res.consignmentId, consignmentNumber: res.consignmentNumber ?? null } : {}),
               },
             });
             if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy },
