@@ -930,6 +930,41 @@ describe("product studio governed workflow", () => {
     ).resolves.toEqual({ ok: true, revision: 2 });
   });
 
+  it("opens a scanned owned task outside the first fifty without widening task access", async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => 100 + index);
+    await db().insert(s.products).values(ids.map((id) => ({ id, name: `منتج المسح ${id}` })));
+    await db().insert(s.productVariants).values({ id: 100, productId: 100, sku: "SCAN-OLD-SKU", variantName: "الأزرق", costPrice: "0" });
+    await db().insert(s.productUnits).values({ id: 100, variantId: 100, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "SCAN-OLD-100" });
+    await db().insert(s.productImageJobs).values(ids.map((id) => ({
+      id,
+      productId: id,
+      variantId: id === 100 ? 100 : null,
+      branchId: 1,
+      mode: "FLATTEN" as const,
+      status: "ASSIGNED" as const,
+      assignedTo: worker.userId,
+      assignedBy: manager.userId,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+      updatedAt: new Date(Date.UTC(2026, 7, 1, 0, 0, id - 100)),
+    })));
+
+    const firstPage = await listStudioTasks(worker, { scope: "MINE", limit: 50 });
+    expect(firstPage.items).toHaveLength(50);
+    expect(firstPage.items.some((task) => Number(task.id) === 100)).toBe(false);
+    const claimed = await claimStudioProductByBarcode(worker, "SCAN-OLD-100");
+    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 1 });
+    const exact = await listStudioTasks(worker, { scope: "MINE", taskId: claimed.taskId, limit: 1 });
+    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 1 }]);
+    expect(exact.nextCursor).toBeNull();
+    expect((await listStudioTasks(otherWorker, { scope: "MINE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(managerTwo, { scope: "QUEUE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(worker, { scope: "REVIEW", taskId: 100 })).items).toEqual([]);
+    await expect(listStudioTasks(worker, { scope: "MINE", taskId: 100, cursor: firstPage.nextCursor })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("paginates task filters and reports exception-focused SLA metrics", async () => {
     const now = new Date("2026-08-19T12:00:00.000Z");
     await db()

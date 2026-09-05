@@ -353,6 +353,31 @@ describe("قضايا السلامة — صيغة الاعتماد تختار ص�
 });
 
 describe("decisions.inbox — الصف يعرض ما يقرر عليه", () => {
+  it("لا يعرض سنداً ملغى حتى لو بقيت حالة اعتماده معلقة", async () => {
+    const [active] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "246000.00", paymentMethod: "CASH", cashBucket: null,
+      status: "PENDING", approvalStatus: "PENDING_APPROVAL", voucherNumber: "RV-1-20260818-00001",
+      description: "إيرادات قسم الطباعة والاستنساخ", createdBy: CASHIER,
+    }).$returningId();
+    const [cancelled] = await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "246000.00", paymentMethod: "CASH", cashBucket: null,
+      status: "REVERSED", approvalStatus: "PENDING_APPROVAL", voucherNumber: "RV-1-20260818-00002",
+      description: "سند ملغى", createdBy: CASHIER,
+    }).$returningId();
+
+    const owner = await caller(OWNER);
+    const rows = (await owner.decisions.inbox({ kind: "treasury.voucher.approve" })).rows;
+
+    expect(rows.some((r) => r.id === active.id)).toBe(true);
+    expect(rows.some((r) => r.id === cancelled.id)).toBe(false);
+
+    await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, active.id));
+    const stale = await owner.decisions.decide({
+      kind: "treasury.voucher.approve", id: active.id, action: "APPROVE", clientRequestId: randomUUID(),
+    });
+    expect(stale.outcome).toBe("STALE");
+  });
+
   it("طلب شراء معلق يظهر للمالك بالمورد والاصناف والاسعار والاجمالي — لا عدد اسطر", async () => {
     const { po, requestId } = await submitPurchase();
     const owner = await caller(OWNER);
