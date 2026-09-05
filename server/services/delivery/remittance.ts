@@ -4,6 +4,13 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, or, sql } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
+import {
+  isShortfallReason,
+  SHORTFALL_REASONS,
+  SHORTFALL_REASON_LABEL_AR,
+  type ShortfallReason,
+} from "@shared/shortfallReason";
 import {
   accountingEntries,
   deliveryConsignments,
@@ -13,6 +20,7 @@ import {
   invoices,
   receipts,
 } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
@@ -36,6 +44,7 @@ import {
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { nextRemittanceNumber } from "./numbering";
+import { shortfallAssignedForConsignmentTx } from "./openParcelPredicates";
 import {
   deliveryCustomerCollectionIntent,
   deliveryRemitIntent,
@@ -76,13 +85,53 @@ export interface RemittanceInput {
     deductionsTotal?: string | null;
     notes?: string | null;
   } | null;
+  /**
+   * م١ (PR-2) — **عجزُ التوريد**: النقدُ المعدود أقلُّ من صافي التوريد المتوقَّع. يُقبل فقط بسببٍ
+   * من القائمة المغلقة `shared/shortfallReason.ts`؛ الفرقُ يُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة
+   * على الجهة (امتدادُ قرار المالك ٣٠/٨ من التسليم إلى التوريد). أسطرُ التوريد لا تُنقَص به —
+   * الزبون سدّد للمندوب فعلاً. بدونه يبقى الشرطُ القائم: المعدود = الصافي تماماً.
+   */
+  shortfall?: { reason: ShortfallReason; notes?: string | null } | null;
 }
 
 export async function recordDeliveryRemittance(
   input: RemittanceInput,
   actor: DeliveryTxActor,
 ) {
-  return withTx(async (tx) => {
+  return withTx((tx) => recordDeliveryRemittanceInTx(tx, input, actor));
+}
+
+/**
+ * يوزّع مبلغاً على أسطرٍ بنسبة قيمتها (منزلتان)، والسطرُ الأخير يمتصّ باقي التقريب —
+ * نفس عقيدة `distributeToSubtotal` في مطابقة فاتورة المورّد: لا امتصاصَ خفيّ، والمجموعُ يساوي الهدف.
+ */
+function allocateProportionally(target: Decimal, weights: Decimal[]): Decimal[] {
+  const total = weights.reduce((s, w) => s.plus(w), new Decimal(0));
+  if (weights.length === 0) return [];
+  if (total.lte(0)) return weights.map((_, i) => (i === weights.length - 1 ? round2(target) : new Decimal(0)));
+  const out: Decimal[] = [];
+  let allocated = new Decimal(0);
+  for (let i = 0; i < weights.length; i += 1) {
+    if (i === weights.length - 1) {
+      out.push(round2(target.minus(allocated)));
+      break;
+    }
+    const share = round2(target.times(weights[i]).div(total));
+    out.push(share);
+    allocated = allocated.plus(share);
+  }
+  return out;
+}
+
+/**
+ * م١ (PR-2): الجسم داخل معاملةٍ قائمة — تستدعيه التسويةُ اليوميّة (`dailySettlement.ts`) في
+ * معاملتها (نمط `dispatchInvoiceInTx`)؛ `withTx = db.transaction(fn)` غير قابلةٍ لإعادة الدخول.
+ */
+export async function recordDeliveryRemittanceInTx(
+  tx: Tx,
+  input: RemittanceInput,
+  actor: DeliveryTxActor,
+) {
     const canonicalLines = input.lines
       .map((line) => ({
         consignmentId: Number(line.consignmentId),
@@ -95,6 +144,8 @@ export async function recordDeliveryRemittance(
       shiftType: input.shiftType ?? "RECEPTION",
       lines: canonicalLines,
       countedCash: toDbMoney(round2(money(input.countedCash))),
+      // م١ (PR-2): سببُ العجز جزءٌ من هويّة التوريد — إعادةٌ بسببٍ مختلف تعارضٌ لا replay.
+      shortfallReason: input.shortfall?.reason ?? null,
     });
     const replayResult = async () => {
       if (!input.clientRequestId) return null;
@@ -279,10 +330,14 @@ export async function recordDeliveryRemittance(
       // (٢٢/٨، عمود 0249): ما سدّده الزبون بالكاونتر بعد ثبوت التسليم لم يمرّ بيد الجهة،
       // فلا يُطالَب به المندوب ولا يُقبل توريده — سقفُ السطر بدونه كان يقبل نقداً عن مبلغٍ
       // سُدِّد في الدرج سلفاً ⇒ paidAmount يتجاوز الصافي وتنقلب ذمّة العميل سالبة.
+      // م١ (PR-2): عجزُ التسليم المُقيَّد على هذا الطرد (Slice DFP1) نقدٌ لم تقبضه الجهة قطّ —
+      // لا يُطالَب به في التوريد ولا يُقيَّد ثانيةً (`openParcelPredicates.ts`).
+      const shortfallAssigned = await shortfallAssignedForConsignmentTx(tx, Number(cn.id));
       const remaining = round2(
         money(cn.codAmount)
           .minus(money(cn.collectedAmount))
-          .minus(money(cn.counterSettledAmount ?? "0")),
+          .minus(money(cn.counterSettledAmount ?? "0"))
+          .minus(shortfallAssigned),
       );
       if (collected.gt(remaining))
         throw new TRPCError({
@@ -353,7 +408,7 @@ export async function recordDeliveryRemittance(
       // الإغلاق المالي يقيس المتبقّي **الحيّ**: ما غطّاه الكاونتر ليس مطلوباً من الجهة، فتوريدُ
       // بقيّته يُقفل الإرسالية SETTLED — إبقاؤها PARTIAL كان يتركها زومبي في شاشة التوريد.
       const delivered = round2(
-        newCollected.plus(money(cn.counterSettledAmount ?? "0")),
+        newCollected.plus(money(cn.counterSettledAmount ?? "0")).plus(shortfallAssigned),
       ).gte(money(cn.codAmount));
       // الأجرة لا تُخصَم من التوريد إطلاقاً (٢٢/٨ — كان هنا فرعٌ ميّت `feeStillOwed=false`
       // يصف منطقاً غير موجود): COURIER يقبضها من الزبون مباشرةً، وCOUNTER/SHOP تُصرف بسند
@@ -414,16 +469,47 @@ export async function recordDeliveryRemittance(
         message: "النقد المعدود لا يمكن أن يكون سالباً",
       });
     }
-    if (!countedCash.eq(netRemitted)) {
+    /**
+     * م١ (PR-2) — **عجزُ التوريد ذمّةٌ فوريّة على الجهة بسببٍ مصنَّف** (امتدادُ قرار المالك ٣٠/٨
+     * من التسليم إلى التوريد). كان الشرطُ مساواةً تامّة، و`shortfallTotal`/`status` ثابتَين ميّتَين
+     * (`0`/`BALANCED`) يُعرَضان في شاشة التسوية كذباً. الآن:
+     *   · المعدود = الصافي ⇒ `BALANCED`.
+     *   · المعدود < الصافي ⇒ يلزم `shortfall.reason` من القائمة المغلقة؛ الفرقُ `SHORTFALL_ASSIGNED`
+     *     على الجهة (عهدتُها ترتفع به) و`status='SHORT'` و`shortfallTotal` حقيقيّ. أسطرُ التوريد
+     *     لا تُنقَص: الزبون سدّد للمندوب فعلاً وفاتورتُه تُقفَل؛ الذي نقص هو ما سلّمه المندوب لنا.
+     *   · المعدود > الصافي ⇒ رفضٌ: الزيادة بلا مصدرٍ في الأسطر، ومسارُها سندُ قبضٍ مستقلّ (§٥).
+     * النقدُ الداخل الدرجَ فعلاً = المُحصَّل − العجز (إيصال IN)، وقيودُ `DELIVERY_REMIT` تُحجَّم به
+     * سطراً سطراً بنسبة القيمة (الأخير يمتصّ الباقي) كي يبقى مدينُ النقد = ما دخل، وتبقى صيغةُ
+     * مطابقة العهدة `DISPATCH − REMIT − WRITEOFF = currentBalance` متوازنةً بلا قيدٍ وسيط.
+     */
+    let shortfallTotal = new Decimal(0);
+    let status: "BALANCED" | "SHORT" = "BALANCED";
+    let shortfallReason: ShortfallReason | null = null;
+    if (countedCash.gt(netRemitted)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `النقد المعدود (${countedCash.toFixed(2)}) لا يطابق صافي التوريد المتوقع (${netRemitted.toFixed(2)}). راجع مبالغ الإرساليات والأجور قبل التأكيد.`,
+        message: appErrorMessage({
+          what: "تعذّر تسجيل التوريد — النقد المعدود يزيد على الصافي المتوقَّع",
+          why: `المعدود ${countedCash.toFixed(2)} والصافي المتوقَّع من أسطر التوريد ${netRemitted.toFixed(2)} — الزيادة ${countedCash.minus(netRemitted).toFixed(2)} لا مصدرَ لها في هذه الأسطر`,
+          doThis: `سجّل ${netRemitted.toFixed(2)} في هذا التوريد، وسجّل الزيادة سندَ قبضٍ مستقلّاً باسم الجهة كي يبقى لكلّ دينارٍ مصدرُه`,
+        }),
       });
+    } else if (countedCash.lt(netRemitted)) {
+      shortfallTotal = round2(netRemitted.minus(countedCash));
+      const reason = input.shortfall?.reason;
+      if (!reason || !isShortfallReason(reason)) {
+        // ⚠️ «لا يطابق صافي التوريد» عبارةٌ متعاقَدٌ عليها (deliveryFlow · deliverySettlementGuards).
+        const choices = SHORTFALL_REASONS.map((r) => SHORTFALL_REASON_LABEL_AR[r]).join(" · ");
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `النقد المعدود (${countedCash.toFixed(2)}) لا يطابق صافي التوريد المتوقع (${netRemitted.toFixed(2)}). راجع مبالغ الإرساليات والأجور قبل التأكيد — وإن كان العجز ${shortfallTotal.toFixed(2)} حقيقياً فصنّف سببه من القائمة (${choices}) ليُقيَّد ذمّةً على الجهة.`,
+        });
+      }
+      shortfallReason = reason;
+      status = "SHORT";
     }
-    // A partial allocation is not a cash shortage. Remaining COD is derived
-    // from immutable allocation lines, not accumulated as historical deficit.
-    const shortfallTotal = new Decimal(0);
-    const status: "BALANCED" | "SHORT" | "OVER" = "BALANCED";
+    // النقدُ الذي يدخل الدرج فعلاً — لا المُحصَّل الاسميّ.
+    const cashIn = round2(collectedTotal.minus(shortfallTotal));
 
     // درج المُستلِم (RECEPTION افتراضياً): صافي النقد (collected − fee) يدخله فعلياً.
     const remittanceNumber = await nextRemittanceNumber(tx, input.branchId);
@@ -462,9 +548,7 @@ export async function recordDeliveryRemittance(
       feesTotal: toDbMoney(feesTotal),
       courierCommissionAmount: courierCommissionAmount != null ? toDbMoney(courierCommissionAmount) : null,
       netRemitted: toDbMoney(netRemitted),
-      shortfallTotal: toDbMoney(
-        shortfallTotal.lt(0) ? new Decimal(0) : shortfallTotal,
-      ),
+      shortfallTotal: toDbMoney(shortfallTotal),
       status,
       receivedBy: actor.userId,
       // كشف شركة التوصيل (١٩/٨) — مستند الشركة الذي قاد التسوية. القيد الفريد
@@ -475,7 +559,10 @@ export async function recordDeliveryRemittance(
         : null,
       statementAttachmentUrl: input.companyStatement?.attachmentUrl?.trim() || null,
       deductionsTotal: toDbMoney(deductionsTotal),
-      notes: input.companyStatement?.notes?.trim() || null,
+      notes: [
+        input.companyStatement?.notes?.trim() || null,
+        shortfallReason ? `عجز توريد ${shortfallTotal.toFixed(2)} — ${SHORTFALL_REASON_LABEL_AR[shortfallReason]}${input.shortfall?.notes?.trim() ? `: ${input.shortfall.notes.trim()}` : ""}` : null,
+      ].filter(Boolean).join(" | ") || null,
     });
     const remittanceId = extractInsertId(rmRes);
 
@@ -484,12 +571,13 @@ export async function recordDeliveryRemittance(
     // كي يُظهر المستندَ صراحةً لا ضمنياً (Codex P2 #6 — ٢٢/٨: نقدٌ خرج بلا حاشيةٍ في صفّ التوريد).
     let receiptInId: number | null = null;
     let receiptOutId: number | null = null;
-    if (collectedTotal.gt(0)) {
+    if (cashIn.gt(0)) {
       const rIn = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId,
         direction: "IN",
-        amount: toDbMoney(collectedTotal),
+        // م١ (PR-2): ما دخل الدرج فعلاً (المُحصَّل − عجز التوريد) — لا المُحصَّل الاسميّ.
+        amount: toDbMoney(cashIn),
         paymentMethod: "CASH",
         cashBucket,
         status: "COMPLETED",
@@ -558,7 +646,11 @@ export async function recordDeliveryRemittance(
       .where(eq(deliveryRemittances.id, remittanceId));
 
     // المرور ٢: تطبيق لكل إرسالية.
-    for (const w of work) {
+    // م١ (PR-2): نقدُ كلّ سطرٍ الداخل الدرجَ فعلاً = حصّتُه من (المُحصَّل − العجز) بنسبة قيمته.
+    const remitCashByLine = allocateProportionally(cashIn, work.map((w) => w.collected));
+    for (let i = 0; i < work.length; i += 1) {
+      const w = work[i];
+      const remitCash = remitCashByLine[i] ?? new Decimal(0);
       const newStatus = w.delivered ? "DELIVERED" : "PARTIAL";
       await tx
         .update(deliveryConsignments)
@@ -576,7 +668,8 @@ export async function recordDeliveryRemittance(
         consignmentId: w.id,
         grossApplied: toDbMoney(w.collected),
         feeOffset: "0.00",
-        cashReceived: toDbMoney(w.collected),
+        // ما دخل الدرج من هذا السطر (يقلّ عن `grossApplied` بحصّته من عجز التوريد).
+        cashReceived: toDbMoney(remitCash),
         writtenOffAmount: "0.00",
       });
       await appendDeliveryLedgerEntry(tx, {
@@ -658,25 +751,46 @@ export async function recordDeliveryRemittance(
         }
         // خفض العهدة بالـCOD المُحصَّل كاملاً (الأجرة netting لا تَمسّ العهدة).
         await adjustDeliveryBalance(tx, input.partyId, w.collected.neg());
-        await postEntry(tx, {
-          entryType: "DELIVERY_REMIT",
-          dedupeKey: `DELIVERY_REMIT:${w.id}:${remittanceId}`,
-          postingIntent: deliveryRemitIntent(w.collected, cashBucket),
-          postingSourceComponents: {
-            roleDebits: {
-              [paymentAccountRole("CASH", cashBucket, "IN")]: w.collected,
+        // قيدُ النقد بما دخل الدرج فعلاً من هذا السطر (عجزُ التوريد يعود على العهدة أدناه).
+        if (remitCash.gt(0)) {
+          await postEntry(tx, {
+            entryType: "DELIVERY_REMIT",
+            dedupeKey: `DELIVERY_REMIT:${w.id}:${remittanceId}`,
+            postingIntent: deliveryRemitIntent(remitCash, cashBucket),
+            postingSourceComponents: {
+              roleDebits: {
+                [paymentAccountRole("CASH", cashBucket, "IN")]: remitCash,
+              },
+              roleCredits: { DELIVERY_FLOAT: remitCash },
             },
-            roleCredits: { DELIVERY_FLOAT: w.collected },
-          },
-          branchId: input.branchId,
-          invoiceId: w.invoiceId,
-          receiptId: receiptInId,
-          deliveryPartyId: input.partyId,
-          amount: w.collected,
-        });
+            branchId: input.branchId,
+            invoiceId: w.invoiceId,
+            receiptId: receiptInId,
+            deliveryPartyId: input.partyId,
+            amount: remitCash,
+          });
+        }
       }
       // لا قيد أجرةٍ هنا: استحقاقُها يُسجَّل عند التسليم (courier.ts) وصرفُها بسند
       // payDeliveryFee / payPartyDeliveryFees — التوريد ينقل عهدة COD وحدها.
+    }
+
+    // م١ (PR-2) — عجزُ التوريد: عهدةُ الجهة ترتفع بمقداره (ذمّةٌ فوريّة بسببٍ مصنَّف)، ويبقى في
+    // الدفتر الإلحاقيّ حدثاً مرتبطاً بمستند التوريد لا بطردٍ بعينه (التوريد مجمَّع). لا قيدَ
+    // محاسبيّ وسيط: `DELIVERY_REMIT` قُيّد بالنقد الداخل فعلاً، فالعهدةُ المتبقّية = العجز حتماً.
+    if (shortfallReason && shortfallTotal.gt(0)) {
+      await adjustDeliveryBalance(tx, input.partyId, shortfallTotal);
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `RM:${remittanceId}:SHORTFALL_ASSIGNED`,
+        partyId: input.partyId,
+        remittanceId,
+        branchId: input.branchId,
+        entryType: "SHORTFALL_ASSIGNED",
+        amount: toDbMoney(shortfallTotal),
+        shortfallReason,
+        notes: `عجز توريد ${remittanceNumber} — ${SHORTFALL_REASON_LABEL_AR[shortfallReason]}`,
+        actorUserId: actor.userId,
+      });
     }
 
     if (input.clientRequestId)
@@ -695,11 +809,9 @@ export async function recordDeliveryRemittance(
       // Slice H — يُعاد للواجهة كي تُظهره في تقرير التسوية جانبَ الأجرة الفعلية (مقارنةٌ سريعة).
       courierCommissionAmount: courierCommissionAmount != null ? courierCommissionAmount.toFixed(2) : null,
       netRemitted: netRemitted.toFixed(2),
-      shortfallTotal: (shortfallTotal.lt(0)
-        ? new Decimal(0)
-        : shortfallTotal
-      ).toFixed(2),
+      shortfallTotal: shortfallTotal.toFixed(2),
       status,
+      // م١ (PR-2): إيصالُ الدرج الذي حمل النقد — تعيده التسوية اليوميّة في ناتجها.
+      receiptInId,
     };
-  });
 }
