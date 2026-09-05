@@ -332,6 +332,8 @@ export default defineConfig({
       "client/src/components/form/__tests__/productFormModel.test.ts",
       "client/src/pages/__tests__/productFormParity.test.ts",
       "client/src/hooks/__tests__/useSaveShortcuts.test.ts",
+      // م٨ (٦/٩/٢٦) — تكافؤ نموذج القدرات مع بوّابات الوحدة (نقيّ، بلا قاعدة).
+      "server/services/__tests__/capabilityGateEquivalence.test.ts",
     ],
   },
 });

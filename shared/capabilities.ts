@@ -12,7 +12,7 @@
  * حتى لو الوحدة FULL — لا تُشتقّ من FULL (تصحيح المراجعة العدائية: قلب العلَم لا يمنح طمأنينة كاذبة).
  */
 
-import type { AccessLevel } from "./permissions";
+import { resolvePermissions, type AccessLevel, type PermissionMap, type RoleKey } from "./permissions";
 
 export type CapabilityAction = string; // "sell" | "void" | "voucher.approve" | ...
 export type CapabilityKey = string;    // "sales:void" — `${module}:${action}`
@@ -142,4 +142,119 @@ export function detectSodConflicts(effective: Set<CapabilityKey>): [CapabilityKe
 export function capabilitiesEnabled(env?: Record<string, string | undefined>): boolean {
   const e = env ?? (typeof process !== "undefined" ? process.env : undefined);
   return e?.RBAC_CAPABILITIES === "1" || e?.RBAC_CAPABILITIES === "true";
+}
+
+/**
+ * هل يعمل **تحقّق القدرات الظِلّيّ** (م٨)؟ مصدره وضعُ الظلّ الموثَّق `AUTHZ_ENGINE=shadow` («يحسب
+ * ويسجّل بلا إنفاذ» — docs/authz/15-rollout-plan.md §15.2). **آمنُ التفعيل**: الظلّ لا يغيّر قرار
+ * البوّابة إطلاقاً (يسجّل التباين/فوات التغطية فقط)، فتفعيلُه لا يُفعّل أيّ سقالةِ إنفاذٍ ناقصة.
+ *
+ * ⚠️ منفصلٌ **عمداً** عن `capabilitiesEnabled()` (علَم الإنفاذ `RBAC_CAPABILITIES` الذي **يبقى معطَّلاً**
+ * — §15.2): كان الظلّ مربوطاً بذاك العلَم فصار جمعُ التتبّع يتطلّب علَماً يُمنَع المشغّلون من رفعه (سقالةٌ
+ * ناقصةٌ بلا عمود `capabilityGrants`). تصحيحُ مراجعة Codex على PR #1026: الظلّ الآن على `AUTHZ_ENGINE=shadow`،
+ * والإنفاذُ المستقبليّ يبقى على `RBAC_CAPABILITIES` منفصلاً ⇒ مسارُ جمع التتبّع الموثَّق قابلٌ للتنفيذ فعلاً.
+ */
+export function capabilityShadowEnabled(env?: Record<string, string | undefined>): boolean {
+  const e = env ?? (typeof process !== "undefined" ? process.env : undefined);
+  return (e?.AUTHZ_ENGINE ?? "").trim().toLowerCase() === "shadow";
+}
+
+/* ════════════════════════ م٨ — وصلُ القدرات كتحقّقٍ ظِلّيّ (صفر انحدار) ════════════════════════
+ * الهدف: أن يُعيد نموذجُ القدرات إنتاجَ **قرار اليوم بالضبط** على مستوى الوحدة، فيُصبح جاهزاً للتفعيل
+ * الواعي لاحقاً بلا مفاجآت. الوصلُ في الخادم يبقى **ظِلّاً**: يُستشار خلف علَمٍ معطَّلٍ افتراضياً ولا
+ * يغيّر قرار البوّابة القائمة إطلاقاً (لا يوسّع الوصول ولا يضيّقه)، ويسجّل تبايناً حين يختلف. */
+
+/**
+ * يشتقّ منح القدرات لدورٍ من **خريطته الوحدية القائمة** — كي يُطابق `hasCapability` قرارَ البوّابة
+ * الحاليّ لكلّ (وحدة، مستوى). السبب: اليوم، الوحدةُ عند FULL تفتح **كلّ** أفعالها بما فيها الحسّاسة
+ * (إلغاء/اعتماد/تحويل — راجع `requireModuleGate` في server/trpc.ts). فنمنح كلّ قدرةٍ حسّاسةٍ صراحةً
+ * حيثما وحدتُها FULL؛ وغيرُ الحسّاسة تُشتقّ تلقائياً من المستوى داخل `resolveCapabilities`. النتيجة:
+ *   hasCapability(map, deriveCapabilityGrants(map), key) ≡ levelSatisfies(map[key.module], key.minLevel)
+ * أي **نفس** قرار `requireModule` بالضبط لأيّ مفتاح قدرة.
+ *
+ * ⚠️ هذا **توثيقُ سلوك اليوم لا تضييقُه**: فصلُ الحسّاس عن FULL (بيعٌ بلا إلغاء) ترقيةٌ واعيةٌ لاحقة
+ * (منحٌ/سلبٌ صريحٌ لكلّ دور)، خارج نطاق هذه الشريحة. المنح هنا مشتقٌّ آليّاً من الخريطة، لا سياسةٌ جديدة.
+ */
+export function deriveCapabilityGrants(moduleMap: Record<string, AccessLevel>): CapabilityGrants {
+  const allow: CapabilityKey[] = [];
+  for (const cap of CAPABILITIES) {
+    if (cap.sensitive && (moduleMap[cap.module] ?? "NONE") === "FULL") allow.push(cap.key);
+  }
+  return { allow };
+}
+
+/** يشتقّ منح دورٍ قياسيّ (قالب + أوفررايد) — غلافٌ مريح فوق `deriveCapabilityGrants`. */
+export function deriveGrantsForRole(
+  role: RoleKey,
+  override?: PermissionMap | null,
+): CapabilityGrants {
+  return deriveCapabilityGrants(resolvePermissions(role, override));
+}
+
+/**
+ * قرارُ الوصول للوحدة كما يراه **نموذجُ القدرات** — تمثيلٌ ظِلّيٌّ لقرار `requireModule`/`moduleProcedure`
+ * لكن مشتقٌّ من مجموعة القدرات الفعّالة لا من الخريطة مباشرةً (كي يكون النموذجُ مصدرَ الحقيقة عند التفعيل).
+ *  - `minLevel==="READ"` ⇒ يكفي حيازةُ أيّ قدرة **عرضٍ غير حسّاسة** في الوحدة (`{module}:view`…).
+ *  - `minLevel==="FULL"` ⇒ يكفي حيازةُ أيّ قدرة **كتابةٍ غير حسّاسة** FULL في الوحدة (أضعفُها كافٍ لتمثيل «كامل»).
+ * يُعيد `null` حين تكون الوحدةُ/المستوى **غير مُغطّاةٍ** بكتالوج القدرات (لا مقارنةَ ممكنة) — لا `true/false` زوراً.
+ * القدرات المستعمَلة للتمثيل **غير حسّاسة**، فقرارُها = `levelSatisfies(map[module], minLevel)` بالضبط، مستقلٌّ عن المنح.
+ */
+export function capabilityModuleDecision(
+  moduleMap: Record<string, AccessLevel>,
+  grants: CapabilityGrants | null | undefined,
+  moduleKey: string,
+  minLevel: AccessLevel,
+): boolean | null {
+  const rep = CAPABILITIES.filter(
+    (c) =>
+      c.module === moduleKey &&
+      !c.sensitive &&
+      (minLevel === "FULL" ? c.minLevel === "FULL" : c.minLevel === "READ"),
+  );
+  if (rep.length === 0) return null; // الوحدة/المستوى غير مُغطّى بالكتالوج ⇒ لا مقارنة
+  const effective = resolveCapabilities(moduleMap, grants);
+  return rep.some((c) => effective.has(c.key));
+}
+
+export interface ShadowGateDecision {
+  /** القرار المُنفَّذ فعلاً — **دائماً** قرارُ البوّابة القائمة (م٨ ظِلٌّ لا إنفاذ). */
+  allow: boolean;
+  /** هل خالف نموذجُ القدرات القرارَ القائم (والعلَم مفعّل والوحدة مُغطّاة)؟ — للتسجيل لا للإنفاذ. */
+  divergence: boolean;
+}
+
+/**
+ * القرار الظِلّيّ الموحَّد الذي يستدعيه الخادم: القدرات **لا تفتح ولا تُغلق** في م٨ — `allow` يبقى
+ * `gateAllowed` مهما كان قرارُ القدرات. نُعلّم `divergence` فقط حين يكون العلَمُ مفعّلاً والوحدةُ مُغطّاةً
+ * والقراران مختلفَين، ليُسجَّل التباينُ ويُبنى عليه التضييقُ الواعي لاحقاً. دالّةٌ نقيّةٌ يختبرها التكافؤ.
+ */
+export function moduleGateShadowDecision(
+  gateAllowed: boolean,
+  capabilityAllowed: boolean | null,
+  flagEnabled: boolean,
+): ShadowGateDecision {
+  const divergence = flagEnabled && capabilityAllowed !== null && capabilityAllowed !== gateAllowed;
+  return { allow: gateAllowed, divergence };
+}
+
+/** ثلاثُ نتائجَ **متمايزة** للتحقّق الظِلّيّ لبوّابةٍ مفردة — تُميّز «فوات التغطية» عن «التطابق». */
+export type CapabilityShadowOutcome = "uncovered" | "match" | "divergence";
+
+/**
+ * يصنّف نتيجة الظلّ لبوّابةٍ مفردة، ويستهلكه `auditCapabilityShadow` (server/trpc.ts) لإصدار الحدث
+ * المناسب لكلٍّ منها:
+ *  - `uncovered` — `capabilityAllowed===null`: الوحدة/المستوى **خارج كتالوج القدرات** (كلّ `purchases`،
+ *    أو زوجٌ بلا فعلٍ ممثِّل مثل `expenses/READ` و`reports/FULL`) ⇒ لا مقارنةَ ممكنة. نُميّزه صراحةً كي
+ *    لا يُحسَب غيرُ المُغطّى **تطابقاً مُتحقَّقاً** (فوات تغطية، لا نجاح) — المصفوفة تُغطّي جزءاً من المرور
+ *    وحده، فتشغيلُ ظلٍّ قد يبدو نظيفاً وأغلبُ المرور لم يُقارَن قطّ.
+ *  - `divergence` — القدراتُ تخالف البوّابة (الوحدة مُغطّاة) ⇒ يُسجَّل للتضييق الواعي لاحقاً.
+ *  - `match` — القدراتُ تطابق البوّابة.
+ * دالّةٌ نقيّةٌ يختبرها التكافؤ. لا تُغيّر أيَّ قرار (م٨ ظِلٌّ لا إنفاذ).
+ */
+export function classifyCapabilityShadow(
+  gateAllowed: boolean,
+  capabilityAllowed: boolean | null,
+): CapabilityShadowOutcome {
+  if (capabilityAllowed === null) return "uncovered";
+  return capabilityAllowed === gateAllowed ? "match" : "divergence";
 }
