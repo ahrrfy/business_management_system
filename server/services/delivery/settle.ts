@@ -31,7 +31,7 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { partyCashInHandTx } from "./cashSource";
 import { consignmentBackedBalance } from "./guards";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition } from "./lifecycle";
 import { deliveryCustomerCollectionIntent, deliveryRemitIntent, deliveryWriteoffIntent, paymentAccountRole } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
@@ -572,6 +572,7 @@ export async function writeOffDeliveryShortfallInTx(
         });
         if (inv.customerId != null) await adjustCustomerBalance(tx, Number(inv.customerId), realPart.neg());
       }
+      assertConsignmentStatusTransition(cn.status, "WRITTEN_OFF");
       await tx.update(deliveryConsignments).set({
         collectedAmount: toDbMoney(round2(money(cn.collectedAmount).plus(realPart))),
         status: "WRITTEN_OFF",

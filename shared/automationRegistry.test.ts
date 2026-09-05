@@ -15,6 +15,11 @@ import {
 } from "./automationRegistry";
 import { WO_NEXT_STATUS, WORK_ORDER_STATUSES } from "./workOrderStatus";
 import { DEAD_INVOICE_STATUSES, INVOICE_STATUSES } from "./invoiceStatus";
+import {
+  DELIVERY_CONSIGNMENT_STATUSES,
+  DELIVERY_MONEY_STATUSES,
+  DELIVERY_PARCEL_STATUSES,
+} from "./deliveryStatuses";
 
 const entries = Object.entries(AUTOMATION_REGISTRY) as [TransitionKey, AutomationMode][];
 
@@ -41,9 +46,35 @@ describe("automationRegistry — الحالاتُ تُقرأ من القوامي
     }
   });
 
-  it("قاموسا الحالة هما المصدر — لا نسخةَ محلّيةَ منهما هنا", () => {
+  it("قواميسُ الحالة هي المصدر — لا نسخةَ محلّيةَ منها هنا", () => {
     expect(ENTITY_STATUSES.workOrder).toBe(WORK_ORDER_STATUSES);
     expect(ENTITY_STATUSES.invoice).toBe(INVOICE_STATUSES);
+    expect(ENTITY_STATUSES.deliveryParcel).toBe(DELIVERY_PARCEL_STATUSES);
+    expect(ENTITY_STATUSES.deliveryMoney).toBe(DELIVERY_MONEY_STATUSES);
+    expect(ENTITY_STATUSES.deliveryConsignment).toBe(DELIVERY_CONSIGNMENT_STATUSES);
+  });
+
+  it("م١: انتقالاتُ التوصيل التي تقع في الشيفرة فعلاً مُسجَّلة (الرسمُ الموجود في lifecycle.ts)", () => {
+    // مصفوفةُ `assertParcelTransition` في server/services/delivery/lifecycle.ts — تُقرأ هنا نصّاً لأنّ
+    // الاختبار المشترك لا يستورد الخادم؛ الرسمُ نفسه محروسٌ هناك باختباراته.
+    const parcelForward: Array<[string, string]> = [
+      ["ASSIGNED", "ACCEPTED"], ["ASSIGNED", "FAILED"],
+      ["ACCEPTED", "PICKED_UP"], ["ACCEPTED", "FAILED"],
+      ["PICKED_UP", "OUT_FOR_DELIVERY"], ["PICKED_UP", "FAILED"],
+      ["OUT_FOR_DELIVERY", "DELIVERED"], ["OUT_FOR_DELIVERY", "FAILED"],
+      ["FAILED", "ASSIGNED"], ["FAILED", "RETURNED"],
+    ];
+    for (const [from, to] of parcelForward) {
+      const key = `deliveryParcel:${from}->${to}` as TransitionKey;
+      expect(automationOf(key), `انتقالُ طردٍ مُصرَّحٌ به في lifecycle.ts بلا مدخل: ${key}`).toBeDefined();
+    }
+    // محورُ نقد الطرد آليٌّ كالفاتورة — لا زرَّ «سُوّي» بيد.
+    for (const [key, mode] of entries) {
+      const p = parseTransitionKey(key)!;
+      if (p.entity !== "deliveryMoney") continue;
+      if (p.to === "WRITTEN_OFF") continue; // الشطبُ قرارٌ بشريّ باعتماد.
+      expect(mode.kind, `انتقالُ نقدٍ مشتقٌّ سُجّل يدوياً: ${key}`).toBe("AUTO");
+    }
   });
 });
 

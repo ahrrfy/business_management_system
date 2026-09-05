@@ -23,7 +23,7 @@ import {
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertConsignmentStatusTransition, type ConsignmentStatus } from "./lifecycle";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -267,6 +267,7 @@ export async function recordDeliveryRemittanceInTx(
       delivered: boolean;
       remaining: Decimal;
       fromMoneyStatus: "UNSETTLED" | "PARTIAL";
+      fromStatus: ConsignmentStatus;
     };
     const work: Work[] = [];
     let collectedTotal = new Decimal(0);
@@ -423,6 +424,7 @@ export async function recordDeliveryRemittanceInTx(
         delivered,
         remaining,
         fromMoneyStatus: cn.moneyStatus,
+        fromStatus: cn.status,
       });
       collectedTotal = collectedTotal.plus(collected);
       expectedTotal = expectedTotal.plus(remaining);
@@ -654,6 +656,7 @@ export async function recordDeliveryRemittanceInTx(
       const w = work[i];
       const remitCash = remitCashByLine[i] ?? new Decimal(0);
       const newStatus = w.delivered ? "DELIVERED" : "PARTIAL";
+      assertConsignmentStatusTransition(w.fromStatus, newStatus);
       await tx
         .update(deliveryConsignments)
         .set({
