@@ -24,8 +24,8 @@ import {
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { findIdempotentRefId } from "../idempotency";
-import { money, round2 } from "../money";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { money, round2, toDbMoney } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
 import type { DeliveryTxActor } from "./types";
@@ -183,9 +183,23 @@ export async function settleDailyTx(
   // Codex #1012 P1 — إعادةُ تسويةٍ سبق التزامها (ضاعت استجابتُها عبر النشر/الانقطاع): بعد التزام
   // الأولى تصير طرودُها SETTLED فتعود `loadSettlementLines` فارغةً، فكان الرمي «لا شيء يُسوَّى»
   // يسبق فحصَ idempotency في `recordDeliveryRemittanceInTx` ⇒ يُبلَّغ فشلاً عن عمليةٍ نجح مالُها،
-  // فيُعيد الموظّف التسويةَ بمفتاحٍ جديد (تكرار). نفحص السجلّ القائم أوّلاً ونُعيد نتيجته حرفياً.
+  // فيُعيد الموظّف التسويةَ بمفتاحٍ جديد (تكرار). نفحص هويّة طلب التسوية قبل الأسطر،
+  // لكن ببصمة حمولته كاملةً: مفتاحٌ مع نقد/سبب/وردية مختلفة تعارضٌ لا replay للسند القديم.
+  const settleRequestHash = idempotencyHash({
+    partyId: Number(input.partyId),
+    branchId: Number(input.branchId),
+    countedCash: toDbMoney(input.countedCash),
+    shortfallReason: input.shortfallReason ?? null,
+    shiftType: input.shiftType ?? "RECEPTION",
+  });
   if (input.clientRequestId) {
-    const existingId = await findIdempotentRefId(tx, "delivery.remit", input.clientRequestId);
+    const existingId = await checkIdempotency(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      settleRequestHash,
+      { requireStoredHash: true },
+    );
     if (existingId != null) {
       const rm = (
         await tx
@@ -260,6 +274,15 @@ export async function settleDailyTx(
     },
     actor,
   );
+  if (input.clientRequestId) {
+    await recordIdempotencyKey(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      res.remittanceId,
+      settleRequestHash,
+    );
+  }
   return {
     remittanceId: res.remittanceId,
     status: res.status === "SHORT" ? "SHORT" : "BALANCED",

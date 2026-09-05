@@ -23,7 +23,6 @@ import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMod
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
-import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
 import {
   enqueueAppNotificationOutbox,
@@ -192,6 +191,25 @@ function assertTaskAccess(actor: ProductStudioActor, task: { assignedTo: number 
 
 function processingAuthorizationHash(authorization: string, mode: "PRO" | "AI"): string {
   return contentHash(Buffer.from(`${mode}:${authorization}`, "utf8"));
+}
+
+/**
+ * Receipt لمعاينةٍ جديدة غير معتمدة، مخزّن مؤقتاً في خانة lease ببادئة لا تبدأ بها
+ * SHA-256 السداسية. بذلك تبقى النتيجة المقبولة السابقة صالحة إن أُلغيَت المعاينة الجديدة.
+ */
+function pendingProcessingReceiptMarker(receipt: string, mode: "PRO" | "AI"): string {
+  const prefix = mode === "AI" ? "I" : "P";
+  return prefix + contentHash(Buffer.from(receipt, "utf8")).slice(0, 63);
+}
+
+function pendingProcessingReceiptMode(marker: string | null, receipt: string): "PRO" | "AI" | null {
+  if (marker === pendingProcessingReceiptMarker(receipt, "AI")) return "AI";
+  if (marker === pendingProcessingReceiptMarker(receipt, "PRO")) return "PRO";
+  return null;
+}
+
+function isPendingProcessingReceipt(marker: string | null): boolean {
+  return typeof marker === "string" && /^[IP][0-9a-f]{63}$/.test(marker);
 }
 
 function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null }, adminOverrideReason?: string | null): string | null {
@@ -709,17 +727,48 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
 }
 
 /** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
-async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null) {
+async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null, variantId: number | null = null) {
   const [approved] = await tx
     .select({ count: sql<number>`count(*)` })
     .from(productImages)
-    .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")));
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
   let requiredImages = 1;
   if (campaignId != null) {
     const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
     requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
   }
   return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+}
+
+/** عددُ الصور التي تسبق المهمة الجديدة في ترتيب حملتها/بديلها. */
+async function completedCampaignImageCount(
+  tx: StudioTx,
+  input: {
+    campaignId: number;
+    imagesPolicy: "ONLY_MISSING" | "ANY_REGARDLESS";
+    productId: number;
+    variantId: number | null;
+  },
+): Promise<number> {
+  if (input.imagesPolicy === "ANY_REGARDLESS") {
+    const [row] = await tx.select({ n: sql<number>`count(*)` }).from(productImageJobs).where(and(
+      eq(productImageJobs.campaignId, input.campaignId),
+      eq(productImageJobs.productId, input.productId),
+      input.variantId == null ? isNull(productImageJobs.variantId) : eq(productImageJobs.variantId, input.variantId),
+      eq(productImageJobs.status, "APPROVED"),
+    ));
+    return Number(row?.n ?? 0);
+  }
+  const [row] = await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
+    eq(productImages.productId, input.productId),
+    input.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, input.variantId),
+    eq(productImages.reviewStatus, "APPROVED"),
+  ));
+  return Number(row?.n ?? 0);
 }
 
 /**
@@ -844,6 +893,12 @@ async function claimFreshCampaignTask(
       }
     }
     const inScope = inScopeRow;
+    const completedImages = await completedCampaignImageCount(tx, {
+      campaignId: Number(campaign.id),
+      imagesPolicy: campaign.imagesPolicy ?? "ONLY_MISSING",
+      productId,
+      variantId,
+    });
     const [created] = await tx
       .insert(productImageJobs)
       .values({
@@ -864,7 +919,9 @@ async function claimFreshCampaignTask(
         assignedBy: actor.userId,
         assignedAt: new Date(),
         createdBy: actor.userId,
-        activeSlot: 1,
+        // يبقى ordinal الصورة ثابتاً طوال المهمة، ثم يُستخدم لترتيب النشر حتى لو
+        // اكتملت صورة سابقة وعاد المنتج إلى الطابور لجولة تالية.
+        activeSlot: Math.min(MAX_REQUIRED_IMAGES, completedImages + 1),
         templateVersion: 1,
       })
       .$returningId()
@@ -878,7 +935,7 @@ async function claimFreshCampaignTask(
       });
     const taskId = Number(created.id);
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, variantId, campaignId: Number(campaign.id) }));
-    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
+    return { taskId, productName: displayName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id), variantId)) };
   }
   // ترتيبُ التشخيص من الأخصّ إلى الأعمّ: «اكتملت» يسبق «خارج النطاق» يسبق «فرعٌ آخر»،
   // فالمصوّر يقرأ سبباً واحداً محدَّداً بدل عدّة سببٍ عامّ محتمل.
@@ -963,10 +1020,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
       );
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (Number(active.assignedTo) === actor.userId) {
-      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
+      return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (active.assignedTo != null) {
       throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» بيد زميلٍ آخر الآن`, why: "المهمّة مُسنَدة إلى مصوّرٍ غيرك، ولا تُفتح المهمّة الواحدة لاثنين", doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير نقل المهمّة إليك بإعادة الإسناد" }) });
@@ -1026,7 +1083,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     await tx.insert(auditLogs).values(
       auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, variantId, upgradedFromParent: upgradeVariant, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
     );
-    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId))) };
+    return { taskId: Number(active.id), productName: displayName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId), variantId)) };
   });
 }
 
@@ -1810,7 +1867,7 @@ function missingStudioProductConditions(requiredImages = 1, imagesPolicy: "ONLY_
   const required = Math.max(1, Math.trunc(requiredImages));
   const missingCountCondition = imagesPolicy === "ANY_REGARDLESS"
     ? undefined
-    : sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`;
+    : sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.variantId} is null and ${productImages.reviewStatus} = 'APPROVED') < ${required}`;
   // في ONLY_MISSING الفحصُ activeSlot=1 يكفي — بمجرد اعتماد الصورة يخرج المنتج بشرط
   // العدّ. في ANY_REGARDLESS المنتج المكتمل مسموحٌ ⇒ إن اقتصر الفحص على activeSlot=1
   // فإنّ approve يفرّغه فيصير المنتج «ناقصاً» فوراً ⇒ باكلوغ لا نهائيّ (الجذر:
@@ -1901,6 +1958,19 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
     if (missing.length === 0) return { createdCount: 0, remaining: 0 };
     const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
+    const approvedByProduct = new Map<number, number>();
+    if (campaign.imagesPolicy === "ONLY_MISSING") {
+      const counts = await tx
+        .select({ productId: productImages.productId, n: sql<number>`count(*)` })
+        .from(productImages)
+        .where(and(
+          inArray(productImages.productId, ids),
+          isNull(productImages.variantId),
+          eq(productImages.reviewStatus, "APPROVED"),
+        ))
+        .groupBy(productImages.productId);
+      for (const row of counts) approvedByProduct.set(Number(row.productId), Number(row.n));
+    }
     // حرسُ سباق: حملتان نشطتان بنطاقٍ متقاطع تحسبان الناقص قبل أيّ إدراج، ثمّ تتسابقان
     // على القيد الفريد `(productId, activeSlot)`. `onDuplicateKeyUpdate` بضبطٍ ذاتيّ
     // يُحوّل الاصطدام إلى **تخطٍّ صامتٍ ذرّيّ** (`affectedRows=0`) بدل إسقاط الدفعة
@@ -1922,7 +1992,7 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
           assignedTo: null,
           assignedBy: null,
           createdBy: actor.userId,
-          activeSlot: 1,
+          activeSlot: Math.min(MAX_REQUIRED_IMAGES, (approvedByProduct.get(Number(product.id)) ?? 0) + 1),
           templateVersion: 1,
         })),
       )
@@ -2931,6 +3001,7 @@ export async function listStudioTasks(
       priority: productImageJobs.priority,
       dueAt: productImageJobs.dueAt,
       revision: productImageJobs.revision,
+      activeSlot: productImageJobs.activeSlot,
       overdue: sql<boolean>`${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'REJECTED')`,
       // حالةُ حملة المهمّة تصعد إلى الواجهة (٢٩/٨) لتُبرزَ الشاشةُ شارة تحذير على المهام
       // التي تتبع حملةً مغلقة/موقوفة. `null` للمهام المستقلّة بلا حملة.
@@ -3351,8 +3422,8 @@ export async function assignStudioTask(
     }
     // تُستعمل في مسارَي الإسناد معاً: إنشاء مهمة جديدة، وتبنّي مهمة طابورٍ قائمة.
     // كان التحقّق حكراً على مسار الإنشاء، فكان تبنّي مهمة الطابور يمرّ بلا تحقّقٍ ثم يُهمل اللقطة.
-    const assertSourceSnapshotCurrent = async () => {
-      if (!snapshot) return;
+    const assertSourceSnapshotCurrent = async (candidate = snapshot) => {
+      if (!candidate) return;
       const current = (
         await tx
           .select({
@@ -3364,11 +3435,11 @@ export async function assignStudioTask(
             reviewStatus: productImages.reviewStatus,
           })
           .from(productImages)
-          .where(and(eq(productImages.id, snapshot.sourceImageId), eq(productImages.productId, input.productId)))
+          .where(and(eq(productImages.id, candidate.sourceImageId), eq(productImages.productId, input.productId)))
           .limit(1)
           .for("update")
       )[0];
-      if (!current || current.reviewStatus !== "APPROVED" || current.url !== snapshot.expected.url || current.objectKey !== snapshot.expected.objectKey || current.contentHash !== snapshot.expected.contentHash || current.mime !== snapshot.expected.mime) {
+      if (!current || current.reviewStatus !== "APPROVED" || current.url !== candidate.expected.url || current.objectKey !== candidate.expected.objectKey || current.contentHash !== candidate.expected.contentHash || current.mime !== candidate.expected.mime) {
         throw new TRPCError({
           code: "CONFLICT",
           message: appErrorMessage({
@@ -3388,6 +3459,8 @@ export async function assignStudioTask(
           priority: productImageJobs.priority,
           dueAt: productImageJobs.dueAt,
           revision: productImageJobs.revision,
+          campaignId: productImageJobs.campaignId,
+          sourceImageId: productImageJobs.sourceImageId,
         })
         .from(productImageJobs)
         // إسنادُ المدير الفرديّ **مستوى-الأمّ فقط** (`variantId IS NULL`): مهامّ البدائل
@@ -3397,6 +3470,11 @@ export async function assignStudioTask(
         .for("update")
     )[0];
     if (activeTask) {
+      // مهمة الحملة التي أُنشئت لإضافة صورة جديدة لا تتحول صامتاً إلى «استبدال
+      // الصورة الرئيسية» لمجرد أن المدير لم يمرر sourceImageId في طلب الإسناد.
+      const assignedSnapshot = activeTask.campaignId != null && activeTask.sourceImageId == null && input.sourceImageId === undefined
+        ? null
+        : snapshot;
       if (activeTask.assignedTo != null) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -3417,7 +3495,7 @@ export async function assignStudioTask(
           }),
         });
       }
-      await assertSourceSnapshotCurrent();
+      await assertSourceSnapshotCurrent(assignedSnapshot);
       await tx
         .update(productImageJobs)
         .set({
@@ -3428,26 +3506,26 @@ export async function assignStudioTask(
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
           // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
           // فيصطدم المنفّذ لاحقاً بـ«الصورة الأصلية مطلوبة لأول إرسال».
-          ...(snapshot
+          ...(assignedSnapshot
             ? {
-                sourceImageId: snapshot.sourceImageId,
-                originalObjectKey: snapshot.originalObjectKey,
-                sourceContentHash: snapshot.sourceContentHash,
-                originalMime: snapshot.originalMime,
+                sourceImageId: assignedSnapshot.sourceImageId,
+                originalObjectKey: assignedSnapshot.originalObjectKey,
+                sourceContentHash: assignedSnapshot.sourceContentHash,
+                originalMime: assignedSnapshot.originalMime,
               }
             : {}),
           sourceProductHash: productContentHash(product),
           revision: sql`${productImageJobs.revision} + 1`,
         })
         .where(eq(productImageJobs.id, activeTask.id));
-      if (snapshot) {
-        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
+      if (assignedSnapshot) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, assignedSnapshot.originalObjectKey));
       }
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.assignBacklog", Number(activeTask.id), {
           productId: input.productId,
           assigneeId: input.assigneeId,
-          sourceImageId: snapshot?.sourceImageId ?? null,
+          sourceImageId: assignedSnapshot?.sourceImageId ?? null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? (activeTask.dueAt?.toISOString() ?? null) : (input.dueAt?.toISOString() ?? null),
         }),
@@ -4033,7 +4111,7 @@ export async function saveStudioDraft(
         }),
       });
     }
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -4102,7 +4180,7 @@ export async function authorizeStudioProcessing(actor: ProductStudioActor, taskI
     }
     // يجب أن تسبق جاهزية R2 حجز الحصة والاتصال بالمزوّد؛ لا استهلاك مدفوع لمرشح لا يمكن حفظه.
     assertStoragePolicy();
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -4128,6 +4206,7 @@ export async function authorizeStudioProcessing(actor: ProductStudioActor, taskI
 export async function attestStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", processingAuthorization: string, adminOverrideReason?: string | null): Promise<string> {
   const receipt = randomUUID();
   const authorizationHash = processingAuthorizationHash(processingAuthorization, mode);
+  const proofExpiresAt = new Date(Date.now() + PROCESSING_PROOF_MS);
   await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
@@ -4151,16 +4230,29 @@ export async function attestStudioProcessing(actor: ProductStudioActor, taskId: 
         }),
       });
     }
+    const preserveAcceptedProof = Boolean(
+      task.processingProofTokenHash &&
+      task.processingProofCandidateHash &&
+      task.processingProofExpiresAt &&
+      task.processingProofExpiresAt > new Date(),
+    );
     await tx
       .update(productImageJobs)
-      .set({
-        processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
-        processingProofMode: mode,
-        processingProofCandidateHash: null,
-        processingProofExpiresAt: new Date(Date.now() + PROCESSING_PROOF_MS),
-        processingLeaseTokenHash: null,
-        processingLeaseExpiresAt: null,
-      })
+      .set(preserveAcceptedProof
+        ? {
+            // لا تستبدل إثباتاً قبله المصوّر بمجرد وصول معاينةٍ أحدث؛ خزّن الأخيرة
+            // معلّقةً حتى يربطها زر «اعتماد» ببايتاتها النهائية.
+            processingLeaseTokenHash: pendingProcessingReceiptMarker(receipt, mode),
+            processingLeaseExpiresAt: proofExpiresAt,
+          }
+        : {
+            processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
+            processingProofMode: mode,
+            processingProofCandidateHash: null,
+            processingProofExpiresAt: proofExpiresAt,
+            processingLeaseTokenHash: null,
+            processingLeaseExpiresAt: null,
+          })
       .where(eq(productImageJobs.id, taskId));
     await recordAdminOverride(tx, actor, taskId, "processingAttestation", overrideReason, task.assignedTo);
   });
@@ -4212,7 +4304,17 @@ export async function bindStudioProcessingCandidate(
         }),
       });
     }
-    if (task.processingProofTokenHash !== receiptHash || !task.processingProofMode || !task.processingProofExpiresAt || task.processingProofExpiresAt <= new Date()) {
+    const pendingMode = task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()
+      ? pendingProcessingReceiptMode(task.processingLeaseTokenHash, input.processingReceipt)
+      : null;
+    const acceptedProofValid = Boolean(
+      task.processingProofTokenHash === receiptHash &&
+      task.processingProofMode &&
+      task.processingProofExpiresAt &&
+      task.processingProofExpiresAt > new Date() &&
+      (!task.processingProofCandidateHash || task.processingProofCandidateHash === candidate.hash),
+    );
+    if (!pendingMode && !acceptedProofValid) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -4222,7 +4324,16 @@ export async function bindStudioProcessingCandidate(
         }),
       });
     }
-    await tx.update(productImageJobs).set({ processingProofCandidateHash: candidate.hash }).where(eq(productImageJobs.id, input.taskId));
+    await tx.update(productImageJobs).set(pendingMode
+      ? {
+          processingProofTokenHash: receiptHash,
+          processingProofMode: pendingMode,
+          processingProofCandidateHash: candidate.hash,
+          processingProofExpiresAt: task.processingLeaseExpiresAt,
+          processingLeaseTokenHash: null,
+          processingLeaseExpiresAt: null,
+        }
+      : { processingProofCandidateHash: candidate.hash }).where(eq(productImageJobs.id, input.taskId));
     await recordAdminOverride(tx, actor, input.taskId, "bindProcessingProof", overrideReason, task.assignedTo);
     return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: task.revision };
   });
@@ -4400,17 +4511,24 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
       row.campaignId === task.campaignId && row.variantId === task.variantId &&
       row.assignedTo === task.assignedTo && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(row.status));
     const slots = [task, ...editable.sort((a, b) => Number(a.id) - Number(b.id))];
+    const sameVariantJob = task.variantId == null
+      ? isNull(productImageJobs.variantId)
+      : eq(productImageJobs.variantId, task.variantId);
+    const sameVariantImage = task.variantId == null
+      ? isNull(productImages.variantId)
+      : eq(productImages.variantId, task.variantId);
     const [completed] = campaign?.imagesPolicy === "ANY_REGARDLESS"
       ? await tx.select({ n: sql<number>`count(*)` }).from(productImageJobs).where(and(
           eq(productImageJobs.productId, task.productId), eq(productImageJobs.campaignId, campaign.id),
-          eq(productImageJobs.status, "APPROVED")))
+          sameVariantJob, eq(productImageJobs.status, "APPROVED")))
       : await tx.select({ n: sql<number>`count(*)` }).from(productImages).where(and(
-          eq(productImages.productId, task.productId), eq(productImages.reviewStatus, "APPROVED")));
+          eq(productImages.productId, task.productId), sameVariantImage, eq(productImages.reviewStatus, "APPROVED")));
     const capacityJobs = campaign?.imagesPolicy === "ANY_REGARDLESS"
-      ? live.filter((row) => row.campaignId === task.campaignId)
-      : live.filter((row) => row.sourceImageId == null);
+      ? live.filter((row) => row.campaignId === task.campaignId && row.variantId === task.variantId)
+      : live.filter((row) => row.sourceImageId == null && row.variantId === task.variantId);
+    const completedCount = Number(completed?.n ?? 0);
     const remaining = campaign?.status === "ACTIVE"
-      ? Math.max(0, Number(campaign.requiredImages) - Number(completed?.n ?? 0) - capacityJobs.length) : 0;
+      ? Math.max(0, Number(campaign.requiredImages) - completedCount - capacityJobs.length) : 0;
     const maxImages = Math.min(MAX_REQUIRED_IMAGES, slots.length + remaining);
     if (input.count > maxImages) {
       throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({
@@ -4419,9 +4537,13 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
       }) });
     }
     const used = new Set(live.filter((row) => row.variantId === task.variantId).map((row) => row.activeSlot));
+    const firstAvailableOrdinal = Math.min(MAX_REQUIRED_IMAGES, completedCount + 1);
     if (slots.length < input.count) assertStoragePolicy();
     while (slots.length < input.count) {
-      const activeSlot = Array.from({ length: MAX_REQUIRED_IMAGES }, (_, i) => i + 1).find((slot) => !used.has(slot));
+      const activeSlot = Array.from(
+        { length: MAX_REQUIRED_IMAGES - firstAvailableOrdinal + 1 },
+        (_, i) => firstAvailableOrdinal + i,
+      ).find((slot) => !used.has(slot));
       if (!activeSlot) throw new TRPCError({ code: "CONFLICT" });
       const [created] = await tx.insert(productImageJobs).values({
         productId: task.productId, variantId: task.variantId, campaignId: task.campaignId,
@@ -4440,6 +4562,7 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
     }
     return { maxImages, tasks: slots.map((row) => ({
       taskId: Number(row.id), revision: Number(row.revision), status: row.status,
+      activeSlot: Number(row.activeSlot),
       hasOriginal: Boolean(row.originalObjectKey), hasCandidate: Boolean(row.processedObjectKey),
       updatedAt: row.updatedAt,
     })) };
@@ -4488,7 +4611,7 @@ export async function submitStudioCandidate(
         }),
       });
     }
-    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+    if (task.processingLeaseTokenHash && !isPendingProcessingReceipt(task.processingLeaseTokenHash) && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -4500,7 +4623,6 @@ export async function submitStudioCandidate(
     }
     // الحجز قبل الرفع وداخل معاملة الحجز نفسها: لا يُكتب بايتٌ في المخزن قبل إثبات رصيده.
     // كان هذا المسار المجّاني بلا سقفٍ إطلاقاً بينما يكتب كائنَين لا يُستبدَلان ولا يُستردّان.
-    await reserveStudioSubmitQuotaInTx(tx, actor.userId, studioPayloadBytes(input.processedDataUrl, input.thumbnailDataUrl, task.originalObjectKey ? null : input.originalDataUrl));
     await tx
       .update(productImageJobs)
       .set({
@@ -4616,6 +4738,8 @@ export async function submitStudioCandidate(
           processingProofMode: null,
           processingProofCandidateHash: null,
           processingProofExpiresAt: null,
+          processingLeaseTokenHash: null,
+          processingLeaseExpiresAt: null,
           revision: sql`${productImageJobs.revision} + 1`,
         })
         .where(eq(productImageJobs.id, input.taskId));
@@ -4842,28 +4966,63 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       imageId = Number(image.id);
       existingOriginalKey = image.originalKey;
     } else {
-      // العزلُ لكل بديل: تخفيضُ الصور الرئيسيّة يُقيَّد بنفس `variantId` (أو نفس مستوى-الأمّ
-      // إن كانت المهمّة variantId=NULL). بلا هذا القيد كانت الصورة الأخيرة لأيّ بديلٍ
-      // تُعزَّز رئيسيّةً وتُخفَّض جميع البدائل الأخرى — فيقرأ الكشك/المتجر صورةً واحدة
-      // لكل البدائل (الجذر: مراجعة Codex P1 على PR #807).
-      await tx
-        .update(productImages)
-        .set({ isPrimary: false })
-        .where(
-          and(
-            eq(productImages.productId, task.productId),
-            eq(productImages.isPrimary, true),
-            task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
-          ),
-        );
+      const scope = and(
+        eq(productImages.productId, task.productId),
+        task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      );
+      const existingImages = await tx
+        .select({
+          id: productImages.id,
+          isPrimary: productImages.isPrimary,
+          sortOrder: productImages.sortOrder,
+          publishedStudioJobId: productImages.publishedStudioJobId,
+        })
+        .from(productImages)
+        .where(scope)
+        .for("update");
+      const publishedJobIds = existingImages
+        .map((image) => image.publishedStudioJobId)
+        .filter((id): id is number => id != null);
+      const publishedJobs = publishedJobIds.length
+        ? await tx
+            .select({ id: productImageJobs.id, campaignId: productImageJobs.campaignId })
+            .from(productImageJobs)
+            .where(inArray(productImageJobs.id, publishedJobIds))
+        : [];
+      const campaignByJob = new Map(publishedJobs.map((job) => [Number(job.id), job.campaignId]));
+      const sameCampaign = task.campaignId == null
+        ? []
+        : existingImages.filter(
+            (image) => image.publishedStudioJobId != null && campaignByJob.get(Number(image.publishedStudioJobId)) === task.campaignId,
+          );
+      const outsideCampaign = existingImages.filter((image) => !sameCampaign.some((own) => Number(own.id) === Number(image.id)));
+      const outsidePrimary = outsideCampaign.some((image) => image.isPrimary);
+      const sameCampaignPrimaryIds = sameCampaign.filter((image) => image.isPrimary).map((image) => Number(image.id));
+      const activeSlot = Math.max(1, Number(task.activeSlot ?? 1));
+      // موضعُ دفعة الحملة ثابت بالـslot لا بترتيب مراجعة المدير. الصور السابقة تبقى
+      // كما هي؛ الدفعة تبدأ بعد أعلى ترتيب خارج حملتها ثم تحتل slots متجاورة.
+      const baseSortOrder = outsideCampaign.reduce(
+        (max, image) => Math.max(max, Number(image.sortOrder ?? 0)),
+        -1,
+      ) + 1;
+      const nextSortOrder = baseSortOrder + activeSlot - 1;
+      // إن لم توجد صورة رئيسية سابقة، تكون أول نتيجة رئيسية مؤقتاً. وصول slot 1
+      // يصحّحها حتمياً؛ وإن ظهرت صورة رئيسية خارج الحملة نحافظ عليها ونخفض المؤقتة.
+      if (sameCampaignPrimaryIds.length && (outsidePrimary || activeSlot === 1)) {
+        await tx
+          .update(productImages)
+          .set({ isPrimary: false })
+          .where(inArray(productImages.id, sameCampaignPrimaryIds));
+      }
+      const shouldBePrimary = !outsidePrimary && (activeSlot === 1 || sameCampaignPrimaryIds.length === 0);
       const [created] = await tx
         .insert(productImages)
         .values({
           productId: task.productId,
           variantId: task.variantId,
           url: "stored-object",
-          isPrimary: true,
-          sortOrder: 0,
+          isPrimary: shouldBePrimary,
+          sortOrder: nextSortOrder,
           reviewStatus: "APPROVED",
           origin: task.mode === "AI" ? "STUDIO_AI" : task.mode === "PRO" ? "STUDIO_PRO" : "STUDIO_FREE",
         })

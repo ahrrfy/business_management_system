@@ -53,7 +53,10 @@ const REPORT_ONLY = process.argv.includes("--report");
  */
 export function stripComments(source) {
   return source
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, " ")
+    // يمسك تعليقَ JSX المكتمل وحده. «النقطة المروَّضة» (tempered dot) في النمط أدناه تمنع
+    // تجاوزَ أوّل «*/»، فلا يُبتلَع جسمُ دالّةٍ يبدأ بتعليق JSDoc حتى أوّل «*/}» لاحق — وكان
+    // ذلك يطرح شيفرةً حقيقيةً فتعمى الكواشف عن مسندٍ أو إجراءٍ بعد الـJSDoc (false negative).
+    .replace(/\{\s*\/\*(?:(?!\*\/)[\s\S])*?\*\/\s*\}/g, " ")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ");
 }
@@ -435,6 +438,19 @@ function runSelfTest({ quiet }) {
     detectHandWrittenReversal("export async function cancelDraft(){ await tx.update(x); }"),
     0,
   );
+
+  // (stripper) جسمُ دالّةٍ يبدأ بـJSDoc لا يُبتلَع حتى أوّل تعليق JSX لاحق (الثقب المُصلَح):
+  //     بالنمط القديم كان المسندُ الحسابيّ بعد الـJSDoc يُطرح مع التعليق فتعمى عنه الكواشف.
+  const jsdocThenCode = [
+    "function calc() {",
+    "  /** doc */",
+    "  const open = total - paidAmount - returnedTotal;",
+    "  return open;",
+    "}",
+    "const jsx = <div>{/* c */}</div>;",
+  ].join("\n");
+  eq("stripper يحفظ الشيفرة بعد JSDoc", /paidAmount - returnedTotal/.test(stripComments(jsdocThenCode)), true);
+  eq("الكاشف يرى المسندَ بعد JSDoc", detectOpenBalancePredicate(jsdocThenCode), 1);
 
   if (fails.length > 0) {
     console.error("✗ الاختبار الذاتيّ لمقياس الاحتكاك فشل:\n");
