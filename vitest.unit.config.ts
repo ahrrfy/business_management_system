@@ -338,6 +338,8 @@ export default defineConfig({
       "client/src/components/delivery/partyBoardModel.test.ts",
       "client/src/components/delivery/dailySettlement.test.ts",
       "client/src/components/delivery/companyStatementReconciliation.test.ts",
+      // م٨ (٦/٩/٢٦) — تكافؤ نموذج القدرات مع بوّابات الوحدة (نقيّ، بلا قاعدة).
+      "server/services/__tests__/capabilityGateEquivalence.test.ts",
     ],
   },
 });

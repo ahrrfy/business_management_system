@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { dispatchManualCameraEntry } from "./cameraScannerLifecycle";
+import { readFileSync } from "node:fs";
+
+it("clears torch UI state when the owned camera is stopped or fails to reopen", () => {
+  const source = readFileSync("client/src/components/scan/CameraScanner.tsx", "utf8");
+  const cleanup = source.slice(source.indexOf("const stop = () =>"), source.indexOf("const setTorchCapability"));
+  expect(cleanup).toContain("setTorchAvailable(false)");
+  expect(cleanup).toContain("setTorchOn(false)");
+});
 
 describe("manual camera entry lifecycle", () => {
   it("uses the normal delivery lifecycle when no manual override exists", () => {
