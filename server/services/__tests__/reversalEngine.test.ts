@@ -119,7 +119,7 @@ describe("reversalEngine — الثابت Σ=0 على نطاقٍ كامل", () =
 
     // ═══ ٣) اعكس الكلّ ═══
     const outcome = await withTx((tx) =>
-      reverse(tx, documentType, documentId, { kind: "ALL" }, "اختبار العكس الكامل", ACTOR),
+      reverse(tx, documentType, documentId, { kind: "ALL" }, "اختبار العكس الكامل", ACTOR, { mode: "MIRROR" }),
     );
     expect(outcome.reversedCount).toBe(applyRows.length);
 
@@ -185,7 +185,7 @@ describe("reversalEngine — الثابت Σ=0 على نطاقٍ كامل", () =
         documentId,
         { kind: "ONLY", effectKinds: ["SUPPLIER_BALANCE"] },
         "إلغاء الفاتورة",
-        ACTOR,
+        ACTOR, { mode: "MIRROR" },
       ),
     );
 
@@ -230,13 +230,13 @@ describe("reversalEngine — الثابت Σ=0 على نطاقٍ كامل", () =
     });
 
     await expect(
-      withTx((tx) => reverse(tx, "INVOICE", 42, { kind: "ALL" }, "  ", ACTOR)),
+      withTx((tx) => reverse(tx, "INVOICE", 42, { kind: "ALL" }, "  ", ACTOR, { mode: "MIRROR" })),
     ).rejects.toThrow(/سببُ العكس/);
   });
 
   it("العكسُ على مستندٍ بلا آثار = صفر عمليات (idempotent)", async () => {
     const result = await withTx((tx) =>
-      reverse(tx, "INVOICE", 77777, { kind: "ALL" }, "لا شيء لعكسه", ACTOR),
+      reverse(tx, "INVOICE", 77777, { kind: "ALL" }, "لا شيء لعكسه", ACTOR, { mode: "MIRROR" }),
     );
     expect(result.reversedCount).toBe(0);
     expect(result.reversedEffectIds).toEqual([]);
@@ -257,12 +257,12 @@ describe("reversalEngine — الثابت Σ=0 على نطاقٍ كامل", () =
       );
     });
     const first = await withTx((tx) =>
-      reverse(tx, "INVOICE", 8888, { kind: "ALL" }, "الأولى", ACTOR),
+      reverse(tx, "INVOICE", 8888, { kind: "ALL" }, "الأولى", ACTOR, { mode: "MIRROR" }),
     );
     expect(first.reversedCount).toBe(1);
     // نداءٌ ثانٍ لا يجد أيَّ APPLY بلا مقابل ⇒ صفر
     const second = await withTx((tx) =>
-      reverse(tx, "INVOICE", 8888, { kind: "ALL" }, "الثانية", ACTOR),
+      reverse(tx, "INVOICE", 8888, { kind: "ALL" }, "الثانية", ACTOR, { mode: "MIRROR" }),
     );
     expect(second.reversedCount).toBe(0);
     // مجموعُ الصفوف = ٢ فقط
@@ -319,7 +319,7 @@ describe("محرّك العكس — ملاحظات Codex #957", () => {
         95701,
         { kind: "ONLY", effectKinds: [] },
         "قائمةٌ فارغة",
-        ACTOR,
+        ACTOR, { mode: "MIRROR" },
       ),
     );
     expect(result.reversedCount).toBe(0);
@@ -386,7 +386,7 @@ describe("محرّك العكس — ملاحظات Codex #957", () => {
           operationScopes: ["cancel"],
         },
         "عكسُ الإلغاء فقط",
-        ACTOR,
+        ACTOR, { mode: "MIRROR" },
       ),
     );
     expect(result.reversedCount).toBe(1);

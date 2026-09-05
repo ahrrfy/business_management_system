@@ -12,8 +12,54 @@ import {
   REFUND_SOURCE_DOC_LABEL,
   REFUND_SOURCE_DOC_TYPES,
   RefundRailContextSchema,
+  availableRefundRails,
   cardReferenceIsMissing,
+  refundRailAvailability,
 } from "./refundRails";
+
+const drawer = { shiftId: 7, userId: 2, userName: "كاشير", shiftType: "RECEPTION", sufficient: true };
+
+describe("توفّرُ الروافد — ما يقبله فعلُ التنفيذ فعلاً (م٢ ق١٠)", () => {
+  it("كلُّ رافدٍ غيرِ متاح يحمل سبباً مقروءاً — لا إخفاءَ صامتاً", () => {
+    for (const type of REFUND_SOURCE_DOC_TYPES) {
+      for (const drawers of [[], [drawer]]) {
+        for (const cardRefundAllowed of [false, true]) {
+          const rails = refundRailAvailability(type, { drawers, cardRefundAllowed }, true);
+          for (const rail of REFUND_RAILS) {
+            if (!rails[rail].available) {
+              expect(rails[rail].reason, `${type}/${rail}`).toBeTruthy();
+              expect((rails[rail].reason ?? "").length, `${type}/${rail}`).toBeGreaterThan(15);
+            } else {
+              expect(rails[rail].reason, `${type}/${rail}`).toBeNull();
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("عكسُ التسليم: الخزينةُ متاحةٌ حين لا وردية استقبال مفتوحة فقط (المفتاح الناقص) والبطاقةُ لا", () => {
+    const none = refundRailAvailability("WORKORDER_REVERSE_DELIVERY", { drawers: [], cardRefundAllowed: true });
+    expect(availableRefundRails(none)).toEqual(["TREASURY"]);
+    const withDrawer = refundRailAvailability("WORKORDER_REVERSE_DELIVERY", { drawers: [drawer], cardRefundAllowed: true });
+    expect(availableRefundRails(withDrawer)).toEqual(["DRAWER"]);
+    expect(withDrawer.TREASURY.reason).toMatch(/وردية استقبال مفتوحة/);
+  });
+
+  it("مرتجعُ البيع: الخزينةُ مخرجُ الإداريّ حين لا وردية، ومحجوبةٌ عن غيره بسببٍ يذكر المدير", () => {
+    const admin = refundRailAvailability("SALE_RETURN", { drawers: [], cardRefundAllowed: true }, true);
+    expect(availableRefundRails(admin)).toEqual(["TREASURY", "CARD"]);
+    const staff = refundRailAvailability("SALE_RETURN", { drawers: [], cardRefundAllowed: false }, false);
+    expect(availableRefundRails(staff)).toEqual([]);
+    expect(staff.TREASURY.reason).toMatch(/المدير/);
+  });
+
+  it("إرجاعُ الإرسالية: الدرجُ وحده — والخزينةُ معلَنةٌ غيرَ مبنيّةٍ باسم فعلها لا مخفيّة", () => {
+    const rails = refundRailAvailability("CONSIGNMENT_RETURN", { drawers: [drawer], cardRefundAllowed: false });
+    expect(availableRefundRails(rails)).toEqual(["DRAWER"]);
+    expect(rails.TREASURY.reason).toMatch(/delivery\.returnConsignment/);
+  });
+});
 
 describe("عقدُ منتقي روافد الردّ", () => {
   it("كلُّ نوعِ مستندٍ في القاموس يملك تسميةً عربية غيرَ فارغة", () => {

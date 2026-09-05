@@ -4,13 +4,14 @@
  *  ② فرعٌ آخر لغير مَن يعبُر الفروع ⇒ `FORBIDDEN` مقروء.
  *  ③ عزلُ الفرع لا يُطبَّق على مَن يعبُر الفروع (admin).
  *  ④ حجبُ رصيد الخزينة/الأدراج عن مَن لا يملك `treasury:READ`.
- *  ⑤ التوزيع الصحيح لأنواع المستندات الثلاثة (WORKORDER_CANCEL/REVERSE_DELIVERY/CONSIGNMENT_RETURN).
+ *  ⑤ التوزيع الصحيح لأنواع المستندات الأربعة (WORKORDER_CANCEL/REVERSE_DELIVERY/CONSIGNMENT_RETURN/SALE_RETURN).
+ *  ⑥ خريطةُ الروافد `rails` (م٢ ذيل): ما لا يقبله فعلُ التنفيذ يُعلَن بسببه ولا يُخفى.
  *
  * ⚠️ الاختبارُ لا يعيد اختبارَ منطقِ الحساب — ذلك مغطّى في `refundPreflightAppliedGap.test.ts`
  * وفي `deliveryFlow.test.ts` وأخواتها. هنا نختبر **البوّابة والتوزيع** لا الحسبة.
  */
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -23,6 +24,8 @@ const TABLES = [
   "auditLogs",
   "accountingEntries",
   "receipts",
+  "invoiceItems",
+  "invoices",
   "orderPayments",
   "receptionDrafts",
   "deliveryConsignments",
@@ -266,13 +269,106 @@ describe("خدمةُ روافد الردّ الموحَّدة — العزلُ �
       ),
     );
     expect(res.branchId).toBe(1);
-    // Codex #960 P1: REVERSE_DELIVERY لا يقبل رافدَ الخزينة (فعلُه بخطّة ردٍّ لكلّ إيصال) —
-    // مهما كان `needsCashDrawer`، خدمتُنا تُحجب treasuryCash صراحةً، فيستحيل تأكيدُ اختيارٍ
-    // لن يُنفَّذ. مقياسُ الاختبار الآن على هذا الثابت، لا على قيمةٍ من دفتر الدفع الأصليّ
-    // (`workOrderRefundPreflight` يقرّر needsCashDrawer بحسب حسابه الداخليّ، وقد يتغيّر —
-    // العقدُ الثابتُ هنا: خزينةٌ محجوبةٌ في REVERSE_DELIVERY).
+    // م٢ ق١٠ (المفتاح الناقص): مع وردية استقبالٍ مفتوحة يخرج ردُّ عكس التسليم من درجها — الخزينةُ ليست
+    // بديلاً يُختار بجانب الدرج (مرآةُ `resolveLockedReceptionCashSource`)، فتُحجب بسببها المعلَن لا صامتةً.
     expect(res.treasuryCash).toBeNull();
     expect(res.treasurySufficient).toBe(false);
+    expect(res.rails.TREASURY.available).toBe(false);
+    expect(res.rails.TREASURY.reason).toMatch(/توجد وردية استقبال مفتوحة/);
+    expect(res.rails.DRAWER.available).toBe(true);
+    expect(res.rails.CARD.available).toBe(false);
+  });
+
+  it("⑦ب REVERSE_DELIVERY بلا وردية استقبال مفتوحة: الخزينةُ رافدٌ معلَن (يُصرَف عند الاعتماد) لا باباً مسدوداً", async () => {
+    const shift = await openReceptionShiftWithCash(1, 2, "50000.00");
+    const wo = await workOrderWithDeposit(1, shift, "3000.00");
+    // تُقفَل الوردية بعد القبض ⇒ لا درجَ استقبالٍ مفتوحاً وقت الطلب.
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, shift));
+    const res = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "WORKORDER_REVERSE_DELIVERY", sourceDocId: wo }, ADMIN),
+    );
+    expect(res.drawers).toHaveLength(0);
+    expect(res.rails.DRAWER.available).toBe(false);
+    expect(res.rails.TREASURY.available).toBe(true);
+    expect(res.rails.CARD.available).toBe(false);
+  });
+
+  it("⑨  SALE_RETURN: الوعاءُ من سقوف الردّ، الأدراجُ أيُّ وردية مفتوحة، والبطاقةُ لعميلٍ مسجَّل", async () => {
+    const shift = await openReceptionShiftWithCash(1, 2, "50000.00");
+    const invoiceId = extractInsertId(
+      await db().insert(s.invoices).values({
+        invoiceNumber: `INV-${randomUUID().slice(0, 6)}`,
+        branchId: 1,
+        customerId: 1,
+        subtotal: "3000.00",
+        total: "3000.00",
+        paidAmount: "3000.00",
+        status: "PAID",
+        sourceType: "POS",
+        createdBy: 2,
+      } as never),
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId: shift, invoiceId, direction: "IN", amount: "3000.00",
+      paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", approvalStatus: "APPROVED",
+      partyType: "CUSTOMER", partyId: 1, createdBy: 2,
+    });
+    const full = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId }, ADMIN),
+    );
+    expect(full.needsCashDrawer).toBe(true);
+    expect(full.estimatedCashOut).toBe("3000.00"); // الوعاءُ كلُّه بلا مبلغ
+    expect(full.drawers.map((d) => d.shiftId)).toContain(shift);
+    expect(full.rails.DRAWER.available).toBe(true);
+    // وردية مفتوحة ⇒ الخزينة ليست بديلاً يُختار بجانب الدرج (مرآة shiftIdForCashTx).
+    expect(full.rails.TREASURY.available).toBe(false);
+    expect(full.cardRefundAllowed).toBe(true); // عميلٌ مسجَّل والنقدُ رافدُ ردٍّ يستوعب الوعاء
+    expect(full.rails.CARD.available).toBe(true);
+
+    // مبلغٌ جزئيّ: الكفاية تُقاس به لا بالوعاء كلّه.
+    const partial = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId, amount: "1000.00" }, ADMIN),
+    );
+    expect(partial.estimatedCashOut).toBe("1000.00");
+    // مبلغٌ فوق الوعاء يُقصّ به — الخادم لا يثق بالشاشة.
+    const capped = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId, amount: "9999.00" }, ADMIN),
+    );
+    expect(capped.estimatedCashOut).toBe("3000.00");
+  });
+
+  it("⑩  SALE_RETURN بلا وردية مفتوحة: الخزينةُ مخرجُ الإداريّ وحده، والكاشير يرى السببَ لا رقاقةً ميتة", async () => {
+    const invoiceId = extractInsertId(
+      await db().insert(s.invoices).values({
+        invoiceNumber: `INV-${randomUUID().slice(0, 6)}`,
+        branchId: 1,
+        customerId: null,
+        subtotal: "2000.00",
+        total: "2000.00",
+        paidAmount: "2000.00",
+        status: "PAID",
+        sourceType: "POS",
+        createdBy: 2,
+      } as never),
+    );
+    await db().insert(s.receipts).values({
+      branchId: 1, invoiceId, direction: "IN", amount: "2000.00",
+      paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", approvalStatus: "APPROVED",
+      partyType: "OTHER", createdBy: 2,
+    });
+    const manager = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId }, MANAGER_B1),
+    );
+    expect(manager.drawers).toHaveLength(0);
+    expect(manager.rails.DRAWER.available).toBe(false);
+    expect(manager.rails.TREASURY.available).toBe(true);
+    // زبونٌ عابر ⇒ لا بطاقة (عقد الخدمة: نقدٌ كامل فقط).
+    expect(manager.rails.CARD.available).toBe(false);
+    const staff = await withTx((tx) =>
+      refundRailPreflight(tx, { sourceDocType: "SALE_RETURN", sourceDocId: invoiceId }, { ...RECEPTION_STAFF, permissionsOverride: { sales: "READ", treasury: "NONE" } as unknown as RefundRailActor["permissionsOverride"] }),
+    );
+    expect(staff.rails.TREASURY.available).toBe(false);
+    expect(staff.rails.TREASURY.reason).toMatch(/صلاحيةُ المدير أو الأدمن/);
   });
 
   it("⑧  التوزيع: CONSIGNMENT_RETURN لإرساليةٍ غير موجودة ⇒ NOT_FOUND بمصطلحها", async () => {
