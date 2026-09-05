@@ -242,6 +242,69 @@ describe("التسوية اليوميّة — المتوقَّع محسوبٌ س
     expect(await partyBalance()).toBe("2000.00");
     expect((await db().select().from(s.deliveryRemittances)).length).toBe(0);
   });
+
+  it("②-ب إعادةُ الطلب بنفس المفتاح (BALANCED) تعيد السند نفسه بلا تسويةٍ ثانية", async () => {
+    await openReception();
+    const a = await saleWithDelivery("rp-1", "2"); // 2000
+    await confirmDelivered(a.consignmentId, "2000");
+    const key = "settle-daily-replay-balanced";
+    const first = await settle("2000", undefined, key);
+    expect(first.status).toBe("BALANCED");
+    expect(first.receiptId).toEqual(expect.any(Number));
+
+    // لقطةُ الحالة بعد التسوية الأولى — إعادةُ الطلب يجب ألّا تحرّك شيئاً منها.
+    const before = {
+      balance: await partyBalance(),
+      remittances: (await db().select().from(s.deliveryRemittances)).length,
+      ledger: (await ledger()).length,
+      receipts: (await db().select().from(s.receipts)).length,
+    };
+    expect(before.remittances).toBe(1);
+
+    // نقرٌ مزدوج / إعادةُ شبكة بنفس المفتاح ⇒ نفس SettleDailyResult حرفياً، ولا أثرٌ جديد.
+    const again = await settle("2000", undefined, key);
+    expect(again).toEqual(first);
+    expect(await partyBalance()).toBe(before.balance);
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(before.remittances);
+    expect((await ledger()).length).toBe(before.ledger);
+    expect((await db().select().from(s.receipts)).length).toBe(before.receipts);
+  });
+
+  it("②-ب إعادةُ الطلب بنفس المفتاح (SHORT) تعيد العجزَ المخزَّن بلا تحميلٍ مزدوجٍ على الجهة", async () => {
+    await openReception();
+    const a = await saleWithDelivery("rp-2", "3"); // 3000
+    await confirmDelivered(a.consignmentId, "3000");
+    const key = "settle-daily-replay-short";
+    const first = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key);
+    expect(first.status).toBe("SHORT");
+    expect(first.shortfallTotal).toBe("500.00");
+    expect(await partyBalance()).toBe("500.00");
+
+    // الإعادةُ تعيد العجزَ نفسه، ولا تُقيّده ثانيةً: نفس الرصيد، سندٌ واحد، قيدُ عجزٍ واحد.
+    const again = await settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key);
+    expect(again).toEqual(first);
+    expect(await partyBalance()).toBe("500.00");
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(1);
+  });
+
+  it("②-ب إعادةُ الطلب بنفس المفتاح لكن بحمولةٍ مختلفة ⇒ CONFLICT لا قبولٌ صامتٌ يكذب على الأثر", async () => {
+    await openReception();
+    const a = await saleWithDelivery("rp-3", "3"); // 3000
+    await confirmDelivered(a.consignmentId, "3000");
+    const key = "settle-daily-tampered";
+    const first = await settle("3000", undefined, key);
+    expect(first.status).toBe("BALANCED");
+    expect(await partyBalance()).toBe("0.00");
+
+    // نفس المفتاح لكن نقدٌ معدودٌ وسببُ عجزٍ مختلفان ⇒ حمولةٌ مختلفة ⇒ تعارضٌ **قبل** أيّ أثر
+    // (لا يُعاد السند القديم صامتاً فيكذب الأثرُ على «2500 بعجز» بينما المخزَّن «3000 متوازن»).
+    await expect(settle("2500", "CUSTOMER_REQUESTED_DISCOUNT", key)).rejects.toMatchObject({ code: "CONFLICT" });
+    // ولا سندَ ثانٍ، ولا عجزٌ زائفٌ قُيِّد على الجهة.
+    expect((await db().select().from(s.deliveryRemittances)).length).toBe(1);
+    expect(await partyBalance()).toBe("0.00");
+    expect((await ledger()).filter((e) => e.entryType === "SHORTFALL_ASSIGNED")).toHaveLength(0);
+  });
 });
 
 describe("اقتراح الجهة بالمنطقة — دليلٌ لا تخمين", () => {

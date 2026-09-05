@@ -20,10 +20,12 @@ import {
   deliveryConsignments,
   deliveryLedgerEntries,
   deliveryParties,
+  deliveryRemittances,
   invoices,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { money, round2 } from "../money";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
+import { money, round2, toDbMoney } from "../money";
 import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import { recordDeliveryRemittanceInTx } from "./remittance";
 import type { DeliveryTxActor } from "./types";
@@ -178,6 +180,48 @@ export async function settleDailyTx(
   actor: DeliveryTxActor,
 ): Promise<SettleDailyResult> {
   const party = await loadPartyOrThrow(tx, input.partyId, "تعذّر تسجيل التسوية اليوميّة");
+  // إعادةُ الطلب بنفس مفتاح idempotency (نقرٌ مزدوج · إعادةُ شبكة · إعادةُ محاولة الراوتر على
+  // ER_DUP): التسويةُ الأولى نقلت الطرود إلى «مُسوّاة» فيعود `loadSettlementLines` فارغاً — ولو
+  // فحصنا الأسطر أوّلاً لرُفضت الإعادةُ بـ«لا شيء يُسوَّى» بدل إعادة السند نفسه. فنفحص المفتاح
+  // **قبل** تحميل الأسطر، ببصمةِ الطلب على مستوى التسوية اليوميّة: نيّةُ المستدعي هي
+  // (الجهة/الفرع/النقد المعدود/سبب العجز/نوع الوردية) — أمّا الأسطرُ فيشتقّها الخادم من حالة
+  // القاعدة لا المستدعي، ولا سبيل لإعادة بنائها بعد أن استُهلكت. البصمةُ تجعل الإعادةَ الأمينة
+  // (نفس الحمولة) تُعيد السند حرفياً، وتجعل إعادةً بنفس المفتاح لكن بنقدٍ معدودٍ أو سببٍ أو ورديةٍ
+  // مختلفة **تعارضاً صريحاً** (`checkIdempotency` يرمي CONFLICT عند اختلاف البصمة) بدل إعادةِ
+  // سندٍ يكذب على ما نُفِّذ — نظير حارس بصمة الحمولة في `recordDeliveryRemittanceInTx`.
+  const settleRequestHash = idempotencyHash({
+    partyId: Number(input.partyId),
+    branchId: Number(input.branchId),
+    countedCash: toDbMoney(input.countedCash),
+    shortfallReason:
+      input.shortfallReason && isShortfallReason(input.shortfallReason) ? input.shortfallReason : null,
+    shiftType: input.shiftType ?? "RECEPTION",
+  });
+  if (input.clientRequestId) {
+    const existingRemittanceId = await checkIdempotency(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      settleRequestHash,
+    );
+    if (existingRemittanceId != null) {
+      const rm = (
+        await tx
+          .select()
+          .from(deliveryRemittances)
+          .where(eq(deliveryRemittances.id, existingRemittanceId))
+          .limit(1)
+      )[0];
+      if (rm) {
+        return {
+          remittanceId: Number(rm.id),
+          status: rm.status === "SHORT" ? "SHORT" : "BALANCED",
+          shortfallTotal: String(rm.shortfallTotal),
+          receiptId: rm.receiptInId != null ? Number(rm.receiptInId) : null,
+        };
+      }
+    }
+  }
   const lines = await loadSettlementLines(tx, input);
   if (!lines.length) {
     throw new TRPCError({
@@ -229,6 +273,17 @@ export async function settleDailyTx(
     },
     actor,
   );
+  // بصمةُ الطلب على مستوى التسوية اليوميّة — عمليّةٌ مستقلّة عن `delivery.remit` الداخليّة (مفتاحان
+  // بنفس clientRequestId، القيد الفريد على (operation, key) فلا يتصادمان). بها تلتقط الإعادةُ
+  // التالية نيّةَ المستدعي: تُعيد السند عند التطابق، وتُعارِض عند اختلاف الحمولة.
+  if (input.clientRequestId)
+    await recordIdempotencyKey(
+      tx,
+      "delivery.settleDaily",
+      input.clientRequestId,
+      res.remittanceId,
+      settleRequestHash,
+    );
   return {
     remittanceId: res.remittanceId,
     status: res.status === "SHORT" ? "SHORT" : "BALANCED",
