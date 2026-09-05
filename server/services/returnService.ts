@@ -20,7 +20,7 @@ import {
 } from "./cash/cashAvailability";
 import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
 import { withTx, type Actor } from "./tx";
-import { recordEffect } from "./reversalEngine"; // ق٧: ربطٌ ظلّيّ لمحرّك العكس (شريحة ٠٣٢٩)
+import { reverseInvoiceSaleInTx } from "./reversal/invoiceReversal"; // ق٧: المرتجعُ الكامل يمرّ بمحرّك العكس
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
@@ -666,6 +666,172 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     });
     work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
 
+    /**
+     * سقفُ الاسترداد والزبونُ العابر — **الحسابُ موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts`
+     * (مصدر حقيقةٍ واحد). يُستدعى من المسارين (الكامل عبر المحرّك · الجزئيّ اليدويّ) بنصوصٍ واحدة.
+     * ⭐ قرار المالك (١٧/٨/٢٦): الاسترداد **النقديّ** متاحٌ من الوعاء كلّه مهما كان رافد القبض،
+     * وغيرُ النقد يبقى محدوداً برافده **وبالوعاء معاً** فلا استرداد مزدوج.
+     */
+    async function validateRefundAgainstCaps(returnedTotalForRefund: Decimal): Promise<{ refundCap: Decimal; refundRequest: Decimal }> {
+      const requestedRefund = money(refund?.amount ?? "0");
+      if (requestedRefund.lt(0)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `مبلغ الاسترداد المُدخَل ${requestedRefund.toFixed(2)} د.ع سالب — والاسترداد مالٌ يخرج للزبون فلا يكون بالسالب`,
+            doThis: "أدخِل المبلغ موجباً كما ستسلّمه للزبون، أو اتركه صفراً إن لم يُردّ له شيء نقداً في هذه العملية",
+          }),
+        });
+      }
+      const refundMethod = refund?.method;
+      let refundCap = new Decimal(0);
+      if (refundMethod) {
+        // `lock: true` إلزاميّ هنا: current read بعد قفل المصدر — لا نعتمد لقطةً قد يستهلكها
+        // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
+        const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
+        refundCap = effectiveRefundCap(caps, refundMethod, returnedTotalForRefund);
+      }
+      // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد — الردُّ يساوي قيمة المرتجع بالضبط.
+      if (isWalkInReturn && !requestedRefund.eq(returnedTotalForRefund)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل مرتجع زبونٍ عابر",
+            why: `الردّ يجب أن يساوي قيمة المرتجع بالضبط بعد التقريب: المطلوب ${returnedTotalForRefund.toFixed(2)} د.ع والمُدخَل ${requestedRefund.toFixed(2)} د.ع — فرق ${returnedTotalForRefund.minus(requestedRefund).abs().toFixed(2)} د.ع ${requestedRefund.lt(returnedTotalForRefund) ? "ناقص يبقى في الدرج بلا صاحب" : "زائد يخرج من الدرج بلا مستند"}`,
+            doThis: `أدخِل ${returnedTotalForRefund.toFixed(2)} د.ع بالضبط وسلّمها للزبون؛ ولا يصحّ ردٌّ جزئيّ لزبونٍ بلا حساب — فإن كان المطلوب رصيداً أو مطالبةً مالية فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته`,
+          }),
+        });
+      }
+      if (requestedRefund.gt(refundCap)) {
+        const poolNote = refundMethod === "CASH"
+          ? "الأقل من قيمة المرتجع والمتبقّي من المقبوض على الفاتورة بكل الطرق"
+          : "الأقل من قيمة المرتجع والمقبوض بهذه الطريقة والمتبقّي من المقبوض إجمالاً";
+        // أيُّ الحدّين قصّ السقف فعلاً؟ مساواتُه لقيمة المرتجع تعني أنّ الحدّ هو المرتجع نفسه،
+        // وإلّا فالحدّ ما تبقّى من مقبوض الفاتورة — وهما مخرجان مختلفان تماماً للموظّف.
+        const cappedByReturnValue = refundCap.eq(returnedTotalForRefund);
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل استرداد المرتجع",
+            why:
+              `المطلوب ردّه بـ${refundMethod ?? "—"} هو ${requestedRefund.toFixed(2)} د.ع، وهو يتجاوز المسموح ${refundCap.toFixed(2)} د.ع بزيادة ${requestedRefund.minus(refundCap).toFixed(2)} د.ع — والمسموح هو ${poolNote}` +
+              (cappedByReturnValue
+                ? `، والحدّ هنا قيمة المرتجع نفسها ${returnedTotalForRefund.toFixed(2)} د.ع`
+                : `، والحدّ هنا ما تبقّى من مقبوض الفاتورة لا قيمة المرتجع ${returnedTotalForRefund.toFixed(2)} د.ع`),
+            doThis: refundCap.isZero()
+              ? "لم يبقَ على الفاتورة مقبوضٌ يُردّ (لم تُدفع بعد أو استُرِدّ مقبوضها كلّه سابقاً): سجّل المرتجع بمبلغ استردادٍ صفر ليسقط المبلغ من ذمّة العميل بدل خروج نقدٍ من الدرج"
+              : `أنقص مبلغ الاسترداد إلى ${refundCap.toFixed(2)} د.ع أو أقلّ؛ وما زاد عنه يُسوّى على ذمّة العميل لا نقداً من الدرج`,
+          }),
+        });
+      }
+      return { refundCap, refundRequest: requestedRefund };
+    }
+
+    /**
+     * قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب**: لا يُسجَّل والطردُ أو نقدُه ما زال بيد جهة
+     * التوصيل. يُفحص بعد الكتابة داخل المعاملة نفسها (يتراجع كلُّ شيءٍ ذرّياً عند الرفض).
+     */
+    async function assertNoLiveConsignmentForReturn(): Promise<void> {
+      const cnRows = await tx
+        .select({
+          id: deliveryConsignments.id,
+          number: deliveryConsignments.consignmentNumber,
+          partyId: deliveryConsignments.partyId,
+          codAmount: deliveryConsignments.codAmount,
+          collectedAmount: deliveryConsignments.collectedAmount,
+          status: deliveryConsignments.status,
+          parcelStatus: deliveryConsignments.parcelStatus,
+          moneyStatus: deliveryConsignments.moneyStatus,
+        })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+        .for("update")
+        .limit(1);
+      const cn = cnRows[0];
+      if (cn && (
+        !["DELIVERED", "CANCELLED", "RETURNED"].includes(cn.parcelStatus)
+        || cn.moneyStatus === "UNSETTLED"
+        || cn.moneyStatus === "PARTIAL"
+      )) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة ما زالت على إرسالية التوصيل ${cn.number}: حالة الطرد «${cn.parcelStatus}» وحالة مالها «${cn.moneyStatus}» — أي أنّ البضاعة أو نقدها ما زال بيد جهة التوصيل، فالمرتجع الآن يعكس بيعاً لم تُغلَق دورتُه`,
+            doThis: "أغلق الإرسالية أوّلاً من شاشة التوصيل: سجّل إرجاع الطرد إن عاد إليك، أو ورّد ما حصّله المندوب — ثمّ أعِد تسجيل المرتجع",
+          }),
+        });
+      }
+    }
+
+    /**
+     * ═══ ق٧ — **المرتجعُ الكامل يمرّ بمحرّك العكس** (م٢) ═══
+     *
+     * حين تُغطّي الأسطرُ المطلوبة كلَّ المتبقّي على كلّ بند، الأثرُ كلُّه (مخزون · أمانة · قيد · هدايا ·
+     * تقريب · ردّ مال · ذمّة · كوبون) يُنفَّذ عبر `reverseInvoiceSaleInTx` — **المصدرُ الواحد** الذي
+     * يستدعيه إلغاءُ البيع أيضاً، فلا نسختان تنجرفان (كان قيدُ RETURN هنا يحمل الإجماليَّ المقرَّب
+     * فيترك فارقَ تقريب IQD في Σ(amount)؛ المحرّك يعكس قيد SALE الخامّ ويعكس التقريب وحده).
+     * الحرّاسُ والقفلُ وسقوفُ الردّ تبقى هنا؛ والمرتجعُ الجزئيّ يبقى على مساره اليدويّ أدناه.
+     *
+     * ⛔ عكسُ التصحيح الداخليّ (`internalCorrectionReversal`) يبقى على المسار اليدويّ: `correctSale`
+     * يُكمل حسابَ الذمّة ونقلَ الإيصالات بيده ولا يقرأ سجلَّ الأثر بعد — توصيلُه شريحةُ التصحيح.
+     */
+    const fullyReturnedNow = items.every((item) => {
+      const requested = work.find((w) => Number(w.item.id) === Number(item.id))?.line.baseQuantity ?? 0;
+      return (item.returnedBaseQuantity ?? 0) + requested >= item.baseQuantity;
+    });
+    if (fullyReturnedNow && !input.internalCorrectionReversal) {
+      const priorFull = (
+        await tx
+          .select({ amt: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
+          .from(accountingEntries)
+          .where(and(eq(accountingEntries.invoiceId, input.invoiceId), eq(accountingEntries.entryType, "RETURN")))
+      )[0];
+      // قيمةُ المرتجع للزبون (المستنديّة، بتقريب IQD): الإجماليُّ المقرَّب − ما أُرجع سلفاً.
+      const returnedTotalFull = round2(money(inv.total).minus(money(priorFull?.amt ?? "0").neg()));
+      const { refundRequest: fullRefundRequest } = await validateRefundAgainstCaps(returnedTotalFull);
+      const summary = await reverseInvoiceSaleInTx(
+        tx,
+        {
+          invoiceId: input.invoiceId,
+          flavor: "RETURN",
+          reason: `مرتجع كامل للفاتورة ${inv.invoiceNumber}${resolutionReason ? ` — ${resolutionReason.slice(0, 120)}` : ""}`,
+          reasonNote: resolutionReason,
+          restock,
+          refund: refund && fullRefundRequest.gt(0)
+            ? {
+                method: refund.method,
+                amount: fullRefundRequest,
+                reference: refund.reference ?? null,
+                cashSource: prelockedRefundSource,
+                requestFingerprint,
+                descriptionNote: input.resolution ? input.resolution.reason.trim() : null,
+              }
+            : { method: "NONE" },
+        },
+        actor,
+      );
+      await tx
+        .update(invoices)
+        .set({
+          returnedTotal: toDbMoney(money(inv.returnedTotal ?? "0").plus(returnedTotalFull)),
+          status: "RETURNED",
+        })
+        .where(eq(invoices.id, input.invoiceId));
+      await assertNoLiveConsignmentForReturn();
+      if (input.clientRequestId) {
+        await recordIdempotencyKey(tx, "sale.return", input.clientRequestId, input.invoiceId, requestFingerprint);
+      }
+      return {
+        invoiceId: input.invoiceId,
+        returnedTotal: returnedTotalFull.toFixed(2),
+        fullyReturned: true,
+        pendingRefundAmount: summary.pendingRefundAmount.toFixed(2),
+        pendingRefundVoucherNumber: summary.pendingRefundVoucherNumber,
+      };
+    }
+
     // Proportional allocation of revenue/tax against the invoice totals.
     const subtotal = money(inv.subtotal);
     const discountAmount = money(inv.discountAmount);
@@ -791,25 +957,9 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           referenceId: input.invoiceId,
           createdBy: actor.userId,
         });
-        // ═══ ق٧ — ربطٌ ظلّيّ (شريحة ٠٣٢٩): صفٌّ APPLY يُوثّق دخول البضاعة الفعليّ إلى
-        //  المخزون عند المرتجع. يُستهلَك مستقبلاً في تسويةٍ عكسيّة أو تدقيقٍ ماليّ (تدقيق
-        //  «كلّ دينار له مسار»)، ويعمل بجانب التنفيذ اليدويّ القائم لا بدلاً منه.
-        await recordEffect(
-          tx,
-          {
-            documentType: "INVOICE",
-            documentId: input.invoiceId,
-            effectKind: "INVENTORY",
-            effectTable: "inventoryMovements",
-            effectRowId: mv.movementId || null,
-            signedQuantity: qty,
-            branchId: Number(inv.branchId),
-            reason: "returnService — مرتجع بيع",
-            scope: "return",
-            payloadJson: { variantId: vid, movementType: "RETURN" },
-          },
-          actor,
-        );
+        // ق٧: لا تسجيلَ ظلّيّ هنا — المرتجعُ الجزئيّ يبقى يدوياً ويُصالحه مُجسِّد محرّك العكس
+        // (server/services/reversal/materialize/invoice.ts) بالفرق عند أوّل عكسٍ كامل أو إلغاء.
+        void mv;
       }
     }
 
@@ -1074,75 +1224,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     });
     }
 
-    // Cash refund capped to min(returnedTotal, amount actually paid). Reject overage.
-    const requestedRefund = money(refund?.amount ?? "0");
-    if (requestedRefund.lt(0)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل المرتجع",
-          why: `مبلغ الاسترداد المُدخَل ${requestedRefund.toFixed(2)} د.ع سالب — والاسترداد مالٌ يخرج للزبون فلا يكون بالسالب`,
-          doThis: "أدخِل المبلغ موجباً كما ستسلّمه للزبون، أو اتركه صفراً إن لم يُردّ له شيء نقداً في هذه العملية",
-        }),
-      });
-    }
-    // سقف الاسترداد — **الحساب موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts` (مصدر حقيقة
-    // واحد). كان مكرَّراً هنا بمنطقٍ يخالف ما تعرضه الشاشة، فيبني الموظف طلباً مرفوضاً حتماً.
-    // ⭐ قرار المالك (١٧/٨/٢٦): الاسترداد **النقديّ** متاحٌ من الوعاء كلّه مهما كان رافد القبض
-    // (زبونُ البطاقة العابر كان بلا أيّ مسار استرداد — علّة INV-1-20260816-00118)؛ وغيرُ النقد
-    // يبقى محدوداً برافده **وبالوعاء معاً** فلا استرداد مزدوج. التفصيل والثابت المحروس هناك.
+    // سقفُ الاسترداد والزبونُ العابر — الدالّةُ المشتركة أعلاه (نصوصٌ واحدة للمسارين).
+    const { refundCap, refundRequest } = await validateRefundAgainstCaps(returnedTotal);
+    void refundCap;
     const refundMethod = refund?.method;
-    let refundCap = new Decimal(0);
-    if (refundMethod) {
-      // `lock: true` إلزاميّ هنا: current read بعد قفل المصدر — لا نعتمد لقطةً قد يستهلكها
-      // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
-      const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
-      refundCap = effectiveRefundCap(caps, refundMethod, returnedTotal);
-    }
-    // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد.
-    //
-    // العميل المسجَّل يستوعب الفارق في ذمّته (`adjustCustomerBalance` أدناه)، أمّا الزبون
-    // العابر فـ`customerId = NULL` ⇒ لا ذمّة ولا رصيد دائن. فمرتجعٌ بلا استرداد كان يُعيد
-    // البضاعة للرفّ ويعكس الإيراد **ويُبقي ماله في الدرج بلا التزامٍ مقابل ولا طرفٍ منسوبٍ
-    // إليه** — نقضٌ مزدوج للمبدأ الحاكم (طرفٌ منسوب + مسار خروجٍ ممكن دائماً). والشاشة كانت
-    // تُطمئن الموظف بنصٍّ كاذب: «تُخصَم من ذمّة العميل فقط» — ولا ذمّة أصلاً.
-    //
-    // لا «رصيد دائن مجهول الطرف» للزبون العابر: resolution النقديّ يساوي **قيمة المرتجع
-    // المحسوبة هنا بعد كل تقريب**، لا مبلغاً واجهياً تقريبياً ولا جزءاً منه. هذا الشرط يقع داخل
-    // المعاملة وبعد قفل الفاتورة؛ أي اختلاف/سباق يُسقط كل حركة المخزون والدفتر ذرّياً.
-    if (isWalkInReturn && !requestedRefund.eq(returnedTotal)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل مرتجع زبونٍ عابر",
-          why: `الردّ يجب أن يساوي قيمة المرتجع بالضبط بعد التقريب: المطلوب ${returnedTotal.toFixed(2)} د.ع والمُدخَل ${requestedRefund.toFixed(2)} د.ع — فرق ${returnedTotal.minus(requestedRefund).abs().toFixed(2)} د.ع ${requestedRefund.lt(returnedTotal) ? "ناقص يبقى في الدرج بلا صاحب" : "زائد يخرج من الدرج بلا مستند"}`,
-          doThis: `أدخِل ${returnedTotal.toFixed(2)} د.ع بالضبط وسلّمها للزبون؛ ولا يصحّ ردٌّ جزئيّ لزبونٍ بلا حساب — فإن كان المطلوب رصيداً أو مطالبةً مالية فسجّله عميلاً أوّلاً ثمّ أعِد المرتجع من فاتورته`,
-        }),
-      });
-    }
-    if (requestedRefund.gt(refundCap)) {
-      const poolNote = refundMethod === "CASH"
-        ? "الأقل من قيمة المرتجع والمتبقّي من المقبوض على الفاتورة بكل الطرق"
-        : "الأقل من قيمة المرتجع والمقبوض بهذه الطريقة والمتبقّي من المقبوض إجمالاً";
-      // أيُّ الحدّين قصّ السقف فعلاً؟ مساواتُه لقيمة المرتجع تعني أنّ الحدّ هو المرتجع نفسه،
-      // وإلّا فالحدّ ما تبقّى من مقبوض الفاتورة — وهما مخرجان مختلفان تماماً للموظّف.
-      const cappedByReturnValue = refundCap.eq(returnedTotal);
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل استرداد المرتجع",
-          why:
-            `المطلوب ردّه بـ${refundMethod ?? "—"} هو ${requestedRefund.toFixed(2)} د.ع، وهو يتجاوز المسموح ${refundCap.toFixed(2)} د.ع بزيادة ${requestedRefund.minus(refundCap).toFixed(2)} د.ع — والمسموح هو ${poolNote}` +
-            (cappedByReturnValue
-              ? `، والحدّ هنا قيمة المرتجع نفسها ${returnedTotal.toFixed(2)} د.ع`
-              : `، والحدّ هنا ما تبقّى من مقبوض الفاتورة لا قيمة المرتجع ${returnedTotal.toFixed(2)} د.ع`),
-          doThis: refundCap.isZero()
-            ? "لم يبقَ على الفاتورة مقبوضٌ يُردّ (لم تُدفع بعد أو استُرِدّ مقبوضها كلّه سابقاً): سجّل المرتجع بمبلغ استردادٍ صفر ليسقط المبلغ من ذمّة العميل بدل خروج نقدٍ من الدرج"
-            : `أنقص مبلغ الاسترداد إلى ${refundCap.toFixed(2)} د.ع أو أقلّ؛ وما زاد عنه يُسوّى على ذمّة العميل لا نقداً من الدرج`,
-        }),
-      });
-    }
-    const refundRequest = requestedRefund;
+    const requestedRefund = refundRequest;
     // ⭐ قرار المالك (١٧/٨/٢٦): **رافدا الردّ الفوريّ نقدٌ أو بطاقة**. الردّ بالبطاقة يُنفَّذ على
     // جهاز الدفع فعلياً ثمّ يُوثَّق بمرجعه هنا ⇒ مالٌ خرج حقيقةً، فيجب أن **يتجسّد** (يُنقص
     // `paidAmount` ويُرحَّل PAYMENT_OUT على CARD_BANK). تسجيلُه «معلَّقاً» كان يكذب على الواقع:
@@ -1311,42 +1397,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(materializedRefund).neg());
     }
 
-    // قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب: تُخصَم عهدته بقيمة ما عاد**.
-    // الحالة الواقعية: المندوب حصّل جزءاً من الفاتورة وأعاد باقي البضاعة. قبل هذا كان
-    // المتبقّي يبقى عهدةً عليه **بلا نقدٍ يقابله** — ومخرجاه الوحيدان يكذبان: شطبٌ يُسجَّل
-    // خسارةً (والبضاعة عندنا!) أو تسويةٌ يدفع فيها من جيبه ما لم يقبضه. الآن تُعكَس عهدته
-    // بمقدار الأقلّ من (قيمة المرتجع، ما تبقّى في عهدته عن هذه الفاتورة)، ويُخفَّض COD
-    // الإرسالية بالمثل فلا يُطالَب بتحصيله لاحقاً.
-    const cnRows = await tx
-      .select({
-        id: deliveryConsignments.id,
-        number: deliveryConsignments.consignmentNumber,
-        partyId: deliveryConsignments.partyId,
-        codAmount: deliveryConsignments.codAmount,
-        collectedAmount: deliveryConsignments.collectedAmount,
-        status: deliveryConsignments.status,
-        parcelStatus: deliveryConsignments.parcelStatus,
-        moneyStatus: deliveryConsignments.moneyStatus,
-      })
-      .from(deliveryConsignments)
-      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
-      .for("update")
-      .limit(1);
-    const cn = cnRows[0];
-    if (cn && (
-      !["DELIVERED", "CANCELLED", "RETURNED"].includes(cn.parcelStatus)
-      || cn.moneyStatus === "UNSETTLED"
-      || cn.moneyStatus === "PARTIAL"
-    )) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: "تعذّر تسجيل المرتجع",
-          why: `الفاتورة ما زالت على إرسالية التوصيل ${cn.number}: حالة الطرد «${cn.parcelStatus}» وحالة مالها «${cn.moneyStatus}» — أي أنّ البضاعة أو نقدها ما زال بيد جهة التوصيل، فالمرتجع الآن يعكس بيعاً لم تُغلَق دورتُه`,
-          doThis: "أغلق الإرسالية أوّلاً من شاشة التوصيل: سجّل إرجاع الطرد إن عاد إليك، أو ورّد ما حصّله المندوب — ثمّ أعِد تسجيل المرتجع",
-        }),
-      });
-    }
+    // الإرساليةُ الحيّة تمنع المرتجع — الدالّةُ المشتركة أعلاه.
+    await assertNoLiveConsignmentForReturn();
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
     if (input.clientRequestId) {

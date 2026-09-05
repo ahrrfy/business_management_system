@@ -85,6 +85,7 @@ import { loadVoucherCategoryForPosting } from "./categoryAccounting";
 import { voucherPostingPlan } from "./posting";
 import type { VoucherCategoryPostingRole } from "../../../shared/voucherCategoryAccounting";
 import { settleTerminationVoucherTx } from "../terminationSettlementService";
+import { closeDeferredSaleRefundEffectsTx } from "../reversal/deferredRefund";
 import type { PayrollPaymentMethod } from "../payroll/types";
 import type { Tx } from "../../db";
 import {
@@ -2061,6 +2062,22 @@ export async function approveVoucher(
         partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      // ردُّ بيعٍ مؤجَّل (تحويل/صك/محفظة) صار مصروفاً باعتماد سنده: أغلِق أثرَي السجلّ اللذين
+      // تركهما المحرّك مفتوحَين بقصد — `PAID_AMOUNT` (نطاق البيع) والرصيد الدائن المعلَّق — كي لا
+      // يبقى السجلُّ يبلّغ ردّاً غير مدفوعٍ وائتماناً بعد صرف المال (Codex P2). `direction === "OUT"`
+      // شرطٌ صريح: القبضُ (IN) على العميل ليس ردّاً.
+      if (
+        direction === "OUT" &&
+        r.invoiceId != null &&
+        typeof r.internalNote === "string" &&
+        r.internalNote.startsWith("SALE_CUSTOMER_REFUND:")
+      ) {
+        await closeDeferredSaleRefundEffectsTx(
+          tx,
+          { invoiceId: Number(r.invoiceId), receiptId, amount, reason: `اعتماد سند صرف استرداد ${r.voucherNumber}` },
+          actor,
+        );
+      }
     } else if (
       partyType === "SUPPLIER" &&
       partyId &&
