@@ -6,9 +6,9 @@ import {
   completeTermination,
   createTermination,
   listTerminations,
+  reverseTerminationPayment,
   reverseTerminationRecognition,
 } from "../promotionService";
-import { rejectVoucher } from "../voucher/approval";
 
 const CREATOR = { userId: 2, branchId: 2, role: "manager" };
 const RECOGNIZER = { userId: 3, branchId: 2, role: "manager" };
@@ -180,7 +180,7 @@ describe("termination gross-to-net accrual", () => {
         status: obligation.status,
       })),
     ).toEqual([
-      { kind: "SALARY_NET", amount: "105.00", remaining: "105.00", status: "OPEN" },
+      { kind: "SALARY_NET", amount: "105.00", remaining: "0.00", status: "SETTLED" },
       { kind: "INCOME_TAX", amount: "50.00", remaining: "50.00", status: "OPEN" },
       { kind: "SOCIAL_SECURITY", amount: "55.00", remaining: "55.00", status: "OPEN" },
     ]);
@@ -298,10 +298,14 @@ describe("termination gross-to-net accrual", () => {
     expect(eosAfterRecognition.every((row) => row.status === "SETTLED")).toBe(true);
     expect(eosAfterRecognition.every((row) => row.remainingAmount === "0.00")).toBe(true);
 
-    await rejectVoucher(
-      completed.settlementVoucher!.receiptId,
+    await reverseTerminationPayment(
+      Number(termination!.id),
       REVERSER,
-      "Recognition must be reversed for correction",
+      {
+        reason: "Return payment before recognition correction",
+        paymentMethod: "TRANSFER",
+        referenceNumber: "BANK-TERM-71-RETURN",
+      },
     );
     await db().insert(s.financialPeriods).values({
       cutoffDate: "2026-08-15",

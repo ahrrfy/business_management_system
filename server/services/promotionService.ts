@@ -910,10 +910,8 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       .where(eq(employeeTerminations.id, id));
 
     // تسوية المستحقات النهائية = صرفُ نقدٍ لموظف = **عملية حسّاسة** ⇒ فصل مهام إلزاميّ (المخاطرة الجهازية
-    // #٦، قرار المالك ١٨/٧: العمليات الحسّاسة تمرّ باعتمادٍ ثنائيّ بلا عتبة). تُصدَر **سند صرف مُعلَّق**
-    // (PENDING_APPROVAL، بلا أثرٍ ماليّ) حتى يعتمده مديرٌ آخر عبر approveVoucher (SOD-04: المُعتمِد ≠ المُنشئ)
-    // فيُرحَّل حينها PAYMENT_OUT للخزينة. يظهر في طابور اعتماد السندات القائم (voucherNumber != null) بلا واجهةٍ جديدة.
-    // كان يُصرَف COMPLETED بفاعلٍ واحد بلا سقف (البند ٩ في «أخطر ١٢»، تدقيق ١٧/٧).
+    // طلب التسوية يمرّ بباب السند المركزي. إن كان المنفّذ مالكاً نشطاً
+    // يُعتمد ويُرحّل داخل المعاملة نفسها؛ وغير المالك يبقى خاضعاً لمسار الاعتماد.
     const settlement = breakdown.total;
     let settlementVoucher: { receiptId: number; voucherNumber: string } | null =
       null;

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -153,6 +153,12 @@ describe("digital sale review resolution", () => {
     await withTx((tx) => intentService.claimExecution(tx, {
       intentId: operation.intentId, intentItemId: operation.itemId, claimToken: "rr-active-claim",
     }, cashier));
+    // اربط المهلة بساعة قاعدة البيانات حتى لا تجعل منطقة زمن مضيف الاختبار المطالبة منتهية ظاهرياً.
+    await db().execute(sql`
+      UPDATE digitalSaleExecutionClaims
+      SET expiresAt = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE)
+      WHERE intentItemId = ${operation.itemId}
+    `);
     await forceReview(operation.intentId);
 
     await expect(withTx((tx) => reviewResolutionService.requestResolution(tx, {
