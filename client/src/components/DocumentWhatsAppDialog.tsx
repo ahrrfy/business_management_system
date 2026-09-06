@@ -19,6 +19,7 @@ import { notify } from "@/lib/notify";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { saveBase64Pdf } from "@/lib/exportPdf";
 
 interface Props {
   kind: "INVOICE" | "QUOTATION";
@@ -39,18 +40,6 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: "فشل الإرسال",
   CANCELLED: "أُلغي الإرسال",
 };
-
-function downloadBase64Pdf(filename: string, base64: string): void {
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-}
 
 export function DocumentWhatsAppDialog({
   kind,
@@ -83,7 +72,7 @@ export function DocumentWhatsAppDialog({
     { enabled: open, staleTime: 10_000 },
   );
   const downloadPdf = trpc.documentDelivery.downloadPdf.useMutation({
-    onSuccess: (result) => downloadBase64Pdf(result.filename, result.bytesBase64),
+    onSuccess: (result) => saveBase64Pdf(result.bytesBase64, result.filename),
     onError: (error) => notify.err(error),
   });
   const sendPdf = trpc.documentDelivery.sendWhatsAppPdf.useMutation({

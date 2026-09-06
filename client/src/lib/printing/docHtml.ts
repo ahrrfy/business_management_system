@@ -57,10 +57,102 @@ ${CAIRO_FONT}
   thead{display:table-header-group} tfoot{display:table-footer-group}
   tr,td,th{page-break-inside:avoid;break-inside:avoid}
   /* على الورق الفعلي: لا ظلال، إطار الزخرفة يُلغى (السبب أعلاه)، الحواف كما هي (التصميم مبنيّ عليها). */
-  @media print { *{box-shadow:none !important} body{background:#fff} .page-inset{display:none !important} }
+  @media print { *{box-shadow:none !important} body{background:#fff} .page-inset{display:none !important} .doc-toolbar{display:none !important} }
+  .doc-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+    background: #1C1F1D;
+    color: #fff;
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    font-family: 'Cairo', sans-serif;
+  }
+  .doc-toolbar-info {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .doc-toolbar-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .doc-toolbar-badge {
+    font-size: 11px;
+    color: #CFE7DE;
+    background: rgba(207,231,222,0.12);
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(207,231,222,0.25);
+  }
+  .doc-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .doc-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: inherit;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+  .doc-btn:active {
+    transform: scale(0.97);
+  }
+  .doc-btn-primary {
+    background: #0D6B52;
+    color: #fff;
+  }
+  .doc-btn-primary:hover {
+    background: #094F3C;
+  }
+  .doc-btn-save {
+    background: #2563EB;
+    color: #fff;
+  }
+  .doc-btn-save:hover {
+    background: #1D4ED8;
+  }
+  .doc-btn-close {
+    background: rgba(255,255,255,0.12);
+    color: #E2E2DD;
+  }
+  .doc-btn-close:hover {
+    background: rgba(255,255,255,0.22);
+  }
 </style>
 </head>
 <body>
+<div class="doc-toolbar" dir="rtl">
+  <div class="doc-toolbar-info">
+    <span class="doc-toolbar-title">${esc(title)}</span>
+    <span class="doc-toolbar-badge">معاينة المستند الرسمي A4</span>
+  </div>
+  <div class="doc-toolbar-actions">
+    <button class="doc-btn doc-btn-primary" onclick="window.print()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg>
+      <span>طباعة المستند</span>
+    </button>
+    <button class="doc-btn doc-btn-save" onclick="window.print()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      <span>حفظ كملف PDF</span>
+    </button>
+    <button class="doc-btn doc-btn-close" onclick="window.close()">
+      <span>إغلاق المعاينة</span>
+    </button>
+  </div>
+</div>
 <div class="page">
   <div class="page-inset"></div>
   ${bodyContent}
@@ -80,9 +172,8 @@ ${CAIRO_FONT}
       window.setTimeout(function () {
         window.focus();
         window.print();
-      }, 100);
+      }, 120);
     });
-    window.addEventListener('afterprint', function () { window.close(); }, { once: true });
   })();
 </script>
 </body></html>`;
