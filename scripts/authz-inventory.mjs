@@ -2,16 +2,24 @@
 /**
  * scripts/authz-inventory.mjs — جرد نقاط الدخول لأغراض إعادة هندسة الصلاحيات (AGP-002 §30.1).
  *
- * أداة **قراءة فقط**: لا تعدّل كوداً ولا سلوكاً. تمسح مصدر الخادم وتُخرج:
+ * لا تعدّل الكودَ ولا سلوكَ التطبيق: مسحٌ ساكنٌ لمصدر الخادم. في **وضع التوليد** تكتب وثيقتَي
+ * الجرد المُلتزَمتَين، وفي **وضع الفحص** (`--check`) لا تكتب شيئاً (قراءةٌ محضة — لا تمسّ شجرة العمل):
  *   docs/authz/endpoint-inventory.csv   — صفّ لكل نقطة دخول
  *   docs/authz/endpoint-inventory.json  — نفس البيانات + ملخّصات
  *
  * تغطّي: tRPC (queries/mutations عبر كل الراوترات)، مسارات Express (طباعة/صور/نسخ/وسائط واتساب/
  * webhooks/well-known/healthz)، والمهام المجدولة (node-cron/setInterval).
  *
- * الاستعمال:  node scripts/authz-inventory.mjs [--check]
- *   --check : يفشل بخروج 1 إن وُجدت نقطة tRPC على publicProcedure/protectedProcedure بلا بوّابة
- *             وحدة/دور خام مستجدّ (§24.1، T-12). **مُفعَّل في CI** عبر `pnpm check:authz`.
+ * الأوضاع:
+ *   (بلا علَم)        : يُعيد توليد وثيقتَي الجرد أعلاه — `pnpm authz:inventory`.
+ *   --check           : **قراءةٌ محضة لا تكتب** — يفشل بخروج 1 إن وُجدت نقطة tRPC بسلطةٍ مستجدّة
+ *                       خارج الأساس (raw-role / بلا بوّابة وحدة / غير مسجَّلة). لا يمسّ شجرة العمل.
+ *   --write-baseline  : يُعيد توليد الوثيقتَين **و** قاعدة الأساس authz-baseline.json معاً —
+ *                       `pnpm authz:baseline` (قرارٌ واعٍ يُغرّب الحالة القائمة).
+ *   --emit-violations : يطبع بصمات الانتهاك JSON على stdout بلا كتابة أيّ ملف (يستهلكه حارس الدمج).
+ *
+ * إنفاذُ CI على الفروع عبر `authz-guard-diff.mjs` (فرق قاعدة الدمج، `--emit-violations`) لا عبر
+ * `--check`؛ وهذا الأخير بوّابةٌ محلّية ضمن `pnpm check:guards`/`pre-commit` (§24.1، T-12).
  */
 import {
   readFileSync,
@@ -1547,10 +1555,18 @@ if (process.argv.includes("--emit-violations")) {
   process.exit(0);
 }
 
-// ─── الوضع الافتراضي: مسح الجذر الحاليّ + كتابة الجرد + الحارس الساكن (--check) ───
+// ─── مسح الجذر الحاليّ ثمّ: توليدُ الجرد (عند التوليد الصريح) + الحارس الساكن (--check) ───
 const { endpoints, express, jobs, summary } = computeInventory(ROOT);
 
-mkdirSync(OUT_DIR, { recursive: true });
+// (تنظيف ٦/٩/٢٦) فصلُ التوليد عن الفحص — `--check` **قراءةٌ محضة لا تكتب**. كان الوضعُ الافتراضيّ
+// يكتب endpoint-inventory.{csv,json} في كلّ تشغيلٍ — حتى تحت `--check` — فيوسّخ شجرة العمل في كلّ
+// `pnpm check:guards`/`pre-commit` (يُعيد توليد أرقام الأسطر من server/routers/**، والمُلتزَم قد
+// يتأخّر). والفحصُ لا يقرأ قطّ ما يكتبه ⇒ كانت الكتابة أثراً جانبياً بحتاً. نكتب الآن **فقط** عند
+// توليدٍ صريح: تشغيلٌ عارٍ (توليد الوثيقة) أو `--write-baseline` (تحديثٌ مقصود للأثر المُلتزَم).
+// المرجع: ذاكرة authz-inventory-check-writes-and-stale-on-main-2026-09-06 و§٣.١ في CLAUDE.md.
+const isCheckMode = process.argv.includes("--check");
+const isWriteBaseline = process.argv.includes("--write-baseline");
+const shouldWriteInventory = !isCheckMode || isWriteBaseline;
 
 const cols = [
   "surface",
@@ -1624,12 +1640,15 @@ const csv = [cols.join(",")]
     ),
   )
   .join("\n");
-writeFileSync(join(OUT_DIR, "endpoint-inventory.csv"), "﻿" + csv, "utf8");
-writeFileSync(
-  join(OUT_DIR, "endpoint-inventory.json"),
-  JSON.stringify({ summary, endpoints, express, jobs }, null, 2),
-  "utf8",
-);
+if (shouldWriteInventory) {
+  mkdirSync(OUT_DIR, { recursive: true });
+  writeFileSync(join(OUT_DIR, "endpoint-inventory.csv"), "﻿" + csv, "utf8");
+  writeFileSync(
+    join(OUT_DIR, "endpoint-inventory.json"),
+    JSON.stringify({ summary, endpoints, express, jobs }, null, 2),
+    "utf8",
+  );
+}
 
 console.log(JSON.stringify(summary, null, 2));
 
