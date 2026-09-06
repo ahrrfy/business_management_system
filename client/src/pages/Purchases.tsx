@@ -668,26 +668,19 @@ export default function Purchases() {
                 // بلا خطوةٍ ثانية — قرار المالك). لكن purchaseOrders.paidAmount **يبقى بلا تحديثٍ**
                 // (لا هذا الإصلاح ولا سداد المورد العاديّ supplierPayments.ts يكتبان إليه — الأخير
                 // يعمل على فاتورة المورد لا على أمر الشراء نفسه)، فهذا العمود يستمرّ بعرض المبلغ
-                // كاملاً حتى بعد التسوية الفعلية. لأمرٍ نقديّ وصل لحالة RECEIVED: **مُسدَّدٌ فعلاً**
-                // دائماً (الاعتماد نفسه كان سيفشل ويتراجع كلياً لو تعذّر الصرف) — الرقم هنا وصف
-                // خاطئ لعمودٍ لا يُحدَّث، لا ذمّةٌ حقيقية.
+                // كاملاً حتى بعد التسوية الفعلية.
+                // Codex (P1، ٦/٩): settlementType+status وحدهما لا يكفيان دليلاً — أمرٌ CASH وصل
+                // RECEIVED **قبل** هذا الإصلاح لم يُسدَّد آلياً قطّ وقد تبقى عليه ذمّةٌ حقيقية.
+                // الدليل الوحيد المقبول: linkedCashPaidAmount (مجموع قيود PAYMENT_OUT المربوطة
+                // فعلياً بهذا الأمر عبر purchaseOrderId — من purchaseRouter.list) يغطّي total.
                 cell: ({ row }) => {
-                  const remaining =
-                    row.original.agreedCurrency === "USD"
-                      ? D(row.original.usdTotal ?? 0).minus(
-                          D(row.original.paidUsd ?? 0),
-                        )
-                      : positiveDiff(
-                          row.original.total ?? 0,
-                          row.original.paidAmount ?? 0,
-                        );
-                  // RECEIVED تحديداً لا "ليس ملغى": الاعتماد التلقائي (automaticInvoicePosting.ts)
-                  // يُرحّل الفاتورة كاملةً دفعةً واحدة فينقل الحالة مباشرةً DRAFT/SENT/CONFIRMED
-                  // ← RECEIVED — لا حالة "مُعتمَد جزئياً" وسيطة تستحقّ هذه الشارة.
+                  const total = D(row.original.total ?? 0);
+                  const linkedPaid = D(row.original.linkedCashPaidAmount ?? 0);
                   const cashAlreadySettled =
                     row.original.settlementType === "CASH" &&
-                    remaining.gt(0) &&
-                    row.original.status === "RECEIVED";
+                    row.original.status === "RECEIVED" &&
+                    total.gt(0) &&
+                    linkedPaid.gte(total);
                   return (
                     <div className="space-y-1">
                       <span
@@ -699,7 +692,7 @@ export default function Purchases() {
                       {cashAlreadySettled ? (
                         <div
                           className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative"
-                          title="أمرٌ نقديّ يُسدَّد فور اعتماده — هذا العمود لا يتحدّث ليعكس ذلك ويبقى يعرض المبلغ كاملاً. تحقّق من سداد الموردين لرؤية سند الصرف الفعليّ إن أردت التأكّد."
+                          title="وُجد سندُ صرفٍ فعليّ يغطّي هذا الأمر بالكامل — هذا العمود لا يتحدّث ليعكس ذلك ويبقى يعرض المبلغ كاملاً. تحقّق من سداد الموردين لرؤية سند الصرف نفسه."
                         >
                           <AlertTriangle aria-hidden className="size-3" />
                           مُسدَّدٌ فعلاً — الرقم غير محدَّث

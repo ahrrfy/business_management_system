@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import {
   PurchaseIntegrityWorkspace,
+  type LiveIntegrityFinding,
+  type LiveIntegritySummary,
   type PurchaseIntegrityRow,
 } from "@/components/purchases/PurchaseIntegrityWorkspace";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -39,10 +41,57 @@ export default function PurchaseIntegrityCases() {
   );
   // نفس تقرير التشخيص الحيّ (GL) المعروض في PurchaseIntegrityPanel على شاشة أوامر الشراء —
   // إجراءٌ واحدٌ مشترك بدل تكرار استدعاء getPurchaseIntegrityReport من مسارين مختلفين.
-  const reportQuery = trpc.purchases.integrityReport.useQuery(
-    { branchId: queryBranchId, limit: 200 },
-    { enabled },
-  );
+  // Codex (P1، ٦/٩/٢٦): صفحةٌ واحدة (limit ثابت، بلا offset) تتجاهل page.hasMore/nextOffset —
+  // فرعٌ بأكثر من حدّ الصفحة أوامرَ شراءٍ يُقرأ جزؤه الأحدث فقط، وقد يبدو نظيفاً كذباً بينما
+  // ثغراتٌ حرجة أقدم مخفيّة. نُقلّب الصفحات كلّها هنا حتى hasMore=false أو سقفٍ أمانٍ صريح.
+  const LIVE_REPORT_PAGE_SIZE = 500;
+  const LIVE_REPORT_MAX_PAGES = 20;
+  const [liveFindings, setLiveFindings] = useState<LiveIntegrityFinding[]>([]);
+  const [liveIsPartial, setLiveIsPartial] = useState(false);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState<unknown>(null);
+  const runLiveScan = useCallback(async () => {
+    if (!enabled) return;
+    setLiveLoading(true);
+    setLiveError(null);
+    try {
+      const findings: LiveIntegrityFinding[] = [];
+      let offset = 0;
+      let partial = false;
+      for (let page = 0; page < LIVE_REPORT_MAX_PAGES; page += 1) {
+        const result = await utils.purchases.integrityReport.fetch({
+          branchId: queryBranchId,
+          limit: LIVE_REPORT_PAGE_SIZE,
+          offset,
+        });
+        findings.push(...(result.findings as LiveIntegrityFinding[]));
+        if (!result.page.hasMore || result.page.nextOffset == null) break;
+        offset = result.page.nextOffset;
+        if (page === LIVE_REPORT_MAX_PAGES - 1) partial = true;
+      }
+      setLiveFindings(findings);
+      setLiveIsPartial(partial);
+    } catch (error) {
+      setLiveError(error);
+    } finally {
+      setLiveLoading(false);
+    }
+  }, [enabled, queryBranchId, utils]);
+  useEffect(() => {
+    void runLiveScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, queryBranchId]);
+  const liveSummary = useMemo<LiveIntegritySummary | null>(() => {
+    if (!liveFindings.length) return { findingCount: 0, affectedOrderCount: 0, severityCounts: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, INFO: 0 } };
+    const severityCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, INFO: 0 };
+    for (const finding of liveFindings) severityCounts[finding.severity] += 1;
+    return {
+      findingCount: liveFindings.length,
+      affectedOrderCount: new Set(liveFindings.map((f) => f.purchaseOrderId))
+        .size,
+      severityCounts,
+    };
+  }, [liveFindings]);
   const rows = useMemo<PurchaseIntegrityRow[]>(
     () =>
       (casesQuery.data ?? []).map((row) => ({
@@ -69,6 +118,7 @@ export default function PurchaseIntegrityCases() {
       utils.purchaseIntegrity.resolutionSources.invalidate(),
       utils.purchaseIntegrity.monthCloseBlockers.invalidate(),
       utils.purchases.integrityReport.invalidate(),
+      runLiveScan(),
     ]);
   }
   const openCase = trpc.purchaseIntegrity.open.useMutation({
@@ -143,11 +193,12 @@ export default function PurchaseIntegrityCases() {
           branchId={branchId}
           rows={rows}
           blockers={blockersQuery.data ?? []}
-          liveFindings={reportQuery.data?.findings ?? []}
-          liveSummary={reportQuery.data?.summary ?? null}
-          liveLoading={reportQuery.isLoading}
-          liveError={reportQuery.error}
-          onRetryLive={() => void reportQuery.refetch()}
+          liveFindings={liveFindings}
+          liveSummary={liveSummary}
+          liveLoading={liveLoading}
+          liveError={liveError}
+          liveIsPartial={liveIsPartial}
+          onRetryLive={() => void runLiveScan()}
           cutoffDate={cutoffDate}
           currentUserId={me.data?.id}
           loading={casesQuery.isLoading || blockersQuery.isLoading}

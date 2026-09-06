@@ -469,11 +469,88 @@ describe("أمر الشراء النقدي يُسدَّد فوراً عند اع
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "0.00",
     );
+    // Codex (P1، ٦/٩): بلا purchaseOrderId هنا يظنّ getPurchaseIntegrityReport أنّ هذا الأمر
+    // النقديّ بلا أيّ تغطية دفعٍ فيبلغ CASH_RECEIVED_PAYMENT_COVERAGE_GAP حرجاً كاذباً.
     const [paymentEntry] = await db()
       .select()
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(paymentEntry).toMatchObject({ supplierId: 1, amount: "60.00" });
+    expect(paymentEntry).toMatchObject({
+      supplierId: 1,
+      amount: "60.00",
+      purchaseOrderId,
+    });
+
+    // Codex (P1، ٦/٩): شارة «مُسدَّدٌ فعلاً» في Purchases.tsx تُشتقّ من purchases.list.
+    // linkedCashPaidAmount — لا من settlementType+status وحدهما — فتثبت هنا أنّ الإشارة
+    // الحقيقية التي يعتمدها العمود تُغطّي الأمر بالكامل بعد التسوية الفورية.
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: purchaseOrderId,
+      settlementType: "CASH",
+      linkedCashPaidAmount: "60.00",
+    });
+  });
+
+  it("Codex P1 (٦/٩): أمرٌ نقديّ وصل RECEIVED **قبل** هذا الإصلاح (بلا أيّ صرفٍ مرتبط) لا يُعرَض مُسدَّداً — linkedCashPaidAmount يبقى صفراً رغم CASH+RECEIVED معاً", async () => {
+    // محاكاة بيانات ما قبل الإصلاح: تحديثٌ مباشر للحالة يتجاوز مسار الاعتماد التلقائي —
+    // بالضبط الحالة التي كانت الشارة القديمة (settlementType+status فقط) ستُسمّيها خطأً
+    // «مُسدَّدٌ فعلاً» بينما لا صرف حقيقياً وقع قطّ.
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        clientRequestId: "legacy-cash-received-draft",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: "RECEIVED" })
+      .where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: draft.purchaseOrderId,
+      settlementType: "CASH",
+      status: "RECEIVED",
+      linkedCashPaidAmount: "0.00",
+    });
   });
 
   it("لا ينشئ أيّ طلب سداد لأمرٍ آجل", async () => {

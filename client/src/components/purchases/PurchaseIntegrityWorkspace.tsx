@@ -167,6 +167,7 @@ export function PurchaseIntegrityWorkspace({
   liveSummary,
   liveLoading,
   liveError,
+  liveIsPartial,
   onRetryLive,
   cutoffDate,
   currentUserId,
@@ -186,6 +187,9 @@ export function PurchaseIntegrityWorkspace({
   liveSummary: LiveIntegritySummary | null;
   liveLoading: boolean;
   liveError?: unknown;
+  /** Codex (P1، ٦/٩): الفحص الحيّ توقّف عند سقف صفحاتٍ أمانيّ قبل نفاد hasMore — النتيجة
+   *  جزئية ولا يجوز عرضها كأنها مسحٌ كاملٌ للفرع. */
+  liveIsPartial?: boolean;
   onRetryLive: () => void;
   cutoffDate: string;
   currentUserId: number | null | undefined;
@@ -518,7 +522,10 @@ export function PurchaseIntegrityWorkspace({
         ),
       },
     ],
-    [pending],
+    // Codex (P2، ٦/٩/٢٦): openFromLiveFinding يُعاد إنشاؤه كل عرضٍ ويحمل branchId الحاليّ في
+    // نطاقه — لكن هذا العمود كان محفوظاً بـpending وحده، فيبقى مغلقاً على branchId **قديم**
+    // بعد تبديل الفرع بلا تغيّر pending. إدراج الدالّة في الاعتماديات يضمن عمودَ إجراءٍ طازجاً.
+    [pending, openFromLiveFinding],
   );
 
   return (
@@ -561,6 +568,13 @@ export function PurchaseIntegrityWorkspace({
               {liveSummary.severityCounts.HIGH.toLocaleString(
                 "ar-IQ-u-nu-latn",
               )}
+            </p>
+          ) : null}
+          {liveIsPartial ? (
+            <p className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative">
+              <AlertTriangle aria-hidden className="size-3" />
+              الفرع كبيرٌ جداً — هذا مسحٌ جزئيّ فقط ولا يغطّي كل أوامر الشراء. لا
+              تعتمد على «لا اكتشافات» هنا كدليل نظافةٍ كاملة.
             </p>
           ) : null}
           {liveError ? (

@@ -1093,10 +1093,18 @@ export async function decideSupplierPaymentInTx(
     roleCredits: { [asset]: amount },
   };
   const dedupeKey = `SUPPLIER_PAYMENT_REQUEST:${input.requestId}`;
+  // تدقيق التغطية النقدية (getPurchaseIntegrityReport) يقيس المدفوع مقابل المعترف به عبر
+  // accountingEntries.purchaseOrderId على القيدين معاً — بلا هذا الربط يبدو كل سدادٍ صحيح
+  // بلا تغطيةٍ إطلاقاً (CRITICAL كاذب). دفعة تخصّ فاتورةً واحدة مرتبطة بأمر شراءٍ واحد تُربَط
+  // به صراحة؛ ودفعة متعددة الفواتير/الأوامر (نادرة) تبقى بلا ربطٍ بدل تخمين أمرٍ خاطئ.
+  const paidPurchaseOrderIds = await resolveInvoicePurchaseOrderIds(tx, ids);
+  const linkedPurchaseOrderId =
+    paidPurchaseOrderIds.length === 1 ? paidPurchaseOrderIds[0] : null;
   await postEntry(tx, {
     entryType: "PAYMENT_OUT",
     branchId: Number(request.branchId),
     supplierId: Number(request.supplierId),
+    purchaseOrderId: linkedPurchaseOrderId,
     receiptId,
     amount,
     paymentMethod: request.paymentMethod,
