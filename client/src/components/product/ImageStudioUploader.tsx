@@ -1,4 +1,15 @@
-import { ArrowLeft, Check, Info, Sparkles, Wand2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Info,
+  Layers,
+  Sparkles,
+  SunMedium,
+  Wand2,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   ImageUploader,
@@ -10,6 +21,7 @@ import { applyStudioPreviews } from "@/lib/imageStudio/applyPreviews";
 import {
   finishCutFromCutout,
   runFreeStudio,
+  type StudioPreset,
   type StudioResult,
 } from "@/lib/imageStudio/freePipeline";
 import { trpc } from "@/lib/trpc";
@@ -56,6 +68,8 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [aiPromptText, setAiPromptText] = useState("");
+  const [preset, setPreset] = useState<StudioPreset>("PURE_WHITE");
+  const [showAdvancedPrompt, setShowAdvancedPrompt] = useState(false);
   // رمز التشغيل: يتزايد عند كلّ إعادة استهداف ⇒ نتيجةُ تشغيلٍ بطيء (Pro/AI) أُطلق على هدفٍ سابق
   // تُتجاهَل إن تغيّر الهدف قبل وصولها (وإلّا ظهرت/اعتُمدت معاينةٌ لصورةٍ غير المحدَّدة — سباق Codex P2).
   const runToken = useRef(0);
@@ -151,16 +165,17 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
             r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
               trustCutout: true,
+              preset,
             });
             processingReceipt = res.processingReceipt;
             if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
           } catch (e) {
             // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
             fellBackMsg = String((e as { message?: string })?.message ?? "");
-            r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+            r = await runFreeStudio(it.dataUrl, { safeOnly: false, preset });
           }
         } else {
-          r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+          r = await runFreeStudio(it.dataUrl, { safeOnly: false, preset });
         }
         return {
           id: it.id,
@@ -382,61 +397,142 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={runStudio}
-                  disabled={busy}
-                >
-                  <Sparkles aria-hidden className="size-4" />
-                  {busy
-                    ? "جارٍ التحويل…"
-                    : proAvailable
-                      ? "قصّ الخلفية (استوديو احترافي)"
-                      : "توسيط على خلفية بيضاء"}
-                </Button>
-                {!proAvailable && (
-                  <p className="text-[11px] text-muted-foreground">
-                    المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل
-                    الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من
-                    الإعدادات.
-                  </p>
-                )}
-              </div>
-
-              {aiAvailable && (
-                <div className="space-y-2 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-2.5">
-                  <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
-                    <Wand2 aria-hidden className="size-4" /> استوديو الذكاء
-                    الاصطناعي (استوديو موحّد)
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة
-                    + ظلّ) بحفظ المنتج. برومت الاستوديو الجاهز مُطبَّق تلقائياً
-                    — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
-                  </p>
-                  <textarea
-                    value={aiPromptText}
-                    onChange={(e) => setAiPromptText(e.target.value)}
-                    placeholder="تعليمات إضافية اختيارية (للخلفية/الإطار فقط) — مثلاً: أظهر المنتج من الأمام على أرضية بيضاء ناعمة"
-                    rows={2}
-                    maxLength={2000}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
+              {/* نمط الاستوديو */}
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-muted-foreground">
+                  نمط الاستوديو المعياري:
+                </div>
+                <div className="flex flex-wrap gap-1.5">
                   <Button
                     type="button"
                     size="sm"
-                    onClick={runAiStudio}
-                    disabled={busy}
-                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                    variant={preset === "PURE_WHITE" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("PURE_WHITE")}
                   >
-                    <Wand2 aria-hidden className="size-4" />
-                    {busy ? "جارٍ الإنشاء…" : "إنشاء استوديو بالذكاء الاصطناعي"}
+                    <SunMedium aria-hidden className="size-3.5" />
+                    أبيض استوديو نقي
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={preset === "LUXURY_MIRROR" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("LUXURY_MIRROR")}
+                  >
+                    <Layers aria-hidden className="size-3.5" />
+                    مرآة فاخرة وانعكاس
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={preset === "VIBRANT_COMMERCIAL" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("VIBRANT_COMMERCIAL")}
+                  >
+                    <Sparkles aria-hidden className="size-3.5" />
+                    ألوان تجارية حيوية
                   </Button>
                 </div>
-              )}
+              </div>
+
+              {/* أزرار المعالجة: الذكاء الاصطناعي بنقرة واحدة كخيار أول */}
+              <div className="space-y-2 pt-1">
+                {aiAvailable ? (
+                  <div className="space-y-2.5 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
+                        <Wand2 aria-hidden className="size-4" />
+                        استوديو الذكاء الاصطناعي (تلقائي بنقرة واحدة)
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => setShowAdvancedPrompt((v) => !v)}
+                      >
+                        {showAdvancedPrompt ? (
+                          <>
+                            <ChevronUp aria-hidden className="size-3.5 mr-1" />
+                            إخفاء التعليمات الإضافية
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown aria-hidden className="size-3.5 mr-1" />
+                            تعليمات إضافية (اختياري)
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    <p className="text-[11px] text-muted-foreground">
+                      يُطبّق تلقائياً خلفية بيضاء #FFFFFF وإضاءة استوديو متوازنة وظل فيزيائي مزدوج، مع الحفاظ الكامل على نصوص وشعارات وتفاصيل المنتج 100%.
+                    </p>
+
+                    {showAdvancedPrompt && (
+                      <textarea
+                        value={aiPromptText}
+                        onChange={(e) => setAiPromptText(e.target.value)}
+                        placeholder="تعليمات إضافية اختيارية للخلفية فقط — مثلاً: أظهر انعكاساً خفيفاً على الأرضية"
+                        rows={2}
+                        maxLength={2000}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    )}
+
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={runAiStudio}
+                        disabled={busy}
+                        className="bg-violet-600 hover:bg-violet-700 text-white"
+                      >
+                        <Wand2 aria-hidden className="size-4" />
+                        {busy ? "جارٍ المعالجة بالذكاء…" : "معالجة بالذكاء الاصطناعي"}
+                      </Button>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={runStudio}
+                        disabled={busy}
+                      >
+                        <Sparkles aria-hidden className="size-4" />
+                        {busy
+                          ? "جارٍ التحويل…"
+                          : proAvailable
+                            ? "قص الخلفية (Remove.bg)"
+                            : "توسيط وظل مباشر"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={runStudio}
+                      disabled={busy}
+                    >
+                      <Sparkles aria-hidden className="size-4" />
+                      {busy
+                        ? "جارٍ التحويل…"
+                        : proAvailable
+                          ? "قصّ الخلفية (استوديو احترافي)"
+                          : "توسيط وظل استوديو على أبيض"}
+                    </Button>
+                    {!proAvailable && (
+                      <p className="text-[11px] text-muted-foreground">
+                        المسار المجاني يوسّط الصورة على خلفية بيضاء نقية مع ظل احترافي. لإزالة الخلفيات المعقدة بدقة متقدمة يمكن تفعيل remove.bg أو مسار الذكاء الاصطناعي من الإعدادات.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

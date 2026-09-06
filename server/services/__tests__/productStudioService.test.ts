@@ -7,7 +7,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
 import { createAppNotification } from "../appNotificationService";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, getStudioTaskPreviousImages, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 import { reserveStudioImageTasks, bulkReassignStudioTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
@@ -3234,5 +3234,51 @@ describe("product studio governed workflow", () => {
         processingReceipt: expired,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("getStudioTaskPreviousImages يعيد صور المنتج المعتمدة السابقة بترتيب الأسبقية والأمر للمصوّر المخوّل", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    // إدخال صورتين معتمدتين للمنتج 1: واحدة رئيسية وواحدة ثانوية
+    await db().insert(s.productImages).values([
+      {
+        id: 901,
+        productId: 1,
+        url: "https://example.com/img901.png",
+        isPrimary: 0,
+        sortOrder: 2,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-secondary",
+      },
+      {
+        id: 902,
+        productId: 1,
+        url: "https://example.com/img902.png",
+        isPrimary: 1,
+        sortOrder: 1,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1_ALT,
+        storageKey: "p1-primary",
+      },
+      {
+        id: 903,
+        productId: 1,
+        url: "https://example.com/img903.png",
+        isPrimary: 0,
+        sortOrder: 3,
+        reviewStatus: "PENDING_REVIEW", // غير معتمدة، لا يجب أن تظهر
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-pending",
+      },
+    ]);
+
+    const prev = await getStudioTaskPreviousImages(worker, task.taskId);
+    expect(prev).toHaveLength(2);
+    expect(prev[0]).toMatchObject({ id: 902, isPrimary: true, sortOrder: 1 });
+    expect(prev[1]).toMatchObject({ id: 901, isPrimary: false, sortOrder: 2 });
+
+    // مصوّر لا يملك المهمة ولا الفرع يُرفض
+    const stranger: ProductStudioActor = { userId: 99, branchId: 2, role: "print_operator" };
+    await expect(getStudioTaskPreviousImages(stranger, task.taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
