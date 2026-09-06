@@ -1,10 +1,12 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { eq } from "drizzle-orm";
 import {
   customers,
+  deliveryParties,
   invoices,
   receipts,
   suppliers,
@@ -13,9 +15,11 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import {
   adjustCustomerBalance,
+  adjustDeliveryBalance,
   adjustSupplierBalance,
   postEntry,
 } from "../ledgerService";
+import { appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { baghdadToday, todayUtcDate, utcDayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
@@ -604,11 +608,17 @@ export async function createVoucherTx(
         const storedVoucherDate = r.voucherDate
           ? new Date(r.voucherDate).toISOString().slice(0, 10)
           : null;
+        const storedPartyType =
+          r.partyType === "OTHER" &&
+          typeof r.internalNote === "string" &&
+          r.internalNote.startsWith("DELIVERY_PARTY:")
+            ? "DELIVERY_PARTY"
+            : (r.partyType ?? null);
         if (
           Number(r.branchId) !== Number(input.branchId) ||
           r.direction !== requestedDirection ||
           r.paymentMethod !== input.paymentMethod ||
-          (r.partyType ?? null) !== (input.partyType ?? null) ||
+          storedPartyType !== (input.partyType ?? null) ||
           storedPartyId !== requestedPartyId ||
           storedInvoiceId !== requestedInvoiceId ||
           storedCategoryId !== requestedCategoryId ||
@@ -818,6 +828,52 @@ export async function createVoucherTx(
         });
       }
     }
+  } else if (input.partyType === "DELIVERY_PARTY") {
+    if (!input.partyId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل غير محدّدة",
+          doThis: "اختر جهة التوصيل من القائمة ثم أعد المحاولة",
+        }),
+      });
+    }
+    const [dp] = await tx
+      .select()
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, input.partyId))
+      .limit(1);
+    if (!dp) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل غير مسجّلة بالنظام أو حُذفت",
+          doThis: "تحقّق من معرّف جهة التوصيل من شاشة جهات التوصيل",
+        }),
+      });
+    }
+    if (!dp.isActive) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "حساب جهة التوصيل مُعطّل حالياً",
+          doThis: "فعّل جهة التوصيل من شاشة إدارة جهات التوصيل قبل إصدار السند",
+        }),
+      });
+    }
+    if (dp.branchId != null && Number(dp.branchId) !== Number(input.branchId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل تتبع فرعاً آخر يختلف عن فرع السند",
+          doThis: "اختر جهة توصيل تابعة لنفس فرع السند أو اختر الفرع المطابق للجهة",
+        }),
+      });
+    }
   } else if (input.partyType === "OTHER") {
     if (!input.counterpartyName?.trim()) {
       throw new TRPCError({
@@ -916,6 +972,27 @@ export async function createVoucherTx(
     status: needsApproval ? "PENDING" : "COMPLETED",
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
+  const dpRow =
+    input.partyType === "DELIVERY_PARTY" && input.partyId
+      ? (
+          await tx
+            .select({ name: deliveryParties.name })
+            .from(deliveryParties)
+            .where(eq(deliveryParties.id, input.partyId))
+            .limit(1)
+        )[0]
+      : null;
+  const effectiveCounterpartyName =
+    input.partyType === "DELIVERY_PARTY"
+      ? (dpRow?.name ?? input.counterpartyName?.trim() ?? null)
+      : (input.counterpartyName?.trim() || null);
+  const effectiveInternalNote =
+    input.partyType === "DELIVERY_PARTY"
+      ? normalizedInternalNote
+        ? `DELIVERY_PARTY:${input.partyId}:${normalizedInternalNote}`
+        : `DELIVERY_PARTY:${input.partyId}`
+      : normalizedInternalNote;
+
   const rRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     invoiceId:
@@ -930,16 +1007,16 @@ export async function createVoucherTx(
     cardLastFour: input.cardLastFour?.trim() || null,
     status: needsApproval ? "PENDING" : "COMPLETED",
     voucherNumber,
-    partyType: input.partyType,
+    partyType: input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
     partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
     description,
     createdBy: actor.userId,
     // vouchers-pro:
     voucherCategoryId: input.voucherCategoryId ?? null,
-    counterpartyName: input.counterpartyName?.trim() || null,
+    counterpartyName: effectiveCounterpartyName,
     voucherDate: new Date(voucherDate),
     attachmentUrl: input.attachmentUrl?.trim() || null,
-    internalNote: normalizedInternalNote,
+    internalNote: effectiveInternalNote,
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
   const receiptId = extractInsertId(rRes);
@@ -969,6 +1046,8 @@ export async function createVoucherTx(
         input.partyType === "CUSTOMER" ? (input.partyId ?? null) : null,
       supplierId:
         input.partyType === "SUPPLIER" ? (input.partyId ?? null) : null,
+      deliveryPartyId:
+        input.partyType === "DELIVERY_PARTY" ? (input.partyId ?? null) : null,
       amount,
       paymentMethod: input.paymentMethod,
       postingIntent: posting.intent,
@@ -1005,13 +1084,31 @@ export async function createVoucherTx(
       );
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
+    } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
+      await adjustDeliveryBalance(
+        tx,
+        input.partyId,
+        direction === "IN" ? amount.neg() : amount,
+      );
+      if (direction === "IN") {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
+          partyId: input.partyId,
+          branchId: input.branchId,
+          entryType: "COD_REMITTED",
+          amount: toDbMoney(amount),
+          notes: description,
+          actorUserId: actor.userId,
+          occurredAt: new Date(voucherDate),
+        });
+      }
     }
 
     // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.
     const hash = computeSignature({
       id: receiptId,
       amount: toDbMoney(amount),
-      partyType: input.partyType,
+      partyType: input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
       partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
       paymentMethod: input.paymentMethod,
       voucherDate,

@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
+import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
@@ -509,6 +511,20 @@ export default function QuotationDetail() {
           </Button>
         )}
         <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
+        <Button
+          variant="outline"
+          onClick={() =>
+            downloadOfficialPdf({
+              kind: "QUOTATION",
+              documentId: quotationId,
+              documentNumber: data.quoteNumber,
+              fetcher: (params) => utils.client.documentDelivery.downloadPdf.mutate(params),
+            })
+          }
+        >
+          <Download aria-hidden className="size-4" />
+          تنزيل PDF
+        </Button>
         <CopyAsMenu
           label="نسخ العرض"
           plain={data.quoteNumber}

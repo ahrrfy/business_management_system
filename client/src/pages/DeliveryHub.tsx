@@ -34,6 +34,8 @@ import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
@@ -172,6 +174,7 @@ function DispatchTab() {
     );
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
+  const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
 
   // كشفُ الطلبات الجديدة بين استعلامَين متتاليَين (Slice A، ٢٩/٨/٢٦) — بلاغ المالك: «الطلب انجزة
   // فني المطبعة وحوّله لجاهز، لا شي يظهر ولا شي يلاحظه موظّفو الاستقبال والتوصيل». تبويب Dispatch
@@ -444,10 +447,28 @@ function DispatchTab() {
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
+            setDepartureData({
+              consignmentNumber: r.consignmentNumber,
+              orderNumber: ord.orderNumber,
+              title: ord.title,
+              customerName: recipientName || ord.customerName,
+              customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
+              deliveryAddress: ord.deliveryAddress,
+              courierName: party?.name ?? "المندوب",
+              courierPhone: party?.phone,
+              codAmount: r.codAmount,
+              deliveryFee: fee,
+              feeCollection: ord.deliveryFeeCollection ?? "COURIER",
+            });
           } catch {
             labelWin?.close();
           }
         }}
+      />
+      <DeliveryDepartureOverlay
+        open={!!departureData}
+        onClose={() => setDepartureData(null)}
+        data={departureData}
       />
     </div>
   );
@@ -861,9 +882,22 @@ function InTransitTab() {
                   <Button size="sm" variant="ghost" asChild title="اتصال بالمستلم">
                     <a href={`tel:${phone}`}><Phone aria-hidden className="size-3" /></a>
                   </Button>
-                  <Button size="sm" variant="ghost" asChild title="واتساب المستلم">
-                    <a href={`https://wa.me/${phone.replace(/[^\d]/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle aria-hidden className="size-3" /></a>
-                  </Button>
+                  <WhatsAppStageActionsMenu
+                    data={{
+                      consignmentNumber: r.consignmentNumber,
+                      orderNumber: r.orderNumber ?? r.invoiceNumber,
+                      customerName: r.recipientName ?? r.customerName,
+                      customerPhone: phone,
+                      deliveryAddress: r.address,
+                      courierName: r.partyName,
+                      codAmount: r.codDue,
+                    }}
+                    target="customer"
+                    size="sm"
+                    variant="ghost"
+                    iconOnly
+                    label="رسائل واتساب للمستلم"
+                  />
                 </>
               )}
               <Button size="sm" variant="ghost" asChild title="فتح جهة التوصيل وتسويتها">

@@ -26,9 +26,11 @@ import {
 } from "../advances";
 import {
   adjustCustomerBalance,
+  adjustDeliveryBalance,
   adjustSupplierBalance,
   postEntry,
 } from "../ledgerService";
+import { appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { baghdadToday } from "../businessDay";
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
@@ -431,6 +433,23 @@ function approvedVoucherPostingPlan(args: {
           "PAYMENT_IN",
           assetRole,
           "AP",
+          args.amount,
+        );
+  }
+  if (args.partyType === "DELIVERY_PARTY") {
+    return args.direction === "IN"
+      ? twoRolePostingPlan(
+          "PAYMENT_IN_DELIVERY_PARTY",
+          "PAYMENT_IN",
+          assetRole,
+          "DELIVERY_FLOAT",
+          args.amount,
+        )
+      : twoRolePostingPlan(
+          "PAYMENT_OUT_COURIER",
+          "PAYMENT_OUT",
+          "COURIER_PAYABLE",
+          assetRole,
           args.amount,
         );
   }
@@ -1094,6 +1113,14 @@ export async function approveVoucherTx(
     const direction = r.direction as "IN" | "OUT";
     const branchId = Number(r.branchId);
     const partyType = r.partyType as PartyType | null;
+    const isDeliveryParty =
+      r.partyType === "OTHER" &&
+      r.partyId != null &&
+      typeof r.internalNote === "string" &&
+      r.internalNote.startsWith("DELIVERY_PARTY:");
+    const effectivePartyType: PartyType | null = isDeliveryParty
+      ? "DELIVERY_PARTY"
+      : partyType;
     const partyId = r.partyId != null ? Number(r.partyId) : null;
     const paymentMethod = r.paymentMethod as PaymentMethod;
     const postingReferenceNumber =
@@ -1153,7 +1180,7 @@ export async function approveVoucherTx(
     }
     let categoryPostingRole: VoucherCategoryPostingRole | null = null;
     let categoryReversalOfDirection: "IN" | "OUT" | null = null;
-    if (partyType === "OTHER" && !isEmployeeAdvance) {
+    if (effectivePartyType === "OTHER" && !isEmployeeAdvance) {
       if (cancellationOriginal) {
         if (cancellationOriginal.voucherCategoryId == null) {
           throw new TRPCError({
@@ -1528,7 +1555,7 @@ export async function approveVoucherTx(
       }
       if (
         systemRequest.kind === "PURCHASE_SUPPLIER" &&
-        (partyType !== "SUPPLIER" ||
+        (effectivePartyType !== "SUPPLIER" ||
           partyId == null ||
           Number(systemPurchaseOrder.supplierId) !== partyId ||
           typeof systemRequest.sourceTotal !== "string" ||
@@ -1639,7 +1666,7 @@ export async function approveVoucherTx(
     // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
     // والاعتماد قد تخفض المستحق لأي مورد، لا المودِع فقط.
     if (
-      partyType === "SUPPLIER" &&
+      effectivePartyType === "SUPPLIER" &&
       partyId != null &&
       direction === "OUT" &&
       systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
@@ -1733,7 +1760,7 @@ export async function approveVoucherTx(
           direction,
           paymentMethod,
           cashBucket,
-          partyType,
+          partyType: effectivePartyType,
           amount,
           referenceNumber: postingReferenceNumber,
           systemKind:
@@ -1969,8 +1996,12 @@ export async function approveVoucherTx(
         entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
         branchId,
         receiptId,
-        customerId: partyType === "CUSTOMER" ? partyId : null,
-        supplierId: partyType === "SUPPLIER" ? partyId : null,
+        customerId: effectivePartyType === "CUSTOMER" ? partyId : null,
+        supplierId: effectivePartyType === "SUPPLIER" ? partyId : null,
+        deliveryPartyId:
+          effectivePartyType === "DELIVERY_PARTY" && partyId != null
+            ? partyId
+            : null,
         purchaseOrderId: systemPurchaseOrder
           ? Number(systemPurchaseOrder.id)
           : cancellationPurchaseOrder
@@ -2049,7 +2080,7 @@ export async function approveVoucherTx(
     // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
     // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
     // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
-    if (partyType === "CUSTOMER" && partyId) {
+    if (effectivePartyType === "CUSTOMER" && partyId) {
       // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
       // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
       // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
@@ -2090,7 +2121,7 @@ export async function approveVoucherTx(
         );
       }
     } else if (
-      partyType === "SUPPLIER" &&
+      effectivePartyType === "SUPPLIER" &&
       partyId &&
       systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
       cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
@@ -2101,6 +2132,24 @@ export async function approveVoucherTx(
         partyId,
         direction === "OUT" ? amount.neg() : amount,
       );
+    } else if (effectivePartyType === "DELIVERY_PARTY" && partyId) {
+      await adjustDeliveryBalance(
+        tx,
+        partyId,
+        direction === "IN" ? amount.neg() : amount,
+      );
+      if (direction === "IN") {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
+          partyId,
+          branchId,
+          entryType: "COD_REMITTED",
+          amount: toDbMoney(amount),
+          notes: r.description,
+          actorUserId: actor.userId,
+          occurredAt: approvedAt,
+        });
+      }
     }
     if (systemRequest?.kind === "PURCHASE_SUPPLIER" && systemPurchaseOrder) {
       await tx

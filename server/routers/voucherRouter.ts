@@ -11,6 +11,7 @@ import {
   getVoucher,
   listVouchers,
   recentVouchersForParty,
+  listVoucherDeliveryParties,
   rejectVoucher,
 } from "../services/voucherService";
 import {
@@ -44,7 +45,7 @@ import {
 } from "../services/voucher/create";
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 
-const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
+const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
 // وفي المخطط للسجلات التاريخية فقط (فلترة/عرض السندات القديمة).
 const creatableMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
@@ -352,6 +353,15 @@ export const voucherRouter = router({
         limit: input.limit,
       });
     }),
+
+  /** قائمة جهات التوصيل المتاحة لسندات القبض والصرف بالفرع. */
+  deliveryParties: treasuryManagerReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const branchId = restrict ? Number(ctx.user.branchId) : (input?.branchId ?? undefined);
+      return listVoucherDeliveryParties({ branchId });
+    }),
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
@@ -373,7 +383,15 @@ async function aggregateVouchers(input: VoucherListFilters) {
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
-  if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
+  if (input.partyType === "DELIVERY_PARTY") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`${receipts.internalNote} LIKE 'DELIVERY_PARTY:%'`);
+  } else if (input.partyType === "OTHER") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`(${receipts.internalNote} NOT LIKE 'DELIVERY_PARTY:%' OR ${receipts.internalNote} IS NULL)`);
+  } else if (input.partyType) {
+    wheres.push(eq(receipts.partyType, input.partyType));
+  }
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
   if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
   if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));

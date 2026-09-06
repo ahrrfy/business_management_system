@@ -105,6 +105,7 @@ export type PostingProfile =
   | "PAYMENT_IN_CATEGORY_REVERSAL"
   | "PAYMENT_IN_TREASURY"
   | "PAYMENT_IN_COURIER"
+  | "PAYMENT_IN_DELIVERY_PARTY"
   | "PAYMENT_IN_PAYROLL_NET_RETURN"
   | "PAYMENT_IN_PAYROLL_TAX_RETURN"
   | "PAYMENT_IN_PAYROLL_SS_RETURN"
@@ -268,6 +269,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "PAYMENT_IN_CATEGORY_REVERSAL",
     "PAYMENT_IN_TREASURY",
     "PAYMENT_IN_COURIER",
+    "PAYMENT_IN_DELIVERY_PARTY",
     "PAYMENT_IN_PAYROLL_NET_RETURN",
     "PAYMENT_IN_PAYROLL_TAX_RETURN",
     "PAYMENT_IN_PAYROLL_SS_RETURN",
@@ -1072,6 +1074,17 @@ export const PROFILE_POLICIES = Object.freeze({
       sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["DELIVERY_FLOAT"]),
     ],
   }),
+  PAYMENT_IN_DELIVERY_PARTY: profilePolicy(
+    "PAYMENT_IN",
+    CASH_ASSETS,
+    ["DELIVERY_FLOAT"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: [...CASH_ASSETS, "DELIVERY_FLOAT"],
+    },
+  ),
   PAYMENT_IN_PAYROLL_NET_RETURN: profilePolicy(
     "PAYMENT_IN",
     CASH_ASSETS,

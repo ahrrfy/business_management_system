@@ -31,7 +31,8 @@ import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { INVOICE_STATUSES, invoiceStatusLabel, invoiceStatusBadgeVariant } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
-import { Calendar, CreditCard, FileWarning, Printer, Truck, User, X } from "lucide-react";
+import { Calendar, CreditCard, Download, FileWarning, Printer, Truck, User, X } from "lucide-react";
+import { downloadOfficialPdf } from "@/lib/exportPdf";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
@@ -689,6 +690,20 @@ export default function Invoices() {
                   kind: "print",
                   label: "طباعة A4",
                   onSelect: () => void printA4(r.id),
+                  gate: { module: "sales", level: "READ" },
+                },
+                {
+                  key: "download-pdf",
+                  kind: "export",
+                  icon: Download,
+                  label: "تنزيل PDF",
+                  onSelect: () =>
+                    downloadOfficialPdf({
+                      kind: "INVOICE",
+                      documentId: r.id,
+                      documentNumber: r.invoiceNumber,
+                      fetcher: (params) => utils.client.documentDelivery.downloadPdf.mutate(params),
+                    }),
                   gate: { module: "sales", level: "READ" },
                 },
                 {

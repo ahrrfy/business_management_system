@@ -40,4 +40,4 @@ export { approveVoucher, rejectVoucher } from "./voucher/approval";
 export type { CancelVoucherResult } from "./voucher/cancel";
 export { cancelVoucher } from "./voucher/cancel";
 export type { ListVouchersInput } from "./voucher/queries";
-export { listVouchers, getVoucher, recentVouchersForParty } from "./voucher/queries";
+export { listVouchers, getVoucher, recentVouchersForParty, listVoucherDeliveryParties } from "./voucher/queries";

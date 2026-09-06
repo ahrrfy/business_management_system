@@ -5,6 +5,8 @@ import { trpc } from "@/lib/trpc";
 import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { notify } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
+import { AnimatedDeliveryButton } from "@/components/delivery/AnimatedDeliveryButton";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import {
   Dialog,
   DialogContent,
@@ -261,15 +263,34 @@ export function InvoiceDispatchDialog({
           </div>
         )}
 
+        <div className="mb-2 flex justify-end">
+          {invoice && (
+            <WhatsAppStageActionsMenu
+              data={{
+                orderNumber: invoice.invoiceNumber,
+                customerName: name || invoice.customerName,
+                customerPhone: phone || invoice.customerPhone,
+                deliveryAddress: address || invoice.deliveryAddress,
+                courierName: party?.name,
+                codAmount: remaining.toFixed(2),
+                deliveryFee: fee,
+                feeCollection: feeCollection,
+              }}
+              size="sm"
+              label="معاينة رسائل واتساب"
+            />
+          )}
+        </div>
+
         <DialogFooter className="gap-2 sm:justify-start">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={dispatch.isPending}
           >
-            إغلاق
+            إلغاء
           </Button>
-          <Button
+          <AnimatedDeliveryButton
             disabled={
               !invoice ||
               !partyId ||
@@ -278,10 +299,10 @@ export function InvoiceDispatchDialog({
               !address.trim() ||
               dispatch.isPending
             }
+            isDispatching={dispatch.isPending}
+            label="تأكيد التسليم للمندوب"
             onClick={() => submit()}
-          >
-            {dispatch.isPending ? "جارٍ الإسناد…" : "تأكيد الإسناد"}
-          </Button>
+          />
         </DialogFooter>
       </DialogContent>
     </Dialog>

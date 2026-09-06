@@ -1,19 +1,5 @@
-import {
-  type WorkOrderStatus,
-  WO_NEXT_STATUS,
-  WO_STAGE_INDEX,
-  workOrderStatusHue,
-  workOrderStatusLabel,
-  workOrderTimelineLabel,
-} from "@shared/workOrderStatus";
-import {
-  isKanbanStateApplicable,
-  isWorkOrderKanbanState,
-  nextKanbanStateInCycle,
-  workOrderKanbanDotCls,
-  workOrderKanbanStateLabel,
-  type WorkOrderKanbanState,
-} from "@shared/workOrderKanban";
+import { type WorkOrderStatus, WO_NEXT_STATUS, WO_STAGE_INDEX, workOrderStatusHue, workOrderStatusLabel, workOrderTimelineLabel } from "@shared/workOrderStatus";
+import { isKanbanStateApplicable, isWorkOrderKanbanState, nextKanbanStateInCycle, workOrderKanbanDotCls, workOrderKanbanStateLabel, type WorkOrderKanbanState } from "@shared/workOrderKanban";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -58,14 +44,7 @@ import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
 import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { ErrorState, LoadingState } from "@/components/PageState";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type WO = RouterOutputs["workOrders"]["list"][number];
 type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
@@ -390,6 +369,14 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         <div className="wob-card-delivery">
           <Package aria-hidden className="size-3.5 shrink-0" />
           <span className="truncate">{o.deliveryAddress ?? "توصيل للعميل"}</span>
+          {(() => {
+            const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+            return st !== "NONE" ? (
+              <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] px-1.5 py-0.5 text-2xs font-bold shrink-0 ms-auto" title={o.deliveryPartyName ? `مع ${o.deliveryPartyName}` : undefined}>
+                <Truck aria-hidden className="size-3" /> {woDeliveryStateLabel(st)}
+              </span>
+            ) : null;
+          })()}
         </div>
       )}
       <div className="wob-meta">
@@ -1389,7 +1376,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal", deliv: "" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1530,13 +1517,18 @@ export default function WorkOrders() {
         const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
         if (ks !== "BLOCKED") return false;
       }
+      if (f.deliv === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+        if (!o.hasDelivery && st === "NONE") return false;
+      }
       if (needle) {
         const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     };
-  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
+  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked, f.deliv]);
 
   const filtered = useMemo(() => all.filter(clientFilterPredicate), [all, clientFilterPredicate]);
 
@@ -1725,7 +1717,7 @@ export default function WorkOrders() {
     navigate(`/work-orders/${d.id}?cancel=1`);
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
   const boardError = activeQ.isError || deliveredQ.isError || countsQ.isError;
@@ -1856,35 +1848,17 @@ export default function WorkOrders() {
             </button>
           );
         })()}
-        <button
-          type="button"
-          aria-pressed={f.dueToday === "1"}
-          onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })}
-          className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`}
-          title="أوامرُ تستحقّ التسليم اليوم"
-        >
-          <Calendar aria-hidden className="size-3.5" />
-          يستحقّ اليوم
+        <button type="button" aria-pressed={f.dueToday === "1"} onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })} className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`} title="أوامرُ تستحقّ التسليم اليوم">
+          <Calendar aria-hidden className="size-3.5" /> يستحقّ اليوم
         </button>
-        <button
-          type="button"
-          aria-pressed={f.unassigned === "1"}
-          onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })}
-          className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`}
-          title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد"
-        >
-          <Wrench aria-hidden className="size-3.5" />
-          بلا فنّيّ
+        <button type="button" aria-pressed={f.unassigned === "1"} onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })} className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`} title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد">
+          <Wrench aria-hidden className="size-3.5" /> بلا فنّيّ
         </button>
-        <button
-          type="button"
-          aria-pressed={f.blocked === "1"}
-          onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })}
-          className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`}
-          title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة"
-        >
-          <AlertTriangle aria-hidden className="size-3.5" />
-          معطَّل
+        <button type="button" aria-pressed={f.blocked === "1"} onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })} className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`} title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة">
+          <AlertTriangle aria-hidden className="size-3.5" /> معطَّل
+        </button>
+        <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
+          <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
