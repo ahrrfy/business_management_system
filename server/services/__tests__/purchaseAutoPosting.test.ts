@@ -9,6 +9,7 @@ import { truncateTables } from "./__testUtils__";
 
 const creator = { userId: 1, branchId: 1, role: "admin" as const };
 const approver = { userId: 2, branchId: 1, role: "manager" as const };
+const treasurer = { userId: 3, branchId: 1, role: "manager" as const };
 
 const TABLES = [
   "idempotencyKeys",
@@ -22,6 +23,10 @@ const TABLES = [
   "supplierInvoiceMatchAllocations",
   "supplierInvoiceMatchRuns",
   "supplierInvoiceLines",
+  "supplierPaymentAllocations",
+  "supplierPayments",
+  "supplierPaymentRequestAllocations",
+  "supplierPaymentRequests",
   "supplierInvoices",
   "goodsReceiptAccountingLinks",
   "goodsReceiptItems",
@@ -79,6 +84,15 @@ async function seed() {
         role: "manager",
         loginMethod: "local",
         branchId: 1,
+      },
+      {
+        id: 3,
+        openId: "purchase-auto-treasurer",
+        name: "معتمد الصرف",
+        role: "manager",
+        loginMethod: "local",
+        branchId: 1,
+        isOwner: true,
       },
     ]);
   await db().insert(s.suppliers).values({
@@ -331,6 +345,248 @@ describe("اعتماد أمر الشراء يرحّل الفاتورة والا�
     expect((await db().select().from(s.productVariants))[0]?.costPrice).toBe(
       "5.00",
     );
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "60.00",
+    );
+  });
+});
+
+describe("أمر الشراء النقدي يُسدَّد فوراً عند اعتماده — اعتمادٌ وصرفٌ بلا شاشةٍ ثانية (بلاغ المالك ٦/٩/٢٦، مُعدَّلٌ لاحقاً بقرارٍ صريح: لا تعقيد ولا خطوة ثانية)", () => {
+  beforeEach(async () => {
+    // تمويل خزينة الفرع — لازمٌ فقط لاختبارَي هذه المجموعة (تسوية نقدية فعلية)؛ خارج seed()
+    // المشتركة كي لا تُغيّر عدد صفوف receipts في اختبار المجموعة الأولى.
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "5000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "CASH-PO-TREASURY-FUND",
+      createdBy: 1,
+    });
+  });
+
+  async function submitCashOrder(clientRequestIdPrefix: string) {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        clientRequestId: `${clientRequestIdPrefix}-draft`,
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    const submitted = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
+        clientRequestId: `${clientRequestIdPrefix}-submit`,
+      },
+      creator,
+    );
+    return { purchaseOrderId: draft.purchaseOrderId, requestId: submitted.requestId };
+  }
+
+  it("مديرٌ غير مالكٍ لا يستطيع اعتماد أمرٍ نقديّ — الصرف من الخزينة يلزمه حساب مالكٍ نشط، والاعتماد كلّه يتراجع", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-nonowner");
+    await expect(
+      decidePurchaseOrderControl(
+        {
+          requestId,
+          decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
+          approve: true,
+          reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+          confirmedFullReceipt: true,
+        },
+        approver, // manager عادي، ليس isOwner
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // تراجعٌ كامل وذرّيّ: لا فاتورة مورد، لا استلام، لا حركة مخزون، لا تغيّر في حالة الأمر.
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0]?.status,
+    ).toBe("SENT");
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+  });
+
+  it("مالكٌ يعتمد الأمر النقدي فيُسدَّد فوراً ضمن نفس الاعتماد — بلا طلبٍ معلَّق وبلا ذمّةٍ تظهر من خارج المعاملة", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-owner");
+    const approved = await decidePurchaseOrderControl(
+      {
+        requestId,
+        decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
+        approve: true,
+        reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+        confirmedFullReceipt: true,
+      },
+      treasurer, // isOwner: true
+    );
+    expect(approved).toMatchObject({ status: "APPROVED", orderStatus: "RECEIVED" });
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0]?.status,
+    ).toBe("RECEIVED");
+
+    const [invoice] = await db()
+      .select()
+      .from(s.supplierInvoices)
+      .where(eq(s.supplierInvoices.supplierId, 1));
+    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "SETTLED" });
+
+    // لا طلب سدادٍ معلَّق يظهر لأي مستخدم — الطلب والاعتماد وقعا معاً داخل معاملة الاعتماد نفسها.
+    const [request] = await db()
+      .select()
+      .from(s.supplierPaymentRequests)
+      .where(eq(s.supplierPaymentRequests.supplierId, 1));
+    expect(request).toMatchObject({
+      status: "APPROVED",
+      paymentMethod: "CASH",
+      requestedAmount: "60.00",
+    });
+
+    // الذمّة صفرٌ — لا ذمّة «مؤقّتة» ظاهرة، بلا حاجة لأي اعتمادٍ ثانٍ.
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+    // Codex (P1، ٦/٩): بلا purchaseOrderId هنا يظنّ getPurchaseIntegrityReport أنّ هذا الأمر
+    // النقديّ بلا أيّ تغطية دفعٍ فيبلغ CASH_RECEIVED_PAYMENT_COVERAGE_GAP حرجاً كاذباً.
+    const [paymentEntry] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(paymentEntry).toMatchObject({
+      supplierId: 1,
+      amount: "60.00",
+      purchaseOrderId,
+    });
+
+    // Codex (P1، ٦/٩): شارة «مُسدَّدٌ فعلاً» في Purchases.tsx تُشتقّ من purchases.list.
+    // linkedCashPaidAmount — لا من settlementType+status وحدهما — فتثبت هنا أنّ الإشارة
+    // الحقيقية التي يعتمدها العمود تُغطّي الأمر بالكامل بعد التسوية الفورية.
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: purchaseOrderId,
+      settlementType: "CASH",
+      linkedCashPaidAmount: "60.00",
+    });
+  });
+
+  it("Codex P1 (٦/٩): أمرٌ نقديّ وصل RECEIVED **قبل** هذا الإصلاح (بلا أيّ صرفٍ مرتبط) لا يُعرَض مُسدَّداً — linkedCashPaidAmount يبقى صفراً رغم CASH+RECEIVED معاً", async () => {
+    // محاكاة بيانات ما قبل الإصلاح: تحديثٌ مباشر للحالة يتجاوز مسار الاعتماد التلقائي —
+    // بالضبط الحالة التي كانت الشارة القديمة (settlementType+status فقط) ستُسمّيها خطأً
+    // «مُسدَّدٌ فعلاً» بينما لا صرف حقيقياً وقع قطّ.
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CASH",
+        clientRequestId: "legacy-cash-received-draft",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    await db()
+      .update(s.purchaseOrders)
+      .set({ status: "RECEIVED" })
+      .where(eq(s.purchaseOrders.id, draft.purchaseOrderId));
+
+    const { purchaseRouter } = await import("../../routers/purchaseRouter");
+    const caller = purchaseRouter.createCaller({
+      req: { headers: {} } as never,
+      res: { cookie() {}, clearCookie() {} } as never,
+      user: {
+        id: treasurer.userId,
+        role: treasurer.role,
+        branchId: treasurer.branchId,
+        name: "معتمد الصرف",
+        email: "treasurer@test.local",
+        isActive: true,
+        isOwner: true,
+        permissionsOverride: null,
+      } as never,
+    });
+    const [listedOrder] = await caller.list({});
+    expect(listedOrder).toMatchObject({
+      id: draft.purchaseOrderId,
+      settlementType: "CASH",
+      status: "RECEIVED",
+      linkedCashPaidAmount: "0.00",
+    });
+  });
+
+  it("لا ينشئ أيّ طلب سداد لأمرٍ آجل", async () => {
+    const draft = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        status: "DRAFT",
+        settlementType: "CREDIT",
+        clientRequestId: "credit-no-autopay-draft",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      creator,
+    );
+    const submitted = await confirmPurchaseOrder(
+      {
+        purchaseOrderId: draft.purchaseOrderId,
+        expectedVersion: draft.version,
+        reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
+        clientRequestId: "credit-no-autopay-submit",
+      },
+      creator,
+    );
+    await decidePurchaseOrderControl(
+      {
+        requestId: submitted.requestId,
+        decisionKey: `purchase-decision-PURCHASE_ORDER-${submitted.requestId}-approve-${randomUUID()}`,
+        approve: true,
+        reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+        confirmedFullReceipt: true,
+      },
+      approver,
+    );
+    expect(await db().select().from(s.supplierPaymentRequests)).toHaveLength(0);
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "60.00",
     );

@@ -24,6 +24,7 @@ import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { AlertTriangle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   moduleAccessAllowed,
@@ -523,12 +524,22 @@ export default function Purchases() {
           <DataTable<PurchaseRow>
             data={rows}
             loading={query.isLoading}
-            errorState={{ isError: query.isError, message: query.error?.message, onRetry: () => void query.refetch() }}
+            errorState={{
+              isError: query.isError,
+              message: query.error?.message,
+              onRetry: () => void query.refetch(),
+            }}
             /* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
             searchable={false}
             externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
             /* الترقيم خادميّ (limit/offset + listCount) ⇒ شريطٌ واحد داخل الجدول بدل TablePager منفصل. */
-            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total, isFetching: query.isFetching }}
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE_SIZE,
+              total,
+              isFetching: query.isFetching,
+            }}
             getRowClassName={(p) => {
               const focus = rowProps(p.id).className;
               return focus ? `${focus} ${FOCUS_ANCHOR_CLASS}` : undefined;
@@ -549,7 +560,9 @@ export default function Purchases() {
                 meta: { width: "wide" },
                 cell: ({ row }) =>
                   /* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */
-                  row.original.supplierName && row.original.supplierId && canOpenSupplierStatement ? (
+                  row.original.supplierName &&
+                  row.original.supplierId &&
+                  canOpenSupplierStatement ? (
                     <Link
                       href={`/suppliers-statement?id=${row.original.supplierId}`}
                       className="text-primary hover:underline"
@@ -567,8 +580,10 @@ export default function Purchases() {
                     {
                       id: "branch",
                       header: "الفرع",
-                      accessorFn: (p) => branchNames.get(p.branchId ?? -1) ?? "—",
-                      cell: ({ row }) => branchNames.get(row.original.branchId ?? -1) ?? "—",
+                      accessorFn: (p) =>
+                        branchNames.get(p.branchId ?? -1) ?? "—",
+                      cell: ({ row }) =>
+                        branchNames.get(row.original.branchId ?? -1) ?? "—",
                     },
                   ] as ColumnDef<PurchaseRow, unknown>[])
                 : []),
@@ -589,7 +604,10 @@ export default function Purchases() {
               {
                 id: "supplierInvoice",
                 header: "فاتورة المورد",
-                accessorFn: (p) => (p.agreedCurrency === "USD" ? `${fmt(p.usdTotal)} $` : `${fmt(p.total)} د.ع`),
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD"
+                    ? `${fmt(p.usdTotal)} $`
+                    : `${fmt(p.total)} د.ع`,
                 meta: { kind: "money" },
                 cell: ({ row }) =>
                   row.original.agreedCurrency === "USD"
@@ -599,9 +617,13 @@ export default function Purchases() {
               {
                 id: "agreedRate",
                 header: "سعر التثبيت",
-                accessorFn: (p) => (p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"),
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—",
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.agreedCurrency === "USD" ? fmt(row.original.agreedRate) : "—"),
+                cell: ({ row }) =>
+                  row.original.agreedCurrency === "USD"
+                    ? fmt(row.original.agreedRate)
+                    : "—",
               },
               {
                 id: "remaining",
@@ -611,14 +633,25 @@ export default function Purchases() {
                 // يكسر إيقاع الجدول (جولة بصرية ٣/٩). fmt() يلفّ نفس Decimal بتنسيق en-US الموحَّد.
                 accessorFn: (p) =>
                   p.agreedCurrency === "USD"
-                    ? `${fmt(D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2))} $`
+                    ? `${fmt(
+                        D(p.usdTotal ?? 0)
+                          .minus(D(p.paidUsd ?? 0))
+                          .toFixed(2),
+                      )} $`
                     : `${fmt(positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2))} د.ع`,
                 meta: { kind: "money" },
                 // ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع».
                 cell: ({ row }) => (
-                  <span className="font-bold" title="المتبقّي = الإجمالي − المدفوع">
+                  <span
+                    className="font-bold"
+                    title="المتبقّي = الإجمالي − المدفوع"
+                  >
                     {row.original.agreedCurrency === "USD"
-                      ? `${fmt(D(row.original.usdTotal ?? 0).minus(D(row.original.paidUsd ?? 0)).toFixed(2))} $`
+                      ? `${fmt(
+                          D(row.original.usdTotal ?? 0)
+                            .minus(D(row.original.paidUsd ?? 0))
+                            .toFixed(2),
+                        )} $`
                       : `${fmt(positiveDiff(row.original.total ?? 0, row.original.paidAmount ?? 0).toFixed(2))} د.ع`}
                   </span>
                 ),
@@ -626,14 +659,48 @@ export default function Purchases() {
               {
                 id: "settlementType",
                 header: "التسوية",
-                accessorFn: (p) => SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
+                accessorFn: (p) =>
+                  SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
                 meta: { kind: "status" },
                 // ٢٤/٨ (تدقيق): شارةُ لون بدل نصٍّ خام.
-                cell: ({ row }) => (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}>
-                    {SETTLEMENT_TYPE[row.original.settlementType] ?? row.original.settlementType}
-                  </span>
-                ),
+                // ٦/٩ (بلاغ المالك): «نقدي» + متبقٍّ > صفر كانا يبدوان مطابقين تماماً لأمرٍ آجل.
+                // الإصلاح (٦/٩): اعتماد أمرٍ نقديّ يُسدِّده فوراً ضمن نفس المعاملة (اعتمادٌ وصرفٌ
+                // بلا خطوةٍ ثانية — قرار المالك). لكن purchaseOrders.paidAmount **يبقى بلا تحديثٍ**
+                // (لا هذا الإصلاح ولا سداد المورد العاديّ supplierPayments.ts يكتبان إليه — الأخير
+                // يعمل على فاتورة المورد لا على أمر الشراء نفسه)، فهذا العمود يستمرّ بعرض المبلغ
+                // كاملاً حتى بعد التسوية الفعلية.
+                // Codex (P1، ٦/٩): settlementType+status وحدهما لا يكفيان دليلاً — أمرٌ CASH وصل
+                // RECEIVED **قبل** هذا الإصلاح لم يُسدَّد آلياً قطّ وقد تبقى عليه ذمّةٌ حقيقية.
+                // الدليل الوحيد المقبول: linkedCashPaidAmount (مجموع قيود PAYMENT_OUT المربوطة
+                // فعلياً بهذا الأمر عبر purchaseOrderId — من purchaseRouter.list) يغطّي total.
+                cell: ({ row }) => {
+                  const total = D(row.original.total ?? 0);
+                  const linkedPaid = D(row.original.linkedCashPaidAmount ?? 0);
+                  const cashAlreadySettled =
+                    row.original.settlementType === "CASH" &&
+                    row.original.status === "RECEIVED" &&
+                    total.gt(0) &&
+                    linkedPaid.gte(total);
+                  return (
+                    <div className="space-y-1">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}
+                      >
+                        {SETTLEMENT_TYPE[row.original.settlementType] ??
+                          row.original.settlementType}
+                      </span>
+                      {cashAlreadySettled ? (
+                        <div
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative"
+                          title="وُجد سندُ صرفٍ فعليّ يغطّي هذا الأمر بالكامل — هذا العمود لا يتحدّث ليعكس ذلك ويبقى يعرض المبلغ كاملاً. تحقّق من سداد الموردين لرؤية سند الصرف نفسه."
+                        >
+                          <AlertTriangle aria-hidden className="size-3" />
+                          مُسدَّدٌ فعلاً — الرقم غير محدَّث
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                },
               },
               {
                 id: "status",
@@ -641,7 +708,9 @@ export default function Purchases() {
                 accessorFn: (p) => PO_STATUS[p.status] ?? p.status,
                 meta: { kind: "status" },
                 cell: ({ row }) => (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}>
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}
+                  >
                     {PO_STATUS[row.original.status] ?? row.original.status}
                   </span>
                 ),
@@ -656,7 +725,8 @@ export default function Purchases() {
                     actor={{
                       userId: row.original.createdBy,
                       name: row.original.createdByName,
-                      source: row.original.createdBy == null ? "legacy" : "user",
+                      source:
+                        row.original.createdBy == null ? "legacy" : "user",
                     }}
                   />
                 ),
@@ -668,7 +738,8 @@ export default function Purchases() {
                 meta: { kind: "actions" },
                 cell: ({ row }) => {
                   const p = row.original;
-                  const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
+                  const terminal =
+                    p.status === "RECEIVED" || p.status === "CANCELLED";
                   const needsConfirmation = p.status === "DRAFT";
                   const awaitingApproval = p.status === "SENT";
                   const hasPendingControl = pendingOrderIds.has(Number(p.id));
@@ -676,8 +747,10 @@ export default function Purchases() {
                     <RowActions
                       mode="auto"
                       contact={{
-                        whatsapp: supplierContacts.get(Number(p.supplierId))?.whatsapp,
-                        phone: supplierContacts.get(Number(p.supplierId))?.phone,
+                        whatsapp: supplierContacts.get(Number(p.supplierId))
+                          ?.whatsapp,
+                        phone: supplierContacts.get(Number(p.supplierId))
+                          ?.phone,
                         label: `واتساب ${p.supplierName ?? "المورّد"}`,
                         message: buildOperationalContactMessage({
                           entityLabel: "أمر شراء",
@@ -700,7 +773,10 @@ export default function Purchases() {
                           label: "إرسال للاعتماد",
                           // الإرسال لا يعني الاعتماد؛ يبقى SENT حتى يحسمه مراجع مستقل.
                           hidden: !needsConfirmation,
-                          disabled: confirmMut.isPending || hasPendingControl || controlStateUnavailable,
+                          disabled:
+                            confirmMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
                           disabledReason: controlStateUnavailable
                             ? "تعذّر التحقق من طلبات التحكم"
                             : hasPendingControl
@@ -725,7 +801,10 @@ export default function Purchases() {
                           href: `/purchases/${p.id}/edit`,
                           // الأهليّة الكاملة خادمية (لا استلام/لا دفعة)؛ هنا نُخفيه عن النهائيّ
                           // فقط — والشاشة نفسها تشرح سبب المنع لو تعذّر التعديل.
-                          hidden: terminal || awaitingApproval || p.status === "CONFIRMED",
+                          hidden:
+                            terminal ||
+                            awaitingApproval ||
+                            p.status === "CONFIRMED",
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
@@ -773,8 +852,12 @@ export default function Purchases() {
                           label: "إلغاء الأمر",
                           variant: "destructive",
                           // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
-                          hidden: p.status === "RECEIVED" || p.status === "CANCELLED",
-                          disabled: cancelMut.isPending || hasPendingControl || controlStateUnavailable,
+                          hidden:
+                            p.status === "RECEIVED" || p.status === "CANCELLED",
+                          disabled:
+                            cancelMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
                           disabledReason: controlStateUnavailable
                             ? "تعذّر التحقق من طلبات التحكم"
                             : hasPendingControl
