@@ -308,9 +308,10 @@ export function StudioCaptureStation({
         <Suspense fallback={null}>
           <CameraScanner
             open
-            keepOpen
             onClose={() => setCameraOpen(false)}
             onDetect={(barcode) => {
+              // انتهت خطوة المسح: أظهر المنتج أو رسالة الحلّ وأخلِ الكاميرا للتصوير.
+              setCameraOpen(false);
               submitCode(barcode);
             }}
           />

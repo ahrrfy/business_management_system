@@ -1,8 +1,7 @@
 /**
  * اختبارات تكامل (DB) لخدمة الترقيات/إنهاء الخدمات — وحدة الموارد البشرية.
- * تغطّي: اعتماد الترقية يحدّث مسمّى/راتب الموظف؛ إكمال إنهاء الخدمة يُصدِر **سند صرفٍ مُعلَّق**
- * للتسوية (فصل مهام #٦: بلا أثرٍ ماليّ حتى يعتمده مديرٌ آخر عبر approveVoucher بشرط SOD-04)
- * ويُنهي خدمته؛ المُنشئ لا يعتمد سنده؛ حارس عدم ترقية منتهي الخدمة؛ التسوية الصفرية لا تُنشئ سنداً.
+ * تغطّي: اعتماد الترقية يحدّث مسمّى/راتب الموظف؛ إكمال المالك لإنهاء الخدمة
+ * يعتمد سند التسوية ويرحّله فوراً؛ وحراس الفروع/الحسابات؛ والتسوية الصفرية.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -19,7 +18,6 @@ import {
   listTerminations,
 } from "../promotionService";
 import { isLinkEffectiveOn } from "../hrDevices/punchStore";
-import { approveVoucher } from "../voucher/approval";
 import { withTx } from "../tx";
 import { approveRun } from "../payroll/lifecycle";
 import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
@@ -100,7 +98,7 @@ async function seedBase() {
       name: "مدير",
       role: "admin",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 2,
@@ -108,7 +106,7 @@ async function seedBase() {
       name: "مدير أ",
       role: "manager",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 3,
@@ -185,7 +183,7 @@ describe("promotionService — الترقيات", () => {
       },
       ACTOR,
     );
-    await completeTermination(t!.id, MANAGER_A);
+    await completeTermination(t!.id, MANAGER_B);
     const p = await createPromotion(
       {
         employeeId: emp!.id,
@@ -386,7 +384,11 @@ describe("promotionService — الترقيات", () => {
 });
 
 describe("promotionService — إنهاء الخدمة (تسوية بفصل مهام #٦)", () => {
-  it("إكمال الإنهاء يُصدِر سند صرف مُعلَّق (PENDING) بلا أثرٍ ماليّ حتى الاعتماد، ويُنهي الخدمة", async () => {
+  beforeEach(async () => {
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, MANAGER_A.userId));
+  });
+
+  it("إكمال المالك للإنهاء يعتمد سند الصرف ويرحّله فوراً وينهي الخدمة", async () => {
     const emp = await createEmployee({
       firstName: "سعد",
       lastName: "الجبوري",
@@ -403,6 +405,11 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       },
       ACTOR,
     );
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "1500000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TERMINATION-FUND", createdBy: 3,
+    });
     const res = await completeTermination(t!.id, MANAGER_A);
 
     const [e2] = await db()
@@ -412,13 +419,13 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(e2.employmentStatus).toBe("terminated");
     expect(e2.isActive).toBe(false);
 
-    // سند صرف مُعلَّق أُصدِر — بلا قيد PAYMENT_OUT بعد.
+    // المالك أكمل الإنهاء، لذلك السند معتمد ومُرحّل في نفس العملية.
     expect(res.settlementVoucher).not.toBeNull();
     const [rc] = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.id, res.settlementVoucher!.receiptId));
-    expect(rc.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(rc.approvalStatus).toBe("APPROVED");
     expect(rc.direction).toBe("OUT");
     expect(Number(rc.amount)).toBe(1500000);
     expect(rc.voucherNumber).toBeTruthy();
@@ -426,21 +433,14 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       .select()
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(before.length).toBe(0); // لا أثر ماليّ قبل الاعتماد
+    expect(before.length).toBe(1);
 
-    // اعتماد مالكٍ آخر (SOD-04) ⇒ يُرحَّل PAYMENT_OUT للخزينة.
-    await db().insert(s.receipts).values({
-      branchId: 1, direction: "IN", amount: "1500000", paymentMethod: "CASH",
-      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
-      referenceNumber: "TEST-TERMINATION-FUND", createdBy: 3,
-    });
-    await approveVoucher(res.settlementVoucher!.receiptId, MANAGER_B);
     const [rc2] = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.id, res.settlementVoucher!.receiptId));
     expect(rc2.approvalStatus).toBe("APPROVED");
-    expect(rc2.approvedBy).toBe(3);
+    expect(rc2.approvedBy).toBe(2);
     const after = await db()
       .select()
       .from(s.accountingEntries)
@@ -474,15 +474,13 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       },
       ACTOR,
     );
-    const res = await completeTermination(t!.id, ownerMaker);
     // تمويلُ الخزينة (كنظير الاختبار أعلاه) — الاعتمادُ الذاتيّ لا يُعفي من فحص كفاية النقد.
     await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "500000", paymentMethod: "CASH",
       cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
       referenceNumber: "TEST-SELF-APPROVE-FUND", createdBy: 3,
     });
-    const ap = await approveVoucher(res.settlementVoucher!.receiptId, ownerMaker);
-    expect(ap.approvalStatus).toBe("APPROVED");
+    const res = await completeTermination(t!.id, ownerMaker);
     const [rc] = await db()
       .select()
       .from(s.receipts)
@@ -575,7 +573,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         lastDay: "2026-06-30",
         settlement: "0",
       },
-      MANAGER_A,
+      ACTOR,
     );
     const foreignTermination = await createTermination(
       {
@@ -658,6 +656,11 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       },
       ACTOR,
     );
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "250000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-SEC03-TERMINATION-FUND", createdBy: 3,
+    });
 
     const result = await completeTermination(termination!.id, MANAGER_A);
     expect(result.userDisabled).toBe(true);
@@ -737,7 +740,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         lastDay: "2026-06-30",
         breakdown: { otherSettlement: "100000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
-      MANAGER_A,
+      ACTOR,
     );
 
     // createdBy مرجعٌ أجنبي: الفاعل الوهمي يفشل عند إدراج سند التسوية بعد تنفيذ الآثار السابقة داخل tx.
@@ -949,7 +952,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         lastDay: "2026-06-30",
         settlement: "0",
       },
-      MANAGER_A,
+      ACTOR,
     );
     const secondTermination = await createTermination(
       {
@@ -958,7 +961,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         lastDay: "2026-06-30",
         settlement: "0",
       },
-      MANAGER_A,
+      ACTOR,
     );
     // اجعل 6 و7 آخر مديرين نشطين فقط، ثم اضرب المسارين معاً.
     await db()

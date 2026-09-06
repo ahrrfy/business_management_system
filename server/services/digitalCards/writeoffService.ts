@@ -35,6 +35,7 @@ import { createPostingIntent, creditLine, debitLine } from "../accounting/postin
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { resolveApprovalActor } from "../approval/ownerGate";
 
 async function auditLog(tx: Tx, actor: Actor, action: string, entityId: number, details: unknown): Promise<void> {
   try {
@@ -135,6 +136,11 @@ export async function requestWriteoff(
     amount: toDbMoney(amount),
     reason,
   });
+
+  const resolvedActor = await resolveApprovalActor(tx, actor);
+  if (resolvedActor.isOwner) {
+    await approveWriteoff(tx, { intentId: input.intentId }, { ...actor, isOwner: true, role: "admin" });
+  }
 
   return { intentId: input.intentId, issuedCount: items.length, amount: toDbMoney(amount) };
 }

@@ -112,7 +112,7 @@ beforeEach(async () => {
       role: "manager",
       loginMethod: "local",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 3,
@@ -240,12 +240,12 @@ describe("voucher category exact double-entry", () => {
       );
 
       const cancellation = await cancelVoucher(request.receiptId, owner);
-      expect(cancellation.status).toBe("PENDING_APPROVAL");
+      expect(cancellation.status).toBe("REVERSED");
       expect(await entriesFor(request.receiptId)).toHaveLength(1);
-      expect(await entriesFor(Number(cancellation.approvalReceiptId))).toHaveLength(0);
-      // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — owner طلب الإلغاء بنفسه فيعتمده بنفسه.
+      expect(await entriesFor(Number(cancellation.approvalReceiptId))).toHaveLength(1);
+      // قرار المالك وقع داخل عملية الإلغاء؛ الاستدعاءان التاليان إعادة تشغيل فقط.
       const cancellationApproval = await approveVoucher(Number(cancellation.approvalReceiptId), owner);
-      expect(cancellationApproval.replayed).toBe(false);
+      expect(cancellationApproval.replayed).toBe(true);
       const cancellationReplay = await approveVoucher(Number(cancellation.approvalReceiptId), secondOwner);
       expect(cancellationReplay.replayed).toBe(true);
       expect(cancellationReplay.signatureHash).toBe(cancellationApproval.signatureHash);
@@ -301,9 +301,9 @@ describe("voucher category exact double-entry", () => {
     });
 
     const cancellation = await cancelVoucher(request.receiptId, owner);
-    expect(cancellation.status).toBe("PENDING_APPROVAL");
-    expect(await entriesFor(Number(cancellation.approvalReceiptId))).toHaveLength(0);
-    await approveVoucher(Number(cancellation.approvalReceiptId), secondOwner);
+    expect(cancellation.status).toBe("REVERSED");
+    expect(await entriesFor(Number(cancellation.approvalReceiptId))).toHaveLength(1);
+    expect((await approveVoucher(Number(cancellation.approvalReceiptId), secondOwner)).replayed).toBe(true);
     const [compensatingReceipt] = await db()
       .select()
       .from(s.receipts)

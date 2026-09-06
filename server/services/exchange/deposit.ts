@@ -7,8 +7,13 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import {
+  createSystemPaymentRequestTx,
+  finalizeOwnerSystemVoucherTx,
+} from "../voucher/create";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { resolveApprovalActor } from "../approval/ownerGate";
+import { approveExchangeDeposit } from "./approveDeposit";
 
 export interface DepositInput {
   exchangeHouseId: number;
@@ -29,7 +34,7 @@ export async function depositToExchange(
   input: DepositInput,
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; pendingApproval?: boolean }> {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "exchange.deposit", input.clientRequestId);
       if (existing != null) {
@@ -127,10 +132,23 @@ export async function depositToExchange(
       .update(exchangeTransactions)
       .set({ receiptId: request.receiptId })
       .where(eq(exchangeTransactions.id, txnId));
+    const ownerApproved = await finalizeOwnerSystemVoucherTx(
+      tx,
+      request.receiptId,
+      actor,
+    );
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "exchange.deposit", input.clientRequestId, txnId);
     }
-    return { txnId, txnNumber, pendingApproval: true };
+    return { txnId, txnNumber, pendingApproval: !ownerApproved };
   });
+  if (input.currency === "USD" && result.pendingApproval) {
+    const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, actor));
+    if (resolvedActor.isOwner) {
+      const approved = await approveExchangeDeposit(result.txnId, resolvedActor);
+      return { txnId: approved.txnId, txnNumber: approved.txnNumber, pendingApproval: false };
+    }
+  }
+  return result;
 }

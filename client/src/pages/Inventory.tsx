@@ -167,15 +167,28 @@ export default function Inventory() {
   // بدء تحريرٍ جديد أو بعد نجاح الطلب — إعادةُ المحاولة ضمن نفس الجلسة تظلّ بالمفتاح نفسه.
   const adjustKeyRef = useRef<string | null>(null);
   const adjust = trpc.inventory.adjust.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       adjustKeyRef.current = null; // rotate for next attempt
       setEditing(null);
       setTarget("");
       setNotes("");
       setReason("");
       setAttachmentUrl(null);
-      notify.ok("سُجِّل طلب تسوية معلَّق — يعتمده مديرٌ آخر (فصل مهام).");
-      await utils.inventory.pendingAdjustments.invalidate();
+      notify.ok(
+        result.status === "APPROVED"
+          ? "اعتُمدت التسوية تلقائيا وطُبِّقت على المخزون."
+          : "سُجِّل طلب تسوية معلَّق — يعتمده مديرٌ آخر (فصل مهام).",
+      );
+      await Promise.all([
+        utils.inventory.pendingAdjustments.invalidate(),
+        ...(result.status === "APPROVED"
+          ? [
+              utils.inventory.onHand.invalidate(),
+              utils.inventory.movements.invalidate(),
+              utils.inventory.movementsRich.invalidate(),
+            ]
+          : []),
+      ]);
     },
     onError: (e) => setErr(e.message),
   });

@@ -474,7 +474,18 @@ export async function approveVoucher(
   receiptId: number,
   actor: Actor,
 ): Promise<ApproveVoucherResult> {
-  return withTx(async (tx) => {
+  return withTx((tx) => approveVoucherTx(tx, receiptId, actor));
+}
+
+/**
+ * النسخة الذرية من اعتماد السند. تستعملها عملية الإنشاء عندما يكون المنشئ مالكاً،
+ * كي يقع إنشاء الطلب واعتماده وأثره المالي في معاملة واحدة بلا نافذة طلب معلّق.
+ */
+export async function approveVoucherTx(
+  tx: Tx,
+  receiptId: number,
+  actor: Actor,
+): Promise<ApproveVoucherResult> {
     const [preview] = await tx
       .select()
       .from(receipts)
@@ -2156,7 +2167,6 @@ export async function approveVoucher(
       signatureHash: hash,
       replayed: false,
     };
-  });
 }
 
 export interface RejectVoucherResult {

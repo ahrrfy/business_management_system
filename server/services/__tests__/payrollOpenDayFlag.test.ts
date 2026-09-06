@@ -135,6 +135,16 @@ describe("اليوم المفتوح لا يُجمّد المسيّر ولا يُ
     expect(note.length).toBeLessThanOrEqual(255);
   });
 
+  it("المالك لا يعتمد تلقائيا تشغيلةً فيها أيام مفتوحة", async () => {
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, ADMIN.userId));
+    await seedJune(1, ["2026-06-08"]);
+    await seedJune(2);
+
+    const run = await generatePayroll(PERIOD, ADMIN as never);
+    expect(run.attendanceFlagged).toHaveLength(1);
+    expect(run.status).toBe("draft");
+  });
+
   it("ي٦) تواريخ كثيرة ⇒ الملاحظة تُفصح عن القصّ، والقائمة الكاملة في نتيجة التوليد", async () => {
     const open = ["06", "07", "08", "09", "10", "11", "13", "14", "15"].map((d) => `2026-06-${d}`);
     await seedJune(1, open);

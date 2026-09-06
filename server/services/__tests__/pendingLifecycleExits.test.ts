@@ -36,7 +36,7 @@ beforeEach(async () => {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values([
-    { id: 1, openId: "u1", name: "مالك", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 1, openId: "u1", name: "مدير", role: "admin", loginMethod: "local", branchId: 1, isOwner: false },
     { id: 2, openId: "u2", name: "مالك٢", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
     { id: 3, openId: "u3", name: "موظّف", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
@@ -92,7 +92,7 @@ describe("و-٣ — لا رفضَ لسندٍ ملغى", () => {
         partyType: "SUPPLIER", partyId: 1, description: "سند فوق العتبة",
         clientRequestId: "wf3-1",
       } as never,
-      manager,
+      admin,
     );
     const [row] = await db().select().from(s.receipts).where(eq(s.receipts.id, created.receiptId));
     // الشريحة تفترض سنداً معلَّقاً؛ لو لم يتجاوز العتبة فلا موضوع للاختبار.
@@ -102,10 +102,10 @@ describe("و-٣ — لا رفضَ لسندٍ ملغى", () => {
     const [afterCancel] = await db().select().from(s.receipts).where(eq(s.receipts.id, created.receiptId));
     expect(afterCancel.status).toBe("REVERSED");
 
-    await expect(rejectVoucher(created.receiptId, admin, "سبب")).rejects.toMatchObject({
+    await expect(rejectVoucher(created.receiptId, manager, "سبب")).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
-    await expect(approveVoucher(created.receiptId, admin)).rejects.toMatchObject({
+    await expect(approveVoucher(created.receiptId, manager)).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
   });

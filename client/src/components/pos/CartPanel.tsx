@@ -88,6 +88,15 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
     { branchId, variantIds: reservationVariantIds },
     { enabled: reservationVariantIds.length > 0, staleTime: 15_000 },
   );
+  // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone) — إكمالُ الوصلة التي تركها PR-B صراحةً لـ#1012:
+  // أكثرُ الجهات إسناداً لمحافظة المسوّدة في هذا الفرع (٩٠ يوماً) + أجرتُها. الخادم يشتقّ الفرعَ من الفاعل،
+  // وتُطبَّق عند اختيار المحافظة عبر `suggestedPartyId` (منطقُ main في `applyGovernorateSelection`) بلا طمسِ
+  // ما يختاره الكاشير بعدها. مُعطَّلةٌ ما لم يكن وضعُ التوصيل فعّالاً بمحافظةٍ مختارة.
+  const deliveryGovernorate = delivery?.governorate ?? "";
+  const partySuggestionQ = trpc.delivery.suggestPartyForZone.useQuery(
+    { governorate: deliveryGovernorate },
+    { enabled: delivery != null && deliveryGovernorate.length > 0 && deliveryDisabledReason == null, staleTime: 60_000 },
+  );
   const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
   for (const allocation of allocationsQ.data ?? []) {
     const list = allocationsByVariant.get(allocation.variantId) ?? [];
@@ -193,9 +202,9 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
           onChange={onDeliveryChange}
           onIdentityChange={onDeliveryIdentity}
           customerBalance={customerBalance}
-          // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone) يبنيه فريقُ courier-ledger (متابَعة #1012)؛
-          // حتى يصل الإجراء لا اقتراحَ في الكاشير — نمرّر null صراحةً بلا وعدٍ كاذبٍ في قائمة الجهات.
-          suggestedPartyId={null}
+          // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone، متابَعة #1012): الجهةُ المعتادة لمحافظة
+          // المسوّدة في هذا الفرع + أجرتُها — تُطبَّق عند اختيار المحافظة ولا تطمس اختيار الكاشير بعدها.
+          suggestedPartyId={partySuggestionQ.data?.partyId ?? null}
           disabledReason={deliveryDisabledReason}
         />
       )}

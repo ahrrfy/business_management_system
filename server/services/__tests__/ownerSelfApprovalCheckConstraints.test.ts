@@ -33,21 +33,32 @@ const DROPPED_MAKER_CHECKER_CONSTRAINTS: ReadonlyArray<{ table: string; constrai
   { table: "purchaseRequisitionControlRequests", constraint: "chk_purchase_req_control_maker_checker" },
   { table: "goodsReceiptReversalRequests", constraint: "chk_grn_reversal_request_maker_checker" },
   { table: "supplierInvoiceApprovalRequests", constraint: "chk_supplier_invoice_approval_maker_checker" },
+  { table: "purchaseOrderControlRequests", constraint: "chk_po_control_maker_checker" },
+  { table: "purchaseIntegrityCases", constraint: "chk_purchase_integrity_resolution_sod" },
+  { table: "purchaseIntegrityCaseEvents", constraint: "chk_purchase_integrity_event_sod" },
+  { table: "accrualCorrectionRequests", constraint: "chk_accrual_correction_maker_checker" },
+  { table: "employeeTerminations", constraint: "chk_term_recognition_maker_checker" },
+  { table: "workOrderControlRequests", constraint: "chk_wo_control_maker_checker" },
+  { table: "yearEndReopenRequests", constraint: "chk_yerr_maker_checker" },
+  { table: "salesControlRequests", constraint: "chk_sales_control_maker_checker" },
+  { table: "salesExchangeCommands", constraint: "chk_sales_exchange_maker_checker" },
+  { table: "deliveryCodWriteOffRequests", constraint: "chk_delivery_cod_writeoff_maker_checker" },
+  { table: "commissionRunApprovalRequests", constraint: "chk_commission_run_approval_maker_checker" },
 ];
 
-describe("owner self-approval — maker-checker CHECK constraints (٣/٩/٢٦ هجرة 0333 + ٤/٩/٢٦ هجرة 0334)", () => {
-  it("لا يبقى أيٌّ من التسعة قيوداً فعلياً على المخطّط الحالي", async () => {
+describe("owner self-approval — CHECK constraints (هجرات 0333 و0334 و0336)", () => {
+  it("لا يبقى أي قيد فصل مهام يتعارض مع اعتماد المالك الذاتي", async () => {
     const [rows] = (await db().execute(sql`
       SELECT table_name AS tableName, constraint_name AS constraintName
       FROM information_schema.table_constraints
-      WHERE table_schema = DATABASE() AND constraint_name LIKE '%maker_checker%'
+      WHERE table_schema = DATABASE() AND constraint_type = 'CHECK'
     `)) as unknown as [Array<{ tableName: string; constraintName: string }>, unknown];
 
     for (const { table, constraint } of DROPPED_MAKER_CHECKER_CONSTRAINTS) {
       const found = rows.find(
         (r) => r.tableName === table && r.constraintName === constraint,
       );
-      expect(found, `${constraint} على ${table} يجب ألّا يبقى بعد الهجرة 0333`).toBeUndefined();
+      expect(found, `${constraint} على ${table} يجب ألّا يبقى بعد هجرات اعتماد المالك`).toBeUndefined();
     }
   });
 

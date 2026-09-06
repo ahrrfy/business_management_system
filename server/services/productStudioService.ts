@@ -2876,6 +2876,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
 type StudioTaskScope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTaskCursor = {
   scope: StudioTaskScope;
+  taskId: number | null;
   statuses: StudioStatus[];
   priorities: StudioPriority[];
   overdue: boolean | null;
@@ -2895,6 +2896,7 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
+    if ((parsed.taskId ?? null) !== expected.taskId) throw new Error("invalid cursor");
     if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || parsed.search !== expected.search || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
@@ -2913,6 +2915,7 @@ export async function listStudioTasks(
   actor: ProductStudioActor,
   input: {
     scope: StudioTaskScope;
+    taskId?: number;
     limit?: number;
     cursor?: string | null;
     statuses?: StudioStatus[];
@@ -2943,6 +2946,7 @@ export async function listStudioTasks(
   const campaignId = input.campaignId ?? null;
   const cursorScope = {
     scope: input.scope,
+    taskId: input.taskId ?? null,
     statuses,
     priorities,
     overdue: input.overdue ?? null,
@@ -2972,6 +2976,8 @@ export async function listStudioTasks(
     conds.push(eq(productImageJobs.assignedTo, assigneeId));
   }
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
+  // فتح المهمة الممسوحة لا يعتمد على موضعها في صفحات القائمة؛ يبقى عزل الفرع والمالك أعلاه سارياً.
+  if (input.taskId != null) conds.push(eq(productImageJobs.id, input.taskId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
   // إخفاءُ مهام الحملات النهائيّة (٢٩/٨): يُنفَّذ في WHERE عبر subquery correlated كي لا

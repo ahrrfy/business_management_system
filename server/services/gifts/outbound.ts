@@ -18,6 +18,7 @@ import {
 } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { ensureAndLockBranchStock, nextGiftNumber } from "./helpers";
 
 /** عتبة تكلفة الهدية الصادرة قبل إلزام اعتماد مدير آخر (د.ع). قابلة للضبط لاحقاً عبر الإعدادات. */
@@ -215,7 +216,7 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     });
   }
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const b = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
     if (!b) {
       throw new TRPCError({
@@ -297,7 +298,7 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
       giftType: input.giftType?.trim() || null,
       reason: input.reason?.trim() || null,
       sellable: true,
-      status: needsApproval ? "PENDING_APPROVAL" : "DELIVERED",
+      status: needsApproval ? "PENDING_APPROVAL" as const : "DELIVERED" as const,
       totalCost: totalCost.toFixed(2),
       notes: input.notes?.trim() || null,
       createdBy: actor.userId,
@@ -328,11 +329,20 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     return {
       giftVoucherId,
       giftNumber,
-      status: needsApproval ? "PENDING_APPROVAL" : "DELIVERED",
+      status: needsApproval ? "PENDING_APPROVAL" as const : "DELIVERED" as const,
       totalCost: totalCost.toFixed(2),
       pending: needsApproval,
     };
   });
+  if (result.pending) {
+    const approved = await autoDecideForActiveOwner(actor, {
+      kind: "gifts.request.approve",
+      id: result.giftVoucherId,
+      reason: input.reason ?? input.notes ?? null,
+    });
+    if (approved) return { ...result, status: "DELIVERED" as const, pending: false };
+  }
+  return result;
 }
 
 export interface ApproveGiftResult {

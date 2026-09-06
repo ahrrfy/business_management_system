@@ -28,6 +28,7 @@
  * لذلك لا يطلبها مديرُ فرعٍ إلّا إن كان الرصيد محصوراً في فرعه (`assertBranchAuthority`).
  */
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { costRevaluationApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
@@ -199,7 +200,7 @@ export async function requestCostRevaluation(
     });
   }
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const v = (
       await tx
         .select({
@@ -334,6 +335,12 @@ export async function requestCostRevaluation(
       expectedValueDelta: valueDelta.toFixed(2),
     };
   });
+  await autoDecideForActiveOwner(actor, {
+    kind: "inventory.costRevaluation.approve",
+    id: result.requestId,
+    reason,
+  });
+  return result;
 }
 
 /** يفرض فصل المهام (المُعتمِد ≠ المُنشئ إلّا admin) — مرآة `adjustmentApproval.assertApprover`. */

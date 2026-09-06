@@ -5,6 +5,12 @@ import {
   type AiProviderErrorCategory,
 } from "@shared/productContentAi";
 import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import {
+  capabilityModuleDecision,
+  capabilityShadowEnabled,
+  classifyCapabilityShadow,
+  deriveCapabilityGrants,
+} from "@shared/capabilities";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -287,15 +293,67 @@ function requireRole(...allowed: string[]) {
   });
 }
 
+/**
+ * تحقّق القدرات الظِلّيّ (RBAC ش٥ / م٨) — يُستشار **فقط** في وضع الظلّ الموثَّق `AUTHZ_ENGINE=shadow`
+ * (معطَّلٌ افتراضياً؛ `capabilityShadowEnabled`)، ولا يغيّر قرار البوّابة القائمة إطلاقاً. يصنّف كلّ بوّابةٍ
+ * إلى ثلاثٍ **متمايزة** (`classifyCapabilityShadow`) ويُصدر لكلٍّ حدثاً مناسباً:
+ *   · `divergence` — القدراتُ تخالف القرار الحاليّ (الوحدة مُغطّاة) ⇒ `warn` ليُبنى عليه التضييقُ الواعي.
+ *   · `uncovered`  — الوحدة/المستوى خارج الكتالوج (كلّ `purchases`، أو `expenses/READ`, `reports/FULL`) ⇒
+ *      `debug` كي لا يُحسَب غيرُ المُغطّى **تطابقاً مُتحقَّقاً**؛ لا يُصعَّد خطأً أحمرَ ولا يكسر طلباً.
+ *   · `match`      — لا حدث.
+ * كلّ حدثٍ يحمل `path` (نقطة النهاية) و`correlationId` (معرِّف الطلب) لتمييز إجراءاتٍ تتشارك بوّابةَ وحدة.
+ * ملفوفٌ بـtry/catch: الظلّ **لا يُسقط طلباً أبداً**، فحتى خطأٌ فيه لا يُغيّر السلوك القائم (لا توسيع، لا تضييق).
+ */
+function auditCapabilityShadow(
+  ctx: { user?: { id?: number | string; role?: string } | null; req?: { id?: unknown } | null },
+  gate: "requireModule" | "requireModuleGate",
+  moduleKey: string,
+  minLevel: AccessLevel,
+  moduleMap: Record<string, AccessLevel>,
+  gateAllowed: boolean,
+  path: string,
+): void {
+  try {
+    // req.id = ReqId (string|number من pino-http) — نُطبّعه نصّاً كما في errorFormatter.
+    const rawCorrelationId = ctx.req?.id;
+    const correlationId = rawCorrelationId == null ? null : String(rawCorrelationId);
+    const grants = deriveCapabilityGrants(moduleMap);
+    const capabilityAllowed = capabilityModuleDecision(moduleMap, grants, moduleKey, minLevel);
+    const outcome = classifyCapabilityShadow(gateAllowed, capabilityAllowed);
+    if (outcome === "match") return;
+    const fields = {
+      gate,
+      path,
+      moduleKey,
+      minLevel,
+      gateAllowed,
+      capabilityAllowed,
+      correlationId,
+      userId: ctx.user?.id ?? null,
+      role: ctx.user?.role ?? null,
+    };
+    if (outcome === "divergence") {
+      logger.warn(fields, `RBAC capability shadow divergence: ${moduleKey}/${minLevel} @ ${path}`);
+    } else {
+      // فوات تغطية: ليس خطأً ولا يكسر طلباً — `debug` (كثيرٌ ومتوقَّع؛ أغلبُ المرور غيرُ مُغطّى بالكتالوج).
+      logger.debug(fields, `RBAC capability shadow uncovered gate: ${moduleKey}/${minLevel} @ ${path}`);
+    }
+  } catch (err) {
+    logger.warn({ err, gate, path, moduleKey, minLevel }, "RBAC capability shadow check failed (ignored)");
+  }
+}
+
 /** إنفاذ وحدة بمستوى وصول — يستخدم الخريطة المحسوبة (قالب + override). */
 export function requireModule(moduleKey: string, minLevel: AccessLevel) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     if (ctx.user.role === "admin") return next({ ctx: { ...ctx, user: ctx.user } });
     const override = (ctx.user as any).permissionsOverride as Record<string, AccessLevel> | null;
     const map = resolvePermissions(ctx.user.role as RoleKey, override);
     const level = map[moduleKey] ?? "NONE";
     const allowed = level === "FULL" || (minLevel === "READ" && level === "READ");
+    // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `allowed` (صفر انحدار).
+    if (capabilityShadowEnabled()) auditCapabilityShadow(ctx, "requireModule", moduleKey, minLevel, map, allowed, path);
     if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
@@ -318,7 +376,14 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
       | Record<string, AccessLevel>
       | null
       | undefined;
-    if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
+    const gateAllowed = moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles);
+    // م٨: تحقّق القدرات الظِلّيّ في وضع الظلّ الموثَّق (AUTHZ_ENGINE=shadow) — لا يغيّر `gateAllowed` (صفر
+    // انحدار). admin مُستثنى (يعبُر البوّابة دائماً وقدراتُه مُطابِقة تلقائياً، فلا معنى لبناء خريطته للمقارنة).
+    if (capabilityShadowEnabled() && ctx.user.role !== "admin") {
+      const map = resolvePermissions(ctx.user.role as RoleKey, override);
+      auditCapabilityShadow(ctx, "requireModuleGate", moduleKey, minLevel, map, gateAllowed, path);
+    }
+    if (!gateAllowed) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
     assertTwoFactorEnrolled(ctx.user, path);

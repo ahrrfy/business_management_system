@@ -752,13 +752,7 @@ describe("#7 قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بع
       reason: "عيّنةٌ اختباريةٌ للتحقّق من اعتماد المالك عكس استلامه هو نفسه",
       lines: [{ goodsReceiptItemId: Number(receiptItem.id), baseQuantity: 10 }],
     }, owner);
-    const decided = await decideGoodsReceiptReversal({
-      requestId: Number(requested.requestId),
-      decisionKey: `hardening2-grn-reversal-decision:${randomUUID()}`,
-      action: "APPROVE",
-      reviewReason: "راجعتُ العكس واعتمدته — أنا نفسي من طلبه",
-    }, owner);
-    expect(decided.status).toBe("APPROVED");
+    expect(requested.status).toBe("APPROVED");
 
     const [reversedReceipt] = await db().select().from(s.goodsReceipts)
       .where(eq(s.goodsReceipts.id, Number(receipt.goodsReceiptId)));
@@ -780,13 +774,7 @@ describe("#7 قرار المالك (٤/٩/٢٦): لا اعتماد ثانٍ بع
       evidenceType: "OTHER",
       evidenceReference: "دليل عكسٍ اختباريّ",
     }, owner);
-    const decided = await decideSupplierInvoiceApproval({
-      requestId: Number(requested.requestId),
-      decisionKey: `hardening2-invoice-reversal-decision:${randomUUID()}`,
-      action: "APPROVE",
-      reviewReason: "راجعتُ العكس واعتمدته — أنا نفسي من طلبه",
-    }, owner);
-    expect(decided.status).toBe("APPROVED");
+    expect(requested.status).toBe("APPROVED");
 
     const [reversedInvoice] = await db().select().from(s.supplierInvoices)
       .where(eq(s.supplierInvoices.id, source.supplierInvoiceId));

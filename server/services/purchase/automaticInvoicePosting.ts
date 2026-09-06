@@ -28,7 +28,7 @@ import {
 } from "../ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import type { Actor } from "../tx";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
@@ -190,6 +190,7 @@ async function recognizeShippingAndCustomsInTx(
     evidenceReference,
     dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
   });
+  await finalizeOwnerSystemVoucherTx(tx, request.receiptId, input.actor);
   return request.receiptId;
 }
 
@@ -256,7 +257,7 @@ export async function postApprovedPurchaseInvoiceInTx(
         "الترحيل التلقائي ينفذه معتمد أمر الشراء نفسه داخل قرار الاعتماد",
     });
   }
-  if (po.createdBy != null && Number(po.createdBy) === actor.userId) {
+  if (!actor.isOwner && po.createdBy != null && Number(po.createdBy) === actor.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "فصل المهام: منشئ أمر الشراء لا يعتمد ترحيله التلقائي",

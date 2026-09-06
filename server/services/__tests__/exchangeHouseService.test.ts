@@ -442,6 +442,22 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     await expect(approveExchangeDeposit(dep.txnId, actorB)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("المالك يعتمد إيداعه القديم المعلّق حتى إن لم تحمل حمولة الراوتر isOwner", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة طلب قديم" }, actor);
+    await buyUsdAtExchange(
+      { exchangeHouseId: id, branchId: 1, usdAmount: "100", exchangeRate: "1500", confirmNegative: true },
+      actor,
+    );
+    const pending = await depositToExchange(
+      { exchangeHouseId: id, branchId: 1, amount: "100", currency: "USD", exchangeRate: "1500" },
+      actor,
+    );
+    // يحاكي طلبا تاريخيا أنشأه المالك قبل تفعيل الاعتماد التلقائي.
+    await db().update(s.exchangeTransactions).set({ createdBy: actorB.userId }).where(eq(s.exchangeTransactions.id, pending.txnId));
+
+    await expect(approveExchangeDeposit(pending.txnId, actorB)).resolves.toMatchObject({ status: "ACTIVE" });
+  });
+
   it("اعتماد إيداع دولار بلا حيازة كافية يفشل قبل أي أثر ويبقي الطلب معلّقاً", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة بلا دولار فعلي" }, actor);
     const dep = await depositToExchange(

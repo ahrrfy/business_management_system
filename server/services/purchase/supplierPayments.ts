@@ -24,6 +24,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import {
   createPostingIntent,
@@ -617,7 +618,7 @@ export async function requestSupplierPayment(
   const evidenceHash = sha256(
     stableCanonical({ type: input.evidenceType, reference: evidenceReference }),
   );
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (
       await tx
         .select()
@@ -766,6 +767,12 @@ export async function requestSupplierPayment(
       idempotent: false as const,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "supplier.payment.decide",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decideSupplierPayment(
@@ -1233,7 +1240,7 @@ export async function requestSupplierPaymentRefund(
     allocations: normalized,
   });
   const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (
       await tx
         .select()
@@ -1361,6 +1368,12 @@ export async function requestSupplierPaymentRefund(
       idempotent: false as const,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "supplier.payment.refund",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decideSupplierPaymentRefund(

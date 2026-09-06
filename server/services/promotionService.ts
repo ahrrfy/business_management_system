@@ -20,6 +20,7 @@ import {
   users,
 } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
+import { resolveApprovalActor } from "./approval/ownerGate";
 import { extractInsertId } from "../lib/insertId";
 import Decimal from "decimal.js";
 import { money, round2, toDbMoney } from "./money";
@@ -226,6 +227,10 @@ export async function createPromotion(
     });
     return extractInsertId(res);
   });
+  const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, { ...actor, branchId: actor.branchId ?? 0 }));
+  if (resolvedActor.isOwner) {
+    await approvePromotion(newId, { ...actor, isOwner: true, role: "admin" });
+  }
   return getPromotion(newId, actor);
 }
 
@@ -670,6 +675,12 @@ export async function createTermination(
     });
     return extractInsertId(res);
   });
+  const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, { ...actor, branchId: actor.branchId ?? 0 }));
+  // الطلب المستقبلي يبقى مؤجلاً حتى يومه التشغيلي؛ تجاوز الاعتماد لا يعني تنفيذ
+  // إنهاء الخدمة قبل آخر يوم عمل.
+  if (resolvedActor.isOwner && input.lastDay <= baghdadToday()) {
+    await completeTermination(newId, { ...actor, isOwner: true, role: "admin" });
+  }
   return getTermination(newId, actor);
 }
 
@@ -778,7 +789,7 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         message: "مجموع تفكيك التسوية لا يطابق الإجمالي المخزن.",
       });
     }
-    if (t.createdBy != null && Number(t.createdBy) === Number(actor.userId)) {
+    if (!actor.isOwner && t.createdBy != null && Number(t.createdBy) === Number(actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message:
@@ -899,10 +910,8 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       .where(eq(employeeTerminations.id, id));
 
     // تسوية المستحقات النهائية = صرفُ نقدٍ لموظف = **عملية حسّاسة** ⇒ فصل مهام إلزاميّ (المخاطرة الجهازية
-    // #٦، قرار المالك ١٨/٧: العمليات الحسّاسة تمرّ باعتمادٍ ثنائيّ بلا عتبة). تُصدَر **سند صرف مُعلَّق**
-    // (PENDING_APPROVAL، بلا أثرٍ ماليّ) حتى يعتمده مديرٌ آخر عبر approveVoucher (SOD-04: المُعتمِد ≠ المُنشئ)
-    // فيُرحَّل حينها PAYMENT_OUT للخزينة. يظهر في طابور اعتماد السندات القائم (voucherNumber != null) بلا واجهةٍ جديدة.
-    // كان يُصرَف COMPLETED بفاعلٍ واحد بلا سقف (البند ٩ في «أخطر ١٢»، تدقيق ١٧/٧).
+    // طلب التسوية يمرّ بباب السند المركزي. إن كان المنفّذ مالكاً نشطاً
+    // يُعتمد ويُرحّل داخل المعاملة نفسها؛ وغير المالك يبقى خاضعاً لمسار الاعتماد.
     const settlement = breakdown.total;
     let settlementVoucher: { receiptId: number; voucherNumber: string } | null =
       null;
