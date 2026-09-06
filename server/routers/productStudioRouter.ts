@@ -2,8 +2,7 @@ import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, type ProductStudioActor } from "../services/productStudioService";
-import { addUnitBarcodeAlias } from "../services/catalog/barcodeAliases";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, linkStudioBarcode, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
@@ -190,12 +189,7 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const res = await addUnitBarcodeAlias(
-        input.productUnitId,
-        input.barcode,
-        input.note ?? "رُبط من استوديو المنتجات",
-        ctx.user.id,
-      );
+      const res = await linkStudioBarcode(actor(ctx), input);
       await logAudit(ctx, {
         action: "productStudio.linkBarcode",
         entityType: "productUnit",

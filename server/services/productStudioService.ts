@@ -8,7 +8,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { addUnitBarcodeAlias, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
 import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
@@ -1065,42 +1065,60 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         }),
       });
     }
-    // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه:
-    const isSelfClaimed = Number(active.assignedBy) === Number(active.assignedTo);
-    const CLAIM_STALE_MS = 15 * 60 * 1_000;
-    const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
-      !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
-    );
-    if (isStaleClaim) {
-      const upgradeVariant = variantId != null && active.variantId == null;
-      await tx
-        .update(productImageJobs)
-        .set({
-          assignedTo: actor.userId,
-          assignedBy: actor.userId,
-          assignedAt: new Date(),
-          ...(upgradeVariant ? { variantId } : {}),
-          revision: sql`${productImageJobs.revision} + 1`,
-        })
-        .where(eq(productImageJobs.id, active.id));
-      await tx.insert(auditLogs).values(
-        auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
-          productId,
-          variantId,
-          previousAssigneeId: Number(active.assignedTo),
-          barcode: barcode.slice(0, 64),
-          campaignId: active.campaignId == null ? null : Number(active.campaignId),
-        }),
-      );
-      return {
-        taskId: Number(active.id),
-        productName: displayName,
-        claimed: true as const,
-        revision: Number(active.revision) + 1,
-        ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
-      };
-    }
+    // إن كانت المهمّة مسندة لزميل (assignedTo != null)
     if (active.assignedTo != null) {
+      // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه
+      // بشرط استيفاء عضوية الحملة والفرع:
+      const isSelfClaimed = active.assignedBy != null && Number(active.assignedBy) === Number(active.assignedTo);
+      const CLAIM_STALE_MS = 15 * 60 * 1_000;
+      const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
+        !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
+      );
+      if (isStaleClaim) {
+        if (!canCrossBranches(actor) && (actor.branchId == null || Number(active.branchId) !== Number(actor.branchId))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "مهمّة هذا المنتج أُنشئت في فرعٍ غير فرعك، والسحب لا يعبر الفروع", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقل هذه المهمّة إلى فرعك" }) });
+        }
+        if (active.campaignId != null) {
+          const member = (
+            await tx
+              .select({ id: productStudioCampaignAssignees.id })
+              .from(productStudioCampaignAssignees)
+              .where(and(eq(productStudioCampaignAssignees.campaignId, Number(active.campaignId)), eq(productStudioCampaignAssignees.userId, actor.userId)))
+              .limit(1)
+          )[0];
+          if (!member && !isManager(actor)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر سحب هذه المهمّة", why: "لستَ ضمن مصوّري الحملة التي تتبعها، والسحب محصورٌ بمصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
+          }
+        }
+        const upgradeVariant = variantId != null && active.variantId == null;
+        await tx
+          .update(productImageJobs)
+          .set({
+            assignedTo: actor.userId,
+            assignedBy: actor.userId,
+            assignedAt: new Date(),
+            ...(upgradeVariant ? { variantId } : {}),
+            revision: sql`${productImageJobs.revision} + 1`,
+          })
+          .where(eq(productImageJobs.id, active.id));
+        await tx.insert(auditLogs).values(
+          auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
+            productId,
+            variantId,
+            previousAssigneeId: Number(active.assignedTo),
+            barcode: barcode.slice(0, 64),
+            campaignId: active.campaignId == null ? null : Number(active.campaignId),
+          }),
+        );
+        return {
+          taskId: Number(active.id),
+          productName: displayName,
+          claimed: true as const,
+          revision: Number(active.revision) + 1,
+          ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
+        };
+      }
+
       throw new TRPCError({
         code: "CONFLICT",
         message: appErrorMessage({
@@ -5662,6 +5680,26 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
  */
 export async function getStudioProductUnits(actor: ProductStudioActor, productId: number) {
   const db = requireDb();
+
+  const product = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false)))
+      .limit(1)
+  )[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للاستوديو",
+        why: "المنتج غير موجود أو معطّل أو من نوع خدمة لا تتطلب تصويراً",
+        doThis: "اختر منتجاً نشطاً من قائمة منتجات الاستوديو",
+      }),
+    });
+  }
+
   const variants = await db
     .select({
       id: productVariants.id,
@@ -5684,7 +5722,7 @@ export async function getStudioProductUnits(actor: ProductStudioActor, productId
           barcode: productUnits.barcode,
         })
         .from(productUnits)
-        .where(inArray(productUnits.variantId, variantIds))
+        .where(and(inArray(productUnits.variantId, variantIds), eq(productUnits.isActive, true)))
     : [];
 
   return {
@@ -5704,3 +5742,52 @@ export async function getStudioProductUnits(actor: ProductStudioActor, productId
     unitTemplate: Array.from(new Set(units.map((u) => u.unitName))).map((unitName) => ({ unitName })),
   };
 }
+
+/**
+ * ربط باركود غير معروف بوحدة منتج نشطة من واجهة الاستوديو
+ * مع التحقق من أن الوحدة والمتغيّر والمنتج نشطون وغير خدميين.
+ */
+export async function linkStudioBarcode(
+  actor: ProductStudioActor,
+  input: { productUnitId: number; barcode: string; note?: string | null },
+) {
+  const db = requireDb();
+  const unit = (
+    await db
+      .select({
+        id: productUnits.id,
+      })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
+        and(
+          eq(productUnits.id, input.productUnitId),
+          eq(productUnits.isActive, true),
+          eq(productVariants.isActive, true),
+          eq(products.isActive, true),
+          eq(products.isService, false),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  if (!unit) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر ربط الباركود",
+        why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
+        doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
+      }),
+    });
+  }
+
+  return addUnitBarcodeAlias(
+    input.productUnitId,
+    input.barcode,
+    input.note ?? "رُبط من استوديو المنتجات",
+    actor.userId,
+  );
+}
+
