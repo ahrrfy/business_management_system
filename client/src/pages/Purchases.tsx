@@ -664,12 +664,13 @@ export default function Purchases() {
                 meta: { kind: "status" },
                 // ٢٤/٨ (تدقيق): شارةُ لون بدل نصٍّ خام.
                 // ٦/٩ (بلاغ المالك): «نقدي» + متبقٍّ > صفر كانا يبدوان مطابقين تماماً لأمرٍ آجل.
-                // ⚠️ تدقيقٌ عدائيّ (٦/٩) أثبت أنّ purchaseOrders.paidAmount **لا يُحدَّثه أيّ مسارٍ
-                // حيّ** — اعتماد أمر الشراء (automaticInvoicePosting.ts) يُرحِّل دائماً إلى ذمّة
-                // المورد بصرف النظر عن settlementType، وسداد المورد الفعليّ (supplierPayments.ts)
-                // يعمل على fatورة المورد لا على أمر الشراء نفسه. فهذا العمود **لا يعكس أبداً** ما
-                // إذا سُدِّد المورد أم لا — لكلّ أمرٍ نقديٍّ أو آجل على حدٍّ سواء. التنبيه هنا يوجّه
-                // للمكان الصحيح (سداد الموردين) بدل الإيحاء بخطوة اعتمادٍ معلَّقة غير موجودة أصلاً.
+                // الإصلاح (٦/٩): اعتماد أمرٍ نقديّ يُسدِّده فوراً ضمن نفس المعاملة (اعتمادٌ وصرفٌ
+                // بلا خطوةٍ ثانية — قرار المالك). لكن purchaseOrders.paidAmount **يبقى بلا تحديثٍ**
+                // (لا هذا الإصلاح ولا سداد المورد العاديّ supplierPayments.ts يكتبان إليه — الأخير
+                // يعمل على فاتورة المورد لا على أمر الشراء نفسه)، فهذا العمود يستمرّ بعرض المبلغ
+                // كاملاً حتى بعد التسوية الفعلية. لأمرٍ نقديّ وصل لحالة RECEIVED: **مُسدَّدٌ فعلاً**
+                // دائماً (الاعتماد نفسه كان سيفشل ويتراجع كلياً لو تعذّر الصرف) — الرقم هنا وصف
+                // خاطئ لعمودٍ لا يُحدَّث، لا ذمّةٌ حقيقية.
                 cell: ({ row }) => {
                   const remaining =
                     row.original.agreedCurrency === "USD"
@@ -680,8 +681,13 @@ export default function Purchases() {
                           row.original.total ?? 0,
                           row.original.paidAmount ?? 0,
                         );
-                  const unreliableRemaining =
-                    row.original.settlementType === "CASH" && remaining.gt(0);
+                  // RECEIVED تحديداً لا "ليس ملغى": الاعتماد التلقائي (automaticInvoicePosting.ts)
+                  // يُرحّل الفاتورة كاملةً دفعةً واحدة فينقل الحالة مباشرةً DRAFT/SENT/CONFIRMED
+                  // ← RECEIVED — لا حالة "مُعتمَد جزئياً" وسيطة تستحقّ هذه الشارة.
+                  const cashAlreadySettled =
+                    row.original.settlementType === "CASH" &&
+                    remaining.gt(0) &&
+                    row.original.status === "RECEIVED";
                   return (
                     <div className="space-y-1">
                       <span
@@ -690,13 +696,13 @@ export default function Purchases() {
                         {SETTLEMENT_TYPE[row.original.settlementType] ??
                           row.original.settlementType}
                       </span>
-                      {unreliableRemaining ? (
+                      {cashAlreadySettled ? (
                         <div
                           className="inline-flex items-center gap-1 text-xs font-semibold text-money-negative"
-                          title="عمود «المتبقّي» لا يتحدّث بالتسديد الفعلي لهذا الأمر — تحقّق من سداد المورد الحقيقي من تبويب «سداد الموردين»، لا من هذا الرقم"
+                          title="أمرٌ نقديّ يُسدَّد فور اعتماده — هذا العمود لا يتحدّث ليعكس ذلك ويبقى يعرض المبلغ كاملاً. تحقّق من سداد الموردين لرؤية سند الصرف الفعليّ إن أردت التأكّد."
                         >
                           <AlertTriangle aria-hidden className="size-3" />
-                          راجع سداد الموردين
+                          مُسدَّدٌ فعلاً — الرقم غير محدَّث
                         </div>
                       ) : null}
                     </div>

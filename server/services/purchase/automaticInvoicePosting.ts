@@ -32,7 +32,11 @@ import { createSystemPaymentRequestTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
-import { requestSupplierPaymentInTx } from "./supplierPayments";
+import {
+  decideSupplierPaymentInTx,
+  requestSupplierPaymentInTx,
+  SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+} from "./supplierPayments";
 import { createSupplierInvoiceInTx } from "./supplierInvoices";
 import { runThreeWayMatchInTx } from "./threeWayMatch";
 
@@ -619,16 +623,17 @@ export async function postApprovedPurchaseInvoiceInTx(
     },
   );
 
-  // قرار المالك (٦/٩/٢٦، بلاغ «المشتريات النقدية تظهر ذمّةً»): أمرٌ نقديٌّ يُصرَّح باعتماده لا
-  // يجوز أن يبقى مجرّد ذمّةٍ صامتة حتى يتذكّر أحدٌ سدادها يدوياً — لكن السداد يبقى **طلباً**
-  // بانتظار اعتماد شخصٍ آخر (فصل المهام)، لا صرفاً تلقائياً. هذا هو الاستبدال الحيّ لآلية
-  // CASH_CLEARING القديمة في receive.ts/pay.ts (معطَّلتان الآن عمداً عبر
-  // assertLegacyPurchaseWritePathDisabled)، مبنيّاً على مسار الدفع الحيّ الوحيد
-  // (supplierPayments.ts) بدل إحياء الجدول/الحقول التي هجرها ذلك المسار.
-  // نستدعي الصيغة الداخلية (…InTx) عمداً لا الغلاف الخارجي: الأخير يفتح withTx مستقلّة
-  // (اتصالاً ثانياً) فيصبح طلب التسوية قابلاً للنجاح والبقاء حتى لو تراجع اعتماد الفاتورة
-  // نفسه لاحقاً في هذه المعاملة — راجع تعليق requestSupplierPaymentInTx.
-  let cashSettlementRequestId: number | null = null;
+  // قرار المالك (٦/٩/٢٦، بلاغ «المشتريات النقدية تظهر ذمّةً»، مُعدَّلٌ بقرارٍ لاحقٍ في نفس اليوم):
+  // أمر الشراء النقديّ «اعتمادٌ وصرفٌ» في خطوةٍ واحدة بلا شاشةٍ ثانية ولا شخصٍ ثانٍ يعتمد الصرف
+  // منفصلاً — المالك رفض صراحةً نمط «طلبٍ معلَّق بانتظار اعتماد مستقل» بحجّة التعقيد والخطوات
+  // الزائدة. فصلُ المهام يبقى محفوظاً على مستوى أمر الشراء نفسه (مُعتمِد الأمر ≠ منشئه، شرطٌ
+  // قائمٌ أعلاه في هذه الدالّة)، لا على مستوى دفعةٍ منفصلة. الاعتماد التلقائي الفوري (لا تعليق
+  // «بانتظار اعتماد») يستدعي requestSupplierPaymentInTx ثم decideSupplierPaymentInTx بالمتتالي
+  // ضمن هذه المعاملة نفسها — فلا يظهر طلبٌ «معلَّق» لأي مستخدمٍ في «سداد الموردين» إطلاقاً، ولا
+  // يُرى رصيد المورد مرتفعاً من خارج هذه المعاملة قبل أن يعود صفراً. صرفُ النقد الفعليّ من
+  // الخزينة يبقى محروساً بلا استثناء: authorizeExternalTreasuryDisbursement يشترط حساب مالكٍ
+  // نشطٍ دائماً، فمُعتمِد أمر الشراء النقديّ يلزمه أن يكون مالكاً حين يكون مصدر النقد الخزينة.
+  let cashSettlementPaymentId: number | null = null;
   if (po.settlementType === "CASH" && money(invoice.totalAmount).gt(0)) {
     const cashSettlementToken = createHash("sha256")
       .update(`cash-settle:${deterministicKey}`)
@@ -645,10 +650,10 @@ export async function postApprovedPurchaseInvoiceInTx(
     if (!currentInvoiceVersion) {
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
-        message: "فاتورة المورد التلقائية مفقودة قبل طلب التسوية النقدية",
+        message: "فاتورة المورد التلقائية مفقودة قبل التسوية النقدية",
       });
     }
-    const cashSettlement = await requestSupplierPaymentInTx(
+    const cashSettlementRequest = await requestSupplierPaymentInTx(
       tx,
       {
         supplierId: Number(invoice.supplierId),
@@ -661,7 +666,7 @@ export async function postApprovedPurchaseInvoiceInTx(
         paymentMethod: "CASH",
         evidenceType: "OTHER",
         evidenceReference: `AUTO-PO-APPROVAL:${deterministicKey}`,
-        reason: `تسوية نقدية تلقائية عند اعتماد أمر الشراء النقدي ${po.poNumber} — بانتظار اعتماد مستقل`,
+        reason: `تسوية نقدية فورية عند اعتماد أمر الشراء النقدي ${po.poNumber}`,
         allocations: [
           {
             supplierInvoiceId,
@@ -673,7 +678,19 @@ export async function postApprovedPurchaseInvoiceInTx(
       },
       actor,
     );
-    cashSettlementRequestId = cashSettlement.requestId;
+    const cashSettlementDecision = await decideSupplierPaymentInTx(
+      tx,
+      {
+        requestId: cashSettlementRequest.requestId,
+        decisionKey: `auto-cash-settle-decide-${cashSettlementToken}`,
+        action: "APPROVE",
+        reviewReason: `تسوية نقدية فورية عند اعتماد أمر الشراء النقدي ${po.poNumber}`,
+      },
+      actor,
+      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+      { skipIndependentReviewerCheck: true },
+    );
+    cashSettlementPaymentId = cashSettlementDecision.supplierPaymentId;
   }
 
   return {
@@ -683,7 +700,7 @@ export async function postApprovedPurchaseInvoiceInTx(
     matchRunId,
     accountingEntryId,
     shippingPaymentRequestReceiptId,
-    cashSettlementRequestId,
+    cashSettlementPaymentId,
     status: "POSTED" as const,
     idempotentReplay: false as const,
   };

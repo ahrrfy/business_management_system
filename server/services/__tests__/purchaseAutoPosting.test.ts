@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { decidePurchaseOrderControl } from "../purchase/controls";
-import { decideSupplierPayment } from "../purchase/supplierPayments";
 import { confirmPurchaseOrder, createPurchaseOrder } from "../purchaseService";
 import { truncateTables } from "./__testUtils__";
 
@@ -352,10 +351,10 @@ describe("اعتماد أمر الشراء يرحّل الفاتورة والا�
   });
 });
 
-describe("أمر الشراء النقدي يطلب تسويته تلقائياً عند الاعتماد (بلاغ المالك ٦/٩/٢٦)", () => {
+describe("أمر الشراء النقدي يُسدَّد فوراً عند اعتماده — اعتمادٌ وصرفٌ بلا شاشةٍ ثانية (بلاغ المالك ٦/٩/٢٦، مُعدَّلٌ لاحقاً بقرارٍ صريح: لا تعقيد ولا خطوة ثانية)", () => {
   beforeEach(async () => {
-    // تمويل خزينة الفرع — لازمٌ فقط لاختبارَي هذه المجموعة (اعتماد دفعة نقدية فعلية)؛
-    // خارج seed() المشتركة كي لا تُغيّر عدد صفوف receipts في اختبار المجموعة الأولى.
+    // تمويل خزينة الفرع — لازمٌ فقط لاختبارَي هذه المجموعة (تسوية نقدية فعلية)؛ خارج seed()
+    // المشتركة كي لا تُغيّر عدد صفوف receipts في اختبار المجموعة الأولى.
     await db().insert(s.receipts).values({
       branchId: 1,
       shiftId: null,
@@ -370,14 +369,14 @@ describe("أمر الشراء النقدي يطلب تسويته تلقائيا�
     });
   });
 
-  async function approveCashOrder() {
+  async function submitCashOrder(clientRequestIdPrefix: string) {
     const draft = await createPurchaseOrder(
       {
         supplierId: 1,
         branchId: 1,
         status: "DRAFT",
         settlementType: "CASH",
-        clientRequestId: "cash-settle-draft",
+        clientRequestId: `${clientRequestIdPrefix}-draft`,
         items: [
           { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
         ],
@@ -389,95 +388,87 @@ describe("أمر الشراء النقدي يطلب تسويته تلقائيا�
         purchaseOrderId: draft.purchaseOrderId,
         expectedVersion: draft.version,
         reason: "اكتملت مراجعة أمر الشراء وأرسل للاعتماد",
-        clientRequestId: "cash-settle-submit",
+        clientRequestId: `${clientRequestIdPrefix}-submit`,
       },
       creator,
     );
-    await decidePurchaseOrderControl(
+    return { purchaseOrderId: draft.purchaseOrderId, requestId: submitted.requestId };
+  }
+
+  it("مديرٌ غير مالكٍ لا يستطيع اعتماد أمرٍ نقديّ — الصرف من الخزينة يلزمه حساب مالكٍ نشط، والاعتماد كلّه يتراجع", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-nonowner");
+    await expect(
+      decidePurchaseOrderControl(
+        {
+          requestId,
+          decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
+          approve: true,
+          reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
+          confirmedFullReceipt: true,
+        },
+        approver, // manager عادي، ليس isOwner
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // تراجعٌ كامل وذرّيّ: لا فاتورة مورد، لا استلام، لا حركة مخزون، لا تغيّر في حالة الأمر.
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0]?.status,
+    ).toBe("SENT");
+    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
+      "0.00",
+    );
+  });
+
+  it("مالكٌ يعتمد الأمر النقدي فيُسدَّد فوراً ضمن نفس الاعتماد — بلا طلبٍ معلَّق وبلا ذمّةٍ تظهر من خارج المعاملة", async () => {
+    const { purchaseOrderId, requestId } = await submitCashOrder("cash-owner");
+    const approved = await decidePurchaseOrderControl(
       {
-        requestId: submitted.requestId,
-        decisionKey: `purchase-decision-PURCHASE_ORDER-${submitted.requestId}-approve-${randomUUID()}`,
+        requestId,
+        decisionKey: `purchase-decision-PURCHASE_ORDER-${requestId}-approve-${randomUUID()}`,
         approve: true,
         reason: "تحققت من المورد والأسعار ووصول كامل الكميات",
         confirmedFullReceipt: true,
       },
-      approver,
+      treasurer, // isOwner: true
     );
-    return draft.purchaseOrderId;
-  }
-
-  it("ينشئ طلب سداد معلَّقاً بكامل قيمة الفاتورة، ولا يعتمده مُنشئ الطلب نفسه", async () => {
-    const purchaseOrderId = await approveCashOrder();
+    expect(approved).toMatchObject({ status: "APPROVED", orderStatus: "RECEIVED" });
+    expect(
+      (
+        await db()
+          .select({ status: s.purchaseOrders.status })
+          .from(s.purchaseOrders)
+          .where(eq(s.purchaseOrders.id, purchaseOrderId))
+      )[0]?.status,
+    ).toBe("RECEIVED");
 
     const [invoice] = await db()
       .select()
       .from(s.supplierInvoices)
       .where(eq(s.supplierInvoices.supplierId, 1));
-    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "OPEN" });
+    expect(invoice).toMatchObject({ status: "POSTED", paymentGate: "SETTLED" });
 
+    // لا طلب سدادٍ معلَّق يظهر لأي مستخدم — الطلب والاعتماد وقعا معاً داخل معاملة الاعتماد نفسها.
     const [request] = await db()
       .select()
       .from(s.supplierPaymentRequests)
       .where(eq(s.supplierPaymentRequests.supplierId, 1));
     expect(request).toMatchObject({
-      status: "PENDING",
+      status: "APPROVED",
       paymentMethod: "CASH",
       requestedAmount: "60.00",
-      requestedBy: approver.userId,
     });
 
-    const [allocation] = await db()
-      .select()
-      .from(s.supplierPaymentRequestAllocations)
-      .where(eq(s.supplierPaymentRequestAllocations.requestId, request.id));
-    expect(allocation).toMatchObject({
-      supplierInvoiceId: invoice.id,
-      requestedAmount: "60.00",
-    });
-
-    // الذمّة لا تزال قائمة — الأمر النقديّ يبقى ذمّةً حقيقية حتى يُعتمَد صرفها فعلاً.
-    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
-      "60.00",
-    );
-
-    // فصل المهام: مُعتمِد أمر الشراء (وهو من طلب التسوية تلقائياً) لا يعتمد صرفها بنفسه.
-    await expect(
-      decideSupplierPayment(
-        {
-          requestId: Number(request.id),
-          decisionKey: `cash-settle-self-${randomUUID()}`,
-          action: "APPROVE",
-          reviewReason: "محاولة اعتماد ذاتي",
-        },
-        approver,
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
-      "60.00",
-    );
-
-    // معتمِدٌ مستقلّ ثانٍ يُطفئ الذمّة فعلاً.
-    const decided = await decideSupplierPayment(
-      {
-        requestId: Number(request.id),
-        decisionKey: `cash-settle-approve-${randomUUID()}`,
-        action: "APPROVE",
-        reviewReason: "سُلِّم النقد للمورد فعلياً",
-      },
-      treasurer,
-    );
-    expect(decided.status).toBe("APPROVED");
+    // الذمّة صفرٌ — لا ذمّة «مؤقّتة» ظاهرة، بلا حاجة لأي اعتمادٍ ثانٍ.
     expect((await db().select().from(s.suppliers))[0]?.currentBalance).toBe(
       "0.00",
     );
-    expect(
-      (
-        await db()
-          .select()
-          .from(s.supplierInvoices)
-          .where(eq(s.supplierInvoices.id, invoice.id))
-      )[0]?.paymentGate,
-    ).toBe("SETTLED");
     const [paymentEntry] = await db()
       .select()
       .from(s.accountingEntries)
