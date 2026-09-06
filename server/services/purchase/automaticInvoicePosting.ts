@@ -32,6 +32,11 @@ import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../v
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
+import {
+  decideSupplierPaymentInTx,
+  requestSupplierPaymentInTx,
+  SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+} from "./supplierPayments";
 import { createSupplierInvoiceInTx } from "./supplierInvoices";
 import { runThreeWayMatchInTx } from "./threeWayMatch";
 
@@ -619,6 +624,75 @@ export async function postApprovedPurchaseInvoiceInTx(
     },
   );
 
+  // قرار المالك (٦/٩/٢٦، بلاغ «المشتريات النقدية تظهر ذمّةً»، مُعدَّلٌ بقرارٍ لاحقٍ في نفس اليوم):
+  // أمر الشراء النقديّ «اعتمادٌ وصرفٌ» في خطوةٍ واحدة بلا شاشةٍ ثانية ولا شخصٍ ثانٍ يعتمد الصرف
+  // منفصلاً — المالك رفض صراحةً نمط «طلبٍ معلَّق بانتظار اعتماد مستقل» بحجّة التعقيد والخطوات
+  // الزائدة. فصلُ المهام يبقى محفوظاً على مستوى أمر الشراء نفسه (مُعتمِد الأمر ≠ منشئه، شرطٌ
+  // قائمٌ أعلاه في هذه الدالّة)، لا على مستوى دفعةٍ منفصلة. الاعتماد التلقائي الفوري (لا تعليق
+  // «بانتظار اعتماد») يستدعي requestSupplierPaymentInTx ثم decideSupplierPaymentInTx بالمتتالي
+  // ضمن هذه المعاملة نفسها — فلا يظهر طلبٌ «معلَّق» لأي مستخدمٍ في «سداد الموردين» إطلاقاً، ولا
+  // يُرى رصيد المورد مرتفعاً من خارج هذه المعاملة قبل أن يعود صفراً. صرفُ النقد الفعليّ من
+  // الخزينة يبقى محروساً بلا استثناء: authorizeExternalTreasuryDisbursement يشترط حساب مالكٍ
+  // نشطٍ دائماً، فمُعتمِد أمر الشراء النقديّ يلزمه أن يكون مالكاً حين يكون مصدر النقد الخزينة.
+  let cashSettlementPaymentId: number | null = null;
+  if (po.settlementType === "CASH" && money(invoice.totalAmount).gt(0)) {
+    const cashSettlementToken = createHash("sha256")
+      .update(`cash-settle:${deterministicKey}`)
+      .digest("hex")
+      .slice(0, 16);
+    // لا تُعِد استعمال invoice.version الملتقَط أعلاه: requestSupplierPaymentInTx يُعيد قفل
+    // الفاتورة وقراءتها بنفسه (lockPaymentAggregate)، والنسخة الملتقَطة هنا أقدم من نسخة ما
+    // بعد كتابة الفاتورة POSTED مباشرةً — راجع [[read-every-writer-before-you-rely-on-a-field]].
+    const [currentInvoiceVersion] = await tx
+      .select({ version: supplierInvoices.version })
+      .from(supplierInvoices)
+      .where(eq(supplierInvoices.id, supplierInvoiceId))
+      .limit(1);
+    if (!currentInvoiceVersion) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "فاتورة المورد التلقائية مفقودة قبل التسوية النقدية",
+      });
+    }
+    const cashSettlementRequest = await requestSupplierPaymentInTx(
+      tx,
+      {
+        supplierId: Number(invoice.supplierId),
+        branchId: Number(invoice.branchId),
+        requestKey: `auto-cash-settle-${cashSettlementToken}`,
+        currency: "IQD",
+        exchangeRate: null,
+        amount: toDbMoney(invoice.totalAmount),
+        currencyAmount: toDbMoney(invoice.totalAmount),
+        paymentMethod: "CASH",
+        evidenceType: "OTHER",
+        evidenceReference: `AUTO-PO-APPROVAL:${deterministicKey}`,
+        reason: `تسوية نقدية فورية عند اعتماد أمر الشراء النقدي ${po.poNumber}`,
+        allocations: [
+          {
+            supplierInvoiceId,
+            invoiceVersion: Number(currentInvoiceVersion.version),
+            amount: toDbMoney(invoice.totalAmount),
+            currencyAmount: toDbMoney(invoice.totalAmount),
+          },
+        ],
+      },
+      actor,
+    );
+    const cashSettlementDecision = await decideSupplierPaymentInTx(
+      tx,
+      {
+        requestId: cashSettlementRequest.requestId,
+        decisionKey: `auto-cash-settle-decide-${cashSettlementToken}`,
+        action: "APPROVE",
+        reviewReason: `تسوية نقدية فورية عند اعتماد أمر الشراء النقدي ${po.poNumber}`,
+      },
+      actor,
+      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
+    );
+    cashSettlementPaymentId = cashSettlementDecision.supplierPaymentId;
+  }
+
   return {
     purchaseOrderId,
     goodsReceiptId,
@@ -626,6 +700,7 @@ export async function postApprovedPurchaseInvoiceInTx(
     matchRunId,
     accountingEntryId,
     shippingPaymentRequestReceiptId,
+    cashSettlementPaymentId,
     status: "POSTED" as const,
     idempotentReplay: false as const,
   };

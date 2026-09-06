@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
+  accountingEntries,
   productUnits,
   productVariants,
   products,
@@ -27,6 +28,7 @@ import {
 } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { money, toDbMoney } from "../services/money";
 import {
   getPurchaseIntegrityReport,
   MAX_PURCHASE_INTEGRITY_LIMIT,
@@ -957,18 +959,53 @@ export const purchaseRouter = router({
             .limit(lim)
             .offset(off),
       });
+      // Codex (P1، ٦/٩/٢٦): شارة «مُسدَّدٌ فعلاً» في الواجهة لا يجوز أن تُستنتَج من
+      // settlementType+status وحدهما — أمرٌ CASH وصل RECEIVED قبل هذا الإصلاح لم يُسدَّد
+      // آلياً قطّ وقد تبقى عليه ذمّةٌ حقيقية. الدليل الوحيد المقبول: قيدُ PAYMENT_OUT فعليّ
+      // مربوطٌ بهذا الأمر عبر accountingEntries.purchaseOrderId (نفس إشارة
+      // purchaseIntegrityService، بلا صافي المرتجعات هنا لأنها شارة قائمةٍ سريعة لا تدقيقاً).
+      const cashOrderIds = rows
+        .filter((row) => row.settlementType === "CASH")
+        .map((row) => Number(row.id));
+      const linkedCashPaidById = new Map<number, string>();
+      if (cashOrderIds.length) {
+        const paidRows = await db
+          .select({
+            purchaseOrderId: accountingEntries.purchaseOrderId,
+            paid: sql<string>`COALESCE(SUM(${accountingEntries.amount}),0)`,
+          })
+          .from(accountingEntries)
+          .where(
+            and(
+              inArray(accountingEntries.purchaseOrderId, cashOrderIds),
+              eq(accountingEntries.entryType, "PAYMENT_OUT"),
+            ),
+          )
+          .groupBy(accountingEntries.purchaseOrderId);
+        for (const row of paidRows) {
+          if (row.purchaseOrderId == null) continue;
+          linkedCashPaidById.set(Number(row.purchaseOrderId), row.paid);
+        }
+      }
+      const withLinkedPaid = rows.map((row) => ({
+        ...row,
+        linkedCashPaidAmount: toDbMoney(
+          money(linkedCashPaidById.get(Number(row.id)) ?? 0),
+        ),
+      }));
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCostForUser(ctx.user)) {
-        return rows.map((row) => ({
+        return withLinkedPaid.map((row) => ({
           ...row,
           total: null,
           paidAmount: null,
           usdTotal: null,
           paidUsd: null,
           agreedRate: null,
+          linkedCashPaidAmount: null,
         }));
       }
-      return rows;
+      return withLinkedPaid;
     }),
 
   /** عدد أوامر الشراء المطابقة للفلتر — لِترقيم القائمة («عرض ١–٥٠ من N»).
