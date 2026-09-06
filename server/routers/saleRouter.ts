@@ -176,7 +176,7 @@ export async function verifyManagerApproval(
   }
   // SOD-03 (فصل المهام): لا يجوز للمستخدم اعتماد عمليته بنفسه (كاشير بدور مدير يُدخل بيانات نفسه).
   // كان غياب الفحص يُتيح للمدير-الكاشير تجاوز حدّ الائتمان على بيعه ذاتياً بلا حسيب.
-  if (Number(u.id) === Number(ctx.user.id)) {
+  if (Number(u.id) === Number(ctx.user.id) && u.isOwner !== true) {
     await logAudit(ctx as any, {
       action: "sale.creditOverride.fail",
       entityType: "user",

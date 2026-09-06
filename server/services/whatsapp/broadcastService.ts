@@ -21,6 +21,7 @@ import { money, toDbMoney } from "../money";
 import { getWaHubSettings } from "./flowNotify";
 import { resolveSegmentCount, type SegmentCriteria } from "./segmentService";
 import { getUsableTemplate } from "./templateService";
+import { resolveApprovalActor } from "../approval/ownerGate";
 
 type DbOrTx = DB | Tx;
 
@@ -171,6 +172,20 @@ export async function launchBroadcast(broadcastId: number, actor: Actor): Promis
     const costEstimate = toDbMoney(money(MARKETING_MSG_COST).mul(audienceCount));
 
     if (row.broadcastStatus === "DRAFT" && audienceCount > settings.campaignApprovalThreshold) {
+      const resolvedActor = await resolveApprovalActor(tx, actor);
+      if (resolvedActor.isOwner) {
+        await tx
+          .update(waBroadcasts)
+          .set({
+            broadcastStatus: "RUNNING",
+            approvedBy: actor.userId,
+            audienceCount,
+            costEstimate,
+            startedAt: new Date(),
+          })
+          .where(eq(waBroadcasts.id, broadcastId));
+        return { status: "RUNNING" as const, audienceCount };
+      }
       await tx
         .update(waBroadcasts)
         .set({ broadcastStatus: "PENDING_APPROVAL", audienceCount, costEstimate })
@@ -208,7 +223,7 @@ export async function approveBroadcast(broadcastId: number, actor: Actor): Promi
       throw new TRPCError({ code: "BAD_REQUEST", message: "البثّ ليس بانتظار الاعتماد" });
     }
     // SOD صارم للحملات: لا استثناء لـadmin (قرار مالك موثَّق — راجع رأس الملف).
-    if (row.createdBy != null && Number(row.createdBy) === actor.userId) {
+    if (!actor.isOwner && row.createdBy != null && Number(row.createdBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "لا يجوز اعتماد بثٍّ أنشأتَه بنفسك — يلزم فاعل آخر (فصل المهام، بلا استثناء).",

@@ -476,18 +476,6 @@ describe("S2ب — قرار المالك (٤/٩/٢٦): لا اعتماد ثان�
       owner,
     );
 
-    // نفس المالك (id=4) طلب القرار وسيعتمده — كان هذا يُرفض بـFORBIDDEN (فصل المهام)
-    // قبل توسيع قرار ٣/٩/٢٦ إلى هذا المسار (purchase/requisitions.ts).
-    await expect(
-      decidePurchaseRequisitionControl(
-        {
-          requestId: submitted.requestId,
-          decisionKey: "req-owner-self-approval-decide",
-          approve: true,
-          reason: "اعتمدتُ طلبي هو نفسه بصفتي مالكاً",
-        },
-        owner,
-      ),
-    ).resolves.toMatchObject({ status: "APPROVED" });
+    expect(submitted).toMatchObject({ status: "APPROVED" });
   });
 });

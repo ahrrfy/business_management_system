@@ -417,9 +417,12 @@ export const inventoryRouter = router({
       );
       if (res.idempotentReplay) {
         // إعادةُ إرسالٍ لطلبٍ قائم — لا سجلَّ تدقيقٍ ولا إشعارَ اعتمادٍ ثانياً.
-        return { requestId: res.requestId, status: "PENDING_APPROVAL" as const, idempotentReplay: true as const };
+        return { requestId: res.requestId, status: res.status, idempotentReplay: true as const };
       }
       await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
+      if (res.status === "APPROVED") {
+        return { requestId: res.requestId, status: res.status };
+      }
       const db = getDb();
       if (db) {
         const candidates = await db
@@ -442,7 +445,7 @@ export const inventoryRouter = router({
           requiresAction: true,
         }).catch(() => undefined)));
       }
-      return { requestId: res.requestId, status: "PENDING_APPROVAL" as const };
+      return { requestId: res.requestId, status: res.status };
     }),
 
   // اعتماد طلب تسوية معلَّق — مديرٌ آخر (SOD-04) ⇒ يطبّق setStock + قيد ADJUST.

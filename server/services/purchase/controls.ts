@@ -12,6 +12,7 @@ import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -257,7 +258,16 @@ export async function requestPurchaseOrderControl(
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
 ) {
-  return withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  const result = await withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  // اعتماد المراجعة يثبت واقعةً مستقلة: وصول البضاعة كاملة ومطابقتها. إنشاء الطلب وحده
+  // لا يحمل هذا الإقرار، لذلك يبقى بانتظار تأكيد صريح حتى لو كان المنشئ هو المالك.
+  if (input.kind === "APPROVE_REVISION") return result;
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.order.control",
+    id: result.requestId,
+    reason: input.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 /** DRAFT → SENT وإنشاء طلب اعتماد المراجعة في معاملة واحدة. */
@@ -277,7 +287,7 @@ export async function submitPurchaseOrderForApproval(
     expectedVersion: input.expectedVersion,
     reason,
   });
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [po] = await tx
       .select()
       .from(purchaseOrders)
@@ -397,6 +407,9 @@ export async function submitPurchaseOrderForApproval(
       idempotent: false as const,
     };
   });
+  // لا نختلق إقرار استلام كامل من فعل «إرسال للاعتماد»؛ يظل هذا الطلب حتى يدخل
+  // المالك تأكيد الاستلام الصريح من شاشة القرار.
+  return result;
 }
 
 async function assertCancellationSafeTx(tx: Tx, purchaseOrderId: number) {
@@ -530,8 +543,9 @@ export async function decidePurchaseOrderControl(
     // المراجعة والاستثناءُ الطارئ والرفضُ بلا بوّابة؛ و**إلغاءُ الأمر** وحده محوُ أثر —
     // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
     // `shared/approvalTriggers.ts`.
+    let resolvedActor: Awaited<ReturnType<typeof resolveApprovalActor>>;
     assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
+      actor: (resolvedActor = await resolveApprovalActor(tx, actor)),
       trigger: purchaseOrderControlTrigger(request.kind, input.approve),
       subject: `أمر الشراء ${po.poNumber}`,
       legacy: () => {
@@ -692,7 +706,7 @@ export async function decidePurchaseOrderControl(
         const posting = await postApprovedPurchaseInvoiceInTx(
           tx,
           Number(po.id),
-          actor,
+          resolvedActor,
           decisionKey,
         );
         applicationEvidence = {

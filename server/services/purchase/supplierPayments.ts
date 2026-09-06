@@ -24,6 +24,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import {
   createPostingIntent,
@@ -546,20 +547,6 @@ function assertAllocationAvailable(
   }
 }
 
-export async function requestSupplierPayment(
-  input: RequestSupplierPaymentInput,
-  actor: Actor,
-) {
-  return withTx((tx) => requestSupplierPaymentInTx(tx, input, actor));
-}
-
-/**
- * جسم requestSupplierPayment مفصولاً عن withTx الخاصّة به — يستقبل معاملة قائمة بدل فتح
- * واحدة جديدة. يستدعيه مسار الاعتماد التلقائي لأمر الشراء النقدي (automaticInvoicePosting.ts)
- * ليبقى «فاتورة مورد مُرحَّلة + طلب تسويتها النقدية» ذرّيَّين معاً: فتح withTx ثانية هنا كان
- * سيفتح اتصالاً/معاملة مستقلّة (انظر server/services/tx.ts) فيسمح لطلب الدفع بالنجاح فعلياً
- * حتى لو تراجع اعتماد أمر الشراء نفسه لاحقاً في نفس الاستدعاء.
- */
 export async function requestSupplierPaymentInTx(
   tx: Tx,
   input: RequestSupplierPaymentInput,
@@ -781,34 +768,33 @@ export async function requestSupplierPaymentInTx(
   };
 }
 
-export async function decideSupplierPayment(
-  input: DecideSupplierPaymentInput,
+/**
+ * قرار المالك (٦/٩/٢٦): أمر الشراء النقديّ يُسدَّد فوراً ضمن معاملة اعتماده نفسها —
+ * لا يمكن استدعاء `requestSupplierPayment` (تفتح `withTx` خاصّتها) من داخل معاملةٍ
+ * جارية بلا فتح اتصالٍ ثانٍ فوق الأول غير المُلتزَم. هذا الغلاف الرقيق يحتفظ بالمسار
+ * العام كما هو، وسدادُ أمر الشراء يمرّ عبر `requestSupplierPaymentInTx` مباشرةً.
+ */
+export async function requestSupplierPayment(
+  input: RequestSupplierPaymentInput,
   actor: Actor,
-  capability?: SupplierPaymentTreasuryDecisionCapability,
 ) {
-  return withTx((tx) =>
-    decideSupplierPaymentInTx(tx, input, actor, capability),
+  const reason = required(input.reason, "سبب الدفع", 500);
+  const result = await withTx((tx) =>
+    requestSupplierPaymentInTx(tx, input, actor),
   );
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "supplier.payment.decide",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
-/**
- * جسم decideSupplierPayment مفصولاً عن withTx الخاصّة به، بنفس منطق requestSupplierPaymentInTx
- * أعلاه — يستدعيه مسار التسوية النقدية الفورية لأمر الشراء (automaticInvoicePosting.ts) داخل
- * معاملة الاعتماد نفسها بدل فتح معاملةٍ ثانية مستقلّة.
- *
- * `skipIndependentReviewerCheck` قرار مالكٍ صريح (٦/٩/٢٦): أمر الشراء النقديّ «اعتمادٌ وصرفٌ»
- * في خطوةٍ واحدة بلا شاشةٍ ثانية ولا شخصٍ ثانٍ منفصل يعتمد الصرف — فصلُ المهام هنا يبقى محفوظاً
- * بمستوى أمر الشراء نفسه (مُعتمِد الأمر مختلفٌ دوماً عن منشئه، شرطٌ قائمٌ في automaticInvoicePosting.ts)
- * لا بمستوى دفعةٍ منفصلة. ⛔ العلَم متاحٌ للاستدعاء الداخليّ من هذا المسار فقط — لا من أي إجراء
- * tRPC يستقبل قرار سدادٍ بشريّاً؛ اعتماد التنفيذ النقديّ من الخزينة (حساب مالكٍ نشط) يبقى
- * محروساً بلا استثناء عبر authorizeExternalTreasuryDisbursement أدناه.
- */
 export async function decideSupplierPaymentInTx(
   tx: Tx,
   input: DecideSupplierPaymentInput,
   actor: Actor,
   capability?: SupplierPaymentTreasuryDecisionCapability,
-  options?: { skipIndependentReviewerCheck?: boolean },
 ) {
   assertSupplierPaymentTreasuryDecisionAuthority(actor, capability);
   const decisionKey = required(input.decisionKey, "مفتاح القرار", 120);
@@ -880,7 +866,6 @@ export async function decideSupplierPaymentInTx(
     trigger: supplierPaymentTrigger(input.action),
     subject: `سداد مورّد (طلب ${input.requestId})`,
     legacy: () => {
-      if (options?.skipIndependentReviewerCheck) return;
       if (supplierPaymentApprover.isOwner) return;
       assertIndependentPurchaseReviewer(Number(request.requestedBy), actor.userId);
     },
@@ -1218,6 +1203,14 @@ export async function decideSupplierPaymentInTx(
   };
 }
 
+export async function decideSupplierPayment(
+  input: DecideSupplierPaymentInput,
+  actor: Actor,
+  capability?: SupplierPaymentTreasuryDecisionCapability,
+) {
+  return withTx((tx) => decideSupplierPaymentInTx(tx, input, actor, capability));
+}
+
 export async function requestSupplierPaymentRefund(
   input: RequestSupplierPaymentRefundInput,
   actor: Actor,
@@ -1269,7 +1262,7 @@ export async function requestSupplierPaymentRefund(
     allocations: normalized,
   });
   const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (
       await tx
         .select()
@@ -1397,6 +1390,12 @@ export async function requestSupplierPaymentRefund(
       idempotent: false as const,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "supplier.payment.refund",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decideSupplierPaymentRefund(

@@ -40,6 +40,15 @@ import {
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
+async function isActiveOwnerTx(tx: Tx, userId: number): Promise<boolean> {
+  const [user] = await tx
+    .select({ isOwner: users.isOwner, isActive: users.isActive })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return user?.isOwner === true && user.isActive === true;
+}
+
 export interface MonthCloseRequestRow {
   id: number;
   month: string;
@@ -150,7 +159,10 @@ async function assertActiveCloseIntegrity(
 export async function requestMonthClose(
   tx: Tx,
   input: { month: string; requestedBy: number; now?: Date },
-): Promise<{ id: number }> {
+): Promise<{
+  id: number;
+  autoApproval: Awaited<ReturnType<typeof approveMonthClose>> | null;
+}> {
   assertCloseableMonth(input.month, input.now);
 
   // الطلب والقفل عمليتان على مستوى الشركة. نمسك بوابة الشركة نفسها التي يمسكها الاعتماد كي لا
@@ -192,7 +204,17 @@ export async function requestMonthClose(
     // الشهر يفشل بـER_DUP_ENTRY على مستوى القاعدة، لا بفحصٍ تطبيقيٍّ قابلٍ للسباق.
     pendingGuard: input.month,
   });
-  return { id: extractInsertId(res) };
+  const id = extractInsertId(res);
+  let autoApproval: Awaited<ReturnType<typeof approveMonthClose>> | null = null;
+  if (await isActiveOwnerTx(tx, input.requestedBy)) {
+    autoApproval = await approveMonthClose(tx, {
+      requestId: id,
+      decidedBy: input.requestedBy,
+      notes: "اعتماد تلقائي: منفذ عملية الإقفال هو المالك",
+      now: input.now,
+    });
+  }
+  return { id, autoApproval };
 }
 
 /**
@@ -250,7 +272,10 @@ export async function approveMonthClose(
   const sequence = await getMonthCloseSequence(tx, { forUpdate: true });
   assertExpectedCloseMonth(sequence, req.month);
   // فصل المهام: من طلب لا يعتمد. لا استثناء للأدمن هنا — القفل عامٌّ ولا رجعة فيه إلا بفتحٍ موثَّق.
-  if (Number(req.requestedBy) === input.decidedBy) {
+  if (
+    Number(req.requestedBy) === input.decidedBy &&
+    !(await isActiveOwnerTx(tx, input.decidedBy))
+  ) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "لا تعتمد طلبك — يعتمده مسؤولٌ آخر (فصل المهام).",

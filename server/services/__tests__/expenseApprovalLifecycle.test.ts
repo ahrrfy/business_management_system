@@ -619,7 +619,7 @@ describe("دورة اعتماد المصروفات", () => {
     ).toBe(true);
   });
 
-  it("غير المالك والمالك المعطل لا يستطيعان الرفض، والمالك المنشئ يعتمد ويرفض نفسه (قرار المالك ٣/٩/٢٦)", async () => {
+  it("غير المالك والمالك المعطل لا يرفضان، وطلب المالك النشط يصبح ACTIVE فوراً", async () => {
     const request = await pendingExpense();
     await expect(
       rejectExpense(
@@ -655,6 +655,7 @@ describe("دورة اعتماد المصروفات", () => {
       },
       ownerA,
     );
+    expect(selfApproveRequest.status).toBe("ACTIVE");
     await expect(
       approveExpense(selfApproveRequest.expenseId, ownerA),
     ).resolves.toMatchObject({ status: "ACTIVE" });
@@ -669,9 +670,10 @@ describe("دورة اعتماد المصروفات", () => {
       },
       ownerA,
     );
+    expect(selfRejectRequest.status).toBe("ACTIVE");
     await expect(
       rejectExpense(selfRejectRequest.expenseId, ownerA, "طلب ذاتي"),
-    ).resolves.toMatchObject({ status: "REJECTED" });
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("اعتمادان متزامنان يصنعان أثراً مالياً واحداً فقط", async () => {
@@ -840,7 +842,7 @@ describe("دورة اعتماد المصروفات", () => {
     expect(report.byPayee).toHaveLength(0);
   });
 
-  it("طلب المصروف يظهر كنوع مستقل للمالك (بمن فيهم طلبه هو نفسه، قرار المالك ٣/٩/٢٦) ولا يتسرّب كسند عام", async () => {
+  it("طلب الموظف يظهر كنوع مستقل، وطلب المالك المعتمد تلقائياً لا يدخل صندوق الاعتماد", async () => {
     const request = await pendingExpense();
     const caller = appRouter.createCaller({
       req: { headers: {} },
@@ -892,14 +894,13 @@ describe("دورة اعتماد المصروفات", () => {
           item.kind === "expense" && Number(item.id) === request.expenseId,
       ),
     ).toBe(true);
-    // ⭐ قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — طلب المالك نفسه يظهر له الآن،
-    // بخلاف driftedRequest المستبعَد لسببٍ غير متعلّق (اتّجاه إيصاله ممسوخٌ إلى IN).
+    // طلب المالك حُسم عند الإنشاء فلا يظهر، وطلب الموظف الممسوخ مستبعد لعدم سلامة اتجاه السند.
     expect(
       inbox.some(
         (item) =>
           item.kind === "expense" && Number(item.id) === selfRequest.expenseId,
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       inbox.some(
         (item) =>
@@ -910,7 +911,7 @@ describe("دورة اعتماد المصروفات", () => {
     const pulse = await caller.superApp.modulePulse({ moduleKey: "treasury" });
     expect(
       pulse.metrics.find((metric) => metric.key === "expense-approvals")?.value,
-    ).toBe(2);
+    ).toBe(1);
     await expect(
       caller.superApp.approvalDetail({
         kind: "expense",

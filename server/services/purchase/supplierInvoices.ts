@@ -16,6 +16,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractInsertId } from "../../lib/insertId";
 import {
   adjustSupplierBalance,
@@ -704,7 +705,7 @@ export async function requestSupplierInvoiceApproval(
     evidenceReference: input.evidenceReference?.trim() || null,
   });
   const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const existing = (
       await tx
         .select()
@@ -822,6 +823,12 @@ export async function requestSupplierInvoiceApproval(
       idempotentReplay: false as const,
     };
   });
+  const approved = result.requestId != null && await autoDecideForActiveOwner(actor, {
+    kind: "purchase.supplierInvoice.reversal",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decideSupplierInvoiceApproval(

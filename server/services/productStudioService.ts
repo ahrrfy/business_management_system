@@ -726,7 +726,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   };
 }
 
-/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
+/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣» مع صور المنتج المعتمدة السابقة. */
 async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null, variantId: number | null = null) {
   const [approved] = await tx
     .select({ count: sql<number>`count(*)` })
@@ -741,7 +741,37 @@ async function studioImageProgress(tx: StudioTx, productId: number, campaignId: 
     const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
     requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
   }
-  return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+
+  const previousImages = await tx
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return {
+    approvedImages: Number(approved?.count ?? 0),
+    requiredImages,
+    previousImages: previousImages.map((img) => ({
+      id: Number(img.id),
+      isPrimary: Boolean(img.isPrimary),
+      sortOrder: Number(img.sortOrder ?? 0),
+      thumbDataUrl: img.thumbDataUrl ?? null,
+      contentHash: img.contentHash ?? null,
+      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+    })),
+  };
 }
 
 /** عددُ الصور التي تسبق المهمة الجديدة في ترتيب حملتها/بديلها. */
@@ -4873,6 +4903,52 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
     base64: await streamToBase64(task.originalObjectKey),
     mime: task.originalMime,
   };
+}
+
+/** يعيد الصور المعتمدة السابقة للمنتج للمصور المصرّح له؛ تظهر في محطة التصوير لمنع تكرار الزوايا. */
+export async function getStudioTaskPreviousImages(actor: ProductStudioActor, taskId: number) {
+  const task = (
+    await requireDb()
+      .select({
+        productId: productImageJobs.productId,
+        variantId: productImageJobs.variantId,
+        assignedTo: productImageJobs.assignedTo,
+        branchId: productImageJobs.branchId,
+      })
+      .from(productImageJobs)
+      .where(eq(productImageJobs.id, taskId))
+      .limit(1)
+  )[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task);
+  if (task.productId == null) return [];
+
+  const images = await requireDb()
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, task.productId),
+      task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return images.map((img) => ({
+    id: Number(img.id),
+    isPrimary: Boolean(img.isPrimary),
+    sortOrder: Number(img.sortOrder ?? 0),
+    thumbDataUrl: img.thumbDataUrl ?? null,
+    contentHash: img.contentHash ?? null,
+    createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+  }));
 }
 
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {

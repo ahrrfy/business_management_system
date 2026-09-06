@@ -41,7 +41,8 @@ const CASHIER = { userId: 2, branchId: 1, role: "cashier" };
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 /** المالك (أدمن) — يفتح طلبات الشطب؛ وأدمنٌ ثانٍ يعتمدها (فصل المهام). */
 const OWNER = { userId: 4, branchId: 1, role: "admin", isOwner: true };
-const REVIEWER = { userId: 5, branchId: 1, role: "admin", reviewAuthorized: true as const };
+const REQUESTER = { userId: 5, branchId: 1, role: "admin" };
+const REVIEWER = { userId: 4, branchId: 1, role: "admin", reviewAuthorized: true as const };
 const PARTY = 1;
 const EVIDENCE = { evidenceNote: "محضر مطابقة عهدة موقع من طرفين" } as const;
 
@@ -179,7 +180,7 @@ describe("(أ) حارس STALE يحيا: version يرتفع مع كلّ حركة 
     // يمسّ العهدة السائبة وحدها (حارس `consignmentBackedBalance`) فيرفض هنا بحقّ.
     const req = await requestDeliveryCodWriteOff(
       { requestKey: "req-stale-1", branchId: 1, partyId: PARTY, consignmentId: a.consignmentId, amount: "2000", reason: "المندوب أقرّ بضياع النقد", ...EVIDENCE },
-      OWNER,
+      REQUESTER,
     );
     expect(Number(req.basePartyVersion)).toBe(v0);
 
@@ -206,7 +207,7 @@ describe("(أ) حارس STALE يحيا: version يرتفع مع كلّ حركة 
     const req = await requestDeliveryCodWriteOff(
       // الشطبُ الموجَّه يكون بكامل متبقّي الطرد (2000) — قاعدةُ `writeOffDeliveryShortfallInTx`.
       { requestKey: "req-ok-1", branchId: 1, partyId: PARTY, consignmentId: a.consignmentId, amount: "2000", reason: "المندوب أقرّ بضياع النقد", ...EVIDENCE },
-      OWNER,
+      REQUESTER,
     );
     const res = await approveDeliveryCodWriteOff({ id: Number(req.id), expectedVersion: Number(req.basePartyVersion), decisionKey: "dec-ok-1" }, REVIEWER);
     expect((res as { stale?: boolean }).stale).not.toBe(true);

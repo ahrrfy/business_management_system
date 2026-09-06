@@ -10,7 +10,7 @@ import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { getAsset } from "./queries";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import { fixedAssetAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
@@ -277,6 +277,7 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
           evidenceReference,
           dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
         });
+        await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
       }
     }
 

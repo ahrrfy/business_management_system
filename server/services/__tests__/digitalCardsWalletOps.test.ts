@@ -221,11 +221,10 @@ describe.sequential("ش٩ — التعديل بفصل المهام", () => {
 
   it("مالك النظام يعتمد طلبه بصفته المرجع النهائي", async () => {
     const walletId = await funded();
-    const { transactionId } = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
+    await withTx((tx) => walletOpsService.requestAdjustment(tx, {
       walletId, amount: "1000", direction: "IN", reason: "تصحيح", clientRequestId: rid(),
     }, owner));
-    const r = await withTx((tx) => walletOpsService.approveAdjustment(tx, { transactionId }, owner));
-    expect(r.balanceAfter).toBe("101000.00");
+    expect((await wallet(walletId)).currentBalance).toBe("101000.00");
   });
 
   it("الاعتماد مرّتين مرفوض، والرفض لا يمسّ الرصيد", async () => {

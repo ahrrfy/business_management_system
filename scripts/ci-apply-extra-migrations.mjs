@@ -220,6 +220,9 @@ const EXTRA_MIGRATIONS = [
   // ٤/٩/٢٦: تُسقط ثلاثة قيود CHECK maker-checker قائمة (توسيعُ قرار المالك ٣/٩/٢٦ على
   // مسارات حوكمة مشترياتٍ إضافية) — نفس فخّ #675/0326/0333.
   "drizzle/migrations/0334_purchases_owner_selfapproval_checkconstraints.sql",
+  // ٦/٩/٢٦: قرار المالك عامٌّ في كل الوحدات؛ تُسقط بقية قيود maker-checker التي لا تستطيع
+  // CHECK أحادية الجدول استثناء المالك النشط منها. التحقق من صفة المالك يبقى في الخدمة.
+  "drizzle/migrations/0336_owner_global_selfapproval_constraints.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

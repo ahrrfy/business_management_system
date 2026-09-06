@@ -25,6 +25,7 @@ import { appErrorMessage } from "@shared/errors";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { applyMovement, ensureBranchStockRows } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
 import { money, round2, toDateStr, toDbMoney } from "../money";
@@ -471,9 +472,10 @@ export async function createGoodsReceiptInTx(
     const isPurchaseOrderApprover =
       po.approvedBy != null && Number(po.approvedBy) === actor.userId;
     if (
-      isPurchaseOrderCreator ||
-      (isPurchaseOrderApprover &&
-        !options.allowPurchaseOrderApproverForAutomaticPosting)
+      !actor.isOwner &&
+      (isPurchaseOrderCreator ||
+        (isPurchaseOrderApprover &&
+          !options.allowPurchaseOrderApproverForAutomaticPosting))
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -939,7 +941,7 @@ export async function requestGoodsReceiptReversal(
     lines,
   });
   const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const existing = (
       await tx
         .select()
@@ -1072,6 +1074,12 @@ export async function requestGoodsReceiptReversal(
       idempotentReplay: false as const,
     };
   });
+  const approved = result.requestId != null && await autoDecideForActiveOwner(actor, {
+    kind: "purchase.goodsReceipt.reversal",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decideGoodsReceiptReversal(
