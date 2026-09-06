@@ -7,7 +7,7 @@ import { offlineDb } from "@/lib/offline/db";
 import Dexie from "dexie";
 
 export const STUDIO_DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
-export const STUDIO_DRAFT_RESUME_LEASE_MS = 60_000;
+export const STUDIO_DRAFT_RESUME_LEASE_MS = 10_000;
 
 export type StudioDraftMode = "FLATTEN" | "CUT" | "AI";
 
@@ -94,23 +94,30 @@ async function studioDraftOpaqueId(
   userId: number,
   taskId: number,
 ): Promise<string> {
-  let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
-  if (!key) {
-    key = await crypto.subtle.generateKey(
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    await offlineDb.keys.put({ name: STUDIO_DRAFT_INDEX_KEY, key });
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    return `sd-insecure-${userId}-${taskId}`;
   }
-  const signature = new Uint8Array(
-    await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(`${userId}:${taskId}`),
-    ),
-  );
-  return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  try {
+    let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
+    if (!key) {
+      key = await crypto.subtle.generateKey(
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+      await offlineDb.keys.put({ name: STUDIO_DRAFT_INDEX_KEY, key });
+    }
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        key,
+        new TextEncoder().encode(`${userId}:${taskId}`),
+      ),
+    );
+    return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  } catch {
+    return `sd-fallback-${userId}-${taskId}`;
+  }
 }
 
 function validDraft(value: unknown): value is StudioDraft {

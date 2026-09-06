@@ -23,15 +23,16 @@ type Props = {
   barcode: string;
   error: string;
   linkAllowed: boolean;
+  activeProduct?: { id: number; name: string };
   onLinked: (barcode: string) => void | Promise<void>;
 };
 
 /**
  * إغلاقٌ صريح لمسار باركود المورد المجهول في الاستوديو.
- * لا يستنتج المنتج من الرقم ولا يربط تلقائياً: المدير يختار المنتج ثم المتغيّر ثم الوحدة،
- * ويرى ملخصاً نهائياً قبل استدعاء إجراء alias القائم والمحروس بـproducts:FULL.
+ * لا يستنتج المنتج من الرقم ولا يربط تلقائياً: المصوّر أو المدير يختار المنتج ثم المتغيّر ثم الوحدة،
+ * ويرى ملخصاً نهائياً قبل استدعاء إجراء الربط المحروس بصلاحيات الاستوديو.
  */
-export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, onLinked }: Props) {
+export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, activeProduct, onLinked }: Props) {
   const me = trpc.auth.me.useQuery();
   const canLink = canManageStudioBarcodeAliases(
     me.data?.role,
@@ -52,11 +53,11 @@ export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, onLi
     { search: debouncedSearch, includeInactive: false },
     { enabled: open && canLink && debouncedSearch.length >= 2 },
   );
-  const productDetails = trpc.catalog.getForVariantEdit.useQuery(
+  const productDetails = trpc.productStudio.productUnits.useQuery(
     { productId: selectedProductId ?? 0 },
     { enabled: open && canLink && selectedProductId != null },
   );
-  const addAlias = trpc.catalog.addUnitBarcodeAlias.useMutation();
+  const addAlias = trpc.productStudio.linkBarcode.useMutation();
 
   const variants = useMemo(
     () => (productDetails.data?.variants ?? []).filter((variant) => variant.isActive),
@@ -134,12 +135,27 @@ export function StudioUnknownBarcodeResolver({ barcode, error, linkAllowed, onLi
         <CopyInline value={barcode} successMessage="نُسخ الباركود" />
       </div>
       {linkAllowed && canLink && (
-        <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}>
-          <Link2 aria-hidden className="size-4" /> ربط الباركود بمنتج
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {activeProduct && (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              onClick={() => {
+                chooseProduct(activeProduct.id, activeProduct.name);
+                setOpen(true);
+              }}
+            >
+              <Link2 aria-hidden className="size-4" /> ربط بـ «{activeProduct.name}»
+            </Button>
+          )}
+          <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}>
+            <Link2 aria-hidden className="size-4" /> {activeProduct ? "ربط بمنتج آخر…" : "ربط الباركود بمنتج"}
+          </Button>
+        </div>
       )}
       {linkAllowed && !me.isLoading && !canLink && (
-        <p className="text-xs text-muted-foreground">ربط باركود جديد يتطلب صلاحية تعديل المنتجات.</p>
+        <p className="text-xs text-muted-foreground">ربط باركود جديد يتطلب صلاحية استوديو المنتجات أو تعديل المنتجات.</p>
       )}
 
       <Dialog open={open} onOpenChange={(next) => { if (next) setOpen(true); else resetDialog(); }}>

@@ -31,12 +31,22 @@ export function canManageStudioBarcodeAliases(
   role: string | undefined,
   permissionsOverride: PermissionMap | null | undefined,
 ): boolean {
-  return !!role && moduleAccessAllowed(
-    role,
-    permissionsOverride,
-    "products",
-    "FULL",
-    ["admin", "manager"],
+  return (
+    !!role &&
+    (moduleAccessAllowed(
+      role,
+      permissionsOverride,
+      "products",
+      "FULL",
+      ["admin", "manager"],
+    ) ||
+      moduleAccessAllowed(
+        role,
+        permissionsOverride,
+        "productStudio",
+        "FULL",
+        ["admin", "manager", "print_operator"],
+      ))
   );
 }
 
@@ -64,7 +74,7 @@ export async function linkStudioBarcodeAlias(
   dependencies: StudioBarcodeLinkDependencies,
 ): Promise<number> {
   if (!input.authorized) {
-    throw new Error("ربط باركود جديد يتطلب صلاحية تعديل المنتجات.");
+    throw new Error("ربط باركود جديد يتطلب صلاحية تعديل المنتجات أو استوديو المنتجات.");
   }
   if (!Number.isSafeInteger(input.variantId) || input.variantId <= 0 || input.unitName === "") {
     throw new Error("اختر المتغيّر والوحدة قبل ربط الباركود.");

@@ -2,7 +2,9 @@ import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
 import { barcodeString } from "../lib/schemas";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, type ProductStudioActor } from "../services/productStudioService";
+import { addUnitBarcodeAlias } from "../services/catalog/barcodeAliases";
+import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories, IMAGE_HEALTH_STATES } from "../services/productStudioDiscovery";
 
@@ -42,6 +44,9 @@ export const productStudioRouter = router({
     .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
   resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: barcodeString })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
   productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
+  productUnits: productStudioReadProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ ctx, input }) => getStudioProductUnits(actor(ctx), input.productId)),
   // إدارةُ صور المنتج القائمة — للمدير (طلب المالك ٢٦/٨: التحكم الكامل بالصور).
   managerImages: productStudioManagerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
@@ -176,6 +181,29 @@ export const productStudioRouter = router({
     .input(z.object({ campaignId }))
     .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx), input.campaignId)),
   claimByBarcode: productStudioWriteProcedure.input(z.object({ barcode: barcodeString })).mutation(({ ctx, input }) => claimStudioProductByBarcode(actor(ctx), input.barcode)),
+  linkBarcode: productStudioWriteProcedure
+    .input(
+      z.object({
+        productUnitId: z.number().int().positive(),
+        barcode: barcodeString,
+        note: z.string().max(255).nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const res = await addUnitBarcodeAlias(
+        input.productUnitId,
+        input.barcode,
+        input.note ?? "رُبط من استوديو المنتجات",
+        ctx.user.id,
+      );
+      await logAudit(ctx, {
+        action: "productStudio.linkBarcode",
+        entityType: "productUnit",
+        entityId: input.productUnitId,
+        newValue: { barcode: input.barcode.trim(), note: input.note ?? null },
+      });
+      return res;
+    }),
   sendDueNotifications: productStudioManagerProcedure.input(z.object({ horizonHours: z.number().int().min(1).max(168).default(24) })).mutation(({ ctx, input }) => sendStudioDueNotifications(actor(ctx), new Date(), input.horizonHours)),
   candidatePreview: productStudioReadProcedure.input(z.object({ taskId })).query(({ ctx, input }) => {
     ctx.res.setHeader("Cache-Control", "private, no-store, max-age=0");

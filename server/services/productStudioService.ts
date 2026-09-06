@@ -1013,7 +1013,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? null
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1024,7 +1024,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? undefined
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1055,8 +1055,60 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (Number(active.assignedTo) === actor.userId) {
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
+    if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» صُوِّر بالفعل وبانتظار الاعتماد`,
+          why: "التقط زميلٌ صورةً لهذا المنتج وأرسلها للاعتماد، ولا حاجة لإعادة تصويره",
+          doThis: "انتقل إلى المنتج التالي في الطابور",
+        }),
+      });
+    }
+    // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه:
+    const isSelfClaimed = Number(active.assignedBy) === Number(active.assignedTo);
+    const CLAIM_STALE_MS = 15 * 60 * 1_000;
+    const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
+      !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
+    );
+    if (isStaleClaim) {
+      const upgradeVariant = variantId != null && active.variantId == null;
+      await tx
+        .update(productImageJobs)
+        .set({
+          assignedTo: actor.userId,
+          assignedBy: actor.userId,
+          assignedAt: new Date(),
+          ...(upgradeVariant ? { variantId } : {}),
+          revision: sql`${productImageJobs.revision} + 1`,
+        })
+        .where(eq(productImageJobs.id, active.id));
+      await tx.insert(auditLogs).values(
+        auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
+          productId,
+          variantId,
+          previousAssigneeId: Number(active.assignedTo),
+          barcode: barcode.slice(0, 64),
+          campaignId: active.campaignId == null ? null : Number(active.campaignId),
+        }),
+      );
+      return {
+        taskId: Number(active.id),
+        productName: displayName,
+        claimed: true as const,
+        revision: Number(active.revision) + 1,
+        ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
+      };
+    }
     if (active.assignedTo != null) {
-      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» بيد زميلٍ آخر الآن`, why: "المهمّة مُسنَدة إلى مصوّرٍ غيرك، ولا تُفتح المهمّة الواحدة لاثنين", doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير نقل المهمّة إليك بإعادة الإسناد" }) });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» قيد العمل لدى زميلٍ آخر الآن`,
+          why: "المهمّة مفتوحة لدى مصوّرٍ غيرك حالياً، ولا تُفتح المهمّة الواحدة لاثنين معاً",
+          doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير إعادة إسنادها إن كان الزميل قد غادر",
+        }),
+      });
     }
     // فحصُ الفرع وحده هنا: `assertTaskAccess` تفشل مغلقةً على صفٍّ **بلا منفّذ**
     // (`Number(null) === 0` لا يساوي معرّف أحد) — وهو بالضبط ما يعنيه السحب.
@@ -5602,4 +5654,53 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     );
     return expectedRevision === undefined ? { imageId: Number(image.id) } : { imageId: Number(image.id), revision: nextRevision(task) };
   });
+}
+
+/**
+ * جلب متغيّرات ووحدات المنتج المتاحة للاستوديو برخصة قراءة الاستوديو
+ * دون كشف الأسعار أو التكاليف أو البيانات الإدارية الحساسة.
+ */
+export async function getStudioProductUnits(actor: ProductStudioActor, productId: number) {
+  const db = requireDb();
+  const variants = await db
+    .select({
+      id: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(and(eq(productVariants.productId, productId), eq(productVariants.isActive, true)));
+
+  const variantIds = variants.map((v) => Number(v.id));
+  const units = variantIds.length > 0
+    ? await db
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+        })
+        .from(productUnits)
+        .where(inArray(productUnits.variantId, variantIds))
+    : [];
+
+  return {
+    variants: variants.map((v) => ({
+      id: Number(v.id),
+      variantName: v.variantName,
+      color: v.color,
+      size: v.size,
+      sku: v.sku,
+      isActive: v.isActive,
+      unitBarcodes: Object.fromEntries(
+        units
+          .filter((u) => Number(u.variantId) === Number(v.id) && u.barcode)
+          .map((u) => [u.unitName, u.barcode!]),
+      ),
+    })),
+    unitTemplate: Array.from(new Set(units.map((u) => u.unitName))).map((unitName) => ({ unitName })),
+  };
 }

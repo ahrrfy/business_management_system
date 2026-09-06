@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask, studioTaskSelection } from "./studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, getStudioTaskStatusDisplay, isQueuedStudioTask, studioTaskSelection } from "./studioBoardLabels";
 
 describe("studio board labels", () => {
   it("selects independent image tasks sharing the same product", () => {
@@ -21,6 +21,25 @@ describe("studio board labels", () => {
     expect(isQueuedStudioTask({ status: "ASSIGNED", assigneeName: "علي" })).toBe(false);
     expect(isQueuedStudioTask({ status: "IN_PROGRESS", assigneeName: null })).toBe(false);
     expect(isQueuedStudioTask({ status: "PENDING_REVIEW", assigneeName: null })).toBe(false);
+  });
+
+  it("يعرض وسوم الحالة بوضوح وتمييز دقيق للمستخدم", () => {
+    expect(getStudioTaskStatusDisplay({ status: "ASSIGNED", assigneeName: null })).toEqual({
+      label: "في الطابور",
+      variant: "warning",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "ASSIGNED", assigneeName: "مصوّر" })).toEqual({
+      label: "بانتظار التصوير",
+      variant: "info",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "PENDING_REVIEW", assigneeName: "مصوّر" })).toEqual({
+      label: "بانتظار الاعتماد",
+      variant: "warning",
+    });
+    expect(getStudioTaskStatusDisplay({ status: "APPROVED", assigneeName: "مصوّر" })).toEqual({
+      label: "مكتملة ومعتمدة",
+      variant: "success",
+    });
   });
 
   it("لا يطبع صفراً إلا حين تكون المعاينة قد نجحت فعلاً", () => {
