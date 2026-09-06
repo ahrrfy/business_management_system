@@ -120,6 +120,9 @@ export function sodHidden(args: {
   adminExempt?: boolean;
 }): boolean {
   const { actor } = args;
+  // المالك أعلى سلطة، وطلبه يُحسم تلقائيا من نفس مصدر القرار؛ يجب ألا تخفيه قواعد
+  // فصل المهام القديمة حتى في أثناء نافذة التنفيذ القصيرة بين الطلب والحسم.
+  if (actor.isOwner) return false;
   if (args.ownerExempt && actor.isOwner) return false;
   if (args.adminExempt && actor.role === "admin") return false;
   if (args.trigger === null && isRolloutOn("ownerOnlyApproval")) return false;

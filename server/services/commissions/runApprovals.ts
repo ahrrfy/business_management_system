@@ -11,6 +11,7 @@ import type { Tx } from "../../db";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { approveRunInTx, type ApproveResult } from "./runs";
 
 export interface RequestCommissionRunApprovalInput {
@@ -149,7 +150,7 @@ export async function requestCommissionRunApproval(
   const requestKey = normalizedKey(input.requestKey, "مفتاح الطلب");
   const reason = normalizedText(input.reason, "سبب طلب الاعتماد");
   assertRequestedScope(input.scopeBranchId, authorizedScope);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = await loadRequestByKey(tx, requestKey);
     if (replay) {
       if (!exactRequestIntentReplay(replay, input, reason, actor)) {
@@ -217,6 +218,12 @@ export async function requestCommissionRunApproval(
       throw new TRPCError({ code: "CONFLICT", message: "يوجد طلب اعتماد معلّق لهذا النطاق أو استُهلك المفتاح" });
     }
   }, { gate: "NONE" });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "commissions.run.approve",
+    id: Number(result.id),
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 class StaleCommissionRunApproval extends Error {}
@@ -254,6 +261,7 @@ function assertIndependentReviewer(
   run: typeof commissionRuns.$inferSelect,
   actor: Actor,
 ) {
+  if (actor.isOwner) return;
   if (Number(request.requestedBy) === actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يراجع منشئ طلب الاعتماد طلبه بنفسه" });
   }

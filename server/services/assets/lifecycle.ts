@@ -8,7 +8,7 @@ import { type Actor, withTx } from "../tx";
 import { companyBranchScope } from "../companyBranchScope";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import { postEntry } from "../ledgerService";
 import { expenseAccrualRecognition } from "../accounting/accrualPosting";
 import { createAccrualObligationTx, transitionAccrualObligationTx } from "../accounting/accrualObligations";
@@ -64,6 +64,7 @@ export interface MaintenanceInput {
 export async function addMaintenance(assetId: number, m: MaintenanceInput, actor: Actor) {
   const scope = companyBranchScope(actor);
   let paymentRequestReceiptId: number | null = null;
+  let paymentApproved = false;
   const clientRequestId = m.clientRequestId.trim();
   const evidenceReference = m.evidenceReference?.trim() ?? "";
   const freeVendor = m.vendor?.trim() ?? "";
@@ -113,12 +114,13 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
         throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: مفتاح الصيانة استُعمل ببيانات مختلفة" });
       }
       const [priorRequest] = await tx
-        .select({ id: accrualObligationEvents.receiptId })
+        .select({ id: accrualObligationEvents.receiptId, status: accrualObligations.status })
         .from(accrualObligationEvents)
         .innerJoin(accrualObligations, eq(accrualObligationEvents.obligationId, accrualObligations.id))
         .where(and(eq(accrualObligations.maintenanceId, Number(existing.id)), eq(accrualObligationEvents.eventType, "PAYMENT_REQUESTED")))
         .limit(1);
       paymentRequestReceiptId = priorRequest?.id == null ? null : Number(priorRequest.id);
+      paymentApproved = priorRequest?.status === "PAID";
       return;
     }
     if (cost.gt(0) && !evidenceReference) {
@@ -272,6 +274,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
         evidenceReference,
         dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
       });
+      paymentApproved = await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
     }
     // الأصل قيد الصيانة الآن (إن لم يكن مُستبعَداً).
     if (a.status !== "retired") {
@@ -281,7 +284,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
   // ن-٢-هـ: إشعارُ المُعتمِدين مركزيّ في createSystemPaymentRequestTx (tx.ts.enqueuePostCommit).
   const asset = await getAsset(assetId, scope);
   return asset
-    ? { ...asset, paymentPending: paymentRequestReceiptId != null, paymentRequestReceiptId }
+    ? { ...asset, paymentPending: paymentRequestReceiptId != null && !paymentApproved, paymentRequestReceiptId }
     : null;
 }
 

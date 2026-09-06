@@ -12,6 +12,7 @@ import { purchaseOrderControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -257,7 +258,13 @@ export async function requestPurchaseOrderControl(
   input: PurchaseOrderControlRequestInput,
   actor: Actor,
 ) {
-  return withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  const result = await withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.order.control",
+    id: result.requestId,
+    reason: input.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 /** DRAFT → SENT وإنشاء طلب اعتماد المراجعة في معاملة واحدة. */
@@ -277,7 +284,7 @@ export async function submitPurchaseOrderForApproval(
     expectedVersion: input.expectedVersion,
     reason,
   });
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [po] = await tx
       .select()
       .from(purchaseOrders)
@@ -397,6 +404,12 @@ export async function submitPurchaseOrderForApproval(
       idempotent: false as const,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.order.control",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 async function assertCancellationSafeTx(tx: Tx, purchaseOrderId: number) {

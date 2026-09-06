@@ -5,6 +5,7 @@
 // معلَّقاً في `stockAdjustmentRequests` **بلا تغيير مخزون**، ويعتمده مديرٌ آخر (SOD-04: المُعتمِد ≠ المُنشئ
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
@@ -178,7 +179,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
         attachmentUrl,
       })
     : null;
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -275,6 +276,12 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
     }
     return { requestId };
   });
+  await autoDecideForActiveOwner(actor, {
+    kind: "inventory.adjustment.approve",
+    id: result.requestId,
+    reason: input.notes ?? input.reason ?? null,
+  });
+  return result;
 }
 
 /** يفرض SOD-04 (المُعتمِد ≠ المُنشئ إلا admin) + عزل الفرع (غير admin يعتمد فرعه فقط). */

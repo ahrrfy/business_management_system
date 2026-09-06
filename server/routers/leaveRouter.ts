@@ -163,7 +163,10 @@ export const leaveRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const lv = await svc.createLeave({ ...input, scopedBranchId: ctx.scopedBranchId } as svc.LeaveInput);
+      const lv = await svc.createLeave(
+        { ...input, scopedBranchId: ctx.scopedBranchId } as svc.LeaveInput,
+        { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role, isOwner: ctx.user.isOwner },
+      );
       await logAudit(ctx, {
         action: "leave.create",
         entityType: "leaveRequest",

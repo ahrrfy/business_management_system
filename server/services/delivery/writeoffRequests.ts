@@ -12,6 +12,7 @@ import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { idempotencyHash, payloadHashMatches } from "../idempotency";
 import { money, round2, toDbMoney } from "../money";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   writeOffDeliveryShortfallInTx,
   type WriteOffInput,
@@ -192,7 +193,7 @@ export async function requestDeliveryCodWriteOff(input: DeliveryWriteOffRequestI
   assertBranch(payload.branchId, actor);
   const payloadHash = idempotencyHash(payload);
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (
       await tx.select().from(deliveryCodWriteOffRequests)
         .where(eq(deliveryCodWriteOffRequests.requestKey, requestKey)).limit(1)
@@ -321,6 +322,12 @@ export async function requestDeliveryCodWriteOff(input: DeliveryWriteOffRequestI
       });
     }
   }, { gate: "NONE" });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "delivery.codWriteOff.approve",
+    id: Number(result.id),
+    reason: payload.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function approveDeliveryCodWriteOff(input: DeliveryWriteOffDecisionInput, actor: DeliveryWriteOffReviewActor) {
@@ -411,7 +418,7 @@ export async function approveDeliveryCodWriteOff(input: DeliveryWriteOffDecision
         }),
       });
     }
-    if (Number(lockedRequest.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(lockedRequest.requestedBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -540,7 +547,7 @@ export async function rejectDeliveryCodWriteOff(
         }),
       });
     }
-    if (Number(request.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(request.requestedBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({

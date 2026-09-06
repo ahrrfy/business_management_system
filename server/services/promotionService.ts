@@ -20,6 +20,7 @@ import {
   users,
 } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
+import { resolveApprovalActor } from "./approval/ownerGate";
 import { extractInsertId } from "../lib/insertId";
 import Decimal from "decimal.js";
 import { money, round2, toDbMoney } from "./money";
@@ -226,6 +227,10 @@ export async function createPromotion(
     });
     return extractInsertId(res);
   });
+  const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, { ...actor, branchId: actor.branchId ?? 0 }));
+  if (resolvedActor.isOwner) {
+    await approvePromotion(newId, { ...actor, isOwner: true, role: "admin" });
+  }
   return getPromotion(newId, actor);
 }
 
@@ -670,6 +675,10 @@ export async function createTermination(
     });
     return extractInsertId(res);
   });
+  const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, { ...actor, branchId: actor.branchId ?? 0 }));
+  if (resolvedActor.isOwner) {
+    await completeTermination(newId, { ...actor, isOwner: true, role: "admin" });
+  }
   return getTermination(newId, actor);
 }
 
@@ -778,7 +787,7 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         message: "مجموع تفكيك التسوية لا يطابق الإجمالي المخزن.",
       });
     }
-    if (t.createdBy != null && Number(t.createdBy) === Number(actor.userId)) {
+    if (!actor.isOwner && t.createdBy != null && Number(t.createdBy) === Number(actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message:

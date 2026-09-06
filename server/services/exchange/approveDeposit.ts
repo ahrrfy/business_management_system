@@ -88,11 +88,11 @@ export async function approveExchangeDeposit(
       throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد مخصّص لإيداعات الدولار المعلّقة فقط" });
     }
     // فصل المهام: المعتمِد ≠ المُنشئ (admin مُستثنى).
-    if (actor.role !== "admin" && txn.createdBy != null && Number(txn.createdBy) === actor.userId) {
+    if (!actor.isOwner && txn.createdBy != null && Number(txn.createdBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد إيداعٍ أنشأته بنفسك — يلزم شخصٌ آخر (فصل المهام)." });
     }
     // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير لا يعتمد إيداع فرعٍ آخر.
-    if (actor.role !== "admin" && txn.branchId != null && Number(txn.branchId) !== Number(actor.branchId)) {
+    if (!actor.isOwner && actor.role !== "admin" && txn.branchId != null && Number(txn.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "عملية الصيرفة تخصّ فرعاً آخر" });
     }
 

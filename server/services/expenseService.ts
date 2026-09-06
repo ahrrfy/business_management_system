@@ -37,6 +37,7 @@ import { money, round2, toDateStr, toDbMoney } from "./money";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { assertApprover, resolveApprovalActor } from "./approval/ownerGate";
+import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 import { resolveExpenseCategory } from "./expenseCategoryService";
 import { extractInsertId } from "../lib/insertId";
 import { parseSystemPaymentRequest } from "./voucher/create";
@@ -592,7 +593,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   const payloadHash = expenseCreatePayloadHash(input, actor);
   const resolvedExpenseDate = input.expenseDate?.trim() || toDateStr();
   try {
-    return await withTx(async (tx) => {
+    const result = await withTx(async (tx) => {
       const replayId = await checkIdempotency(
         tx,
         opKey,
@@ -760,6 +761,15 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         requiresApproval: pendingApproval,
       };
     });
+    if ("status" in result && result.status === "PENDING_APPROVAL") {
+      const approved = await autoDecideForActiveOwner(actor, {
+        kind: "expense.approve",
+        id: result.expenseId,
+        reason: input.description ?? null,
+      });
+      if (approved) return { ...result, status: "ACTIVE" as const, requiresApproval: false };
+    }
+    return result;
   } catch (error) {
     if (!input.clientRequestId) throw error;
     // المكرر النقدي قد ينتظر قفل الدرج حتى يصرف الأول الرصيد، فيرى حارس السيولة قبل
@@ -774,7 +784,17 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       );
       return replayId ? loadExpenseReplay(tx, replayId) : null;
     });
-    if (replay) return replay;
+    if (replay) {
+      if (replay.status === "PENDING_APPROVAL") {
+        const approved = await autoDecideForActiveOwner(actor, {
+          kind: "expense.approve",
+          id: replay.expenseId,
+          reason: input.description ?? null,
+        });
+        if (approved) return { ...replay, status: "ACTIVE" as const, requiresApproval: false };
+      }
+      return replay;
+    }
     throw error;
   }
 }

@@ -22,6 +22,7 @@ import {
 import { baghdadToday } from "../businessDay";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   payrollSettlementPosting,
   postPayrollAccountingEvent,
@@ -178,6 +179,15 @@ export async function createRemittanceRequest(
   input: CreatePayrollRemittanceInput,
   actor: Actor,
 ) {
+  const finalize = async <T extends { id: number; status: string }>(result: T) => {
+    if (result.status !== "PENDING") return result;
+    const approved = await autoDecideForActiveOwner(actor, {
+      kind: "payroll.remittance.approve",
+      id: Number(result.id),
+      reason: `تحويل ${input.authorityName}`,
+    });
+    return approved ? { ...result, status: "APPROVED" as const } : result;
+  };
   assertValidRemittanceDocument(input.supportingDocumentUrl);
   if (!actor.isOwner && actor.role !== "admin" && Number(actor.branchId) !== input.payingBranchId) {
     throw new TRPCError({
@@ -225,10 +235,10 @@ export async function createRemittanceRequest(
         }),
       });
     }
-    return { ...replay, replayed: true };
+    return finalize({ ...replay, replayed: true });
   }
   try {
-    return await withTx(async (tx) => {
+    const created = await withTx(async (tx) => {
       const [branch] = await tx
         .select({ id: branches.id })
         .from(branches)
@@ -329,11 +339,12 @@ export async function createRemittanceRequest(
         .limit(1);
       return { ...created!, replayed: false };
     });
+    return finalize(created);
   } catch (error) {
     if (!isDupEntry(error)) throw error;
     const concurrent = await existingBySourceKey(sourceKey);
     if (concurrent && sameRequest(concurrent, input)) {
-      return { ...concurrent, replayed: true };
+      return finalize({ ...concurrent, replayed: true });
     }
     throw new TRPCError({
       code: "CONFLICT",

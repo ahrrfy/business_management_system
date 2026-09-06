@@ -182,7 +182,7 @@ export async function approveRunInTx(
     throw new TRPCError({ code: "CONFLICT", message: "تغيّرت فترة تشغيلة العمولات أثناء الاعتماد." });
   }
   if (run.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "التشغيلة معتمدة فعلاً." });
-  if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
+  if (!actor.isOwner && run.createdBy != null && Number(run.createdBy) === actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "المعتمِد يجب أن يختلف عن مَن احتسب التشغيلة (فصل مهام)." });
   }
   if (payroll && payroll.status !== "draft") {
