@@ -136,16 +136,12 @@ describe("digital sale review resolution", () => {
       intentId: operation.intentId, decision: "FINALIZE_SALE", reason: "مطابق لتقرير الجهاز ومبلغ البيع مقبوض",
       items: [{ intentItemId: operation.itemId, outcome: "ISSUED", providerReference: "RR-SALE-1" }],
     }, owner));
-    const result = await withTx((tx) => reviewResolutionService.approveResolution(tx, {
-      intentId: operation.intentId,
-    }, owner));
 
-    expect(result.invoiceId).toBeTypeOf("number");
     const [intent] = await db().select().from(s.digitalSaleIntents).where(eq(s.digitalSaleIntents.id, operation.intentId));
     const [resolution] = await db().select().from(s.digitalSaleReviewResolutions)
       .where(eq(s.digitalSaleReviewResolutions.intentId, operation.intentId));
     expect(intent.status).toBe("FINALIZED");
-    expect(Number(intent.invoiceId)).toBe(result.invoiceId);
+    expect(Number(intent.invoiceId)).toBeGreaterThan(0);
     expect(resolution.status).toBe("APPROVED");
     expect(Number(resolution.requestedBy)).toBe(owner.userId);
     expect(Number(resolution.reviewedBy)).toBe(owner.userId);

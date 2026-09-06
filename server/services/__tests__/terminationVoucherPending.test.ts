@@ -66,7 +66,7 @@ async function resetAndSeed() {
       name: "Maker owner",
       role: "manager",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
       isActive: true,
     },
     {

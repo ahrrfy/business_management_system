@@ -41,6 +41,7 @@ import type { VoucherInput, VoucherResult } from "./types";
 import { createHash } from "node:crypto";
 import { voucherApprovalTrigger } from "@shared/approvalTriggers";
 import { planApproval, resolveApprovalActor } from "../approval/ownerGate";
+import { logAuditTx } from "../auditService";
 import {
   isCanonicalPurchaseUsdSystemPaymentRequest,
   PURCHASE_USD_REFERENCE_PREFIX,
@@ -1038,7 +1039,25 @@ export async function createVoucherTx(
     // الاستيراد الديناميكي يمنع دورة create ⇄ approval وقت تهيئة الوحدات؛ الاعتماد نفسه
     // يجري داخل tx الحالية، لذلك لا يمكن أن يبقى طلب المالك معلّقاً إذا فشل الأثر المالي.
     const { approveVoucherTx } = await import("./approval");
-    await approveVoucherTx(tx, receiptId, resolvedActor);
+    const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+    await logAuditTx(
+      tx,
+      {
+        user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+        req: undefined as never,
+      },
+      {
+        action: "voucher.approve",
+        entityType: "receipt",
+        entityId: receiptId,
+        branchId: input.branchId,
+        newValue: {
+          voucherNumber: approval.voucherNumber,
+          signatureHash: approval.signatureHash,
+          approvalAuthority: "OWNER_AUTO",
+        },
+      },
+    );
   }
 
   return {
@@ -1059,7 +1078,25 @@ export async function finalizeOwnerSystemVoucherTx(
   const resolvedActor = await resolveApprovalActor(tx, actor);
   if (!resolvedActor.isOwner) return false;
   const { approveVoucherTx } = await import("./approval");
-  await approveVoucherTx(tx, receiptId, resolvedActor);
+  const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+  await logAuditTx(
+    tx,
+    {
+      user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+      req: undefined as never,
+    },
+    {
+      action: "voucher.approve",
+      entityType: "receipt",
+      entityId: receiptId,
+      branchId: resolvedActor.branchId ?? null,
+      newValue: {
+        voucherNumber: approval.voucherNumber,
+        signatureHash: approval.signatureHash,
+        approvalAuthority: "OWNER_AUTO",
+      },
+    },
+  );
   return true;
 }
 

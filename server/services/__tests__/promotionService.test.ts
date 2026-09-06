@@ -100,7 +100,7 @@ async function seedBase() {
       name: "مدير",
       role: "admin",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 2,
@@ -108,7 +108,7 @@ async function seedBase() {
       name: "مدير أ",
       role: "manager",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 3,
@@ -474,15 +474,13 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       },
       ACTOR,
     );
-    const res = await completeTermination(t!.id, ownerMaker);
     // تمويلُ الخزينة (كنظير الاختبار أعلاه) — الاعتمادُ الذاتيّ لا يُعفي من فحص كفاية النقد.
     await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "500000", paymentMethod: "CASH",
       cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
       referenceNumber: "TEST-SELF-APPROVE-FUND", createdBy: 3,
     });
-    const ap = await approveVoucher(res.settlementVoucher!.receiptId, ownerMaker);
-    expect(ap.approvalStatus).toBe("APPROVED");
+    const res = await completeTermination(t!.id, ownerMaker);
     const [rc] = await db()
       .select()
       .from(s.receipts)

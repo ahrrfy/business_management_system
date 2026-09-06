@@ -21,7 +21,7 @@ const maker = {
   userId: 1,
   branchId: 1,
   role: "admin" as const,
-  isOwner: true,
+  isOwner: false,
 };
 const checker = {
   userId: 2,
@@ -73,7 +73,7 @@ async function seed() {
       role: "admin",
       loginMethod: "local",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
       isActive: true,
     },
     {

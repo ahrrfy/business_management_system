@@ -676,7 +676,9 @@ export async function createTermination(
     return extractInsertId(res);
   });
   const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, { ...actor, branchId: actor.branchId ?? 0 }));
-  if (resolvedActor.isOwner) {
+  // الطلب المستقبلي يبقى مؤجلاً حتى يومه التشغيلي؛ تجاوز الاعتماد لا يعني تنفيذ
+  // إنهاء الخدمة قبل آخر يوم عمل.
+  if (resolvedActor.isOwner && input.lastDay <= baghdadToday()) {
     await completeTermination(newId, { ...actor, isOwner: true, role: "admin" });
   }
   return getTermination(newId, actor);

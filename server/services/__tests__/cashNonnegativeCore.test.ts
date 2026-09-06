@@ -68,7 +68,7 @@ async function seedBase() {
       role: "admin",
       loginMethod: "local",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 2,

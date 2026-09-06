@@ -58,7 +58,7 @@ async function resetAndSeed() {
       name: "Creator owner",
       role: "manager",
       branchId: 2,
-      isOwner: true,
+      isOwner: false,
       isActive: true,
     },
     {

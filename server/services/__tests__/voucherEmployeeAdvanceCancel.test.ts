@@ -151,7 +151,7 @@ beforeEach(async () => {
 describe("employee advance voucher cancellation", () => {
   it("يلغي السلفة غير المستعملة ذرياً مع الإيصال والقيد ويعيد الاعتماد idempotently", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-happy");
-    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
     expect(cancellation.status).toBe("PENDING_APPROVAL");
 
     let [advance] = await db()
@@ -207,7 +207,7 @@ describe("employee advance voucher cancellation", () => {
    */
   it("cancelAdvance المستقلّة بعد مسار السند الحقيقيّ: رفضٌ آمن لا إلغاءٌ مزدوج (مسارٌ ميت عملياً)", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-real-path-then-direct");
-    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
     await approveVoucher(Number(cancellation.approvalReceiptId), SECOND_OWNER);
 
     const [sourceReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
@@ -237,7 +237,7 @@ describe("employee advance voucher cancellation", () => {
     const receiptsBefore = await db().select().from(s.receipts);
     const entriesBefore = await db().select().from(s.accountingEntries);
 
-    await expect(cancelVoucher(original.receiptId, FIRST_OWNER)).rejects.toMatchObject({
+    await expect(cancelVoucher(original.receiptId, MAKER)).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
 
@@ -254,7 +254,7 @@ describe("employee advance voucher cancellation", () => {
 
   it("يعيد فحص الاستعمال تحت القفل عند الاعتماد ولا يعكس طلب إلغاء سبق الخصم بعده", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-race");
-    const cancellation = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const cancellation = await cancelVoucher(original.receiptId, MAKER);
     await materializePartialPayrollDeduction(original.advance, "2026-08");
 
     await expect(
@@ -285,14 +285,14 @@ describe("employee advance voucher cancellation", () => {
 
   it("يرفض محاولة الإلغاء A1 ثم يعيد إصدار A2 مرتبطة بها مرة واحدة ويُبقي المفتاح القديم", async () => {
     const original = await requestAndApproveAdvance("advance-cancel-reissue");
-    const first = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const first = await cancelVoucher(original.receiptId, MAKER);
     await rejectVoucher(
       Number(first.approvalReceiptId),
       SECOND_OWNER,
       "بيانات طلب الإلغاء تحتاج مراجعة",
     );
 
-    const second = await cancelVoucher(original.receiptId, FIRST_OWNER);
+    const second = await cancelVoucher(original.receiptId, MAKER);
     expect(second.approvalReceiptId).not.toBe(first.approvalReceiptId);
     const [secondReceipt] = await db()
       .select()
@@ -328,7 +328,7 @@ describe("employee advance voucher cancellation", () => {
     await expect(
       approveVoucher(Number(first.approvalReceiptId), SECOND_OWNER),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    const replay = await cancelVoucher(original.receiptId, FIRST_OWNER).catch(
+    const replay = await cancelVoucher(original.receiptId, MAKER).catch(
       (error: unknown) => error,
     );
     expect(replay).toMatchObject({ code: "BAD_REQUEST" });
