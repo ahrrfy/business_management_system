@@ -153,7 +153,7 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
     expect(Number(entries[0].deliveryPartyId)).toBe(partyId);
   });
 
-  it("أمر شغل مسند للتوصيل في حالة READY وصدرت له فاتورة يمكن إلغاؤه بسلاسة وفك إسناده وعكس فاتورته", async () => {
+  it("أمر شغل مسند للتوصيل: الحارس يمنع الإلغاء أثناء الإسناد وبعد فكّه يوجّه للاسترجاع لوجود الفاتورة", async () => {
     const shift = await openReceptionShift();
     const partyRes = await createDeliveryParty({
       name: "شركة الفهد للتوصيل",
@@ -220,24 +220,19 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
     expect(parcelCancelled.parcelStatus).toBe("CANCELLED");
     expect(parcelCancelled.status).toBe("CANCELLED");
 
-    // الآن بعد فك الشحنة، طلب واعتماد إلغاء أمر الشغل ينفذان بنجاح ويعكسان الفاتورة
+    // بعد فك الشحنة، لأن الأمر صدرت له فاتورة بيع، حارس الفاتورة (ز) يرفض الإلغاء ويوجه لمسار استرجاع التسليم
     const [woReadyForCancel] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
     const request = await requestWorkOrderControl({
       requestKey: `cancel-dispatch-ok-${randomUUID()}`,
       workOrderId,
       requestType: "CANCEL",
       baseVersion: Number(woReadyForCancel.version),
-      reason: "إلغاء الطلب بناء على رغبة العميل وفك إسناد التوصيل",
+      reason: "محاولة إلغاء أمر بعد صدور فاتورته",
       payload: { refundShiftId: shift.shiftId, materials: null },
     }, MANAGER);
 
-    await approveWorkOrderControlRequest(Number(request.id), OWNER, "موافق على الإلغاء وعكس الفاتورة");
-
-    const [woAfter] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
-    expect(woAfter.status).toBe("CANCELLED");
-
-    // الفاتورة تعود ملغاة
-    const [invAfter] = await db().select().from(s.invoices).where(eq(s.invoices.id, Number(woBefore.invoiceId)));
-    expect(invAfter.status).toBe("CANCELLED");
+    await expect(
+      approveWorkOrderControlRequest(Number(request.id), OWNER, "موافق"),
+    ).rejects.toThrowError(/فاتورة|استرجاع/);
   });
 });

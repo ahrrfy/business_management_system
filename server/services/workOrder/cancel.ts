@@ -6,7 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
-import { adjustCustomerBalance, postEntry } from "../ledgerService";
+import { postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../deposits";
@@ -17,7 +17,6 @@ import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from ".
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { logAuditTx } from "../auditService";
-import { assertPeriodOpen } from "../periodLockService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
@@ -240,60 +239,15 @@ export async function cancelWorkOrderInTx(
       });
     await assertNoLiveConsignment(tx, workOrderId, "cancel");
 
-    // إذا كانت قد صدرت فاتورة للطلب، نعكس الفاتورة وذمّتها بقيود محاسبية مطابقة
     if (wo.invoiceId != null) {
-      const invId = Number(wo.invoiceId);
-      const inv = (
-        await tx
-          .select()
-          .from(invoices)
-          .where(eq(invoices.id, invId))
-          .for("update")
-          .limit(1)
-      )[0];
-      if (inv && inv.status !== "CANCELLED" && inv.status !== "RETURNED") {
-        await assertPeriodOpen(tx, inv.invoiceDate);
-        const invTotal = round2(money(inv.total));
-        const matCost = round2(money(wo.materialsCost ?? "0"));
-        const rawDeposit = money(wo.deposit ?? "0");
-        const depClosed = round2(rawDeposit.lt(invTotal) ? rawDeposit : invTotal);
-        const codAmt = round2(money(wo.codAmount ?? "0"));
-
-        const reverseLines = [debitLine("SALES_FLEX", invTotal), creditLine("AR", invTotal)];
-        const roleDebits: Record<string, Decimal> = { SALES_FLEX: invTotal };
-        const roleCredits: Record<string, Decimal> = { AR: invTotal };
-        if (matCost.gt(0)) {
-          reverseLines.push(debitLine("WORK_IN_PROGRESS", matCost), creditLine("COGS", matCost));
-          roleDebits.WORK_IN_PROGRESS = matCost;
-          roleCredits.COGS = matCost;
-        }
-        if (depClosed.gt(0)) {
-          reverseLines.push(debitLine("AR", depClosed), creditLine("OTHER_LIABILITY", depClosed));
-          roleDebits.AR = depClosed;
-          roleCredits.OTHER_LIABILITY = depClosed;
-        }
-        const reverseSource = { roleDebits, roleCredits };
-        await postEntry(tx, {
-          entryType: "RETURN",
-          dedupeKey: `WO-CANCEL-INV:${workOrderId}:${invId}`,
-          branchId: Number(wo.branchId),
-          invoiceId: invId,
-          customerId: wo.customerId ?? null,
-          revenue: invTotal.neg(),
-          cost: matCost.neg(),
-          profit: round2(invTotal.minus(matCost)).neg(),
-          amount: invTotal.neg(),
-          notes: `إلغاء فاتورة أمر الشغل ${wo.orderNumber} — ${reason}`,
-          postingIntent: createPostingIntent("RETURN_SALE_FLEX_WORKORDER", "RETURN", reverseLines, reverseSource),
-          postingSourceComponents: reverseSource,
-        });
-
-        if (wo.customerId != null && codAmt.gt(0)) {
-          await adjustCustomerBalance(tx, Number(wo.customerId), codAmt.neg());
-        }
-
-        await tx.update(invoices).set({ status: "CANCELLED" }).where(eq(invoices.id, invId));
-      }
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
+          why: `صدرت للطلب فاتورة (رقمها الداخليّ ${Number(wo.invoiceId)}) وقُيِّد بيعُها وذمّتُها — والإلغاء يردّ المواد ويستردّ العربون ويترك الفاتورة وقيدها قائمَين: إيرادٌ بلا بضاعة وذمّةٌ على عميلٍ لطلبٍ ملغى`,
+          doThis: "استعمل «استرجاع التسليم» من صفحة أمر الشغل بدل الإلغاء — هو الذي يعكس الفاتورة والذمّة والمواد معاً في عمليةٍ واحدة",
+        }),
+      });
     }
     const existingMaterials = await tx
       .select({ id: workOrderMaterials.id })
