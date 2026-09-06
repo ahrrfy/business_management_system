@@ -332,6 +332,12 @@ export default defineConfig({
       "client/src/components/form/__tests__/productFormModel.test.ts",
       "client/src/pages/__tests__/productFormParity.test.ts",
       "client/src/hooks/__tests__/useSaveShortcuts.test.ts",
+      // م١ (٥/٩/٢٦) — الكاشير بوضعين + لوحة الخمسة أعمدة + التسوية اليوميّة + مطابقة كشف الشركة (منطقٌ نقيّ بلا قاعدة).
+      "client/src/components/customer/customerByPhoneMachine.test.ts",
+      "client/src/components/pos/deliveryMode.test.ts",
+      "client/src/components/delivery/partyBoardModel.test.ts",
+      "client/src/components/delivery/dailySettlement.test.ts",
+      "client/src/components/delivery/companyStatementReconciliation.test.ts",
       // م٨ (٦/٩/٢٦) — تكافؤ نموذج القدرات مع بوّابات الوحدة (نقيّ، بلا قاعدة).
       "server/services/__tests__/capabilityGateEquivalence.test.ts",
     ],

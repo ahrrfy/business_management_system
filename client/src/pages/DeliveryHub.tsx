@@ -5,7 +5,6 @@ import {
   Check,
   CheckCircle2,
   FileCheck2,
-  FileText,
   History,
   MessageCircle,
   Phone,
@@ -38,6 +37,9 @@ import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
+import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
+import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -54,7 +56,6 @@ import {
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
 import { cn } from "@/lib/utils";
-import { printDoc } from "@/lib/printing/print";
 import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { buildCourierAssignmentMessage, buildCustomerDispatchMessage, buildWorkOrderStatusMessage, openWhatsApp } from "@/lib/whatsapp";
@@ -89,40 +90,17 @@ type TransitRow = InTransitRow & { viewKey: ConsignmentViewKey };
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 type RemittanceRow = RouterOutputs["delivery"]["remittances"][number];
 
-/** إيصال تسوية توصيل حراري عند التوريد. */
-function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string | null; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string; courierCommissionAmount?: string | null }) {
-  if (!r.remittanceNumber) return; // كشف إثبات محض بلا سند توريد ⇒ لا إيصال.
-  // Slice H (٢٩/٨/٢٦): سطرُ العمولة يظهر على الإيصال حين تكون للجهة قاعدةٌ فعّالة — إعلاميّ للمقارنة.
-  const totals: Array<{ label: string; value: string }> = [
-    { label: "إجمالي التحصيل", value: `${fmt(r.collectedTotal)} د.ع` },
-    { label: "مستحقات الجهة (الأجور)", value: `${fmt(r.feesTotal)} د.ع` },
-  ];
-  if (r.courierCommissionAmount != null) {
-    totals.push({ label: "عمولة القاعدة (تقديريّة)", value: `${fmt(r.courierCommissionAmount)} د.ع` });
-  }
-  totals.push(
-    { label: "صافٍ للمكتبة", value: `${fmt(r.netRemitted)} د.ع` },
-    { label: "عجز يبقى عهدة", value: `${fmt(r.shortfallTotal)} د.ع` },
-  );
-  void printDoc({
-    kind: "zreport",
-    title: "إيصال تسوية توصيل",
-    subtitle: r.remittanceNumber,
-    meta: [`الجهة: ${partyName}`, fmtDateTime(new Date())],
-    totals,
-    footer: "تسوية تحصيلات المندوب",
-  });
-}
-
 const tabBtn = (active: boolean) =>
   cn(
     "rounded-lg px-4 py-2 text-sm font-bold transition-colors",
     active ? "bg-primary text-primary-foreground" : "border bg-card hover:bg-muted/60",
   );
 
-function readTabFromSearch(search: string): "dispatch" | "transit" | "settle" {
+// م١ PR-C: «board» = لوحة الخمسة أعمدة — الصورة الحيّة لكلّ جهة + «سوِّ اليوم» بتأكيدٍ واحد (PartyBoardSection).
+type HubTabKey = "dispatch" | "transit" | "settle" | "board";
+function readTabFromSearch(search: string): HubTabKey {
   const t = new URLSearchParams(search).get("tab");
-  return t === "transit" ? "transit" : t === "settle" ? "settle" : "dispatch";
+  return t === "transit" ? "transit" : t === "settle" ? "settle" : t === "board" ? "board" : "dispatch";
 }
 
 export default function DeliveryHub() {
@@ -134,7 +112,7 @@ export default function DeliveryHub() {
    * يدوياً يبقى يعمل (setTab يتقدّم على الـeffect للتحديث المحلّيّ الفوريّ).
    */
   const search = useSearch();
-  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(() => readTabFromSearch(search));
+  const [tab, setTab] = useState<HubTabKey>(() => readTabFromSearch(search));
   useEffect(() => {
     setTab(readTabFromSearch(search));
   }, [search]);
@@ -171,8 +149,9 @@ export default function DeliveryHub() {
           )}
         </button>
         <button className={tabBtn(tab === "settle")} onClick={() => setTab("settle")}>تسوية المناديب</button>
+        <button className={tabBtn(tab === "board")} onClick={() => setTab("board")}>اللوحة</button>
       </div>
-      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : <SettleTab />}
+      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : tab === "board" ? <PartyBoardSection /> : <SettleTab />}
     </div>
   );
 }
@@ -499,7 +478,9 @@ function InTransitTab() {
   useEffect(() => {
     if (rows.hasNextPage && !rows.isFetchingNextPage) void rows.fetchNextPage();
   }, [rows.hasNextPage, rows.isFetchingNextPage, rows.fetchNextPage]);
-  const [query, setQuery] = useState("");
+  // م١ PR-C: لوحة الجهات تفتح هذا التبويب بفلترٍ وبحثٍ من الرابط (?view=…&q=…) — يُقرآن مرّةً عند التركيب.
+  const transitSearch = useSearch();
+  const [query, setQuery] = useState(() => new URLSearchParams(transitSearch).get("q") ?? "");
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [drawerId, setDrawerId] = useState<number | null>(null);
   const [failTarget, setFailTarget] = useState<{ ids: number[] } | null>(null);
@@ -582,7 +563,10 @@ function InTransitTab() {
   });
 
   // ── Filtering ──
-  const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">("ALL");
+  const [stateFilter, setStateFilter] = useState<ConsignmentViewKey | "ALL">(() => {
+    const v = new URLSearchParams(transitSearch).get("view");
+    return v && (CONSIGNMENT_VIEW_ORDER as readonly string[]).includes(v) ? (v as ConsignmentViewKey) : "ALL";
+  });
   const rowsWithView = useMemo(() => {
     const flat = (rows.data?.pages ?? []).flatMap((p) => p.rows);
     return flat.map((r) => ({
@@ -1529,7 +1513,10 @@ function SettleTab() {
   const partyName = obligations.data?.find((p) => String(p.partyId) === partyId)?.name ?? "";
   const partyRow = obligations.data?.find((p) => String(p.partyId) === partyId);
 
-  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount) - Number((c as { counterSettledAmount?: string }).counterSettledAmount ?? "0"));
+  // note-I (م١): المتبقّي الحيّ للتوريد يطرح **العجزَ المُصنَّف** (`shortfallAssigned` من الخادم) — نقدٌ لم
+  // تقبضه الجهة قطّ وحُمِّل عليها ذمّةً. بدونه يحسب هذا أعلى من الحدّ الخادميّ (`recordDeliveryRemittanceInTx`)
+  // فيُرفَض كلُّ توريدٍ بعد عجز. مطابقٌ لصيغة `queries.ts`: cod − collected − counterSettled − shortfallAssigned.
+  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount) - Number(c.counterSettledAmount ?? "0") - Number(c.shortfallAssigned ?? "0"));
   const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
     && remainingOf(c) > 0;
@@ -1991,49 +1978,15 @@ function SettleTab() {
             </table>
           </ScrollTableShell>
 
-          {/* ─── كشف شركة التوصيل (يقلب الأهلية إلى opt-in) ─── */}
-          <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/40 p-4">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-info)]">
-                <FileText aria-hidden className="size-4" />
-                كشف شركة التوصيل (اختياريّ)
-              </div>
-              {statementMode && (
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="rounded bg-card px-2 py-1 font-bold">المحدَّد: <span className="tabular-nums">{totals.selectedCount}</span> من {list.filter((c) => isSettleable(c)).length}</span>
-                  <Button size="sm" variant="outline" onClick={selectAll}>تحديد الكل</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setRows({})}>مسح التحديد</Button>
-                </div>
-              )}
-            </div>
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="space-y-1">
-                <Label htmlFor="stmt-no" className="text-xs">رقم الكشف</Label>
-                <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
-                  onChange={(e) => { setStatementNumber(e.target.value); setRows({}); }} placeholder="STMT-…" className="h-9" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-date" className="text-xs">تاريخ الكشف</Label>
-                <Input id="stmt-date" type="date" value={statementDate}
-                  onChange={(e) => setStatementDate(e.target.value)} className="h-9" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
-                <MoneyInput id="stmt-deduct" value={String(statementDeductions || "")}
-                  onChange={(v) => setStatementDeductions(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="stmt-notes" className="text-xs">ملاحظة</Label>
-                <Input id="stmt-notes" value={statementNotes} maxLength={500}
-                  onChange={(e) => setStatementNotes(e.target.value)} placeholder="سبب الفرق مثلاً…" className="h-9" />
-              </div>
-            </div>
-            {statementMode && (
-              <p className="mt-2 text-[11px] font-bold text-[var(--sem-info)]">
-                وضعُ الكشف مُفعَّل: الصفوف تبدأ **غير محدَّدة** (opt-in). حدّد ما ورد في الكشف الورقيّ يدوياً — الأسطر الصفرية تُثبِت التسليم بلا نقد.
-              </p>
-            )}
-          </div>
+          {/* ─── كشف شركة التوصيل (يقلب الأهلية إلى opt-in) + مطابقته الحيّة مطابق/مختلف/مفقود (م١ PR-C) ─── */}
+          <CompanyStatementBox
+            statementNumber={statementNumber} onStatementNumberChange={(v) => { setStatementNumber(v); setRows({}); }}
+            statementDate={statementDate} onStatementDateChange={setStatementDate}
+            deductions={statementDeductions} onDeductionsChange={setStatementDeductions}
+            notes={statementNotes} onNotesChange={setStatementNotes}
+            onSelectAll={selectAll} onClearSelection={() => setRows({})}
+            lines={list.filter((c) => isSettleable(c)).map((c) => ({ consignmentId: c.id, consignmentNumber: c.consignmentNumber, remaining: String(remainingOf(c)), selected: get(c).outcome === "COLLECTED", collected: get(c).collected }))}
+          />
 
           {/**
            * Slice DFP2 (٣١/٨/٢٦) — إعادة تصميم بطاقة توريد التسوية:

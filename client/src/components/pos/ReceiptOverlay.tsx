@@ -55,6 +55,9 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
   const invoiceNumber = (("invoiceNumber" in receipt ? receipt.invoiceNumber : undefined) ?? ("num" in receipt ? receipt.num : undefined) ?? "") as string;
   const consignmentNumber = ("consignmentNumber" in receipt ? receipt.consignmentNumber : undefined) ?? null;
   const delivery = "delivery" in receipt ? receipt.delivery : null;
+  // Codex #1012 P2: طلبُ توصيلٍ عليه متبقٍّ يُحصَّل عند التسليم ليس «مدفوعاً» — ختمُ الإيصال وعنوانُه
+  // يجب ألّا يدّعيا الدفعَ الكامل بينما يظهر المتبقّي مستحقّاً أدناه (تناقضٌ يربك الكاشير والزبون).
+  const codOutstanding = !!delivery && receipt.total > receipt.received;
   const isCredit = "isCredit" in receipt ? receipt.isCredit : false;
   const credit = "credit" in receipt ? receipt.credit : 0;
   const customerName = "customerName" in receipt ? receipt.customerName : null;
@@ -104,7 +107,7 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
           ref={modalRef}
           role="dialog"
           aria-modal="true"
-          aria-label="تم الدفع بنجاح"
+          aria-label={codOutstanding ? "تم تسجيل طلب التوصيل" : "تم الدفع بنجاح"}
           style={{
             display: "flex", flexDirection: "column", alignItems: "center",
             width: "100%", maxWidth: 440, cursor: "default", direction: "rtl",
@@ -184,8 +187,8 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
                 position: "absolute",
                 top: 22,
                 left: 20,
-                border: "2.5px solid #16a34a",
-                color: "#16a34a",
+                border: codOutstanding ? "2.5px solid #0284c7" : "2.5px solid #16a34a",
+                color: codOutstanding ? "#0284c7" : "#16a34a",
                 borderRadius: 8,
                 padding: "2px 10px",
                 fontSize: 12.5,
@@ -195,11 +198,11 @@ export function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverla
                 alignItems: "center",
                 gap: 4,
                 pointerEvents: "none",
-                background: "rgba(240, 253, 244, 0.9)",
+                background: codOutstanding ? "rgba(240, 249, 255, 0.9)" : "rgba(240, 253, 244, 0.9)",
               }}
             >
-              <Check size={14} strokeWidth={3} />
-              <span>مدفوع • PAID</span>
+              {codOutstanding ? <Truck size={14} strokeWidth={2.5} aria-hidden /> : <Check size={14} strokeWidth={3} />}
+              <span>{codOutstanding ? "طلب توصيل" : "مدفوع • PAID"}</span>
             </motion.div>
 
             {/* ترويسة الإيصال */}

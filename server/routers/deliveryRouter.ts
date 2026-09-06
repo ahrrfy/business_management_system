@@ -52,6 +52,12 @@ import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
 import { SHORTFALL_REASONS } from "@shared/shortfallReason";
+import { GOVERNORATE_IDS } from "@shared/governorates";
+import { appErrorMessage } from "@shared/errors";
+import { listPartyBoardTx, suggestPartyForZoneTx } from "../services/delivery/board";
+import { previewDailySettlementTx, settleDailyTx } from "../services/delivery/dailySettlement";
+import { withTx } from "../services/tx";
+import { rolloutMode } from "../config/rolloutFlags";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -101,10 +107,33 @@ function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null }
 async function assertPartyInScope(partyId: number, scopedBranchId: number | null) {
   const party = await getDeliveryParty(partyId);
   if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
-  if (scopedBranchId == null) return; // الأدمن عابر الفروع
+  if (scopedBranchId == null) return party; // الأدمن عابر الفروع
   if (party && party.branchId != null && Number(party.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل تخصّ فرعاً آخر" });
   }
+  return party;
+}
+
+/**
+ * فرعُ التسوية اليوميّة (م١ PR-C): فرعُ الفاعل (عزل مدير الفرع — `effectiveBranch`)، وللأدمن بلا
+ * فرعٍ مُسنَد فرعُ الجهة نفسها — ولا تسويةَ بلا فرعٍ محدَّد: النقدُ يدخل درجَ فرعٍ بعينه.
+ */
+function settlementBranchOf(
+  ctx: { user: { role?: string; branchId?: number | null } },
+  requested: number | null | undefined,
+  party: { branchId?: number | null },
+): number {
+  const own = effectiveBranch(ctx, requested);
+  if (own > 0) return own;
+  if (party.branchId != null && Number(party.branchId) > 0) return Number(party.branchId);
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: "تعذّر تحديد فرع التسوية اليوميّة",
+      why: "حسابك غير مُسنَدٍ إلى فرع، والجهة مشتركة بين الفروع فلا يُعرف درجُ أيّ فرعٍ يستلم النقد",
+      doThis: "افتح التسوية من حساب كاشير/مدير الفرع، أو أسنِد حسابك إلى فرعٍ من شاشة المستخدمين ثمّ أعد المحاولة",
+    }),
+  });
 }
 
 
@@ -383,6 +412,101 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       return listPartyRemittances(input.partyId, { from: input.from, to: input.to, limit: input.limit });
     }),
+
+  // ─── م١ PR-C — لوحة الخمسة أعمدة + التسوية اليوميّة بتأكيدٍ واحد + اقتراح الجهة بالمنطقة ───
+  // سطورٌ رقيقة (zod + withTx(خدمة)) — الخدمات في server/services/delivery/{board,dailySettlement}.ts (م١-خادم PR-2).
+
+  /**
+   * لكلّ جهةٍ: مُسنَد · بالطريق · سُلِّم ولم يُورَّد · رجع · أُلغي + نقدٌ بيده (دفتر/مخزَّن/انحراف) + أجور + صافٍ
+   * + طرود متأخّرة (SLA). `branchScopedProcedure`: المالك/الأدمن يعبُران (scopedBranchId=null ⇒ كلّ الفروع)،
+   * وغيرُهما مثبَّتٌ على فرعه — نفس عزل `listParties`.
+   */
+  partyBoard: deliveryReadProcedure.query(({ ctx }) =>
+    withTx((tx) =>
+      listPartyBoardTx(tx, { branchId: ctx.scopedBranchId, canCrossBranches: ctx.scopedBranchId == null }, actorOf(ctx)),
+    ),
+  ),
+
+  /** المعاينة المحسوبة سلفاً: المتوقَّع · الأجرة المستحقّة · الاستقطاعات · الصافي · الأسطر · المرتجعات المُعلَنة. */
+  settlementPreview: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive(), branchId: z.number().int().positive().nullish() }))
+    .query(async ({ input, ctx }) => {
+      const party = await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      const branchId = settlementBranchOf(ctx, input.branchId, party);
+      return withTx((tx) => previewDailySettlementTx(tx, { partyId: input.partyId, branchId }, actorOf(ctx)));
+    }),
+
+  /**
+   * الإقفال بتأكيدٍ واحد: المعدود يطابق ⇒ BALANCED؛ ينقص ⇒ SHORT بسببٍ مصنَّف من `shared/shortfallReason`
+   * (يُقيَّد `SHORTFALL_ASSIGNED` ذمّةً فوريّة على الجهة)؛ يزيد ⇒ رفضٌ خادميّ (الزيادة تحتاج مصدراً).
+   * البوّابة `deliveryCashierProcedure` (store:FULL بكاشير/مدير) — النقد يدخل الدرج فتُشترط ورديّته.
+   */
+  settleDaily: deliveryCashierProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        countedCash: moneyStr,
+        shortfallReason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]).optional(),
+        shortfallNotes: z.string().trim().max(500).nullish(),
+        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      // IDOR كتابة (F7): كاشير فرعٍ لا يُسوّي جهة فرعٍ آخر (نظير recordRemittance/settle).
+      const party = await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const branchId = settlementBranchOf(ctx, input.branchId, party);
+      // retryOnDup (مرآة recordRemittance): نقرتان بنفس المفتاح ⇒ الثانية تعيد النتيجة idempotent بدل خطأٍ للمستخدم.
+      const res = await retryOnDeadlock(() => retryOnDup(() =>
+        withTx((tx) =>
+          settleDailyTx(
+            tx,
+            {
+              partyId: input.partyId,
+              branchId,
+              countedCash: input.countedCash,
+              shortfallReason: input.shortfallReason,
+              shortfallNotes: input.shortfallNotes,
+              shiftType: input.shiftType,
+              clientRequestId: input.clientRequestId,
+            },
+            actorOf(ctx),
+          ),
+        ),
+      ));
+      await logAudit(ctx, {
+        action: "delivery.settleDaily",
+        entityType: "deliveryRemittance",
+        entityId: res.remittanceId,
+        newValue: { partyId: input.partyId, countedCash: input.countedCash, status: res.status, shortfallTotal: res.shortfallTotal, shortfallReason: input.shortfallReason ?? null },
+      });
+      return res;
+    }),
+
+  /**
+   * اقتراح الجهة للمحافظة (أتمتة ٤): أكثرُ الجهات إسناداً للمنطقة في هذا الفرع خلال ٩٠ يوماً + أجرة المنطقة —
+   * «المستخدم يعدّل لا يبتدئ»؛ `null` بصدقٍ بلا تاريخ. بلا فرعٍ محدَّد (أدمن بلا فرع) لا اقتراح.
+   */
+  suggestPartyForZone: deliveryReadProcedure
+    .input(z.object({ governorate: z.enum(GOVERNORATE_IDS), branchId: z.number().int().positive().nullish() }))
+    .query(({ input, ctx }) => {
+      const branchId = effectiveBranch(ctx, input.branchId);
+      if (!(branchId > 0)) return null;
+      return withTx((tx) => suggestPartyForZoneTx(tx, { governorate: input.governorate, branchId }));
+    }),
+
+  /**
+   * أعلامُ الطرح التدريجيّ التي تحكم واجهةَ التوصيل (Codex #1012 P1/P2) — تُشتقّ من البيئة على الخادم
+   * (`server/config/rolloutFlags`) فتصل العميلَ بدل أن يخمّنها: (١) `posDeliveryMode` — بلا ON لا يُعرَض
+   * مفتاحُ «توصيل» في الكاشير (الافتراض OFF = وضعٌ واحد كما وثّق السجلّ)؛ (٢) `courierLedgerDerived` —
+   * بلا ON تعرض لوحةُ الجهات «نقد بيده» من المخزَّن (`currentBalance`) لا من الدفتر، مطابقاً لمصدر `net`.
+   * بوّابةُ `store:READ` تكفي: يملكها كلُّ مشغّلي الكاشير/الاستقبال/التوصيل، فلا فِعلَ ولا رقمَ حسّاس هنا.
+   */
+  deliveryUiFlags: deliveryReadProcedure.query(() => ({
+    posDeliveryMode: rolloutMode("posDeliveryMode") === "ON",
+    courierLedgerDerived: rolloutMode("courierLedgerDerived") === "ON",
+  })),
 
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — store=FULL بكاشير/مدير أو منح صريح.
