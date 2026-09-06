@@ -787,6 +787,7 @@ export async function proposeCashVarianceCase(
   const approved = await autoDecideForActiveOwner(actor, {
     kind: "cash.variance.approve",
     id: result.caseId,
+    expectedVersion: result.version,
   });
   return approved ? { ...result, status: "APPROVED" as const } : result;
 }

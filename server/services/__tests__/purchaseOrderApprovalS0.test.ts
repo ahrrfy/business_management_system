@@ -282,6 +282,22 @@ describe("S0 — دورة اعتماد أمر الشراء", () => {
     ).resolves.toMatchObject({ orderStatus: "RECEIVED", idempotent: false });
   });
 
+  it("إرسال المالك لا يختلق إقرار الاستلام الكامل", async () => {
+    await db().update(s.users).set({ isOwner: true }).where(eq(s.users.id, creator.userId));
+    const po = await createDraft("owner-receipt-create");
+    const request = await confirmPurchaseOrder(
+      approval(po.purchaseOrderId, po.version, "owner-receipt-submit"),
+      creator,
+    );
+
+    expect(request.status).toBe("PENDING");
+    expect(await db().select().from(s.goodsReceipts)).toHaveLength(0);
+    expect(await db().select().from(s.supplierInvoices)).toHaveLength(0);
+    await expect(
+      decide(request.requestId, "owner-explicit-receipt", creator),
+    ).resolves.toMatchObject({ orderStatus: "RECEIVED" });
+  });
+
   it("يعيد replay مطابقاً ويمنع تغيير الحمولة أو عبور الفرع", async () => {
     const po = await createDraft("replay-create");
     const input = approval(po.purchaseOrderId, po.version, "replay-confirm");

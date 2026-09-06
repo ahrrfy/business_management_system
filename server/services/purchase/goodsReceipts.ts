@@ -472,9 +472,10 @@ export async function createGoodsReceiptInTx(
     const isPurchaseOrderApprover =
       po.approvedBy != null && Number(po.approvedBy) === actor.userId;
     if (
-      isPurchaseOrderCreator ||
-      (isPurchaseOrderApprover &&
-        !options.allowPurchaseOrderApproverForAutomaticPosting)
+      !actor.isOwner &&
+      (isPurchaseOrderCreator ||
+        (isPurchaseOrderApprover &&
+          !options.allowPurchaseOrderApproverForAutomaticPosting))
     ) {
       throw new TRPCError({
         code: "FORBIDDEN",

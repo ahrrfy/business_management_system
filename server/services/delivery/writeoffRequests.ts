@@ -326,6 +326,7 @@ export async function requestDeliveryCodWriteOff(input: DeliveryWriteOffRequestI
     kind: "delivery.codWriteOff.approve",
     id: Number(result.id),
     reason: payload.reason,
+    expectedVersion: Number(result.basePartyVersion),
   });
   return approved ? { ...result, status: "APPROVED" as const } : result;
 }

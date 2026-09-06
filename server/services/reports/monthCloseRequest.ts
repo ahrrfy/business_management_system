@@ -159,7 +159,10 @@ async function assertActiveCloseIntegrity(
 export async function requestMonthClose(
   tx: Tx,
   input: { month: string; requestedBy: number; now?: Date },
-): Promise<{ id: number }> {
+): Promise<{
+  id: number;
+  autoApproval: Awaited<ReturnType<typeof approveMonthClose>> | null;
+}> {
   assertCloseableMonth(input.month, input.now);
 
   // الطلب والقفل عمليتان على مستوى الشركة. نمسك بوابة الشركة نفسها التي يمسكها الاعتماد كي لا
@@ -202,15 +205,16 @@ export async function requestMonthClose(
     pendingGuard: input.month,
   });
   const id = extractInsertId(res);
+  let autoApproval: Awaited<ReturnType<typeof approveMonthClose>> | null = null;
   if (await isActiveOwnerTx(tx, input.requestedBy)) {
-    await approveMonthClose(tx, {
+    autoApproval = await approveMonthClose(tx, {
       requestId: id,
       decidedBy: input.requestedBy,
       notes: "اعتماد تلقائي: منفذ عملية الإقفال هو المالك",
       now: input.now,
     });
   }
-  return { id };
+  return { id, autoApproval };
 }
 
 /**

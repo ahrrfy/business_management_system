@@ -259,6 +259,9 @@ export async function requestPurchaseOrderControl(
   actor: Actor,
 ) {
   const result = await withTx((tx) => requestPurchaseOrderControlTx(tx, input, actor));
+  // اعتماد المراجعة يثبت واقعةً مستقلة: وصول البضاعة كاملة ومطابقتها. إنشاء الطلب وحده
+  // لا يحمل هذا الإقرار، لذلك يبقى بانتظار تأكيد صريح حتى لو كان المنشئ هو المالك.
+  if (input.kind === "APPROVE_REVISION") return result;
   const approved = await autoDecideForActiveOwner(actor, {
     kind: "purchase.order.control",
     id: result.requestId,
@@ -404,12 +407,9 @@ export async function submitPurchaseOrderForApproval(
       idempotent: false as const,
     };
   });
-  const approved = await autoDecideForActiveOwner(actor, {
-    kind: "purchase.order.control",
-    id: result.requestId,
-    reason,
-  });
-  return approved ? { ...result, status: "APPROVED" as const } : result;
+  // لا نختلق إقرار استلام كامل من فعل «إرسال للاعتماد»؛ يظل هذا الطلب حتى يدخل
+  // المالك تأكيد الاستلام الصريح من شاشة القرار.
+  return result;
 }
 
 async function assertCancellationSafeTx(tx: Tx, purchaseOrderId: number) {
@@ -543,8 +543,9 @@ export async function decidePurchaseOrderControl(
     // المراجعة والاستثناءُ الطارئ والرفضُ بلا بوّابة؛ و**إلغاءُ الأمر** وحده محوُ أثر —
     // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
     // `shared/approvalTriggers.ts`.
+    const resolvedActor = await resolveApprovalActor(tx, actor);
     assertApprover({
-      actor: await resolveApprovalActor(tx, actor),
+      actor: resolvedActor,
       trigger: purchaseOrderControlTrigger(request.kind, input.approve),
       subject: `أمر الشراء ${po.poNumber}`,
       legacy: () => {
@@ -705,7 +706,7 @@ export async function decidePurchaseOrderControl(
         const posting = await postApprovedPurchaseInvoiceInTx(
           tx,
           Number(po.id),
-          actor,
+          resolvedActor,
           decisionKey,
         );
         applicationEvidence = {

@@ -168,12 +168,13 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
   });
 
   it("المالك يطلب تسوية المخزون فتُعتمد وتُطبق في الخطوة نفسها", async () => {
-    const { requestId } = await requestStockAdjustment(
+    const result = await requestStockAdjustment(
       { variantId: 1, branchId: 1, targetQuantity: 17, notes: "جرد المالك" },
       OWNER,
     );
+    expect(result.status).toBe("APPROVED");
     expect(await stockOf(1, 1)).toBe(17);
-    const [row] = await db().select().from(s.stockAdjustmentRequests).where(eq(s.stockAdjustmentRequests.id, requestId));
+    const [row] = await db().select().from(s.stockAdjustmentRequests).where(eq(s.stockAdjustmentRequests.id, result.requestId));
     expect(row).toMatchObject({ status: "APPROVED", createdBy: OWNER.userId, approvedBy: OWNER.userId });
   });
 

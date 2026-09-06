@@ -222,6 +222,7 @@ export async function requestCommissionRunApproval(
     kind: "commissions.run.approve",
     id: Number(result.id),
     reason,
+    expectedVersion: Number(result.baseRunVersion),
   });
   return approved ? { ...result, status: "APPROVED" as const } : result;
 }

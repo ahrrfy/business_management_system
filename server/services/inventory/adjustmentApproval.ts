@@ -137,7 +137,10 @@ function assertRequesterBranch(branchId: number, actor: Actor): void {
 }
 
 /** يُنشئ طلب تسوية مخزونٍ معلَّقاً — **بلا تغيير مخزون** حتى الاعتماد. */
-export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number; idempotentReplay?: true }> {
+export async function requestStockAdjustment(
+  input: RequestAdjustmentInput,
+  actor: Actor,
+): Promise<{ requestId: number; status: "PENDING_APPROVAL" | "APPROVED"; idempotentReplay?: true }> {
   // حارس خدمة لا يعتمد على الراوتر: لا يجوز للمستدعي تزوير actor.branchId=target.
   assertRequesterBranch(input.branchId, actor);
   // P2-#3: التحقّق من السبب/المرفق قبل أيّ عملٍ في القاعدة (لا صفٌّ نصف صالحٍ يُتَراجَع عنه).
@@ -193,7 +196,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
     if (clientRequestId) {
       const existing = await checkIdempotency(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, payloadHash);
       if (existing != null) {
-        return { requestId: existing, idempotentReplay: true as const };
+        return { requestId: existing, status: "PENDING_APPROVAL" as const, idempotentReplay: true as const };
       }
     }
     const v = (
@@ -274,14 +277,15 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       // وسباقُ طلبَين بنفس المفتاح يتلقّى ER_DUP_ENTRY على القيد الفريد فيراه المستدعي.
       await recordIdempotencyKey(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, requestId, payloadHash);
     }
-    return { requestId };
+    return { requestId, status: "PENDING_APPROVAL" as const };
   });
-  await autoDecideForActiveOwner(actor, {
+  if (result.idempotentReplay) return result;
+  const approved = await autoDecideForActiveOwner(actor, {
     kind: "inventory.adjustment.approve",
     id: result.requestId,
     reason: input.notes ?? input.reason ?? null,
   });
-  return result;
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 /** يفرض SOD-04 (المُعتمِد ≠ المُنشئ إلا admin) + عزل الفرع (غير admin يعتمد فرعه فقط). */

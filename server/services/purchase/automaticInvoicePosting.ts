@@ -257,7 +257,7 @@ export async function postApprovedPurchaseInvoiceInTx(
         "الترحيل التلقائي ينفذه معتمد أمر الشراء نفسه داخل قرار الاعتماد",
     });
   }
-  if (po.createdBy != null && Number(po.createdBy) === actor.userId) {
+  if (!actor.isOwner && po.createdBy != null && Number(po.createdBy) === actor.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "فصل المهام: منشئ أمر الشراء لا يعتمد ترحيله التلقائي",
