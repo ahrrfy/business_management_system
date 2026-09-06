@@ -92,7 +92,7 @@ describe("و-٣ — لا رفضَ لسندٍ ملغى", () => {
         partyType: "SUPPLIER", partyId: 1, description: "سند فوق العتبة",
         clientRequestId: "wf3-1",
       } as never,
-      manager,
+      admin,
     );
     const [row] = await db().select().from(s.receipts).where(eq(s.receipts.id, created.receiptId));
     // الشريحة تفترض سنداً معلَّقاً؛ لو لم يتجاوز العتبة فلا موضوع للاختبار.
@@ -102,10 +102,10 @@ describe("و-٣ — لا رفضَ لسندٍ ملغى", () => {
     const [afterCancel] = await db().select().from(s.receipts).where(eq(s.receipts.id, created.receiptId));
     expect(afterCancel.status).toBe("REVERSED");
 
-    await expect(rejectVoucher(created.receiptId, admin, "سبب")).rejects.toMatchObject({
+    await expect(rejectVoucher(created.receiptId, manager, "سبب")).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
-    await expect(approveVoucher(created.receiptId, admin)).rejects.toMatchObject({
+    await expect(approveVoucher(created.receiptId, manager)).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
   });

@@ -660,7 +660,29 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
     id: result.requestId,
     reason,
   });
-  return approved ? { ...result, status: "APPROVED" as const } : result;
+  if (!approved) return result;
+  return withTx(async (tx) => {
+    const [posted] = await tx
+      .select({ id: purchaseReturns.id })
+      .from(purchaseReturns)
+      .where(eq(purchaseReturns.requestId, result.requestId))
+      .limit(1);
+    if (!posted) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إكمال مرتجع الشراء بعد اعتماد المالك",
+          why: "الطلب مسجل معتمدا لكن مستند المرتجع الناتج غير موجود",
+          doThis: "حدّث قائمة المرتجعات، وإن بقي الطلب بلا مستند أبلغ الدعم بمعرف الطلب",
+        }),
+      });
+    }
+    return {
+      ...result,
+      status: "APPROVED" as const,
+      purchaseReturnId: Number(posted.id),
+    };
+  });
 }
 
 export async function decidePurchaseReturn(input: DecidePurchaseReturnInput, actor: Actor) {
@@ -1048,7 +1070,29 @@ export async function requestPurchaseReturnReversal(input: RequestPurchaseReturn
     id: result.requestId,
     reason,
   });
-  return approved ? { ...result, status: "APPROVED" as const } : result;
+  if (!approved) return result;
+  return withTx(async (tx) => {
+    const [posted] = await tx
+      .select({ id: purchaseReturnReversals.id })
+      .from(purchaseReturnReversals)
+      .where(eq(purchaseReturnReversals.requestId, result.requestId))
+      .limit(1);
+    if (!posted) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إكمال عكس مرتجع الشراء بعد اعتماد المالك",
+          why: "طلب العكس مسجل معتمدا لكن مستند العكس الناتج غير موجود",
+          doThis: "حدّث قائمة عكوس المرتجعات، وإن بقي الطلب بلا مستند أبلغ الدعم بمعرف الطلب",
+        }),
+      });
+    }
+    return {
+      ...result,
+      status: "APPROVED" as const,
+      reversalId: Number(posted.id),
+    };
+  });
 }
 
 export async function decidePurchaseReturnReversal(input: DecidePurchaseReturnReversalInput, actor: Actor) {
