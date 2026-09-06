@@ -37,6 +37,12 @@ export default function PurchaseIntegrityCases() {
     { branchId: queryBranchId, cutoffDate },
     { enabled },
   );
+  // نفس تقرير التشخيص الحيّ (GL) المعروض في PurchaseIntegrityPanel على شاشة أوامر الشراء —
+  // إجراءٌ واحدٌ مشترك بدل تكرار استدعاء getPurchaseIntegrityReport من مسارين مختلفين.
+  const reportQuery = trpc.purchases.integrityReport.useQuery(
+    { branchId: queryBranchId, limit: 200 },
+    { enabled },
+  );
   const rows = useMemo<PurchaseIntegrityRow[]>(
     () =>
       (casesQuery.data ?? []).map((row) => ({
@@ -62,6 +68,7 @@ export default function PurchaseIntegrityCases() {
       utils.purchaseIntegrity.list.invalidate(),
       utils.purchaseIntegrity.resolutionSources.invalidate(),
       utils.purchaseIntegrity.monthCloseBlockers.invalidate(),
+      utils.purchases.integrityReport.invalidate(),
     ]);
   }
   const openCase = trpc.purchaseIntegrity.open.useMutation({
@@ -136,6 +143,11 @@ export default function PurchaseIntegrityCases() {
           branchId={branchId}
           rows={rows}
           blockers={blockersQuery.data ?? []}
+          liveFindings={reportQuery.data?.findings ?? []}
+          liveSummary={reportQuery.data?.summary ?? null}
+          liveLoading={reportQuery.isLoading}
+          liveError={reportQuery.error}
+          onRetryLive={() => void reportQuery.refetch()}
           cutoffDate={cutoffDate}
           currentUserId={me.data?.id}
           loading={casesQuery.isLoading || blockersQuery.isLoading}

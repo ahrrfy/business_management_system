@@ -550,6 +550,21 @@ export async function requestSupplierPayment(
   input: RequestSupplierPaymentInput,
   actor: Actor,
 ) {
+  return withTx((tx) => requestSupplierPaymentInTx(tx, input, actor));
+}
+
+/**
+ * جسم requestSupplierPayment مفصولاً عن withTx الخاصّة به — يستقبل معاملة قائمة بدل فتح
+ * واحدة جديدة. يستدعيه مسار الاعتماد التلقائي لأمر الشراء النقدي (automaticInvoicePosting.ts)
+ * ليبقى «فاتورة مورد مُرحَّلة + طلب تسويتها النقدية» ذرّيَّين معاً: فتح withTx ثانية هنا كان
+ * سيفتح اتصالاً/معاملة مستقلّة (انظر server/services/tx.ts) فيسمح لطلب الدفع بالنجاح فعلياً
+ * حتى لو تراجع اعتماد أمر الشراء نفسه لاحقاً في نفس الاستدعاء.
+ */
+export async function requestSupplierPaymentInTx(
+  tx: Tx,
+  input: RequestSupplierPaymentInput,
+  actor: Actor,
+) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120);
   const reason = required(input.reason, "سبب الدفع", 500);
   const evidenceReference = required(
@@ -617,155 +632,153 @@ export async function requestSupplierPayment(
   const evidenceHash = sha256(
     stableCanonical({ type: input.evidenceType, reference: evidenceReference }),
   );
-  return withTx(async (tx) => {
-    const replay = (
-      await tx
-        .select()
-        .from(supplierPaymentRequests)
-        .where(eq(supplierPaymentRequests.requestKey, requestKey))
-        .limit(1)
-    )[0];
-    if (replay) {
-      assertPurchaseBranch(replay, actor);
-      if (!payloadHashMatches(payloadHash, replay.payloadHash))
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "مفتاح الطلب مستعمل بدفعة مختلفة",
-        });
-      return {
-        requestId: Number(replay.id),
-        status: replay.status,
-        idempotent: true as const,
-      };
-    }
-    assertPurchaseBranch({ branchId: input.branchId }, actor);
-    const ids = normalized.map((row) => row.supplierInvoiceId);
-    const { supplier, invoices } = await lockPaymentAggregate(
-      tx,
-      input.supplierId,
-      ids,
-    );
-    if (!supplier || !supplier.isActive)
+  const replay = (
+    await tx
+      .select()
+      .from(supplierPaymentRequests)
+      .where(eq(supplierPaymentRequests.requestKey, requestKey))
+      .limit(1)
+  )[0];
+  if (replay) {
+    assertPurchaseBranch(replay, actor);
+    if (!payloadHashMatches(payloadHash, replay.payloadHash))
       throw new TRPCError({
         code: "CONFLICT",
-        message: "المورد غير موجود أو غير نشط",
+        message: "مفتاح الطلب مستعمل بدفعة مختلفة",
       });
-    if (invoices.length !== ids.length)
+    return {
+      requestId: Number(replay.id),
+      status: replay.status,
+      idempotent: true as const,
+    };
+  }
+  assertPurchaseBranch({ branchId: input.branchId }, actor);
+  const ids = normalized.map((row) => row.supplierInvoiceId);
+  const { supplier, invoices } = await lockPaymentAggregate(
+    tx,
+    input.supplierId,
+    ids,
+  );
+  if (!supplier || !supplier.isActive)
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "المورد غير موجود أو غير نشط",
+    });
+  if (invoices.length !== ids.length)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "بعض فواتير المورد غير موجودة",
+    });
+  const invoiceById = new Map(invoices.map((row) => [Number(row.id), row]));
+  const reservations = await invoiceReservations(tx, ids);
+  const rows = normalized.map((allocation) => {
+    const invoice = invoiceById.get(allocation.supplierInvoiceId)!;
+    assertPurchaseBranch(invoice, actor);
+    assertSupplierInvoicePayable(invoice);
+    assertExpectedVersion(
+      Number(invoice.version),
+      allocation.invoiceVersion,
+      "فاتورة المورد",
+    );
+    if (
+      Number(invoice.supplierId) !== input.supplierId ||
+      Number(invoice.branchId) !== input.branchId ||
+      invoice.currency !== input.currency
+    )
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "بعض فواتير المورد غير موجودة",
+        message: "الفاتورة لا تطابق المورد أو الفرع أو العملة",
       });
-    const invoiceById = new Map(invoices.map((row) => [Number(row.id), row]));
-    const reservations = await invoiceReservations(tx, ids);
-    const rows = normalized.map((allocation) => {
-      const invoice = invoiceById.get(allocation.supplierInvoiceId)!;
-      assertPurchaseBranch(invoice, actor);
-      assertSupplierInvoicePayable(invoice);
-      assertExpectedVersion(
-        Number(invoice.version),
-        allocation.invoiceVersion,
-        "فاتورة المورد",
-      );
+    if (input.currency === "USD") {
       if (
-        Number(invoice.supplierId) !== input.supplierId ||
-        Number(invoice.branchId) !== input.branchId ||
-        invoice.currency !== input.currency
+        !money(invoice.agreedRate)
+          .toDecimalPlaces(4)
+          .eq(money(rate).toDecimalPlaces(4))
       )
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "الفاتورة لا تطابق المورد أو الفرع أو العملة",
+          message: "لا يجوز جمع فواتير بأسعار صرف مختلفة في دفعة واحدة",
         });
-      if (input.currency === "USD") {
-        if (
-          !money(invoice.agreedRate)
-            .toDecimalPlaces(4)
-            .eq(money(rate).toDecimalPlaces(4))
-        )
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "لا يجوز جمع فواتير بأسعار صرف مختلفة في دفعة واحدة",
-          });
-        assertAgreedRateAmount(
-          allocation.amount,
-          allocation.currencyAmount,
-          invoice.agreedRate,
-          `تخصيص الفاتورة ${invoice.invoiceNumber}`,
-        );
-      }
-      const posted = reservations.posted.get(allocation.supplierInvoiceId) ?? {
-        amount: money(0),
-        currencyAmount: money(0),
-      };
-      const pending = reservations.pending.get(
-        allocation.supplierInvoiceId,
-      ) ?? { amount: money(0), currencyAmount: money(0) };
-      const creditReturns =
-        reservations.creditReturns.get(allocation.supplierInvoiceId) ??
-        money(0);
-      assertAllocationAvailable(
-        invoice,
-        allocation,
-        {
-          amount: posted.amount.plus(pending.amount),
-          currencyAmount: posted.currencyAmount.plus(pending.currencyAmount),
-        },
-        creditReturns,
+      assertAgreedRateAmount(
+        allocation.amount,
+        allocation.currencyAmount,
+        invoice.agreedRate,
+        `تخصيص الفاتورة ${invoice.invoiceNumber}`,
       );
-      const snapshot = stableCanonical({
-        invoiceId: Number(invoice.id),
-        invoiceNumber: invoice.invoiceNumber,
-        version: Number(invoice.version),
-        status: invoice.status,
-        paymentGate: invoice.paymentGate,
-        liabilityClass: invoice.liabilityClass,
-        legacySettledAmount: invoice.legacySettledAmount,
-        legacySettlementEvidenceHash: invoice.legacySettlementEvidenceHash,
-        totalAmount: invoice.totalAmount,
-        usdTotal: invoice.usdTotal,
-      });
-      return { allocation, snapshot, hash: sha256(snapshot) };
-    });
-    const inserted = await tx
-      .insert(supplierPaymentRequests)
-      .values({
-        requestKey,
-        supplierId: input.supplierId,
-        branchId: input.branchId,
-        currency: input.currency,
-        exchangeRate: rate,
-        requestedAmount: amount,
-        requestedCurrencyAmount: currencyAmount,
-        paymentMethod: input.paymentMethod,
-        externalReference,
-        payloadCanonical: canonical,
-        payloadHash,
-        evidenceType: input.evidenceType,
-        evidenceReference,
-        evidenceHash,
-        reason,
-        pendingGuard: `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
-        requestedBy: actor.userId,
-      });
-    const requestId = extractInsertId(inserted);
-    await tx
-      .insert(supplierPaymentRequestAllocations)
-      .values(
-        rows.map(({ allocation, snapshot, hash }) => ({
-          requestId,
-          supplierInvoiceId: allocation.supplierInvoiceId,
-          invoiceVersion: allocation.invoiceVersion,
-          requestedAmount: allocation.amount,
-          requestedCurrencyAmount: allocation.currencyAmount,
-          invoiceSnapshot: snapshot,
-          invoiceHash: hash,
-        })),
-      );
-    return {
-      requestId,
-      status: "PENDING" as const,
-      idempotent: false as const,
+    }
+    const posted = reservations.posted.get(allocation.supplierInvoiceId) ?? {
+      amount: money(0),
+      currencyAmount: money(0),
     };
+    const pending = reservations.pending.get(
+      allocation.supplierInvoiceId,
+    ) ?? { amount: money(0), currencyAmount: money(0) };
+    const creditReturns =
+      reservations.creditReturns.get(allocation.supplierInvoiceId) ??
+      money(0);
+    assertAllocationAvailable(
+      invoice,
+      allocation,
+      {
+        amount: posted.amount.plus(pending.amount),
+        currencyAmount: posted.currencyAmount.plus(pending.currencyAmount),
+      },
+      creditReturns,
+    );
+    const snapshot = stableCanonical({
+      invoiceId: Number(invoice.id),
+      invoiceNumber: invoice.invoiceNumber,
+      version: Number(invoice.version),
+      status: invoice.status,
+      paymentGate: invoice.paymentGate,
+      liabilityClass: invoice.liabilityClass,
+      legacySettledAmount: invoice.legacySettledAmount,
+      legacySettlementEvidenceHash: invoice.legacySettlementEvidenceHash,
+      totalAmount: invoice.totalAmount,
+      usdTotal: invoice.usdTotal,
+    });
+    return { allocation, snapshot, hash: sha256(snapshot) };
   });
+  const inserted = await tx
+    .insert(supplierPaymentRequests)
+    .values({
+      requestKey,
+      supplierId: input.supplierId,
+      branchId: input.branchId,
+      currency: input.currency,
+      exchangeRate: rate,
+      requestedAmount: amount,
+      requestedCurrencyAmount: currencyAmount,
+      paymentMethod: input.paymentMethod,
+      externalReference,
+      payloadCanonical: canonical,
+      payloadHash,
+      evidenceType: input.evidenceType,
+      evidenceReference,
+      evidenceHash,
+      reason,
+      pendingGuard: `SUPPLIER-PAY:${input.supplierId}:${input.branchId}:${input.currency}`,
+      requestedBy: actor.userId,
+    });
+  const requestId = extractInsertId(inserted);
+  await tx
+    .insert(supplierPaymentRequestAllocations)
+    .values(
+      rows.map(({ allocation, snapshot, hash }) => ({
+        requestId,
+        supplierInvoiceId: allocation.supplierInvoiceId,
+        invoiceVersion: allocation.invoiceVersion,
+        requestedAmount: allocation.amount,
+        requestedCurrencyAmount: allocation.currencyAmount,
+        invoiceSnapshot: snapshot,
+        invoiceHash: hash,
+      })),
+    );
+  return {
+    requestId,
+    status: "PENDING" as const,
+    idempotent: false as const,
+  };
 }
 
 export async function decideSupplierPayment(

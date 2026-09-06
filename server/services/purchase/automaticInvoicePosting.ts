@@ -32,6 +32,7 @@ import { createSystemPaymentRequestTx } from "../voucher/create";
 import { createGoodsReceiptInTx } from "./goodsReceipts";
 import { postSupplierInvoiceGrniTx } from "./grniAccounting";
 import { assertPurchaseBranch } from "./internal";
+import { requestSupplierPaymentInTx } from "./supplierPayments";
 import { createSupplierInvoiceInTx } from "./supplierInvoices";
 import { runThreeWayMatchInTx } from "./threeWayMatch";
 
@@ -618,6 +619,63 @@ export async function postApprovedPurchaseInvoiceInTx(
     },
   );
 
+  // قرار المالك (٦/٩/٢٦، بلاغ «المشتريات النقدية تظهر ذمّةً»): أمرٌ نقديٌّ يُصرَّح باعتماده لا
+  // يجوز أن يبقى مجرّد ذمّةٍ صامتة حتى يتذكّر أحدٌ سدادها يدوياً — لكن السداد يبقى **طلباً**
+  // بانتظار اعتماد شخصٍ آخر (فصل المهام)، لا صرفاً تلقائياً. هذا هو الاستبدال الحيّ لآلية
+  // CASH_CLEARING القديمة في receive.ts/pay.ts (معطَّلتان الآن عمداً عبر
+  // assertLegacyPurchaseWritePathDisabled)، مبنيّاً على مسار الدفع الحيّ الوحيد
+  // (supplierPayments.ts) بدل إحياء الجدول/الحقول التي هجرها ذلك المسار.
+  // نستدعي الصيغة الداخلية (…InTx) عمداً لا الغلاف الخارجي: الأخير يفتح withTx مستقلّة
+  // (اتصالاً ثانياً) فيصبح طلب التسوية قابلاً للنجاح والبقاء حتى لو تراجع اعتماد الفاتورة
+  // نفسه لاحقاً في هذه المعاملة — راجع تعليق requestSupplierPaymentInTx.
+  let cashSettlementRequestId: number | null = null;
+  if (po.settlementType === "CASH" && money(invoice.totalAmount).gt(0)) {
+    const cashSettlementToken = createHash("sha256")
+      .update(`cash-settle:${deterministicKey}`)
+      .digest("hex")
+      .slice(0, 16);
+    // لا تُعِد استعمال invoice.version الملتقَط أعلاه: requestSupplierPaymentInTx يُعيد قفل
+    // الفاتورة وقراءتها بنفسه (lockPaymentAggregate)، والنسخة الملتقَطة هنا أقدم من نسخة ما
+    // بعد كتابة الفاتورة POSTED مباشرةً — راجع [[read-every-writer-before-you-rely-on-a-field]].
+    const [currentInvoiceVersion] = await tx
+      .select({ version: supplierInvoices.version })
+      .from(supplierInvoices)
+      .where(eq(supplierInvoices.id, supplierInvoiceId))
+      .limit(1);
+    if (!currentInvoiceVersion) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "فاتورة المورد التلقائية مفقودة قبل طلب التسوية النقدية",
+      });
+    }
+    const cashSettlement = await requestSupplierPaymentInTx(
+      tx,
+      {
+        supplierId: Number(invoice.supplierId),
+        branchId: Number(invoice.branchId),
+        requestKey: `auto-cash-settle-${cashSettlementToken}`,
+        currency: "IQD",
+        exchangeRate: null,
+        amount: toDbMoney(invoice.totalAmount),
+        currencyAmount: toDbMoney(invoice.totalAmount),
+        paymentMethod: "CASH",
+        evidenceType: "OTHER",
+        evidenceReference: `AUTO-PO-APPROVAL:${deterministicKey}`,
+        reason: `تسوية نقدية تلقائية عند اعتماد أمر الشراء النقدي ${po.poNumber} — بانتظار اعتماد مستقل`,
+        allocations: [
+          {
+            supplierInvoiceId,
+            invoiceVersion: Number(currentInvoiceVersion.version),
+            amount: toDbMoney(invoice.totalAmount),
+            currencyAmount: toDbMoney(invoice.totalAmount),
+          },
+        ],
+      },
+      actor,
+    );
+    cashSettlementRequestId = cashSettlement.requestId;
+  }
+
   return {
     purchaseOrderId,
     goodsReceiptId,
@@ -625,6 +683,7 @@ export async function postApprovedPurchaseInvoiceInTx(
     matchRunId,
     accountingEntryId,
     shippingPaymentRequestReceiptId,
+    cashSettlementRequestId,
     status: "POSTED" as const,
     idempotentReplay: false as const,
   };
