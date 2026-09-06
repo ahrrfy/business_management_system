@@ -1,21 +1,24 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { and, desc, eq, isNull, like, notInArray, notLike, or, sql } from "drizzle-orm";
+import { accountingEntries, customers, deliveryConsignments, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
 import { lockInventoryVariants } from "../inventory/stockLock";
-import { postEntry } from "../ledgerService";
+import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../deposits";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
-import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import Decimal from "decimal.js";
+import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { logAuditTx } from "../auditService";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "../delivery/lifecycle";
+import { assertPeriodOpen } from "../periodLockService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { appErrorMessage } from "@shared/errors";
@@ -236,22 +239,142 @@ export async function cancelWorkOrderInTx(
             : "استعمل «استرجاع التسليم» من صفحة أمر الشغل — هو المسار الذي يعكس التسليم والفاتورة والذمّة معاً",
         }),
       });
-    // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
-    // الإلغاء يعيد المواد للمخزون ويردّ العربون بينما الفاتورة وقيد البيع وعهدة COD حيّة.
-    await assertNoLiveConsignment(tx, workOrderId, "cancel");
-    // ش٤ (١٩/٨): `workOrders.invoiceId` **يُكتَب** عند الإرسال (`delivery/dispatch.ts`) ولا
-    // **يُقرأ** في أيّ حارس. فأمرٌ أُرسِلت فاتورتُه ثمّ أُلغيت إرساليّتُه (⇒ `assertNoLiveConsignment`
-    // تمرّ) كان يُلغى هنا فتعود المواد ويُردّ العربون **وفاتورتُه وقيدُ بيعها قائمان**: إيرادٌ بلا
-    // بضاعة وذمّةٌ على عميلٍ لطلبٍ ملغى. المخرجُ الصحيح استرجاعٌ لا إلغاء.
-    if (wo.invoiceId != null) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: appErrorMessage({
-          what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
-          why: `صدرت للطلب فاتورة (رقمها الداخليّ ${Number(wo.invoiceId)}) وقُيِّد بيعُها وذمّتُها — والإلغاء يردّ المواد ويستردّ العربون ويترك الفاتورة وقيدها قائمَين: إيرادٌ بلا بضاعة وذمّةٌ على عميلٍ لطلبٍ ملغى`,
-          doThis: "استعمل «استرجاع التسليم» من صفحة أمر الشغل بدل الإلغاء — هو الذي يعكس الفاتورة والذمّة والمواد معاً في عمليةٍ واحدة",
-        }),
+    // التعامل مع إرساليات التوصيل الحية المرتبطة بالطلب
+    const liveConsignments = await tx
+      .select()
+      .from(deliveryConsignments)
+      .where(
+        and(
+          eq(deliveryConsignments.workOrderId, workOrderId),
+          notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+        ),
+      )
+      .for("update");
+
+    for (const cn of liveConsignments) {
+      if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
+            why: `الطلب خرج مع جهة التوصيل (الإرسالية ${cn.consignmentNumber ?? cn.id}) وحالة الطرد «${cn.parcelStatus}» — ولا يُلغى أمرٌ طرده بيد المندوب على الطريق`,
+            doThis: "استرجع الإرسالية أولاً من إدارة التوصيل بعد استلام الطرد من المندوب، ثم أعد محاولة الإلغاء",
+          }),
+        });
+      }
+      if (!round2(money(cn.collectedAmount ?? "0")).isZero() || cn.remittanceId != null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
+            why: `الإرسالية ${cn.consignmentNumber ?? cn.id} بدأ تحصيلها أو رُبطت بتوريد مالي — فلا تُعكس بإلغاء مباشر`,
+            doThis: "سوِّ الإرسالية في إدارة التوصيل أولاً قبل الإلغاء",
+          }),
+        });
+      }
+      const remainingCod = round2(
+        money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
+      );
+      const cancelledAt = new Date();
+      if (remainingCod.gt(0)) {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `CN:${cn.id}:COD_RELEASED:WO_CANCEL:${workOrderId}:${Date.now()}`,
+          partyId: Number(cn.partyId),
+          consignmentId: Number(cn.id),
+          branchId: Number(cn.branchId),
+          entryType: "COD_RELEASED",
+          amount: toDbMoney(remainingCod),
+          notes: `إلغاء أمر الشغل #${workOrderId} — ${reason}`,
+          actorUserId: actor.userId,
+          occurredAt: cancelledAt,
+        });
+      }
+      await tx
+        .update(deliveryConsignments)
+        .set({
+          assignedUserId: null,
+          parcelStatus: "CANCELLED",
+          moneyStatus: "CANCELLED",
+          status: "CANCELLED",
+          cancelledAt,
+          cancellationReason: `إلغاء أمر الشغل #${workOrderId} — ${reason}`,
+          cancelledBy: actor.userId,
+          settledAt: cancelledAt,
+        })
+        .where(eq(deliveryConsignments.id, Number(cn.id)));
+
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${cn.id}:WO_CANCELLED:${workOrderId}:${Date.now()}`,
+        consignmentId: Number(cn.id),
+        eventType: "ASSIGNMENT_CANCELLED",
+        fromParcelStatus: cn.parcelStatus,
+        toParcelStatus: "CANCELLED",
+        fromMoneyStatus: cn.moneyStatus,
+        toMoneyStatus: "CANCELLED",
+        actorUserId: actor.userId,
+        payload: {
+          reason,
+          workOrderId,
+          partyId: Number(cn.partyId),
+          releasedCod: remainingCod.toFixed(2),
+        },
       });
+    }
+
+    // إذا كانت قد صدرت فاتورة للطلب، نعكس الفاتورة وذمّتها بقيود محاسبية مطابقة
+    if (wo.invoiceId != null) {
+      const invId = Number(wo.invoiceId);
+      const inv = (
+        await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, invId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (inv && inv.status !== "CANCELLED" && inv.status !== "RETURNED") {
+        await assertPeriodOpen(tx, inv.invoiceDate);
+        const invTotal = round2(money(inv.total));
+        const matCost = round2(money(wo.materialsCost ?? "0"));
+        const rawDeposit = money(wo.deposit ?? "0");
+        const depClosed = round2(rawDeposit.lt(invTotal) ? rawDeposit : invTotal);
+        const codAmt = round2(money(wo.codAmount ?? "0"));
+
+        const reverseLines = [debitLine("SALES_FLEX", invTotal), creditLine("AR", invTotal)];
+        const roleDebits: Record<string, Decimal> = { SALES_FLEX: invTotal };
+        const roleCredits: Record<string, Decimal> = { AR: invTotal };
+        if (matCost.gt(0)) {
+          reverseLines.push(debitLine("WORK_IN_PROGRESS", matCost), creditLine("COGS", matCost));
+          roleDebits.WORK_IN_PROGRESS = matCost;
+          roleCredits.COGS = matCost;
+        }
+        if (depClosed.gt(0)) {
+          reverseLines.push(debitLine("AR", depClosed), creditLine("OTHER_LIABILITY", depClosed));
+          roleDebits.AR = depClosed;
+          roleCredits.OTHER_LIABILITY = depClosed;
+        }
+        const reverseSource = { roleDebits, roleCredits };
+        await postEntry(tx, {
+          entryType: "RETURN",
+          dedupeKey: `WO-CANCEL-INV:${workOrderId}:${invId}`,
+          branchId: Number(wo.branchId),
+          invoiceId: invId,
+          customerId: wo.customerId ?? null,
+          revenue: invTotal.neg(),
+          cost: matCost.neg(),
+          profit: round2(invTotal.minus(matCost)).neg(),
+          amount: invTotal.neg(),
+          notes: `إلغاء فاتورة أمر الشغل ${wo.orderNumber} — ${reason}`,
+          postingIntent: createPostingIntent("RETURN_SALE_FLEX_WORKORDER", "RETURN", reverseLines, reverseSource),
+          postingSourceComponents: reverseSource,
+        });
+
+        if (wo.customerId != null && codAmt.gt(0)) {
+          await adjustCustomerBalance(tx, Number(wo.customerId), codAmt.neg());
+        }
+
+        await tx.update(invoices).set({ status: "CANCELLED" }).where(eq(invoices.id, invId));
+      }
     }
     const existingMaterials = await tx
       .select({ id: workOrderMaterials.id })
@@ -264,6 +387,7 @@ export async function cancelWorkOrderInTx(
      * تخفيفَها كان سيوسّع سلطةً قائمةً بلا طلب.
      */
     const riskyCancellation = wo.status !== "RECEIVED"
+      || wo.invoiceId != null
       || money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
       || existingMaterials.length > 0
@@ -279,7 +403,8 @@ export async function cancelWorkOrderInTx(
      */
     const moneyAtStake = money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
-      || heldFeeBeforeCancel.gt(0);
+      || heldFeeBeforeCancel.gt(0)
+      || wo.invoiceId != null;
     const directCancelAllowed = mayCancelWorkOrderWithoutApproval({
       role: actor.role ?? "",
       override: (actor.permissionsOverride ?? null) as never,
@@ -534,7 +659,7 @@ export async function cancelWorkOrderInTx(
                 eq(receipts.direction, "IN"),
                 eq(receipts.status, "COMPLETED"),
                 eq(receipts.approvalStatus, "APPROVED"),
-                isNull(receipts.invoiceId),
+                or(isNull(receipts.invoiceId), eq(receipts.invoiceId, Number(wo.invoiceId))),
                 or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
               ))
               .for("update")

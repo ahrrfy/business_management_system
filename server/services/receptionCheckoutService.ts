@@ -590,48 +590,53 @@ export async function checkoutReceptionInTx(
       }
       const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
       if (carrierInvoiceId == null) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: appErrorMessage({
-            what: "لا فاتورة تحمل أمانة الأجرة",
-            why: "أمانة أجرة التوصيل تُختم على فاتورة (بضاعة أو طباعة)، ولا فاتورة من هذين النوعين في هذا الطلب — أوامر الشغل وحدها أجرتها على بندها",
-            doThis: "أضف فاتورة بضاعة أو طباعة للسلّة قبل قبض الأمانة، أو انزع أمانة الأجرة",
+        if (normalizedWorkOrders.length === 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: appErrorMessage({
+              what: "لا فاتورة تحمل أمانة الأجرة",
+              why: "أمانة أجرة التوصيل تُختم على فاتورة (بضاعة أو طباعة) أو أمر شغل، ولا يوجد أي منها في هذا الطلب",
+              doThis: "أضف فاتورة بضاعة أو طباعة أو أمر شغل للسلّة قبل قبض الأمانة، أو انزع أمانة الأجرة",
+            }),
+          });
+        }
+        // عند عدم وجود فاتورة بضاعة أو طباعة ووجود أوامر شغل، تُسجَّل أمانة الأجرة
+        // على أمر الشغل الأول تلقائياً عبر createWorkOrderInTx (بإيصال DLV-FEE-WO وقيد DELIVERY_FEE_HELD).
+      } else {
+        const feeRes = await tx.insert(receipts).values({
+          branchId: input.branchId,
+          shiftId: input.shiftId,
+          invoiceId: carrierInvoiceId,
+          direction: "IN",
+          amount: feeHeldD.toFixed(2),
+          // أمانةٌ نقديّة للمندوب تدخل الدرج حتماً — مهما كانت طريقة دفع السلّة (تُصرف له نقداً
+          // من نفس الدرج عند توريده، فقبضُها بغير النقد يترك OUT بلا IN).
+          paymentMethod: "CASH",
+          cashBucket: "DRAWER",
+          status: "COMPLETED",
+          partyType: "OTHER",
+          referenceNumber: `DLV-FEE-INV-${carrierInvoiceId}`,
+          description: "أجرة توصيل مقبوضة أمانةً للمندوب — طلب استقبال",
+          createdBy: actor.userId,
+        });
+        await postEntry(tx, {
+          entryType: "DELIVERY_FEE_HELD",
+          dedupeKey: `DELIVERY_FEE_HELD:INV:${carrierInvoiceId}`,
+          branchId: input.branchId,
+          invoiceId: carrierInvoiceId,
+          receiptId: extractInsertId(feeRes),
+          amount: feeHeldD,
+          notes: "أمانة أجرة توصيل — طلب استقبال",
+          postingSourceComponents: {
+            roleDebits: { CASH: feeHeldD },
+            roleCredits: { COURIER_PAYABLE: feeHeldD },
+          },
+          postingIntent: createPostingIntent("DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD", [debitLine("CASH", feeHeldD), creditLine("COURIER_PAYABLE", feeHeldD)], {
+            roleDebits: { CASH: feeHeldD },
+            roleCredits: { COURIER_PAYABLE: feeHeldD },
           }),
         });
       }
-      const feeRes = await tx.insert(receipts).values({
-        branchId: input.branchId,
-        shiftId: input.shiftId,
-        invoiceId: carrierInvoiceId,
-        direction: "IN",
-        amount: feeHeldD.toFixed(2),
-        // أمانةٌ نقديّة للمندوب تدخل الدرج حتماً — مهما كانت طريقة دفع السلّة (تُصرف له نقداً
-        // من نفس الدرج عند توريده، فقبضُها بغير النقد يترك OUT بلا IN).
-        paymentMethod: "CASH",
-        cashBucket: "DRAWER",
-        status: "COMPLETED",
-        partyType: "OTHER",
-        referenceNumber: `DLV-FEE-INV-${carrierInvoiceId}`,
-        description: "أجرة توصيل مقبوضة أمانةً للمندوب — طلب استقبال",
-        createdBy: actor.userId,
-      });
-      await postEntry(tx, {
-        entryType: "DELIVERY_FEE_HELD",
-        dedupeKey: `DELIVERY_FEE_HELD:INV:${carrierInvoiceId}`,
-        branchId: input.branchId,
-        invoiceId: carrierInvoiceId,
-        receiptId: extractInsertId(feeRes),
-        amount: feeHeldD,
-        notes: "أمانة أجرة توصيل — طلب استقبال",
-        postingSourceComponents: {
-          roleDebits: { CASH: feeHeldD },
-          roleCredits: { COURIER_PAYABLE: feeHeldD },
-        },
-        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD", [debitLine("CASH", feeHeldD), creditLine("COURIER_PAYABLE", feeHeldD)], {
-          roleDebits: { CASH: feeHeldD },
-          roleCredits: { COURIER_PAYABLE: feeHeldD },
-        }),
-      });
     }
 
     // ش٧ (قرار المالك ٦/٨) — **الإسناد داخل المعاملة**: متبقّي فاتورة التوصيل يصير عهدةً على
@@ -640,30 +645,33 @@ export async function checkoutReceptionInTx(
     let dispatch: Awaited<ReturnType<typeof dispatchInvoiceInTx>> | null = null;
     if (input.delivery && !completeReplay) {
       const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
-      if (carrierInvoiceId == null) {
+      if (carrierInvoiceId != null) {
+        dispatch = await dispatchInvoiceInTx(
+          tx,
+          {
+            invoiceId: carrierInvoiceId,
+            partyId: input.delivery.partyId,
+            deliveryFee: input.delivery.fee ?? "0",
+            feeCollection: input.delivery.feeCollection ?? "COURIER",
+            recipientName: input.delivery.recipientName ?? input.contactName ?? null,
+            recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
+            deliveryAddress: input.delivery.address ?? null,
+            clientRequestId: `${input.clientRequestId}-dispatch`,
+          },
+          { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role } as never,
+        );
+      } else if (normalizedWorkOrders.length === 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
             what: "لا فاتورة تصلح للتوصيل",
-            why: "الإرسالية تُربط بفاتورة بيع مباشر أو طباعة، ولا فاتورة من هذين النوعين في هذا الطلب — أوامر الشغل تُسلَّم من طابور الطلبات عند جاهزيّتها لا من التثبيت",
-            doThis: "أضف فاتورة بضاعة أو طباعة قبل جدولة التوصيل، أو انزع خيار التوصيل من الطلب",
+            why: "الإرسالية تتطلب فاتورة بيع مباشر أو طباعة أو أمر شغل، ولا يوجد أي منها في هذا الطلب",
+            doThis: "أضف بضاعة أو طباعة أو أمر شغل قبل جدولة التوصيل، أو انزع خيار التوصيل من الطلب",
           }),
         });
       }
-      dispatch = await dispatchInvoiceInTx(
-        tx,
-        {
-          invoiceId: carrierInvoiceId,
-          partyId: input.delivery.partyId,
-          deliveryFee: input.delivery.fee ?? "0",
-          feeCollection: input.delivery.feeCollection ?? "COURIER",
-          recipientName: input.delivery.recipientName ?? input.contactName ?? null,
-          recipientPhone: input.delivery.recipientPhone ?? input.contactPhone ?? null,
-          deliveryAddress: input.delivery.address ?? null,
-          clientRequestId: `${input.clientRequestId}-dispatch`,
-        },
-        { userId: actor.userId, branchId: actor.branchId ?? null, role: actor.role } as never,
-      );
+      // إذا كان carrierInvoiceId == null وهناك أوامر شغل، تبقى dispatch = null هنا
+      // وتُحفظ بيانات التوصيل على أمر الشغل ليُرسل عند جاهزيته.
     }
 
     // ش٦ (§٩.٣) — هويّة مُقِرّ السعر داخل المعاملة: الراية بلا هويّةٍ كانت تُذيب المسؤولية.
@@ -684,6 +692,33 @@ export async function checkoutReceptionInTx(
         entityType: "invoice",
         entityId: String(regularSale?.invoiceId ?? printSale?.invoiceId ?? 0),
         newValue: JSON.stringify({ approvedBy: input.priceApprovedBy, lines: overriddenLines }),
+      });
+    }
+
+    if (input.delivery && normalizedWorkOrders.length > 0) {
+      const carrierInvoiceId = regularSale?.invoiceId ?? printSale?.invoiceId ?? null;
+      normalizedWorkOrders = normalizedWorkOrders.map((order, idx) => {
+        const isFirst = idx === 0;
+        let woDeliveryCost = order.deliveryCost ?? "0.00";
+        let woFeeCollection = order.deliveryFeeCollection ?? input.delivery!.feeCollection ?? "COURIER";
+        if (carrierInvoiceId == null && isFirst) {
+          if (feeHeldD.gt(0)) {
+            woDeliveryCost = feeHeldD.toFixed(2);
+            woFeeCollection = "COUNTER";
+          } else if (input.delivery!.fee) {
+            woDeliveryCost = input.delivery!.fee;
+          }
+        }
+        return {
+          ...order,
+          hasDelivery: true,
+          deliveryAddress: order.deliveryAddress ?? input.delivery!.address ?? null,
+          deliveryPhone: order.deliveryPhone ?? input.delivery!.recipientPhone ?? input.contactPhone ?? null,
+          contactName: order.contactName ?? input.delivery!.recipientName ?? input.contactName ?? null,
+          deliveryCost: woDeliveryCost,
+          deliveryFeeCollection: woFeeCollection,
+          paymentMode: order.paymentMode ?? "COD",
+        };
       });
     }
 

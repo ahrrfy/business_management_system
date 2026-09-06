@@ -3,6 +3,7 @@
 // + معاينة قَيد دفتر + اختصارات لوحة المفاتيح + حفظ+طباعة + استخدام CustomerPicker/SupplierPicker.
 import CustomerPicker from "@/components/CustomerPicker";
 import SupplierPicker from "@/components/voucher/SupplierPicker";
+import DeliveryPartyPicker from "@/components/voucher/DeliveryPartyPicker";
 import { BalanceBadge } from "@/components/BalanceBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -117,9 +118,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     }
   }, [method]);
   const seededCustomerId = isReceipt ? Number(new URLSearchParams(search).get("customerId")) || null : null;
-  const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "OTHER">(seededCustomerId ? "CUSTOMER" : "OTHER");
+  const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER">(seededCustomerId ? "CUSTOMER" : "OTHER");
   const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
   const [supplierId, setSupplierId] = useState<number | null>(null);
+  const [deliveryPartyId, setDeliveryPartyId] = useState<number | null>(null);
   const [description, setDescription] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
   const [cardLastFour, setCardLastFour] = useState("");
@@ -272,10 +274,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       return { partyId: customerId, name: null };
     if (partyType === "SUPPLIER" && supplierId)
       return { partyId: supplierId, name: null };
+    if (partyType === "DELIVERY_PARTY" && deliveryPartyId)
+      return { partyId: deliveryPartyId, name: null };
     if (partyType === "OTHER" && counterpartyName.trim().length >= 3)
       return { partyId: null, name: counterpartyName.trim() };
     return null;
-  }, [partyType, customerId, supplierId, counterpartyName]);
+  }, [partyType, customerId, supplierId, deliveryPartyId, counterpartyName]);
 
   const recent = trpc.vouchers.recentForParty.useQuery(
     {
@@ -375,7 +379,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             ? "عميل"
             : v.partyType === "SUPPLIER"
               ? "مورّد"
-              : "أخرى",
+              : (v.partyType as string) === "DELIVERY_PARTY" || (v.partyType === "OTHER" && v.internalNote?.startsWith("DELIVERY_PARTY:"))
+                ? "جهة توصيل"
+                : "أخرى",
         partyName,
         partyBalance: null,
         categoryName: v.categoryName,
@@ -444,6 +450,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       return "اختر العميل المرتبط بالسند.";
     if (partyType === "SUPPLIER" && !supplierId)
       return "اختر المورّد المرتبط بالسند.";
+    if (partyType === "DELIVERY_PARTY" && !deliveryPartyId)
+      return "اختر جهة التوصيل المرتبطة بالسند.";
     if (partyType === "OTHER" && voucherCategoryId === "") {
       return "فئة محاسبية معيّنة إلزامية لسندات «أخرى».";
     }
@@ -465,7 +473,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         ? customerId
         : partyType === "SUPPLIER"
           ? supplierId
-          : null;
+          : partyType === "DELIVERY_PARTY"
+            ? deliveryPartyId
+            : null;
     return {
       voucherType,
       // `validate()` يرفض الحفظَ بلا فرع؛ الشاشةُ تُرسل ما عرضته حرفياً — لا انزلاق بين المعروض والمُرسَل.
@@ -607,9 +617,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           ? "ذمة عميل (تَنقص)"
           : partyType === "SUPPLIER"
             ? "ذمة مورّد (تَزيد)"
-            : selectedCategoryReady
-              ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
-              : "اختر فئة محاسبية مهيأة";
+            : partyType === "DELIVERY_PARTY"
+              ? "عهدة جهة توصيل (تَنقص)"
+              : selectedCategoryReady
+                ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
+                : "اختر فئة محاسبية مهيأة";
       return [
         {
           side: "مَدين",
@@ -624,9 +636,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         ? "ذمة عميل (تَزيد)"
         : partyType === "SUPPLIER"
           ? "ذمة مورّد (تَنقص)"
-          : selectedCategoryReady
-            ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
-            : "اختر فئة محاسبية مهيأة";
+          : partyType === "DELIVERY_PARTY"
+            ? "مستحق جهة توصيل (تَنقص)"
+            : selectedCategoryReady
+              ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
+              : "اختر فئة محاسبية مهيأة";
     return [
       { side: "مَدين", account: debit, amount: a },
       {
@@ -884,6 +898,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   setPartyType(v);
                   setCustomerId(null);
                   setSupplierId(null);
+                  setDeliveryPartyId(null);
                   setInvoiceId(null);
                 }}
               >
@@ -892,6 +907,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 </option>
                 <option value="CUSTOMER">عميل</option>
                 <option value="SUPPLIER">مورّد</option>
+                <option value="DELIVERY_PARTY">جهة توصيل (COD / مستحقات)</option>
               </AppSelect>
               <p className="text-xs text-muted-foreground">
                 {partyType === "OTHER" &&
@@ -904,6 +920,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   (isReceipt
                     ? "AP (ما ندين به للمورّد) يَزيد (استلام نقد من المورّد)."
                     : "AP يَنقص (دفعة للمورّد).")}
+                {partyType === "DELIVERY_PARTY" &&
+                  (isReceipt
+                    ? "توريد وتحصيل عهدة COD من جهة التوصيل لحساب الصندوق."
+                    : "صرف مستحقات أو أجور لجهة التوصيل.")}
               </p>
             </div>
 
@@ -983,6 +1003,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               <SupplierPicker
                 supplierId={supplierId}
                 onSupplierChange={setSupplierId}
+              />
+            )}
+            {partyType === "DELIVERY_PARTY" && (
+              <DeliveryPartyPicker
+                partyId={deliveryPartyId}
+                onPartyChange={setDeliveryPartyId}
+                branchId={branchId}
               />
             )}
             {partyType === "OTHER" && (

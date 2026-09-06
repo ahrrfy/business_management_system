@@ -81,6 +81,7 @@ const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = {
   CUSTOMER: "عميل",
   SUPPLIER: "مورّد",
+  DELIVERY_PARTY: "جهة توصيل",
   OTHER: "أخرى",
 };
 // التسمية من `@/lib/paymentMethod` (مصدر واحد مع POS والفواتير وحوار الوردية) — كانت نسخةً
@@ -732,6 +733,7 @@ export default function Vouchers() {
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
+              <option value="DELIVERY_PARTY">جهة توصيل</option>
               <option value="OTHER">أخرى</option>
             </AppSelect>
           </FilterField>

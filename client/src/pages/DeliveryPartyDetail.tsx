@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
@@ -164,6 +165,17 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
             {party.phone && <div className="mt-1 text-xs text-muted-foreground" dir="ltr">{party.phone}</div>}
           </div>
           <div className="flex items-center gap-2">
+            <WhatsAppStageActionsMenu
+              data={{
+                courierName: party.name,
+                courierPhone: party.phone,
+                totalSettlementCod: party.currentBalance,
+                openConsignmentsCount: 1,
+              }}
+              target="courier"
+              size="sm"
+              label="رسائل واتساب للمندوب"
+            />
             <div className="rounded-lg border px-3 py-1.5 text-sm">
               <span className="text-muted-foreground">نقد بذمّتها: </span>
               <b className={cn("tabular-nums", balanceDirection(party, "deliveryParty") === "receivable" ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
