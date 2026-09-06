@@ -543,9 +543,9 @@ export async function decidePurchaseOrderControl(
     // المراجعة والاستثناءُ الطارئ والرفضُ بلا بوّابة؛ و**إلغاءُ الأمر** وحده محوُ أثر —
     // لأنّه يمحو توقيعَ الجرد الافتتاحيّ (openingEligibility.ts:426). التفصيل ودليلُه في
     // `shared/approvalTriggers.ts`.
-    const resolvedActor = await resolveApprovalActor(tx, actor);
+    let resolvedActor: Awaited<ReturnType<typeof resolveApprovalActor>>;
     assertApprover({
-      actor: resolvedActor,
+      actor: (resolvedActor = await resolveApprovalActor(tx, actor)),
       trigger: purchaseOrderControlTrigger(request.kind, input.approve),
       subject: `أمر الشراء ${po.poNumber}`,
       legacy: () => {
