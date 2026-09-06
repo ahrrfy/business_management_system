@@ -1,7 +1,7 @@
 // إلغاء أمر شغل: يعيد المواد المُستهلَكة للمخزون ويسترد العربون المقبوض (إن وُجد).
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, like, notInArray, notLike, or, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { and, desc, eq, isNull, like, notLike, or, sql } from "drizzle-orm";
+import { accountingEntries, customers, invoices, orderPayments, receipts, shifts, users, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
 import { applyMovement } from "../inventoryService";
@@ -13,11 +13,10 @@ import { appliedCollectionsForWorkOrder } from "../deposits";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import Decimal from "decimal.js";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { logAuditTx } from "../auditService";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { assertPeriodOpen } from "../periodLockService";
 import type { TrpcContext } from "../../context";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -239,87 +238,7 @@ export async function cancelWorkOrderInTx(
             : "استعمل «استرجاع التسليم» من صفحة أمر الشغل — هو المسار الذي يعكس التسليم والفاتورة والذمّة معاً",
         }),
       });
-    // التعامل مع إرساليات التوصيل الحية المرتبطة بالطلب
-    const liveConsignments = await tx
-      .select()
-      .from(deliveryConsignments)
-      .where(
-        and(
-          eq(deliveryConsignments.workOrderId, workOrderId),
-          notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
-        ),
-      )
-      .for("update");
-
-    for (const cn of liveConsignments) {
-      if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
-            why: `الطلب خرج مع جهة التوصيل (الإرسالية ${cn.consignmentNumber ?? cn.id}) وحالة الطرد «${cn.parcelStatus}» — ولا يُلغى أمرٌ طرده بيد المندوب على الطريق`,
-            doThis: "استرجع الإرسالية أولاً من إدارة التوصيل بعد استلام الطرد من المندوب، ثم أعد محاولة الإلغاء",
-          }),
-        });
-      }
-      if (!round2(money(cn.collectedAmount ?? "0")).isZero() || cn.remittanceId != null) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: `تعذّر إلغاء طلب الخدمة ${wo.orderNumber}`,
-            why: `الإرسالية ${cn.consignmentNumber ?? cn.id} بدأ تحصيلها أو رُبطت بتوريد مالي — فلا تُعكس بإلغاء مباشر`,
-            doThis: "سوِّ الإرسالية في إدارة التوصيل أولاً قبل الإلغاء",
-          }),
-        });
-      }
-      const remainingCod = round2(
-        money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
-      );
-      const cancelledAt = new Date();
-      if (remainingCod.gt(0)) {
-        await appendDeliveryLedgerEntry(tx, {
-          eventKey: `CN:${cn.id}:COD_RELEASED:WO_CANCEL:${workOrderId}:${Date.now()}`,
-          partyId: Number(cn.partyId),
-          consignmentId: Number(cn.id),
-          branchId: Number(cn.branchId),
-          entryType: "COD_RELEASED",
-          amount: toDbMoney(remainingCod),
-          notes: `إلغاء أمر الشغل #${workOrderId} — ${reason}`,
-          actorUserId: actor.userId,
-          occurredAt: cancelledAt,
-        });
-      }
-      await tx
-        .update(deliveryConsignments)
-        .set({
-          assignedUserId: null,
-          parcelStatus: "CANCELLED",
-          moneyStatus: "CANCELLED",
-          status: "CANCELLED",
-          cancelledAt,
-          cancellationReason: `إلغاء أمر الشغل #${workOrderId} — ${reason}`,
-          cancelledBy: actor.userId,
-          settledAt: cancelledAt,
-        })
-        .where(eq(deliveryConsignments.id, Number(cn.id)));
-
-      await appendDeliveryEvent(tx, {
-        eventKey: `CN:${cn.id}:WO_CANCELLED:${workOrderId}:${Date.now()}`,
-        consignmentId: Number(cn.id),
-        eventType: "ASSIGNMENT_CANCELLED",
-        fromParcelStatus: cn.parcelStatus,
-        toParcelStatus: "CANCELLED",
-        fromMoneyStatus: cn.moneyStatus,
-        toMoneyStatus: "CANCELLED",
-        actorUserId: actor.userId,
-        payload: {
-          reason,
-          workOrderId,
-          partyId: Number(cn.partyId),
-          releasedCod: remainingCod.toFixed(2),
-        },
-      });
-    }
+    await assertNoLiveConsignment(tx, workOrderId, "cancel");
 
     // إذا كانت قد صدرت فاتورة للطلب، نعكس الفاتورة وذمّتها بقيود محاسبية مطابقة
     if (wo.invoiceId != null) {

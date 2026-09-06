@@ -10,6 +10,7 @@ import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 import { createDeliveryParty } from "../deliveryService";
 import { dispatchToDelivery } from "../delivery/dispatch";
+import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import {
@@ -194,24 +195,49 @@ describe("إصلاحات إسناد التوصيل والذمم في كاشير 
     expect(parcelBefore).toBeDefined();
     expect(parcelBefore.parcelStatus).toBe("ASSIGNED");
 
-    // طلب واعتماد إلغاء أمر الشغل — كسر الجمود المعماري
-    const request = await requestWorkOrderControl({
-      requestKey: `cancel-dispatch-${randomUUID()}`,
+    // التحقق أولاً من أن الحارس يمنع الإلغاء المباشر ما دام الطرد مسنداً للتوصيل
+    const directCancelReq = await requestWorkOrderControl({
+      requestKey: `cancel-dispatch-blocked-${randomUUID()}`,
       workOrderId,
       requestType: "CANCEL",
       baseVersion: Number(woBefore.version),
+      reason: "محاولة إلغاء مباشرة والأمر مسند",
+      payload: { refundShiftId: shift.shiftId, materials: null },
+    }, MANAGER);
+
+    await expect(
+      approveWorkOrderControlRequest(Number(directCancelReq.id), OWNER, "موافق"),
+    ).rejects.toThrowError(/استرجع الإرساليّة|استرجع الإرسالية/);
+
+    // إلغاء إسناد التوصيل من إدارة التوصيل (فك الشحنة واسترداد الطرد)
+    await cancelDeliveryAssignment({
+      consignmentId: Number(parcelBefore.id),
+      reason: "فك الشحنة بناء على طلب العميل لإلغاء الأمر",
+      clientRequestId: `req-cancel-cn-${randomUUID()}`,
+    }, MANAGER);
+
+    const [parcelCancelled] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, parcelBefore.id));
+    expect(parcelCancelled.parcelStatus).toBe("CANCELLED");
+    expect(parcelCancelled.status).toBe("CANCELLED");
+
+    // الآن بعد فك الشحنة، طلب واعتماد إلغاء أمر الشغل ينفذان بنجاح ويعكسان الفاتورة
+    const [woReadyForCancel] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
+    const request = await requestWorkOrderControl({
+      requestKey: `cancel-dispatch-ok-${randomUUID()}`,
+      workOrderId,
+      requestType: "CANCEL",
+      baseVersion: Number(woReadyForCancel.version),
       reason: "إلغاء الطلب بناء على رغبة العميل وفك إسناد التوصيل",
       payload: { refundShiftId: shift.shiftId, materials: null },
     }, MANAGER);
 
-    await approveWorkOrderControlRequest(Number(request.id), OWNER, "موافق على الإلغاء وفك الشحنة");
+    await approveWorkOrderControlRequest(Number(request.id), OWNER, "موافق على الإلغاء وعكس الفاتورة");
 
     const [woAfter] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId));
     expect(woAfter.status).toBe("CANCELLED");
 
-    // التحقق من فك الشحنة وإلغاء الطرد
-    const [parcel] = await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.workOrderId, workOrderId));
-    expect(parcel.parcelStatus).toBe("CANCELLED");
-    expect(parcel.status).toBe("CANCELLED");
+    // الفاتورة تعود ملغاة
+    const [invAfter] = await db().select().from(s.invoices).where(eq(s.invoices.id, Number(woBefore.invoiceId)));
+    expect(invAfter.status).toBe("CANCELLED");
   });
 });
