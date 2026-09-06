@@ -44,9 +44,12 @@ export class EscPos {
     return this;
   }
 
-  /** فتح درج النقود (ESC p). */
+  /** فتح درج النقود (ESC p m t1 t2) — نبضة مزدوجة لكلا المنفذين (Pin 2 و Pin 5) لضمان الفتح على كل الطابعات. */
   openDrawer(): this {
+    // Pin 2 pulse: ESC p 0 25 250
     this.chunks.push(0x1b, 0x70, 0x00, 0x19, 0xfa);
+    // Pin 5 pulse: ESC p 1 25 250
+    this.chunks.push(0x1b, 0x70, 0x01, 0x19, 0xfa);
     return this;
   }
 
