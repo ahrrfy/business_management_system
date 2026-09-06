@@ -5,6 +5,7 @@ import {
   accrualCorrectionRequests,
   accrualObligationEvents,
   accrualObligations,
+  users,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import type { Tx } from "../../db";
@@ -320,7 +321,14 @@ export async function transitionAccrualObligationTx(
     throw new TRPCError({ code: "BAD_REQUEST", message: "التسوية والتصحيح كاملان فقط ويجب أن يطابقا أصل الالتزام" });
   }
   if (input.reviewerId != null && input.reviewerId === input.actorId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "الفصل بين المنشئ والمعتمد إلزامي" });
+    const [reviewer] = await tx
+      .select({ isOwner: users.isOwner, isActive: users.isActive })
+      .from(users)
+      .where(eq(users.id, input.reviewerId))
+      .limit(1);
+    if (!reviewer?.isActive || !reviewer.isOwner) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفصل بين المنشئ والمعتمد إلزامي" });
+    }
   }
   const paymentRequestEvent = input.eventType === "PAYMENT_REQUESTED" || input.eventType === "PAYMENT_REJECTED";
   const settlementEvent = input.eventType === "PAYMENT_SETTLED" || input.eventType === "SETTLEMENT_REVERSED";

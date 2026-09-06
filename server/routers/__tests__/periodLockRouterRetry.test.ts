@@ -110,6 +110,30 @@ describe("periodLockRouter governed transaction retry", () => {
     expect(mocks.withTx).toHaveBeenCalledWith(expect.any(Function));
   });
 
+  it("writes approval and lock audits when the owner's close request is auto-approved", async () => {
+    mocks.requestMonthClose.mockResolvedValueOnce({
+      id: 31,
+      month: "2025-11",
+      autoApproval: {
+        month: "2025-11",
+        revision: 1,
+        periodId: 32,
+        certificateId: 33,
+        certificateNumber: "MC-2025-11-R01",
+        cutoffDate: "2025-11-30",
+      },
+    } as never);
+
+    await caller("admin").requestClose({ month: "2025-11" });
+
+    expect(mocks.logAuditTx).toHaveBeenCalledTimes(3);
+    expect(mocks.logAuditTx.mock.calls.map((call) => call[2]?.action)).toEqual([
+      "period.close_request",
+      "period.close_approve",
+      "period.lock",
+    ]);
+  });
+
   it("never retries non-lock failures", async () => {
     mocks.withTx.mockRejectedValueOnce(new Error("audit storage failed"));
 

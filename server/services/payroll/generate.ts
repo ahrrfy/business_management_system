@@ -28,6 +28,8 @@ import { assertPeriod, computeNet, countDaysWithin, expandSpans, recomputeRunTot
 import { getRun } from "./queries";
 import { encodeTerminationWageCoverage } from "./terminationCoverage";
 import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
+import { resolveApprovalActor } from "../approval/ownerGate";
+import { approveRun } from "./lifecycle";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
@@ -593,6 +595,12 @@ export async function generatePayroll(period: string, actor: Actor) {
     }
     return { runId, attendanceFlagged };
   }).then(async ({ runId, attendanceFlagged }) => {
+    const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, actor));
+    // أيام الحضور المفتوحة تعني أن الساعات الناقصة لم تُحتسب بعد؛ تبقى التشغيلة مسودة
+    // ليصححها المالك، ثم يعتمدها، ولا تتحول تلقائيا إلى راتب ناقص.
+    if (resolvedActor.isOwner && attendanceFlagged.length === 0) {
+      await approveRun(runId, { ...actor, isOwner: true, role: "admin" });
+    }
     const run = await getRun(runId);
     // يُرافق النتيجةَ لا الرأسَ المخزَّن: حالةٌ لحظة التوليد تُعرَض ثم تزول بالتصحيح، ولا
     // معنى لتخزينها فتشيخ. الشاشة تعرضها فور التوليد، وملاحظةُ البند أثرُها الدائم.

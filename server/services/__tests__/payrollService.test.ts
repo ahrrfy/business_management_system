@@ -74,6 +74,15 @@ beforeEach(async () => {
 });
 
 describe("payrollService — generate", () => {
+  it("يعتمد المالك النشط المسيّر الذي ولّده ضمن العملية نفسها", async () => {
+    await createEmployee({ firstName: "مالك", lastName: "النظام", payType: "monthly", salary: "750000", allowances: "0" });
+
+    const run = await generatePayroll("2026-09", { ...APPROVER, role: "manager", isOwner: true });
+
+    expect(run!.status).toBe("approved");
+    expect(Number(run!.approvedBy)).toBe(APPROVER.userId);
+  });
+
   it("ينشئ مسيّر مسودة بصافٍ صحيح لموظف شهري (أساسي + مخصّصات)", async () => {
     await createEmployee({ firstName: "علي", lastName: "العبيدي", payType: "monthly", salary: "1000000", allowances: "150000" });
     await createEmployee({ firstName: "زينب", lastName: "الموسوي", payType: "monthly", salary: "800000", allowances: "50000" });

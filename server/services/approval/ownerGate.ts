@@ -83,13 +83,24 @@ export interface ApprovalPlan extends ApprovalDecision {
 /**
  * **لحظةَ الفعل.** يقرّر: يُنفَّذ الآن، أم يُنشَأ طلبٌ ينتظر المالك؟
  *
- * حين يكون العلَم مطفأً تُرجع `executeNow: false` دائماً — أي «أنشئ الطلب كما اليوم»،
- * فلا يتغيّر مسارٌ واحد.
+ * قرار المالك الذاتي دائمٌ ولا يخضع لعلم طرح: المالك الذي بدأ الفعل هو أعلى سلطة،
+ * فينفّذه ويعتمده في الخطوة نفسها. العلم يحكم فقط تبسيط دورة الموظفين القديمة.
  */
 export function planApproval(args: {
   actor: ResolvedApprovalActor;
   trigger: ApprovalTrigger | null;
 }): ApprovalPlan {
+  if (actorIsOwner(args.actor)) {
+    const decision = resolveApproval({
+      trigger: args.trigger,
+      actorIsOwner: true,
+    });
+    return {
+      ...decision,
+      executeNow: true,
+      underNewPolicy: true,
+    };
+  }
   if (!isRolloutOn("ownerOnlyApproval")) {
     return {
       outcome: "NEEDS_OWNER",
@@ -146,6 +157,9 @@ export function assertApprover(args: {
    */
   retainLegacy?: boolean;
 }): void {
+  // قرار المالك النهائي لا يخضع لعلم طرح ولا لفصل المهام القديم: إذا كان المالك هو
+  // المنشئ/الطالب فقد وافق بالفعل عند بدء العملية، فلا معنى لاعتماد ثان عليه.
+  if (actorIsOwner(args.actor)) return;
   if (!isRolloutOn("ownerOnlyApproval")) {
     args.legacy();
     return;

@@ -14,6 +14,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractInsertId } from "../../lib/insertId";
 import {
   ACCOUNT_ROLES,
@@ -211,7 +212,7 @@ export async function createPurchaseCharge(input: CreatePurchaseChargeInput, act
 export async function requestPurchaseChargeControl(input: RequestPurchaseChargeControlInput, actor: Actor) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120); const evidenceReference = required(input.evidenceReference, "مرجع الدليل", 500); const reason = required(input.reason, "سبب الطلب", 500);
   const canonical = stableCanonical({ purchaseChargeId: input.purchaseChargeId, expectedChargeVersion: input.expectedChargeVersion, kind: input.kind, evidenceReference, reason }); const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseChargeControlRequests).where(eq(purchaseChargeControlRequests.requestKey, requestKey)).limit(1))[0];
     if (replay) { assertPurchaseBranch(replay, actor); if (!payloadHashMatches(payloadHash, replay.payloadHash)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بحمولة مختلفة" }); return { requestId: Number(replay.id), status: replay.status, idempotent: true as const }; }
     const charge = (await tx.select().from(purchaseCharges).where(eq(purchaseCharges.id, input.purchaseChargeId)).for("update").limit(1))[0];
@@ -220,6 +221,12 @@ export async function requestPurchaseChargeControl(input: RequestPurchaseChargeC
     const inserted = await tx.insert(purchaseChargeControlRequests).values({ requestKey, purchaseChargeId: input.purchaseChargeId, branchId: Number(charge.branchId), kind: input.kind, baseChargeVersion: input.expectedChargeVersion, payloadCanonical: canonical, payloadHash, evidenceReference, reason, pendingGuard: `PURCHASE-CHARGE:${input.purchaseChargeId}`, requestedBy: actor.userId });
     return { requestId: extractInsertId(inserted), status: "PENDING" as const, idempotent: false as const };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.charge.control",
+    id: result.requestId,
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decidePurchaseChargeControl(input: DecidePurchaseChargeControlInput, actor: Actor) {

@@ -2865,7 +2865,7 @@ export const cashMissedDailyCountExceptions = mysqlTable(
       sql`(
         (${table.status} = 'PENDING' AND ${table.version} = 1 AND ${table.decisionClientRequestId} IS NULL AND ${table.decisionHash} IS NULL AND ${table.reviewedByUserId} IS NULL AND ${table.reviewedAt} IS NULL AND ${table.decisionNote} IS NULL)
         OR
-        (${table.status} IN ('APPROVED','REJECTED') AND ${table.version} = 2 AND ${table.decisionClientRequestId} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.reviewedByUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionNote} IS NOT NULL AND ${table.reviewedByUserId} <> ${table.requestedByUserId})
+        (${table.status} IN ('APPROVED','REJECTED') AND ${table.version} = 2 AND ${table.decisionClientRequestId} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.reviewedByUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.decisionNote} IS NOT NULL)
       )`,
     ),
   }),
@@ -5047,7 +5047,8 @@ export const purchaseOrderControlRequests = mysqlTable(
       OR (${table.status} = 'APPROVED' AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NOT NULL AND ${table.pendingGuard} IS NULL)
       OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL AND ${table.pendingGuard} IS NULL)
     )`),
-    makerChecker: check("chk_po_control_maker_checker", sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`),
+    // `chk_po_control_maker_checker` أُسقط بالهجرة 0336؛ التطبيق يتحقق من المالك
+    // النشط قبل السماح بالاعتماد الذاتي، ويبقي الفصل لغيره.
   }),
 );
 
@@ -7633,10 +7634,8 @@ export const purchaseIntegrityCases = mysqlTable(
         OR (${table.status} IN ('RESOLVED','DISMISSED') AND ${table.pendingResolutionGuard} IS NULL AND ${table.resolutionRequestKey} IS NOT NULL AND ${table.resolutionRequestHash} IS NOT NULL AND ${table.resolutionRequestedBy} IS NOT NULL AND ${table.resolutionRequestedAt} IS NOT NULL AND ${table.decisionKey} IS NOT NULL AND ${table.decisionHash} IS NOT NULL AND ${table.resolutionDecision} IN ('APPROVE_RESOLVED','APPROVE_DISMISSED') AND ${table.resolvedBy} IS NOT NULL AND ${table.resolvedAt} IS NOT NULL AND ${table.decisionReason} IS NOT NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_purchase_integrity_resolution_sod",
-      sql`${table.resolvedBy} IS NULL OR ${table.resolvedBy} <> ${table.resolutionRequestedBy}`,
-    ),
+    // `chk_purchase_integrity_resolution_sod` أُسقط بالهجرة 0336 للسماح للمالك
+    // النشط بحسم طلبه عبر مسار القرار القانوني نفسه.
   }),
 );
 
@@ -7703,10 +7702,8 @@ export const purchaseIntegrityCaseEvents = mysqlTable(
       table.branchId,
       table.eventType,
     ),
-    makerChecker: check(
-      "chk_purchase_integrity_event_sod",
-      sql`${table.eventType} NOT IN ('RESOLUTION_APPROVED','DISMISSED') OR (${table.counterpartyActorId} IS NOT NULL AND ${table.counterpartyActorId} <> ${table.actorId})`,
-    ),
+    // `chk_purchase_integrity_event_sod` أُسقط بالهجرة 0336؛ سلطة الاستثناء
+    // تُحسم من users داخل الخدمة ولا يمكن تمثيلها في CHECK أحادي الجدول.
     actorShape: check(
       "chk_purchase_integrity_event_actor",
       sql`(${table.actorType} = 'USER' AND ${table.actorId} IS NOT NULL) OR (${table.actorType} = 'SYSTEM' AND ${table.actorId} IS NULL AND ${table.eventType} IN ('OPENED','EVIDENCE_ADDED'))`,
@@ -9696,10 +9693,8 @@ export const accrualCorrectionRequests = mysqlTable(
         (${t.status} = 'REJECTED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND CHAR_LENGTH(TRIM(${t.rejectionReason})) > 0)
       )`,
     ),
-    makerCheckerCheck: check(
-      "chk_accrual_correction_maker_checker",
-      sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`,
-    ),
+    // `chk_accrual_correction_maker_checker` أُسقط بالهجرة 0336؛ الخدمة وحدها
+    // تسمح بالتطابق للمالك النشط.
     refundShapeCheck: check(
       "chk_accrual_correction_refund_shape",
       sql`(
@@ -11102,10 +11097,8 @@ export const employeeTerminations = mysqlTable(
       "chk_term_evidence_attested",
       sql`${t.zeroAmountsAttested} = 1 AND CHAR_LENGTH(TRIM(${t.settlementEvidenceNote})) >= 10`,
     ),
-    recognitionMakerChecker: check(
-      "chk_term_recognition_maker_checker",
-      sql`${t.recognizedBy} IS NULL OR ${t.createdBy} IS NULL OR ${t.recognizedBy} <> ${t.createdBy}`,
-    ),
+    // `chk_term_recognition_maker_checker` أُسقط بالهجرة 0336 كي يستطيع المالك
+    // إكمال الإنهاء الذي أنشأه، بعد تحقق الخدمة من نشاطه وملكيته.
     recognitionLifecycle: check(
       "chk_term_recognition_lifecycle",
       sql`(
@@ -12734,10 +12727,8 @@ export const workOrderControlRequests = mysqlTable(
         OR (${table.status} IN ('REJECTED','STALE') AND ${table.reviewedBy} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL AND ${table.appliedAt} IS NULL)
       )`,
     ),
-    makerChecker: check(
-      "chk_wo_control_maker_checker",
-      sql`(${table.reviewedBy} IS NULL OR ${table.reviewedBy} <> ${table.requestedBy})`,
-    ),
+    // `chk_wo_control_maker_checker` أُسقط بالهجرة 0336؛ اعتماد المالك الذاتي
+    // محروس في الخدمة، وبقية الفاعلين يبقون تحت فصل المهام.
   }),
 );
 
@@ -16509,10 +16500,8 @@ export const yearEndReopenRequests = mysqlTable(
       "chk_yerr_identity",
       sql`${t.year} BETWEEN 2020 AND 2100 AND CHAR_LENGTH(TRIM(${t.reason})) >= 10 AND CHAR_LENGTH(${t.requestPayloadHash}) = 64`,
     ),
-    makerCheckerCheck: check(
-      "chk_yerr_maker_checker",
-      sql`${t.decidedBy} IS NULL OR ${t.decidedBy} <> ${t.requestedBy}`,
-    ),
+    // `chk_yerr_maker_checker` أُسقط بالهجرة 0336 للسماح بطلب المالك وحسمه
+    // في العملية نفسها بعد التحقق من حسابه في قاعدة البيانات.
     lifecycleCheck: check(
       "chk_yerr_lifecycle",
       sql`(
@@ -16931,9 +16920,8 @@ export const salesControlRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE','WITHDRAWN') AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    // السحبُ وحده يُستثنى: الساحبُ هو الطالبُ بالتعريف. ويبقى القيد مُلزِماً على
-    // APPROVED/REJECTED حيث يعني رقابةً فعليّة (هجرة 0326).
-    makerChecker: check("chk_sales_control_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.status} = 'WITHDRAWN' OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_sales_control_maker_checker` أُسقط بالهجرة 0336؛ التطبيق يستثني المالك
+    // النشط فقط ويبقي فصل المهام على الموظفين.
   }),
 );
 export type SalesControlRequest = typeof salesControlRequests.$inferSelect;
@@ -16971,7 +16959,7 @@ export const salesExchangeCommands = mysqlTable(
       columns: [t.controlRequestId],
       foreignColumns: [salesControlRequests.id],
     }),
-    makerChecker: check("chk_sales_exchange_maker_checker", sql`${t.requestedBy} <> ${t.approvedBy}`),
+    // `chk_sales_exchange_maker_checker` أُسقط بالهجرة 0336 لنفس عقد طلب البيع الأم.
     deltaNonnegative: check("chk_sales_exchange_delta_nonnegative", sql`${t.deltaAmount} >= 0`),
     invoiceDistinct: check("chk_sales_exchange_invoice_distinct", sql`${t.originalInvoiceId} <> ${t.replacementInvoiceId}`),
   }),
@@ -17028,7 +17016,7 @@ export const deliveryCodWriteOffRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    makerChecker: check("chk_delivery_cod_writeoff_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_delivery_cod_writeoff_maker_checker` أُسقط بالهجرة 0336؛ الحارس الخادمي باقٍ لغير المالك.
   }),
 );
 export type DeliveryCodWriteOffRequest = typeof deliveryCodWriteOffRequests.$inferSelect;
@@ -17070,7 +17058,7 @@ export const commissionRunApprovalRequests = mysqlTable(
       OR (${t.status} = 'APPROVED' AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NOT NULL)
       OR (${t.status} IN ('REJECTED','STALE') AND ${t.pendingGuard} IS NULL AND ${t.reviewedBy} IS NOT NULL AND ${t.reviewedAt} IS NOT NULL AND ${t.decisionKey} IS NOT NULL AND ${t.decisionHash} IS NOT NULL AND ${t.appliedAt} IS NULL)
     )`),
-    makerChecker: check("chk_commission_run_approval_maker_checker", sql`${t.reviewedBy} IS NULL OR ${t.reviewedBy} <> ${t.requestedBy}`),
+    // `chk_commission_run_approval_maker_checker` أُسقط بالهجرة 0336؛ الحارس الخادمي باقٍ لغير المالك.
   }),
 );
 export type CommissionRunApprovalRequest = typeof commissionRunApprovalRequests.$inferSelect;

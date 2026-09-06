@@ -168,7 +168,11 @@ export const leaveSource: DecisionSource = {
     const subject = `طلب الاجازة رقم ${input.id}`;
     const decision = input.action === "REJECT" ? "rejected" : "approved";
     // `scopedBranchIdFor` مرآةُ `branchScopedProcedure`: لا `null` لغير العابر أبداً.
-    await decideLeaveAndNotify(input.id, decision, { userId: actor.userId, scopedBranchId: scopedBranchIdFor(actor) });
+    await decideLeaveAndNotify(input.id, decision, {
+      userId: actor.userId,
+      scopedBranchId: scopedBranchIdFor(actor),
+      isOwner: actor.isOwner,
+    });
     const outcome = decision === "approved" ? "EXECUTED" : "REJECTED";
     return decided(input, outcome, decision === "approved" ? `${subject}: اعتُمد وأُشعر الموظف.` : `${subject}: رُفض وأُشعر الموظف.`);
   },

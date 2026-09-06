@@ -30,6 +30,7 @@ import {
   type RefundRail,
 } from "@shared/refundRail";
 import { type Actor, requireDb, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { recordWorkOrderEvent } from "../workOrderEvents";
 import { workOrderFeeHeldNet } from "./deliveryFeeRefund";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
@@ -166,7 +167,7 @@ export async function requestWorkOrderControl(
   }
   const reason = normalizedReason(input.reason, "الإجراء");
   const payloadHash = idempotencyHash(input.payload);
-  return retryOnDeadlock(() => withTx(async (tx) => {
+  const result = await retryOnDeadlock(() => withTx(async (tx) => {
     const replay = await loadExistingByKey(tx, requestKey);
     if (replay) {
       assertRequestBranch(replay, actor);
@@ -276,6 +277,12 @@ export async function requestWorkOrderControl(
     const row = await loadExistingByKey(tx, requestKey);
     return { ...row!, replayed: false as const };
   }, { gate: "NONE" }));
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "workOrder.control.approve",
+    id: Number(result.id),
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function listPendingWorkOrderControls(actor: Actor & { role?: string }) {
@@ -423,7 +430,7 @@ export async function approveWorkOrderControlRequest(
       || Number(requestSnapshot.requestedBy) !== Number(request.requestedBy)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر طلب التحكم أثناء الاعتماد" });
     }
-    if (Number(request.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(request.requestedBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد منشئ الطلب طلبه بنفسه" });
     }
     if (request.status === "APPROVED") return { request, replayed: true as const };
@@ -439,7 +446,7 @@ export async function approveWorkOrderControlRequest(
       : await loadWorkOrder(tx, Number(request.workOrderId));
     if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
     assertWorkOrderBranch(wo, actor);
-    if ((request.requestType === "CANCEL" || request.requestType === "MATERIAL_ADJUST" || request.requestType === "REVERSE_DELIVERY")
+    if (!actor.isOwner && (request.requestType === "CANCEL" || request.requestType === "MATERIAL_ADJUST" || request.requestType === "REVERSE_DELIVERY")
       && (Number(wo.createdBy ?? 0) === actor.userId || Number(wo.assignedTo ?? 0) === actor.userId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
@@ -554,7 +561,7 @@ export async function rejectWorkOrderControlRequest(
     )[0];
     if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب التحكم غير موجود" });
     assertRequestBranch(request, actor);
-    if (Number(request.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(request.requestedBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يرفض منشئ الطلب طلبه بنفسه" });
     }
     if (request.status === "REJECTED" && request.reviewNote === note) return { request, replayed: true as const };

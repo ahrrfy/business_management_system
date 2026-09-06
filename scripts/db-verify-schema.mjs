@@ -890,7 +890,6 @@ try {
     ["monthCloseSequence", "chk_month_close_sequence_singleton"],
     ["monthCloseSequence", "chk_mcs_status_tuple"],
     ["yearEndReopenRequests", "chk_yerr_identity"],
-    ["yearEndReopenRequests", "chk_yerr_maker_checker"],
     ["yearEndReopenRequests", "chk_yerr_lifecycle"],
   ];
   const [monthCloseCheckRows] = await conn.query(

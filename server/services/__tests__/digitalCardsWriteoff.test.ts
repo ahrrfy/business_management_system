@@ -228,7 +228,6 @@ describe("الشطب — الاعتماد (SOD وكلّ الأثر المالي)
     const intentId = await stuckIntent(offeringId, priced.get(offeringId)!);
 
     await withTx((tx) => writeoffService.requestWriteoff(tx, { intentId, reason: "لم يُسلَّم" }, owner));
-    await withTx((tx) => writeoffService.approveWriteoff(tx, { intentId }, owner));
     expect((await intentRow(intentId)).status).toBe("WRITTEN_OFF");
   });
 
