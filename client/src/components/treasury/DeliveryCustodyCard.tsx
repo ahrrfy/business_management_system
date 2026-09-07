@@ -4,15 +4,28 @@ import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 
-export function DeliveryCustodyCard() {
-  const board = trpc.delivery.partyBoard.useQuery(undefined, {
-    refetchInterval: 30_000,
-    staleTime: 10_000,
+import { effectiveCashInHand } from "@/components/delivery/partyBoardModel";
+
+export function DeliveryCustodyCard({ branchId }: { branchId?: number | null } = {}) {
+  const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, {
+    staleTime: 60_000,
   });
+  const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
+
+  const board = trpc.delivery.partyBoard.useQuery(
+    branchId ? { branchId } : undefined,
+    {
+      refetchInterval: 30_000,
+      staleTime: 10_000,
+    },
+  );
 
   const rows = board.data ?? [];
-  const rowEffectiveCash = (r: (typeof rows)[number]) =>
-    Math.max(Number(r.deliveredUnremitted?.amount || 0), Number(r.cashInHandLedger || 0));
+  const rowEffectiveCash = (r: (typeof rows)[number]) => {
+    const cashOnHand = Number(effectiveCashInHand(r, ledgerDerived) || 0);
+    const unremitted = Number(r.deliveredUnremitted?.amount || 0);
+    return Math.max(unremitted, cashOnHand);
+  };
 
   const couriersWithCash = rows.filter((r) => rowEffectiveCash(r) > 0);
   const totalUnremittedCash = rows.reduce(
@@ -123,7 +136,7 @@ export function DeliveryCustodyCard() {
             variant={isClear ? "outline" : "default"}
             className="gap-1.5 text-xs font-semibold"
           >
-            <Link href="/delivery">
+            <Link href="/delivery?tab=board">
               <Wallet className="size-3.5" />
               {isClear ? "لوحة التوصيل" : "تسوية وتصفير العهد"}
               <ArrowLeft className="size-3" />
