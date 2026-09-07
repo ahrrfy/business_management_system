@@ -468,26 +468,107 @@ async function computeManagementAlerts(opts: {
     alerts.push({ key: "ap-due", severity: "info", title: "موردون مستحقّون (دائنون لنا)", count: Number(ap.cnt), amount: toDbMoney(money(ap.total ?? 0)), href: "/ap-aging", actionLabel: "أعمار الموردين" });
   }
 
-  // (ط) رقيب الشذوذ — عدّ المؤشرات النشطة؛ حرج عند عبثٍ بالتسلسل أو بيعٍ دون الكلفة.
+  // (ط) رادار الذكاء التشغيلي ومنع التلاعب (Operational Intelligence & Audit Radar)
+  // كواشف ذكية حتمية تكشف: بيع دون الكلفة / حسومات غير اعتيادية / تكرار المرتجعات / فروقات وعجوزات النقد / عهد التوصيل المتقادمة / فجوات الترقيم
   if (anomalyRes) {
     const k = anomalyRes.kpis;
-    const indicators =
-      (k.belowCostLines > 0 ? 1 : 0) +
-      (k.flaggedDiscountCashiers > 0 ? 1 : 0) +
-      (k.flaggedReturnSellers > 0 ? 1 : 0) +
-      (k.flaggedShortageCashiers > 0 ? 1 : 0) +
-      (k.reversedVouchers > 0 ? 1 : 0) +
-      (k.sequenceGapDays > 0 ? 1 : 0);
-    if (indicators > 0) {
+    let radarSpecificFired = false;
+
+    if (k.belowCostLines > 0) {
       alerts.push({
-        key: "anomaly-watch",
-        severity: k.sequenceGapDays > 0 || k.belowCostLines > 0 ? "critical" : "warning",
-        title: "مؤشرات شذوذ (آخر ٧ أيام): بيع دون الكلفة/خصومات/مرتجعات/عجوزات",
-        count: indicators,
+        key: "radar-below-cost",
+        severity: "critical",
+        title: "رادار التدقيق: مبيعات سُجِّلت دون سعر التكلفة التاريخية",
+        count: k.belowCostLines,
         amount: money(k.belowCostLoss).gt(0) ? k.belowCostLoss : null,
         href: "/reports/anomaly-watch",
-        actionLabel: "رقيب الشذوذ",
+        actionLabel: "فحص الكلفة",
       });
+      radarSpecificFired = true;
+    }
+
+    if (k.flaggedDiscountCashiers > 0) {
+      alerts.push({
+        key: "radar-cashier-discounts",
+        severity: "warning",
+        title: "رادار التدقيق: كاشيرية بحسومات يدوية غير اعتيادية (تتجاوز ضعف المتوسط)",
+        count: k.flaggedDiscountCashiers,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "كشف الخصومات",
+      });
+      radarSpecificFired = true;
+    }
+
+    if (k.flaggedReturnSellers > 0) {
+      alerts.push({
+        key: "radar-seller-returns",
+        severity: "warning",
+        title: "رادار التدقيق: تركّز مرتجعات غير اعتيادي لبائعين (تجاوز ٥٪ من المبيعات)",
+        count: k.flaggedReturnSellers,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "كشف المرتجعات",
+      });
+      radarSpecificFired = true;
+    }
+
+    if (k.flaggedShortageCashiers > 0) {
+      alerts.push({
+        key: "radar-cash-shortages",
+        severity: "critical",
+        title: "رادار التدقيق: كاشيرية بفروقات وعجوزات نقد متكررة في إغلاق الصندوق",
+        count: k.flaggedShortageCashiers,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "كشف العجوزات",
+      });
+      radarSpecificFired = true;
+    }
+
+    if (k.flaggedDeliveryCustody > 0) {
+      alerts.push({
+        key: "radar-delivery-custody",
+        severity: "warning",
+        title: "رادار التدقيق: عهدة نقدية متقادمة بذمة سائقي التوصيل تجاوزت الفترة الآمنة",
+        count: k.flaggedDeliveryCustody,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "متابعة العهد",
+      });
+      radarSpecificFired = true;
+    }
+
+    if (k.sequenceGapDays > 0) {
+      alerts.push({
+        key: "radar-sequence-gaps",
+        severity: "critical",
+        title: "رادار التدقيق: انقطاع في تسلسل ترقيم الفواتير (شبهة حذف مباشر)",
+        count: k.sequenceGapDays,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "فحص التسلسل",
+      });
+      radarSpecificFired = true;
+    }
+
+    if (!radarSpecificFired) {
+      const indicators =
+        (k.reversedVouchers > 0 ? 1 : 0) +
+        (k.flaggedConsignWithdrawers > 0 ? 1 : 0) +
+        (k.flaggedCancelledFundedDrafters > 0 ? 1 : 0) +
+        (k.flaggedTelecomCollectors > 0 ? 1 : 0);
+      if (indicators > 0) {
+        alerts.push({
+          key: "anomaly-watch",
+          severity: "warning",
+          title: "رادار التدقيق: مؤشرات شذوذ تشغيلي إضافية (عكوسات وسحوبات)",
+          count: indicators,
+          amount: null,
+          href: "/reports/anomaly-watch",
+          actionLabel: "رقيب الشذوذ",
+        });
+      }
     }
   }
 

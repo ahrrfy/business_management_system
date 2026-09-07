@@ -138,4 +138,41 @@ describe("ش٦ — طوابير أوامر الشغل في تنبيهات الإ
     const all = await getManagementAlerts({});
     expect(all.alerts.find((x) => x.key === "wo-unassigned")?.count).toBe(1);
   });
+
+  it("⭐ رادار الذكاء التشغيلي: يرصد البيع دون الكلفة ويطلقه كتنبيه رادار حرج", async () => {
+    await db().insert(s.products).values({ id: 99, name: "منتج رادار" });
+    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "RADAR-1", costPrice: "10000.00" });
+
+    const invRes = await db().insert(s.invoices).values({
+      branchId: 1,
+      customerId: 1,
+      invoiceNumber: "INV-RADAR-1",
+      sourceType: "POS",
+      invoiceStatus: "PAID",
+      subtotal: "5000.00",
+      total: "5000.00",
+      paidAmount: "5000.00",
+      createdBy: 1,
+      invoiceDate: new Date(),
+    } as never);
+    const invId = Number((invRes as unknown as { insertId: number }[])[0]?.insertId ?? 0);
+
+    await db().insert(s.invoiceItems).values({
+      invoiceId: invId,
+      variantId: 99,
+      quantity: "1.000",
+      baseQuantity: 1,
+      unitPrice: "5000.00",
+      unitCost: "10000.00",
+      total: "5000.00",
+    } as never);
+
+    const a = await alertKeys();
+    const radarAlert = a.get("radar-below-cost");
+    expect(radarAlert).toBeDefined();
+    expect(radarAlert?.severity).toBe("critical");
+    expect(radarAlert?.count).toBe(1);
+    expect(radarAlert?.href).toBe("/reports/anomaly-watch");
+  });
 });
+
