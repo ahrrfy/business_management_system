@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { truncateTables } from "./__testUtils__";
 import {
   createReorderDraft,
   listReorderAlerts,
@@ -14,6 +15,9 @@ import {
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "variantBranchThresholds",
+  "invoiceItems",
+  "invoices",
   "purchaseOrderItems",
   "purchaseOrders",
   "branchStock",
@@ -21,8 +25,8 @@ const TABLES = [
   "productVariants",
   "products",
   "suppliers",
-  "branches",
   "users",
+  "branches",
 ];
 
 function db() {
@@ -32,10 +36,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -132,6 +133,44 @@ describe("listReorderAlerts", () => {
     expect(b2.map((r) => [r.variantId, r.branchId])).toEqual([[4, 2]]);
     const all = await listReorderAlerts({});
     expect(all).toHaveLength(3);
+  });
+
+  it("يحسب سرعة البيع (dailyVelocity) والأيام المتبقية ودرجة الإلحاح ذكياً عند وجود مبيعات سابقة", async () => {
+    const d = db();
+    const [inv] = await d.insert(s.invoices).values({
+      invoiceNumber: "INV-TEST-001",
+      branchId: 1,
+      invoiceDate: new Date(),
+      total: "600.00",
+      subtotal: "600.00",
+      paidAmount: "600.00",
+      status: "PAID",
+      createdBy: 1,
+    } as never).$returningId();
+
+    await d.insert(s.invoiceItems).values({
+      invoiceId: inv.id,
+      variantId: 1,
+      productUnitId: 1,
+      quantity: "60",
+      baseQuantity: 60,
+      unitPrice: "10.00",
+      total: "600.00",
+    } as never);
+
+    const rows = await listReorderAlerts({ branchId: 1 });
+    const hit = rows.find((r) => r.variantId === 1 && r.branchId === 1);
+    expect(hit).toBeDefined();
+    // 60 / 30 = 2.00 daily velocity
+    expect(hit?.sales30d).toBe(60);
+    expect(hit?.dailyVelocity).toBe(2);
+    // quantity = 3, dailyVelocity = 2 => daysRemaining = Math.floor(3 / 2) = 1
+    expect(hit?.daysRemaining).toBe(1);
+    // daysRemaining <= 3 => CRITICAL
+    expect(hit?.urgency).toBe("CRITICAL");
+    // smartTarget: max(reorderPoint * 2 [20], dailyVelocity * 14 + minStock [2*14 + 5 = 33]) = 33
+    // suggestedQty: 33 - 3 = 30
+    expect(hit?.suggestedQty).toBe(30);
   });
 });
 
