@@ -15,6 +15,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PayrollAccrualOperations, PayrollRemittanceRequestPanel } from "@/components/hr/PayrollAccrualOperations";
 import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
+import { BiometricReadinessBanner } from "@/components/payroll/BiometricReadinessBanner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -164,10 +165,14 @@ export default function Payroll() {
        * هنا لحظيّ، ولوحةُ الانتباه أدناه أثرُه الدائم (تُشتقّ من ملاحظات البنود).
        */
       const openCount = r?.attendanceFlagged?.length ?? 0;
-      if (openCount > 0) {
+      const unmappedCount = (r as { unmappedPunchesCount?: number })?.unmappedPunchesCount ?? 0;
+      if (openCount > 0 || unmappedCount > 0) {
+        const details: string[] = [];
+        if (openCount > 0) details.push(`${openCount} موظف بأيام بلا انصراف`);
+        if (unmappedCount > 0) details.push(`${unmappedCount} بصمة غير مربوطة بموظف`);
         notify.warn(
-          `تم توليد المسيّر — ${openCount} موظف بأيام بلا انصراف`,
-          "ساعات تلك الأيام غير محتسَبة. صحّحها قبل الاعتماد (التفصيل أعلى الجدول).",
+          `تم توليد المسيّر — ${details.join(" و ")}`,
+          "يُرجى مراجعة الحضور وربط البصمات قبل الاعتماد.",
         );
       } else {
         notify.ok("تم توليد المسيّر");
@@ -738,6 +743,7 @@ export default function Payroll() {
               <Label htmlFor="gen-period">الشهر (YYYY-MM)</Label>
               <Input id="gen-period" type="month" value={genPeriod} onChange={(e) => setGenPeriod(e.target.value)} dir="ltr" className="tabular-nums" />
             </div>
+            <BiometricReadinessBanner period={genPeriod} />
             <p className="text-xs text-muted-foreground">
               يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + البدلات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.
