@@ -16,7 +16,9 @@ import {
   Info,
   Flame,
   Volume2,
+  Plus,
 } from "lucide-react";
+import { Link } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +43,12 @@ export function BroadcastTicker() {
     }
   });
   const [selectedAnnouncement, setSelectedAnnouncement] = useState<AnnouncementItem | null>(null);
+
+  const meQuery = trpc.auth.me.useQuery(undefined, {
+    staleTime: 60_000,
+  });
+  const role = meQuery.data?.role;
+  const canManage = role === "admin" || role === "manager";
 
   const autoPlayTimerRef = useRef<number | null>(null);
 
@@ -77,7 +85,78 @@ export function BroadcastTicker() {
   };
 
   if (!announcements || announcements.length === 0) {
-    return null;
+    if (isCollapsed) {
+      return (
+        <div className="w-full px-3 md:px-6 pt-2 pb-0.5 shrink-0" dir="rtl">
+          <div className="w-full px-3 py-1.5 bg-muted/40 border border-border/60 rounded-lg flex items-center justify-between text-xs shadow-2xs">
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition font-medium cursor-pointer"
+            >
+              <span className="flex size-2 rounded-full bg-primary animate-ping" aria-hidden />
+              <Radio className="size-3.5 text-primary" aria-hidden />
+              <span>شريط السبتلايت الإخباري مفعّل وجاهز — اضغط للإظهار</span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              className="text-xs text-primary hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+            >
+              <Maximize2 className="size-3" aria-hidden />
+              إظهار الشريط
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div dir="rtl" className="w-full px-3 md:px-6 pt-3 pb-1 shrink-0">
+        <div className="w-full rounded-xl border border-primary/20 bg-primary/5 dark:bg-primary/10 shadow-xs">
+          <div className="flex items-center justify-between min-h-[40px] px-2.5 sm:px-4 gap-2">
+            <div className="flex items-center shrink-0">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary text-primary-foreground font-bold text-xs shadow-xs">
+                <Radio className="size-3.5 animate-[spin_4s_linear_infinite]" aria-hidden />
+                <span>السبتلايت الإخباري</span>
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary-foreground animate-ping ms-0.5" aria-hidden />
+              </div>
+            </div>
+
+            <div className="flex-1 min-w-0 overflow-hidden mx-2 text-xs sm:text-sm text-foreground flex items-center gap-2">
+              <span className="font-semibold text-primary">شركة الرؤية العربية للتجارة العامة</span>
+              <span className="text-muted-foreground hidden sm:inline">—</span>
+              <span className="text-muted-foreground truncate">
+                {canManage
+                  ? "شريط البث والسبتلايت جاهز ومفعل — لا توجد إعلانات نشطة حالياً. يمكنك نشر توجيه لفروع الشركة."
+                  : "مرحباً بكم في منظومة العمل الموحدة لشركة الرؤية العربية للتجارة العامة."}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {canManage && (
+                <Link
+                  href="/announcements"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 text-xs font-bold transition shadow-2xs"
+                >
+                  <Plus className="size-3.5" aria-hidden />
+                  <span>نشر إعلان</span>
+                </Link>
+              )}
+              <button
+                type="button"
+                onClick={toggleCollapsed}
+                className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition"
+                title="تصغير الشريط"
+                aria-label="تصغير الشريط"
+              >
+                <Minimize2 className="size-3.5" aria-hidden />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const current = announcements[currentIndex] || announcements[0];
@@ -241,6 +320,18 @@ export function BroadcastTicker() {
                   <ChevronLeft className="size-4" aria-hidden />
                 </button>
               </div>
+            )}
+
+            {/* زر إدارة الإعلانات للمدير */}
+            {canManage && (
+              <Link
+                href="/announcements"
+                className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition"
+                title="إدارة ونشر إعلانات الشركة"
+                aria-label="إدارة ونشر إعلانات الشركة"
+              >
+                <Plus className="size-3.5" aria-hidden />
+              </Link>
             )}
 
             {/* زر فتح التفاصيل */}
