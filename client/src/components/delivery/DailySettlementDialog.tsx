@@ -6,7 +6,7 @@
  * + رقم السند/الإيصال). المنطق النقيّ في `dailySettlement.ts`.
  */
 import { useEffect, useState } from "react";
-import { CheckCircle2, Scale, TriangleAlert } from "lucide-react";
+import { CheckCircle2, Printer, Scale, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { DELIVERY_TERMS } from "@shared/deliveryTerminology";
 import { SHORTFALL_REASON_DESCRIPTION_AR, type ShortfallReason } from "@shared/shortfallReason";
+import { printRemittanceReceipt } from "./printRemittanceReceipt";
 import {
   SHORTFALL_OPTIONS,
   buildSettleDailyPayload,
@@ -124,9 +125,31 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
         ) : previewLoading || !preview || !verdict || !totals ? (
           <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
         ) : summary ? (
-          <div className="space-y-2 rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] p-3" role="status">
+          <div className="space-y-3 rounded-lg border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] p-3" role="status">
             <p className="inline-flex items-center gap-2 text-sm font-black text-[var(--sem-pos)]"><CheckCircle2 aria-hidden className="size-4" /> {summary.title}</p>
             <ul className="list-disc space-y-1 ps-5 text-xs">{summary.lines.map((l) => <li key={l}>{l}</li>)}</ul>
+            {result && (
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs font-semibold"
+                  onClick={() => {
+                    printRemittanceReceipt(party?.name ?? "جهة التوصيل", {
+                      remittanceNumber: result.remittanceNumber || `DR-${result.remittanceId}`,
+                      collectedTotal: result.collectedTotal || preview?.expectedCash || "0.00",
+                      feesTotal: result.feesTotal || preview?.feeDue || "0.00",
+                      netRemitted: result.netRemitted || counted || (preview?.net ?? "0.00"),
+                      shortfallTotal: result.shortfallTotal ?? "0.00",
+                    });
+                  }}
+                >
+                  <Printer aria-hidden className="size-3.5" />
+                  طباعة سند التوريد الحراري
+                </Button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-3">
@@ -198,7 +221,28 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
 
         <DialogFooter className="gap-2 sm:justify-start">
           {summary ? (
-            <Button onClick={() => onOpenChange(false)}>إغلاق</Button>
+            <>
+              {result && (
+                <Button
+                  type="button"
+                  variant="default"
+                  className="gap-1.5"
+                  onClick={() => {
+                    printRemittanceReceipt(party?.name ?? "جهة التوصيل", {
+                      remittanceNumber: `DR-${result.remittanceId}`,
+                      collectedTotal: preview?.expectedCash ?? "0.00",
+                      feesTotal: preview?.feeDue ?? "0.00",
+                      netRemitted: counted || (preview?.net ?? "0.00"),
+                      shortfallTotal: result.shortfallTotal ?? "0.00",
+                    });
+                  }}
+                >
+                  <Printer aria-hidden className="size-4" />
+                  طباعة سند التوريد
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => onOpenChange(false)}>إغلاق</Button>
+            </>
           ) : (
             <>
               <Button disabled={!settleEnabled} onClick={() => void submit()}>

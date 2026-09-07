@@ -73,6 +73,10 @@ export type SettlementPreview = {
 
 export type SettleDailyResult = {
   remittanceId: number;
+  remittanceNumber?: string | null;
+  collectedTotal?: string | null;
+  feesTotal?: string | null;
+  netRemitted?: string | null;
   status: "BALANCED" | "SHORT";
   shortfallTotal: string;
   receiptId: number | null;
