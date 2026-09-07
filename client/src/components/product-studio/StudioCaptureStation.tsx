@@ -160,6 +160,7 @@ export function StudioCaptureStation({
                 barcode={code}
                 error={scanError}
                 linkAllowed={linkAllowed}
+                activeProduct={active ? { id: active.taskId, name: active.productName } : undefined}
                 onLinked={submitCode}
               />
             )}
@@ -177,7 +178,7 @@ export function StudioCaptureStation({
         </div>
 
         {/* لوحة المنتج النشط والصور السابقة المعتمدة */}
-        {active ? (
+        {active && !scanError ? (
           <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/[0.02] p-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2.5">
               <div className="min-w-0">

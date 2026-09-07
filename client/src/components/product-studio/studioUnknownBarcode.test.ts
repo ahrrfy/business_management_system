@@ -29,11 +29,13 @@ describe("studio unknown barcode closure", () => {
     expect(isUnknownStudioBarcodeFailure("NOT_FOUND", "المنتج أو وحدته معطّل")).toBe(false);
   });
 
-  it("uses the same products FULL authority as product editing", () => {
+  it("uses products or productStudio FULL authority for barcode linking", () => {
     expect(canManageStudioBarcodeAliases("manager", null)).toBe(true);
-    expect(canManageStudioBarcodeAliases("manager", { products: "READ" })).toBe(false);
+    expect(canManageStudioBarcodeAliases("print_operator", null)).toBe(true);
+    expect(canManageStudioBarcodeAliases("manager", { products: "READ", productStudio: "NONE" })).toBe(false);
     expect(canManageStudioBarcodeAliases("user", { products: "FULL" })).toBe(true);
-    expect(canManageStudioBarcodeAliases("user", { products: "READ" })).toBe(false);
+    expect(canManageStudioBarcodeAliases("user", { productStudio: "FULL" })).toBe(true);
+    expect(canManageStudioBarcodeAliases("user", { products: "READ", productStudio: "READ" })).toBe(false);
     expect(canManageStudioBarcodeAliases(undefined, { products: "FULL" })).toBe(false);
   });
 
@@ -61,14 +63,14 @@ describe("studio unknown barcode closure", () => {
     });
   });
 
-  it("fails closed before any API call without products FULL authority", async () => {
+  it("fails closed before any API call without products or productStudio FULL authority", async () => {
     const resolveProductUnitId = vi.fn();
     const addAlias = vi.fn();
 
     await expect(linkStudioBarcodeAlias(
       { authorized: false, barcode: "1  0095", variantId: 46001, unitName: "قطعة" },
       { resolveProductUnitId, addAlias },
-    )).rejects.toThrow("صلاحية تعديل المنتجات");
+    )).rejects.toThrow("صلاحية تعديل المنتجات أو استوديو المنتجات");
     expect(resolveProductUnitId).not.toHaveBeenCalled();
     expect(addAlias).not.toHaveBeenCalled();
   });

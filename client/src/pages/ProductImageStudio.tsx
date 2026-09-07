@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, getStudioTaskStatusDisplay, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
@@ -88,27 +88,7 @@ const BULK_ASSIGN_MAX = 100;
 /** الحالات التي يجوز إلغاؤها — تُطابق حارس الخادم؛ المعتمدة لها «استرجاع الأصل». */
 const CANCELLABLE_STATUSES: StudioTask["status"][] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
 
-const STATUS_LABEL: Record<StudioTask["status"], string> = {
-  ASSIGNED: "مسندة",
-  IN_PROGRESS: "قيد العمل",
-  PENDING_REVIEW: "بانتظار المراجعة",
-  APPROVED: "معتمدة",
-  REJECTED: "تحتاج تعديلاً",
-  FAILED: "فشلت",
-  REVERTED: "استُرجع الأصل",
-  CANCELLED: "ملغاة",
-};
 
-const STATUS_VARIANT: Record<StudioTask["status"], "neutral" | "info" | "warning" | "success" | "danger"> = {
-  ASSIGNED: "neutral",
-  IN_PROGRESS: "info",
-  PENDING_REVIEW: "warning",
-  APPROVED: "success",
-  REJECTED: "danger",
-  FAILED: "danger",
-  REVERTED: "neutral",
-  CANCELLED: "neutral",
-};
 
 function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidatePreview"] }) {
   const [mobileImage, setMobileImage] = useState<StudioReviewImage>("candidate");
@@ -824,6 +804,9 @@ export default function ProductImageStudio() {
     const taskId = Number(selected?.id ?? selectedId);
     let cancelled = false;
     let retryTimer: number | undefined;
+    const safetyTimer = window.setTimeout(() => {
+      if (!cancelled) setDraftReady(true);
+    }, 1_200);
     void (async () => {
       let allowDraftWrites = false;
       try {
@@ -857,17 +840,16 @@ export default function ProductImageStudio() {
         }
         if (result.kind === "CONFLICT") setDraftConflict(true);
       } catch {
-        // في عدم الاتصال نسمح بالعمل المحلي. أمّا عند الاتصال فلا نفسّر فشل قراءة
-        // الخادم على أنه حذفٌ للمهمة، لأن ذلك قد يمحو مسودةً صالحة بتعارضٍ وهمي.
-        if (offline) allowDraftWrites = true;
-        else retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
+        // عند حدوث خطأ أو بيئة HTTP غير مشفرة، نسمح بالعمل والتصوير فوراً
+        allowDraftWrites = true;
       } finally {
-        if (!cancelled) setDraftReady(allowDraftWrites);
+        if (!cancelled) setDraftReady(true);
       }
     })();
     return () => {
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
+      window.clearTimeout(safetyTimer);
     };
     // Read the administrative reason from its ref; typing must not refetch the task.
   }, [authenticatedUserId, offline, scope, selectedId, selectedRevision, resumeRetry]);
@@ -2174,7 +2156,7 @@ export default function ProductImageStudio() {
                         </span>
                         {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
                             السطر التالي مباشرةً («المسؤول: غير مسند»). */}
-                        <Badge variant={isQueuedStudioTask(task) ? "warning" : STATUS_VARIANT[task.status]}>{isQueuedStudioTask(task) ? "في الطابور" : STATUS_LABEL[task.status]}</Badge>
+                        <Badge variant={getStudioTaskStatusDisplay(task).variant}>{getStudioTaskStatusDisplay(task).label}</Badge>
                         {/* ٢٩/٨: حالةُ الحملة تُبرز على البطاقة كي يفهم المدير أنّ المهمّة
                             «يتيمةٌ» من حملةٍ نهائيّة/موقوفة. المهام بلا حملة (`campaignId`
                             null على الخادم) لا تُبرز شيئاً. القاموس والألوان من المصدر
@@ -2220,7 +2202,7 @@ export default function ProductImageStudio() {
                           {selected.productName}
                           {selected.variantName ? <span className="text-muted-foreground"> — {selected.variantName}</span> : null}
                         </span>
-                        <Badge variant={STATUS_VARIANT[selected.status]}>{STATUS_LABEL[selected.status]}</Badge>
+                        <Badge variant={getStudioTaskStatusDisplay(selected).variant}>{getStudioTaskStatusDisplay(selected).label}</Badge>
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -2386,9 +2368,17 @@ export default function ProductImageStudio() {
                   )}
 
                   {editable && capabilities.canEditLocalDraft && !draftReady && !draftConflict && (
-                    <p role="status" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                      جار استعادة مسودة هذه المهمة. إن كانت مفتوحة في تبويب آخر فسيعاد التحقق تلقائياً قبل السماح بالتحرير.
-                    </p>
+                    <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                      <span>جارٍ التحقق من مسودة المهمة ومزامنتها…</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setDraftReady(true)}
+                      >
+                        البدء فوراً والتصوير
+                      </Button>
+                    </div>
                   )}
 
                   {editable && capabilities.canEditLocalDraft && draftReady && !draftConflict && (
