@@ -2,6 +2,10 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
+import { QuranAudioProvider } from "@/components/quran/QuranAudioContext";
+import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
+import { QuranStationDrawer } from "@/components/quran/QuranStationDrawer";
+import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -93,7 +97,7 @@ function isModuleActive(loc: string, href: string): boolean {
   return loc === href || loc.startsWith(href + "/");
 }
 
-export function AppLayout({ children }: { children: React.ReactNode }) {
+function AppLayoutInner({ children }: { children: React.ReactNode }) {
   const [loc] = useLocation();
   const queryClient = useQueryClient();
   const connectivity = useConnectivity();
@@ -292,6 +296,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
+        {/* إذاعة القرآن الكريم — بطاقة بارزة في القائمة الجانبية */}
+        <QuranSidebarCard />
+
         <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
           {!isCourier && !isCashier && (
@@ -488,7 +495,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
         <div className="sb-header px-4 py-4 flex items-center justify-between gap-1">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-1">
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
@@ -513,7 +520,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </button>
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-1">
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
@@ -529,7 +536,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <BroadcastTicker />
+        <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+      </div>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
       {shellCapabilities.mountMobileBottomNav && (
@@ -543,6 +553,17 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           deliveryReadyCount={deliveryReadyCount}
         />
       )}
+
+      {/* محطة القرآن الكريم الموسعة — تفتح كدرج جانبي عند الطلب فقط */}
+      <QuranStationDrawer />
     </div>
+  );
+}
+
+export function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <QuranAudioProvider>
+      <AppLayoutInner>{children}</AppLayoutInner>
+    </QuranAudioProvider>
   );
 }

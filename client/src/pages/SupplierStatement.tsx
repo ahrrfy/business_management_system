@@ -214,7 +214,11 @@ export default function SupplierStatement() {
       return {
         t: new Date(p.orderDate).getTime(),
         date: fmtDate(p.orderDate),
-        ref: p.poNumber, description: "فاتورة شراء — بضاعة",
+        ref: p.poNumber,
+        description:
+          p.settlementType === "CASH"
+            ? "فاتورة شراء نقدية — بضاعة"
+            : "فاتورة شراء — بضاعة",
         actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
         debit: null as string | null, credit: p.total as string | null,
         filterGroup: "buy" as const,

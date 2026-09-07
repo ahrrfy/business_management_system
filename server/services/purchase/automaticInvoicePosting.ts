@@ -691,6 +691,12 @@ export async function postApprovedPurchaseInvoiceInTx(
       SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
     );
     cashSettlementPaymentId = cashSettlementDecision.supplierPaymentId;
+    await tx
+      .update(purchaseOrders)
+      .set({
+        paidAmount: toDbMoney(invoice.totalAmount),
+      })
+      .where(eq(purchaseOrders.id, purchaseOrderId));
   }
 
   return {

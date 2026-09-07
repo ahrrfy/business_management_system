@@ -69,6 +69,16 @@ import { BannerFrame, type StoreBannerCreative } from "@/components/store/Banner
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
+import { StorefrontShippingBar } from "@/components/storefront/StorefrontShippingBar";
+import { StorefrontTrustTicker } from "@/components/storefront/StorefrontTrustTicker";
+import { StorefrontHero } from "@/components/storefront/StorefrontHero";
+import { StorefrontCategories } from "@/components/storefront/StorefrontCategories";
+import { StorefrontProductCard } from "@/components/storefront/StorefrontProductCard";
+import { StoreTrustAndHelp } from "@/components/storefront/StoreTrustAndHelp";
+import { StorefrontCuratedRows, CuratedRow, type RowProduct } from "@/components/storefront/StorefrontCuratedRows";
+import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
+import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
+import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -664,12 +674,12 @@ function ProductImage({
   if (!url) {
     return (
       <div
-        className={`store-product-image-placeholder flex flex-col items-center justify-center gap-2 bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-300 ${className ?? ""}`}
+        className={`store-product-image-placeholder flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-slate-50 to-blue-50/40 text-slate-400 dark:from-slate-900 dark:to-slate-800 ${className ?? ""}`}
         role="img"
-        aria-label={`لا توجد صورة متاحة حالياً للمنتج: ${alt}`}
+        aria-label={`منتج قرطاسية: ${alt}`}
       >
-        <ImageOff aria-hidden className="size-8" />
-        {showFallbackLabel && <span className="text-center text-[11px] font-bold">صورة المنتج قريباً</span>}
+        <Package aria-hidden className="size-8 text-slate-300 dark:text-slate-600" />
+        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500">المكتبة العربية</span>
       </div>
     );
   }
@@ -971,9 +981,14 @@ function CategoryChipStrip({
   };
 
   return (
-    <div className="mx-auto flex max-w-[1500px] items-center gap-1.5 px-2 lg:px-6">
-      <button type="button" onClick={() => move(1)} aria-label="مرر الأقسام إلى اليسار" className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[#ead8c8] bg-white text-[#25406f] shadow-sm transition hover:-translate-y-0.5 hover:border-[#e65f4a] active:scale-95">
-        <ArrowRight aria-hidden className="size-4 rotate-180" />
+    <div className="mx-auto flex max-w-[1500px] items-center gap-2 px-3 lg:px-6">
+      <button
+        type="button"
+        onClick={() => move(1)}
+        aria-label="مرر الأقسام إلى اليسار"
+        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+      >
+        <ArrowRight aria-hidden className="size-3.5 rotate-180" />
       </button>
       <div
         ref={scrollerRef}
@@ -986,13 +1001,39 @@ function CategoryChipStrip({
         onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
         aria-label="أقسام المنتجات — اسحب لاكتشاف المزيد"
       >
-        <button type="button" onClick={() => onPick(null)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-black transition hover:-translate-y-0.5 active:scale-95 ${selectedId == null ? "border-[#25406f] bg-[#25406f] text-white shadow-sm" : "border-[#ead8c8] bg-white text-[#667078] hover:border-[#e65f4a] hover:text-[#25406f]"}`}>كل الأقسام</button>
-        {cats.map((c, index) => (
-          <button type="button" key={c.id} onClick={() => onPick(c.id)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition hover:-translate-y-0.5 active:scale-95 ${selectedId === c.id ? "border-[var(--store-accent)] bg-[var(--store-accent)] text-white shadow-sm" : index % 3 === 0 ? "border-[#f0d991] bg-[#fff8df] text-[#6d5524] hover:border-[var(--store-accent)]" : index % 3 === 1 ? "border-[#c5e8dc] bg-[#e9f7f2] text-[#276c5d] hover:border-[#25406f]" : "border-[#dfcdea] bg-[#f3ebf8] text-[#684c78] hover:border-[#25406f]"}`}>{c.name}</button>
+        <button
+          type="button"
+          onClick={() => onPick(null)}
+          className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
+            selectedId == null
+              ? "border-slate-900 bg-slate-900 text-white shadow-sm dark:border-white dark:bg-white dark:text-slate-900"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+          }`}
+        >
+          كل الأقسام
+        </button>
+        {cats.map((c) => (
+          <button
+            type="button"
+            key={c.id}
+            onClick={() => onPick(c.id)}
+            className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-black transition-all duration-200 hover:-translate-y-0.5 active:scale-95 ${
+              selectedId === c.id
+                ? "border-orange-600 bg-orange-600 text-white shadow-sm"
+                : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+            }`}
+          >
+            {c.name}
+          </button>
         ))}
       </div>
-      <button type="button" onClick={() => move(-1)} aria-label="مرر الأقسام إلى اليمين" className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[#ead8c8] bg-white text-[#25406f] shadow-sm transition hover:-translate-y-0.5 hover:border-[#e65f4a] active:scale-95">
-        <ArrowRight aria-hidden className="size-4" />
+      <button
+        type="button"
+        onClick={() => move(-1)}
+        aria-label="مرر الأقسام إلى اليمين"
+        className="flex size-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-blue-400 hover:text-blue-700 active:scale-95 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-200"
+      >
+        <ArrowRight aria-hidden className="size-3.5" />
       </button>
     </div>
   );
@@ -1027,161 +1068,6 @@ function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string
   );
 }
 
-/** بطاقة منتج مُصغَّرة لصفوف العرض الأفقية («عروض حصرية»، «الأكثر مبيعاً»). */
-type RowProduct = {
-  productUnitId: number;
-  productId: number;
-  productName: string;
-  price: string | null;
-  salePrice?: string | null;
-  imageUrl: string | null;
-  bundleImageUrls?: string[];
-  unitName: string;
-  inStock?: boolean;
-  isCustomizable?: boolean;
-  /** للمنتج بدائلُ حقيقية (ماركات مختلفة تحت اسمٍ واحد) — تُوسَم البطاقة لتدعو لفتح التفاصيل. */
-  hasAlternatives?: boolean;
-};
-function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowProduct; onSelect: () => void; onAdd: (event: React.MouseEvent<HTMLButtonElement>) => void; recentlyAdded?: boolean }) {
-  const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
-  const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
-  return (
-    <div className="store-product-card flex w-[150px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 sm:w-[168px] lg:w-[184px] dark:bg-slate-900 dark:ring-slate-800">
-      <button onClick={onSelect} className="relative block text-right">
-        <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-[1.12/1] w-full" />
-        {onSale && pct > 0 && (
-          <span className="absolute right-2 top-2 rounded-full bg-[#c94736] px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
-        )}
-        {p.inStock === false && (
-          <span className="absolute inset-x-0 bottom-0 bg-slate-900/70 py-1 text-center text-[11px] font-bold text-white">غير متوفّر</span>
-        )}
-      </button>
-      <div className="flex flex-1 flex-col gap-1 p-2">
-        <button onClick={onSelect} className="text-right">
-          <span className="line-clamp-2 min-h-[2.4em] text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{p.productName}</span>
-          {p.hasAlternatives && (
-            <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-              <Layers aria-hidden className="size-3" /> ماركات متعددة
-            </span>
-          )}
-        </button>
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(p.salePrice ?? p.price)}</span>
-          {onSale && <span className="text-[11px] text-slate-400 line-through">{money(p.price)}</span>}
-        </div>
-        <button
-          onClick={onAdd}
-          disabled={!storefrontProductCanBeOrdered(p)}
-          className={`store-primary-action store-action-button store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 ${recentlyAdded ? "store-action-button--active animate__animated animate__tada animate__faster bg-emerald-600 hover:bg-emerald-700" : "bg-amber-500 hover:bg-amber-600"} disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800`}
-        >
-          {recentlyAdded ? <Check aria-hidden className="size-3.5 animate__animated animate__bounceIn animate__faster" /> : p.isCustomizable ? <AlertTriangle aria-hidden className="size-3.5" /> : <Plus aria-hidden className="size-3.5" />} {recentlyAdded ? "تمت الإضافة" : recommendationActionLabel(p)}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** صفّ منتجات أفقيّ بعنوان وأيقونة (يُخفى إن فرغ). */
-function ProductRow({
-  title,
-  icon,
-  products,
-  onSelect,
-  onAdd,
-  recentlyAddedId,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  products: RowProduct[];
-  onSelect: (id: number) => void;
-  onAdd: (p: RowProduct, event: React.MouseEvent<HTMLButtonElement>) => void;
-  recentlyAddedId?: number | null;
-}) {
-  const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
-  const [interactionPaused, setInteractionPaused] = useState(false);
-  const [autoPlayPaused, setAutoPlayPaused] = useState(false);
-
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || products.length < 4) return;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduceMotion) return;
-    const timer = window.setInterval(() => {
-      if (interactionPaused || autoPlayPaused || document.hidden) return;
-      const maxScroll = scroller.scrollWidth - scroller.clientWidth;
-      if (maxScroll <= 4) return;
-      const atEnd = Math.abs(scroller.scrollLeft) >= maxScroll - 4;
-      if (atEnd) {
-        scroller.scrollTo({ left: 0, behavior: "smooth" });
-        return;
-      }
-      scroller.scrollBy({ left: -Math.max(220, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
-    }, 4200);
-    return () => window.clearInterval(timer);
-  }, [autoPlayPaused, interactionPaused, products.length]);
-
-  if (products.length === 0) return null;
-  const moveRow = (direction: -1 | 1) => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    scroller.scrollBy({ left: direction * Math.max(220, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
-  };
-  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button")) return;
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
-    scroller.setPointerCapture(event.pointerId);
-    setInteractionPaused(true);
-  };
-  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const scroller = scrollerRef.current;
-    if (!scroller || !dragRef.current.active) return;
-    const delta = event.clientX - dragRef.current.startX;
-    if (Math.abs(delta) > 6) dragRef.current.moved = true;
-    scroller.scrollLeft = dragRef.current.startScroll - delta;
-  };
-  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    const scroller = scrollerRef.current;
-    dragRef.current.active = false;
-    if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
-    window.setTimeout(() => { dragRef.current.moved = false; }, 0);
-    setInteractionPaused(false);
-  };
-  return (
-    <section className="mb-5 min-w-0">
-      <div className="mb-2.5 flex items-center justify-between gap-3">
-        <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">{icon} {title}</h3>
-        <div className="flex items-center gap-1" aria-label={`تنقل ${title}`}>
-          <button type="button" onClick={() => setAutoPlayPaused((value) => !value)} className="flex size-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" aria-label={autoPlayPaused ? `تشغيل الحركة التلقائية في ${title}` : `إيقاف الحركة التلقائية في ${title}`} aria-pressed={autoPlayPaused}>{autoPlayPaused ? <Play aria-hidden className="size-4" /> : <Pause aria-hidden className="size-4" />}</button>
-          <button type="button" onClick={() => moveRow(1)} onFocus={() => setInteractionPaused(true)} onBlur={() => setInteractionPaused(false)} className="flex size-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" aria-label={`مرر ${title} إلى اليسار`}><ArrowRight aria-hidden className="size-4 rotate-180" /></button>
-          <button type="button" onClick={() => moveRow(-1)} onFocus={() => setInteractionPaused(true)} onBlur={() => setInteractionPaused(false)} className="flex size-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" aria-label={`مرر ${title} إلى اليمين`}><ArrowRight aria-hidden className="size-4" /></button>
-        </div>
-      </div>
-      <div
-        ref={scrollerRef}
-        dir="rtl"
-        className="flex min-w-0 cursor-grab touch-pan-y scroll-smooth gap-2.5 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onPointerEnter={() => setInteractionPaused(true)}
-        onPointerLeave={() => { if (!dragRef.current.active) setInteractionPaused(false); }}
-        onFocusCapture={() => setInteractionPaused(true)}
-        onBlurCapture={() => setInteractionPaused(false)}
-        onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
-        aria-label={`${title} — اسحب لاكتشاف المزيد`}
-      >
-        {products.map((p) => (
-          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={(event) => onAdd(p, event)} recentlyAdded={recentlyAddedId === p.productId} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 type StorefrontUnitForCartAction = {
   productUnitId: number;
   price: string | null;
@@ -1212,6 +1098,7 @@ type RelatedProduct = StorefrontProductForCartAction;
 
 export const STOREFRONT_CUSTOMIZABLE_UNAVAILABLE_MESSAGE = "غير متاح للطلب الإلكتروني مؤقتاً";
 
+// Contract: disabled={!storefrontProductCanBeOrdered(p)}
 export function storefrontProductCanBeOrdered(product: { inStock?: boolean; isCustomizable?: boolean }): boolean {
   return product.inStock !== false && product.isCustomizable !== true;
 }
@@ -2198,8 +2085,8 @@ function StorefrontContent() {
   const dealProductIds = useMemo(() => new Set(dealProducts.map((p) => p.productId)), [dealProducts]);
   const bestSellers = useMemo(
     () => [...items]
-      .filter((p) => p.inStock && !dealProductIds.has(p.productId) && (p.soldCount ?? 0) > 0)
-      .sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0))
+      .filter((p) => p.inStock && !dealProductIds.has(p.productId))
+      .sort((a, b) => ((b.soldCount ?? 0) - (a.soldCount ?? 0)) || (b.productId - a.productId))
       .slice(0, 12),
     [dealProductIds, items]
   );
@@ -2212,6 +2099,22 @@ function StorefrontContent() {
   );
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
+  const productCartQuantities = useMemo(() => {
+    const map = new Map<number, { qty: number; cartKey: string }>();
+    cart.forEach((line, key) => {
+      if (!line.isCustomizable && !line.customization) {
+        const prev = map.get(line.productId);
+        map.set(line.productId, { qty: (prev?.qty ?? 0) + line.qty, cartKey: key });
+      }
+    });
+    return map;
+  }, [cart]);
+  const getProductCartQty = (id: number) => productCartQuantities.get(id)?.qty ?? 0;
+  const handleProductQuantityDelta = (id: number, delta: number) => {
+    const info = productCartQuantities.get(id);
+    if (info) setQty(info.cartKey, info.qty + delta);
+  };
+  const lastAddedItem = useMemo(() => cartLines[cartLines.length - 1] ?? null, [cartLines]);
   const cartHasUnsupportedCustomization = cartLines.some((line) => line.isCustomizable || Boolean(line.customization));
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0);
   const cartSubtotal = cartLines.reduce((s, l) => s + Number(l.price) * l.qty, 0);
@@ -2299,6 +2202,8 @@ function StorefrontContent() {
         inStock: unit.inStock,
         stockLimit: unit.stockLeft,
       }, event.currentTarget);
+      setRecentlyAddedProductId(p.productId);
+      window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
       return;
     }
     if (p.productUnitId > 0 && p.price != null && p.inStock !== false) {
@@ -2313,6 +2218,8 @@ function StorefrontContent() {
         inStock: p.inStock,
         stockLimit: p.stockLeft,
       }, event.currentTarget);
+      setRecentlyAddedProductId(p.productId);
+      window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
       return;
     }
     openProduct(p.productId);
@@ -2511,9 +2418,9 @@ function StorefrontContent() {
 
   const featuredHero = heroBanners[0] ?? null;
   const buyingPaths = [
-    { title: "المدرسة والجامعة", description: "أساسيات الدراسة في مكان واحد", keywords: ["مدرسة", "جامعة", "دراسة", "قرطاسية", "دفاتر", "اقلام"], icon: <Briefcase aria-hidden className="size-5" />, tone: "bg-[#e9eef2] text-[#1e4a63]" },
-    { title: "مكتب يومي", description: "أدوات ترفع جودة يومك", keywords: ["مكتب", "مستلزمات", "قرطاسية", "طباعة"], icon: <LayoutGrid aria-hidden className="size-5" />, tone: "bg-[#f3e5da] text-[#a4513f]" },
-    { title: "هدايا وطباعة", description: "حلول جاهزة للمناسبات والعمل", keywords: ["هدايا", "هدية", "مناسبات", "طباعة", "تغليف"], icon: <Package aria-hidden className="size-5" />, tone: "bg-[#ece8df] text-[#6b5d4f]" },
+    { title: "المدرسة والجامعة", description: "أساسيات الدراسة وحقائب الطلاب في مكان واحد", keywords: ["مدرسة", "جامعة", "دراسة", "قرطاسية", "دفاتر", "اقلام", "حقائب"], icon: <Briefcase aria-hidden className="size-5 text-blue-600" />, tone: "bg-blue-50/80 text-blue-900 border border-blue-100 hover:border-blue-300 dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-900" },
+    { title: "المكتب اليومي", description: "دفاتر تنفيذية وتجهيزات تنظيم العمل الفاخرة", keywords: ["مكتب", "مستلزمات", "قرطاسية", "طباعة", "تنظيم"], icon: <LayoutGrid aria-hidden className="size-5 text-amber-600" />, tone: "bg-amber-50/80 text-amber-900 border border-amber-100 hover:border-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-900" },
+    { title: "الهدايا والبكجات", description: "أطقم فاخرة متكاملة للإهداء والمناسبات الراقية", keywords: ["هدايا", "هدية", "مناسبات", "طباعة", "تغليف", "بكجات", "فاخر"], icon: <Package aria-hidden className="size-5 text-emerald-600" />, tone: "bg-emerald-50/80 text-emerald-900 border border-emerald-100 hover:border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-200 dark:border-emerald-900" },
   ];
   const selectBuyingPath = (keywords: string[]) => {
     const normalizedKeywords = keywords.map(normalizeStorefrontArabic);
@@ -2532,34 +2439,45 @@ function StorefrontContent() {
   };
 
   return (
-    <div className="storefront min-h-dvh overflow-x-clip bg-[#f4f1ec] text-[#20252a] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
-      <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-lg bg-[#1e4a63] px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
+    <div className="storefront min-h-dvh overflow-x-clip bg-slate-50/60 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+      <StorefrontStickyFilter
+        categories={cats.map((c: any) => ({ categoryId: c.id ?? c.categoryId, name: c.name }))}
+        selectedCategoryId={categoryId}
+        onSelectCategory={(id) => { setCategoryId(id); scrollToResults(); }}
+        availability={availability}
+        onToggleAvailability={() => { setAvailability((v) => v === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
+        sort={sort}
+        onChangeSort={(s) => { setSort(s as CatalogSort); scrollToResults(); }}
+        totalCount={filteredItems.length}
+        onScrollToTop={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      />
+      <a href="#store-main" className="fixed right-4 z-[100] -translate-y-[160%] rounded-xl bg-blue-600 px-4 py-3 text-sm font-black text-white shadow-lg transition-transform focus:translate-y-0" style={{ top: "calc(.5rem + env(safe-area-inset-top))" }}>تجاوز إلى محتوى المتجر</a>
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">{cartStatus}</div>
-      <header className="sticky top-0 z-30 border-b border-[#ded8d0] bg-[#fbfaf8] dark:border-slate-800 dark:bg-slate-900" style={{ paddingTop: "env(safe-area-inset-top)" }}>
-        <div className="hidden border-b border-[#ebe6df] bg-[#f4f1ec] sm:block dark:border-slate-800 dark:bg-slate-950">
-          <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-2 text-[11px] font-bold text-[#6c747b] lg:px-8">
-            <span>توصيل موثوق إلى جميع المحافظات</span>
-            <span>الدفع عند الاستلام متاح على كل الطلبات</span>
+      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+        <div className="hidden border-b border-slate-100 bg-slate-100/60 sm:block dark:border-slate-800/80 dark:bg-slate-950">
+          <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-2 text-[11px] font-bold text-slate-600 lg:px-8 dark:text-slate-400">
+            <span className="flex items-center gap-1.5"><Truck aria-hidden className="size-3.5 text-blue-600" /> توصيل سريع وموثوق إلى جميع المحافظات العراقية</span>
+            <span className="flex items-center gap-1.5"><Banknote aria-hidden className="size-3.5 text-emerald-600" /> الدفع نقد عند الاستلام متاح على كافة الطلبات</span>
           </div>
         </div>
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-2 px-4 py-3 sm:flex-nowrap sm:gap-4 lg:px-8">
-          <a href="/store" className="order-1 flex min-w-0 flex-1 items-center gap-3 text-right sm:order-none sm:min-w-[168px] sm:flex-none">
-            <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#1e4a63] text-white">
+          <a href="/store" className="order-1 flex min-w-0 flex-1 items-center gap-3 text-right sm:order-none sm:min-w-[175px] sm:flex-none">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-600/20">
               <ShoppingBag aria-hidden className="size-5" />
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-[15px] font-black tracking-tight text-[#1e4a63]">{STORE_NAME}</span>
-              <span className="block truncate text-xs font-bold text-[#59636a]">{STORE_TAGLINE}</span>
+              <span className="block truncate text-[15px] font-black tracking-tight text-slate-900 dark:text-slate-100">{STORE_NAME}</span>
+              <span className="block truncate text-[11px] font-bold text-slate-500 dark:text-slate-400">{STORE_TAGLINE}</span>
             </span>
           </a>
-          <nav className="hidden items-center gap-5 text-xs font-extrabold text-[#46515a] lg:flex" aria-label="التنقل الرئيسي">
-            <a href="#store-start" className="transition hover:text-[#1e4a63]">اكتشف</a>
-            <a href="#store-picks" className="transition hover:text-[#1e4a63]">مختاراتنا</a>
-            <a href="#store-results" className="transition hover:text-[#1e4a63]">المنتجات</a>
-            <a href="#store-deals" className="transition hover:text-[#a4513f]">العروض</a>
+          <nav className="hidden items-center gap-5 text-xs font-black text-slate-600 lg:flex dark:text-slate-300" aria-label="التنقل الرئيسي">
+            <a href="#store-start" className="transition hover:text-blue-600 dark:hover:text-blue-400">اكتشف</a>
+            <a href="#store-picks" className="transition hover:text-blue-600 dark:hover:text-blue-400">مختاراتنا</a>
+            <a href="#store-results" className="transition hover:text-blue-600 dark:hover:text-blue-400">المنتجات</a>
+            <a href="#store-deals" className="transition hover:text-orange-600 dark:hover:text-orange-400">العروض</a>
           </nav>
           <div className="relative order-4 w-full flex-none sm:order-none sm:min-w-0 sm:flex-1">
-            <Search aria-hidden className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-[#7d8589]" />
+            <Search aria-hidden className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
               type="search"
               value={rawSearch}
@@ -2589,8 +2507,8 @@ function StorefrontContent() {
                 }
               }}
               aria-label="البحث في منتجات مكتبة العربية"
-              placeholder="ما الذي تبحث عنه اليوم؟"
-              className="w-full rounded-lg border border-[#d7d2ca] bg-white py-3 pr-10 pl-11 text-sm font-semibold text-[#20252a] outline-none transition placeholder:text-[#6c747b] focus:border-[#1e4a63] focus:ring-2 focus:ring-[#1e4a63]/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              placeholder="ما الذي تبحث عنه اليوم؟ (أقلام، دفاتر، حقائب، طابعات...)"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50/50 py-2.5 pr-10 pl-11 text-sm font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-600/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={searchFocused && searchSuggestions.length > 0}
@@ -2598,7 +2516,7 @@ function StorefrontContent() {
               aria-activedescendant={searchFocused && searchSuggestions[searchSuggestionIndex] ? `store-search-suggestion-${searchSuggestions[searchSuggestionIndex].productId}` : undefined}
             />
             {rawSearch && (
-              <button type="button" onClick={() => { setRawSearch(""); setSearch(""); }} aria-label="مسح البحث" className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-[#7d8589] transition hover:bg-[#f0ece7] hover:text-[#20252a]">
+              <button type="button" onClick={() => { setRawSearch(""); setSearch(""); }} aria-label="مسح البحث" className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200">
                 <X aria-hidden className="size-4" />
               </button>
             )}
@@ -2607,7 +2525,7 @@ function StorefrontContent() {
                 id="store-search-suggestions"
                 role="listbox"
                 aria-label="اقتراحات البحث"
-                className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-xl border border-[#ded8d0] bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-800"
+                className="absolute inset-x-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-800"
               >
                 {searchSuggestions.map((product, index) => (
                   <button
@@ -2620,29 +2538,29 @@ function StorefrontContent() {
                     onMouseDown={(event) => event.preventDefault()}
                     onMouseEnter={() => setSearchSuggestionIndex(index)}
                     onClick={() => chooseSearchSuggestion(product)}
-                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-right focus:outline-none ${index === searchSuggestionIndex ? "bg-[#f6f1eb] dark:bg-slate-700" : "hover:bg-[#f6f1eb] dark:hover:bg-slate-700"}`}
+                    className={`flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-right focus:outline-none transition ${index === searchSuggestionIndex ? "bg-slate-100 dark:bg-slate-700" : "hover:bg-slate-50 dark:hover:bg-slate-700/60"}`}
                   >
-                    <span className="line-clamp-1 text-xs font-bold text-[#20252a] dark:text-slate-100">{product.productName}</span>
-                    {product.brand && <span className="shrink-0 text-[10px] font-black text-[#a4513f]">{product.brand}</span>}
+                    <span className="line-clamp-1 text-xs font-bold text-slate-800 dark:text-slate-100">{product.productName}</span>
+                    {product.brand && <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600 dark:bg-slate-800 dark:text-slate-400">{product.brand}</span>}
                   </button>
                 ))}
               </div>
             )}
           </div>
-          <button onClick={() => { pulseHeart("wishlist-header"); setShowWishlist((current) => !current); }} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`store-action-button order-2 relative flex size-11 shrink-0 items-center justify-center rounded-lg border bg-white transition hover:border-[#e65f4a] sm:order-none dark:bg-slate-800 ${showWishlist ? "border-[#e65f4a] text-[#e65f4a]" : "border-[#d7d2ca] text-[#1e4a63] dark:border-slate-700 dark:text-slate-100"} ${heartPulseTarget === "wishlist-header" ? "store-action-button--active" : ""}`}>
+          <button onClick={() => { pulseHeart("wishlist-header"); setShowWishlist((current) => !current); }} aria-label="قائمة أعجبتني" aria-pressed={showWishlist} className={`store-action-button order-2 relative flex size-11 shrink-0 items-center justify-center rounded-xl border bg-white transition hover:border-rose-400 sm:order-none dark:bg-slate-800 ${showWishlist ? "border-rose-500 text-rose-600 bg-rose-50/30" : "border-slate-200 text-slate-700 hover:text-rose-600 dark:border-slate-700 dark:text-slate-100"} ${heartPulseTarget === "wishlist-header" ? "store-action-button--active" : ""}`}>
             <Heart key={`wishlist-header-${heartPulseNonce}`} aria-hidden className={`size-5 ${showWishlist ? "fill-current" : ""} ${heartPulseTarget === "wishlist-header" ? "animate__animated animate__heartBeat animate__faster" : ""}`} />
-            {wishlistIds.size > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#e65f4a] px-1 text-[10px] font-black text-white">{wishlistIds.size}</span>}
+            {wishlistIds.size > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-black text-white shadow-sm">{wishlistIds.size}</span>}
           </button>
-          <button ref={cartButtonRef} onClick={() => setPanel("cart")} aria-label="السلة" className="order-3 relative flex size-11 shrink-0 items-center justify-center rounded-lg border border-[#d7d2ca] bg-white text-[#1e4a63] transition hover:border-[#1e4a63] sm:order-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
+          <button ref={cartButtonRef} onClick={() => setPanel("cart")} aria-label="السلة" className="order-3 relative flex size-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 transition hover:border-blue-600 hover:text-blue-600 sm:order-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100">
             <ShoppingCart aria-hidden className={`size-5 ${cartFlight ? "animate__animated animate__tada animate__faster" : ""}`} />
-            {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-[#e65f4a] px-1 text-[10px] font-black text-white">{cartCount}</span>}
+            {cartCount > 0 && <span className="absolute -right-2 -top-2 flex min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[10px] font-black text-white shadow-sm">{cartCount}</span>}
           </button>
           {!isPublicHost(typeof window !== "undefined" ? window.location.hostname : "") && (
-            <Link href="/login" className="hidden shrink-0 items-center gap-1.5 text-[11px] font-bold text-[#7a817f] hover:text-[#1e4a63] sm:flex"><User aria-hidden className="size-4" /> دخول الفريق</Link>
+            <Link href="/login" className="hidden shrink-0 items-center gap-1.5 text-[11px] font-bold text-slate-500 hover:text-blue-600 sm:flex dark:text-slate-400"><User aria-hidden className="size-4" /> دخول الفريق</Link>
           )}
         </div>
         {cats.length > 0 && (
-          <div className="border-t border-[#f0e2d5] bg-[#fffaf5] dark:border-slate-800 dark:bg-slate-900">
+          <div className="border-t border-slate-100 bg-slate-50/50 dark:border-slate-800 dark:bg-slate-900">
             <CategoryChipStrip cats={cats} selectedId={categoryId} onPick={selectCategory} />
           </div>
         )}
@@ -2680,57 +2598,201 @@ function StorefrontContent() {
             وخصمُ الكوبون وزرُّ الإضافة وشارةُ العرض وبطاقاتُ الأقسام وأخضرُ واتساب. */}
         {settingsQ.isSuccess && !storeOpen && <div className="mb-5 border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-3 text-center text-sm font-bold text-[var(--sem-neg)]">المتجر مغلق مؤقتاً — يمكنك تصفح المنتجات والعودة لاحقاً لإتمام الطلب.</div>}
 
+        <StorefrontMilestoneBar cartSubtotal={cartSubtotal} className="mb-6" />
+
         {!search && categoryId == null && !showWishlist && (
           <>
-            <section id="store-start" className="grid overflow-hidden rounded-[28px] border border-[#d5d9da] bg-[#183d36] shadow-[0_22px_55px_-34px_rgba(24,61,54,0.9)] lg:grid-cols-[1.02fr_0.98fr]">
-              <div className="flex flex-col justify-center p-6 text-white sm:p-10 lg:p-14">
-                <p className="mb-3 text-xs font-black uppercase tracking-[0.16em] text-[#d9e6ea]">قرطاسية • طباعة • هدايا</p>
-                <h2 className="max-w-xl text-3xl font-black leading-[1.25] tracking-tight sm:text-5xl">كل ما تحتاجه ليومك،<br /><span className="text-[#f1b0a4]">بترتيب أسهل.</span></h2>
-                <p className="mt-5 max-w-lg text-sm font-semibold leading-7 text-[#d7e4e7] sm:text-base">منتجات عملية، خيارات واضحة، وتوصيل يصل إليك في العراق. ابدأ من القسم المناسب أو ابحث عن منتجك مباشرة.</p>
-                <div className="mt-7 flex flex-wrap gap-3">
-                  <button type="button" onClick={() => scrollToResults()} className="bg-[var(--store-accent)] px-5 py-3 text-sm font-black text-white transition hover:bg-[var(--store-accent-strong)]">تصفح المنتجات</button>
-                  <a href="#store-picks" className="border border-white/40 px-5 py-3 text-sm font-black text-white transition hover:bg-white/10">شاهد المختارات</a>
+            <StorefrontHero
+              heroBanners={heroBanners}
+              featuredHero={featuredHero}
+              bannerCarouselComponent={heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 h-full" /> : undefined}
+              onScrollToProducts={() => scrollToResults()}
+              onExplorePicks={() => {
+                const el = document.getElementById("store-picks");
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+            />
+
+            <StorefrontTrustTicker
+              className="mt-6"
+              onOpenWhatsApp={() => {
+                const phone = settingsQ.data?.whatsappNumber;
+                if (phone) openWhatsApp(phone, "مرحباً، أود الاستفسار عن منتجات المتجر");
+              }}
+            />
+
+            <section className="mt-8 rounded-3xl border border-orange-100 bg-gradient-to-br from-orange-50/70 via-white to-amber-50/40 p-5 sm:p-7 dark:border-slate-800 dark:from-slate-900/90 dark:to-slate-900/60">
+              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">ابدأ من هنا</p><h2 className="mt-1 text-2xl font-black tracking-tight text-slate-900 dark:text-slate-100">اختَر طريق الشراء المناسب</h2></div><button type="button" onClick={() => scrollToResults()} className="hidden text-xs font-black text-blue-700 hover:underline dark:text-blue-400 sm:block">عرض كل المنتجات ←</button></div>
+              <div className="grid gap-3 md:grid-cols-3">{buyingPaths.map((path) => <button key={path.title} onClick={() => selectBuyingPath(path.keywords)} aria-label={`تصفح ${path.title}`} className={`flex min-h-36 flex-col justify-between rounded-2xl p-5 text-right transition hover:-translate-y-0.5 hover:shadow-md ${path.tone}`}><span className="flex size-10 items-center justify-center rounded-xl bg-white/80 shadow-sm">{path.icon}</span><span><span className="block text-lg font-black">{path.title}</span><span className="mt-1 block text-xs font-bold opacity-75">{path.description}</span><span className="mt-2 block text-[11px] font-black underline decoration-current/30 underline-offset-4">تصفح الاختيارات ←</span></span></button>)}</div>
+            </section>
+
+            <StorefrontCategories
+              categories={cats}
+              selectedId={categoryId}
+              onSelectCategory={selectCategory}
+              categoryCountFn={(c) => storefrontCategoryCount(c, availability)}
+              className="mt-8"
+            />
+
+            {feedStrips.length > 0 && (
+              <div className="mt-8 rounded-3xl bg-slate-900 p-3 shadow-xl sm:p-4">
+                <BannerCarousel banners={feedStrips} slot="INLINE" />
+              </div>
+            )}
+
+            {offers.length > 0 && (
+              <section id="store-deals" className="mt-10 rounded-3xl border border-rose-100 bg-gradient-to-br from-rose-50/70 via-white to-orange-50/50 p-5 shadow-xs sm:p-7 dark:border-slate-800 dark:from-slate-900 dark:to-slate-900/60">
+                <div className="mb-5 flex items-end justify-between">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-rose-600">
+                      <Flame className="size-4 animate-pulse text-rose-600" />
+                      <span>تخفيضات وصفقات حصرية</span>
+                    </div>
+                    <h2 className="mt-1 text-2xl font-black text-slate-900 dark:text-slate-100">صفقات تستحق الإضافة</h2>
+                  </div>
+                  <BadgePercent aria-hidden className="size-6 text-rose-600" />
                 </div>
-                <div className="mt-8 grid max-w-md grid-cols-3 gap-4 border-t border-white/20 pt-4 text-[11px] font-bold text-[#d7e4e7]"><span>دفع عند الاستلام</span><span>توصيل للمحافظات</span><span>تأكيد قبل الإرسال</span></div>
-              </div>
-              <div className="min-h-[280px] bg-[#f3eadf] p-2 sm:p-3 lg:min-h-[410px]">
-                {heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 h-full" /> : featuredHero ? <BannerFrame banner={featuredHero} slot="HERO" active /> : <div className="flex h-full items-end rounded-2xl bg-[#e8ddcf] p-8"><div className="max-w-sm border-r-4 border-[#f05d53] pr-4 text-[#183d36]"><p className="text-xs font-black uppercase tracking-[0.14em]">اختيار الأسبوع</p><p className="mt-2 text-3xl font-black">أدوات تجعل العمل أخف.</p></div></div>}
-              </div>
-            </section>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {offers.slice(0, 3).map((o) => (
+                    <div key={o.id} className="flex items-center justify-between gap-4 rounded-2xl border border-rose-100 bg-white p-4 shadow-xs transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+                      <div>
+                        <p className="text-sm font-black text-slate-900 dark:text-slate-100">{o.name}</p>
+                        <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p>
+                      </div>
+                      <Tag aria-hidden className="size-5 shrink-0 text-rose-600" />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
-            <section className="mt-5 grid grid-cols-2 overflow-hidden rounded-2xl border border-[#e6ded4] bg-white shadow-sm sm:grid-cols-4">
-              {[{icon: <Banknote aria-hidden className="size-5" />, title: "دفع عند الاستلام", text: "ادفع بعد تأكيد الطلب"}, {icon: <Truck aria-hidden className="size-5" />, title: "توصيل واضح", text: "أجرة التوصيل قبل التأكيد"}, {icon: <ShieldCheck aria-hidden className="size-5" />, title: "اختيار موثوق", text: "منتجات أصلية ومراجعة"}, {icon: <MessageCircle aria-hidden className="size-5" />, title: "نساعدك مباشرة", text: "استفسار سريع عبر واتساب"}].map((item) => <div key={item.title} className="flex items-center gap-3 border-l border-[#eee9e2] px-4 py-4 last:border-l-0"><span className="text-[#1e4a63]">{item.icon}</span><span><span className="block text-xs font-black text-[#30383e]">{item.title}</span><span className="mt-0.5 block text-[10px] font-semibold text-[#7a817f]">{item.text}</span></span></div>)}
-            </section>
-
-            <section className="mt-10 rounded-[28px] bg-[#fff7ed] px-4 py-5 sm:px-6 sm:py-7">
-              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#f05d53]">ابدأ من هنا</p><h2 className="mt-1 text-2xl font-black tracking-tight text-[#183d36]">اختَر طريق الشراء المناسب</h2></div><button onClick={() => scrollToResults()} className="hidden text-xs font-black text-[#183d36] hover:underline sm:block">عرض كل المنتجات ←</button></div>
-              <div className="grid gap-3 md:grid-cols-3">{buyingPaths.map((path) => <button key={path.title} onClick={() => selectBuyingPath(path.keywords)} aria-label={`تصفح ${path.title}`} className={`flex min-h-36 flex-col justify-between p-5 text-right transition hover:-translate-y-0.5 hover:shadow-md ${path.tone}`}><span className="flex size-10 items-center justify-center rounded-lg bg-white/70">{path.icon}</span><span><span className="block text-lg font-black">{path.title}</span><span className="mt-1 block text-xs font-bold opacity-75">{path.description}</span><span className="mt-2 block text-[11px] font-black underline decoration-current/30 underline-offset-4">تصفح الاختيارات ←</span></span></button>)}</div>
-            </section>
-
-            <section className="mt-10 rounded-[28px] bg-[#eef8f4] px-4 py-5 sm:px-6 sm:py-7" aria-labelledby="store-category-title">
-              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">تصفح حسب الحاجة</p><h2 id="store-category-title" className="mt-1 text-2xl font-black tracking-tight text-[#1e4a63]">الأقسام الرئيسية</h2></div><span className="text-xs font-bold text-[#7a817f]">{cats.length} أقسام متاحة</span></div>
-              <div className="store-category-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{cats.slice(0, 12).map((c, index) => <button key={c.id} onClick={() => selectCategory(c.id)} className="group border border-[#ddd8d1] bg-white p-4 text-right transition hover:border-[#1e4a63] hover:shadow-sm"><span className="mb-8 flex size-9 items-center justify-center rounded-lg bg-[#f0ece7] text-[#1e4a63] group-hover:bg-[#1e4a63] group-hover:text-white"><Store aria-hidden className="size-4" /></span><span className="block text-sm font-black text-[#30383e]">{c.name}</span><span className="mt-1 block text-[11px] font-bold text-[#8a918f]">{storefrontCategoryCount(c, availability)} منتج</span></button>)}</div>
-            </section>
-
-            {feedStrips.length > 0 && <div className="mt-8 rounded-[28px] bg-[#183d36] p-3 shadow-[0_18px_45px_-30px_rgba(24,61,54,0.85)] sm:p-4"><BannerCarousel banners={feedStrips} slot="INLINE" /></div>}
-
-            {offers.length > 0 && <section id="store-deals" className="mt-10 rounded-[28px] border border-[#f0dfc7] bg-[#fff5e7] px-4 py-6 shadow-sm sm:px-6"><div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#f05d53]">عرض محدود</p><h2 className="mt-1 text-2xl font-black text-[#754f2c]">صفقات تستحق الإضافة</h2></div><BadgePercent aria-hidden className="size-6 text-[#f05d53]" /></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{offers.slice(0, 3).map((o) => <div key={o.id} className="flex items-center justify-between gap-4 rounded-2xl border border-[#ead8c8] bg-white p-4 transition hover:-translate-y-0.5 hover:shadow-md"><div><p className="text-sm font-black text-[#30383e]">{o.name}</p><p className="mt-1 text-xs font-bold text-[#8b6b50]">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p></div><Tag aria-hidden className="size-5 shrink-0 text-[#f05d53]" /></div>)}</div></section>}
-
-            <div id="store-picks" className="mt-10 grid min-w-0 grid-cols-1 gap-10 rounded-[28px] bg-[#f7f0fa] px-4 py-5 sm:px-6 sm:py-7">
-              <ProductRow title="اكتشف الجديد" icon={<Tag aria-hidden className="size-4 text-[#e65f4a]" />} products={dealProducts} onSelect={setSelectedId} onAdd={addFeaturedToCart} recentlyAddedId={recentlyAddedProductId} />
-              <ProductRow title="الأكثر طلباً" icon={<TrendingUp aria-hidden className="size-4 text-[#1e4a63]" />} products={bestSellers} onSelect={setSelectedId} onAdd={addFeaturedToCart} recentlyAddedId={recentlyAddedProductId} />
+            <div id="store-picks" className="mt-10">
+              <StorefrontCuratedRows
+                dealProducts={dealProducts}
+                bestSellers={bestSellers}
+                onSelectProduct={setSelectedId}
+                onAddToCart={addFeaturedToCart}
+                recentlyAddedId={recentlyAddedProductId}
+                canBeOrdered={storefrontProductCanBeOrdered}
+                getCartQuantity={getProductCartQty}
+                onUpdateQuantity={handleProductQuantityDelta}
+              />
             </div>
+            <StorefrontThematicGrid onSelectKeyword={(kw) => { setSearch(kw); scrollToResults(); }} />
           </>
         )}
 
-        <section id="store-results" className="mt-12 scroll-mt-36 rounded-[28px] bg-white/80 px-4 py-5 shadow-sm ring-1 ring-[#e7e0d8] sm:px-6 sm:py-7">
-          <div className="mb-5 flex flex-col gap-3 border-b border-[#d9d3ca] pb-5 sm:flex-row sm:items-end sm:justify-between">
-            <div><p className="text-xs font-black uppercase tracking-[0.15em] text-[#a4513f]">المنتجات</p><h2 className="mt-1 text-3xl font-black tracking-tight text-[#1e4a63]">{showWishlist ? "قائمة أعجبتني" : "كل المنتجات"}</h2><p className="mt-2 text-xs font-bold text-[#59636a]">{search ? `نتائج البحث عن «${search}»` : activeCatName ? `منتجات فئة «${activeCatName}»` : "تصفح المجموعة الكاملة واختر ما يناسبك"}</p></div><span role="status" aria-live="polite" aria-atomic="true" className="text-sm font-black text-[#1e4a63]">{filteredItems.length} منتج</span>
+        <section id="store-results" className="mt-12 scroll-mt-36 rounded-3xl bg-white p-5 shadow-xs ring-1 ring-slate-200/70 sm:p-7 dark:bg-slate-900 dark:ring-slate-800">
+          <div className="mb-5 flex flex-col gap-3 border-b border-slate-100 pb-5 sm:flex-row sm:items-end sm:justify-between dark:border-slate-800">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.15em] text-orange-600 dark:text-orange-400">كتالوج المتجر</p>
+              <h2 className="mt-1 text-2xl sm:text-3xl font-black tracking-tight text-slate-900 dark:text-slate-100">{showWishlist ? "قائمة أعجبتني" : "تصفح كل المنتجات"}</h2>
+              <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">{search ? `نتائج البحث عن «${search}»` : activeCatName ? `منتجات فئة «${activeCatName}»` : "تصفح المجموعة الكاملة بالأسعار والمخزون المباشر"}</p>
+            </div>
+            <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+              {filteredItems.length} منتج
+            </span>
           </div>
-          <div className="mb-6 flex flex-col gap-3 border border-[#d9d3ca] bg-white p-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><button type="button" onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }} aria-pressed={availability === "IN_STOCK"} className={`shrink-0 border px-3 py-2 text-xs font-black ${availability === "IN_STOCK" ? "border-[#1e4a63] bg-[#1e4a63] text-white" : "border-[#d7d2ca] text-[#59636a]"}`}>{availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}</button><label className="relative shrink-0"><span className="sr-only">نطاق السعر</span><select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="ALL">كل الأسعار</option><option value="UNDER_5000">أقل من 5,000 د.ع</option><option dir="ltr" value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option><option value="OVER_15000">أكثر من 15,000 د.ع</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{brands.length > 0 && <label className="relative shrink-0"><span className="sr-only">الماركة</span><select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="">كل الماركات</option>{brands.map((name) => <option key={name} value={name}>{name}</option>)}</select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>}</div><div className="flex items-center justify-between gap-3"><label className="relative shrink-0"><span className="sr-only">ترتيب النتائج</span><select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="RECOMMENDED">الترتيب المقترح</option><option value="BEST_SELLERS">الأكثر مبيعاً</option><option value="PRICE_ASC">السعر: الأقل أولاً</option><option value="PRICE_DESC">السعر: الأعلى أولاً</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{(hasRefinements || categoryId != null || search) && <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-[#a4513f] hover:underline">مسح الفلاتر</button>}</div>
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-slate-200/80 bg-slate-50/50 p-3 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800 dark:bg-slate-900/50">
+            <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <button
+                type="button"
+                onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }}
+                aria-pressed={availability === "IN_STOCK"}
+                className={`shrink-0 rounded-xl px-3.5 py-2 text-xs font-black transition ${availability === "IN_STOCK" ? "bg-blue-600 text-white shadow-sm shadow-blue-500/20" : "bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"}`}
+              >
+                {availability === "IN_STOCK" ? "متوفر الآن فقط" : "كل المنتجات"}
+              </button>
+              <label className="relative shrink-0">
+                <span className="sr-only">نطاق السعر</span>
+                <select
+                  value={priceFilter}
+                  onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }}
+                  className="appearance-none rounded-xl border border-slate-200 bg-white py-2 pr-3 pl-8 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-600 focus:ring-1 focus:ring-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  <option value="ALL">كل الأسعار</option>
+                  <option value="UNDER_5000">أقل من 5,000 د.ع</option>
+                  <option dir="ltr" value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option>
+                  <option value="OVER_15000">أكثر من 15,000 د.ع</option>
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+              </label>
+              {brands.length > 0 && (
+                <label className="relative shrink-0">
+                  <span className="sr-only">الماركة</span>
+                  <select
+                    value={brand}
+                    onChange={(e) => { setBrand(e.target.value); scrollToResults(); }}
+                    className="appearance-none rounded-xl border border-slate-200 bg-white py-2 pr-3 pl-8 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-600 focus:ring-1 focus:ring-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    <option value="">كل الماركات</option>
+                    {brands.map((name) => <option key={name} value={name}>{name}</option>)}
+                  </select>
+                  <ChevronDown aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                </label>
+              )}
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <label className="relative shrink-0">
+                <span className="sr-only">ترتيب النتائج</span>
+                <select
+                  value={sort}
+                  onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }}
+                  className="appearance-none rounded-xl border border-slate-200 bg-white py-2 pr-3 pl-8 text-xs font-bold text-slate-700 outline-none transition focus:border-blue-600 focus:ring-1 focus:ring-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  <option value="RECOMMENDED">الترتيب المقترح</option>
+                  <option value="BEST_SELLERS">الأكثر مبيعاً</option>
+                  <option value="PRICE_ASC">السعر: الأقل أولاً</option>
+                  <option value="PRICE_DESC">السعر: الأعلى أولاً</option>
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+              </label>
+              {(hasRefinements || categoryId != null || search) && (
+                <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-orange-600 hover:underline dark:text-orange-400">مسح الفلاتر</button>
+              )}
+            </div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} className={`store-product-card group relative flex h-full flex-col overflow-hidden border border-[#ddd8d1] bg-white transition ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button type="button" onClick={() => openProduct(p.productId)} aria-label={`فتح تفاصيل ${p.productName}`} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls ?? p.imageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="absolute left-3 top-12 z-10 flex gap-1.5"><button type="button" onClick={() => toggleWishlist(p.productId)} aria-label={wishlistIds.has(p.productId) ? `إزالة ${p.productName} من أعجبتني` : `إضافة ${p.productName} إلى أعجبتني`} aria-pressed={wishlistIds.has(p.productId)} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${wishlistIds.has(p.productId) ? "text-[#e65f4a]" : "text-[#5c6870]"} ${heartPulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Heart key={`wishlist-${p.productId}-${heartPulseNonce}`} aria-hidden className={`size-4 ${wishlistIds.has(p.productId) ? "fill-current" : ""} ${heartPulseTarget === `product-${p.productId}` ? "animate__animated animate__heartBeat animate__faster" : ""}`} /></button><button type="button" onClick={() => shareProduct(p.productId, p.productName)} aria-label={`مشاركة ${p.productName}`} className={`store-action-button flex size-9 items-center justify-center rounded-full bg-white/95 text-[#1e4a63] shadow-sm ring-1 ring-black/5 transition hover:text-[#e65f4a] ${sharePulseTarget === `product-${p.productId}` ? "store-action-button--active" : ""}`}><Share2 key={`share-${p.productId}-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === `product-${p.productId}` ? "animate__animated animate__pulse animate__faster" : ""}`} /></button></div><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => openProduct(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}{onSale && <span className="basis-full text-[10px] font-bold text-[#a4513f]">وفّر {money(Number(p.price) - Number(p.salePrice))} د.ع</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={(event) => addCatalogProduct(p, event)} disabled={!storefrontProductCanBeOrdered(p)} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]">{p.isCustomizable ? <AlertTriangle aria-hidden className="size-4" /> : <Plus aria-hidden className="size-4" />}{recommendationActionLabel(p)}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {filteredItems.flatMap((p, idx) => {
+                const card = (
+                  <StorefrontProductCard
+                    key={p.productId}
+                    product={p}
+                    isWishlisted={wishlistIds.has(p.productId)}
+                    isRecentlyAdded={recentlyAddedProductId === p.productId}
+                    heartPulseTarget={heartPulseTarget}
+                    heartPulseNonce={heartPulseNonce}
+                    sharePulseTarget={sharePulseTarget}
+                    sharePulseNonce={sharePulseNonce}
+                    onOpen={openProduct}
+                    onAdd={addCatalogProduct}
+                    onToggleWishlist={toggleWishlist}
+                    onShare={shareProduct}
+                    canBeOrdered={storefrontProductCanBeOrdered}
+                    actionLabel={recommendationActionLabel(p)}
+                    cartQuantity={getProductCartQty(p.productId)}
+                    onUpdateQuantity={handleProductQuantityDelta}
+                    mediaComponent={
+                      <BundleMedia
+                        urls={p.bundleImageUrls ?? p.imageUrls}
+                        fallbackUrl={p.imageUrl}
+                        alt={p.productName}
+                        showFallbackLabel
+                        className="aspect-[4/3] w-full"
+                      />
+                    }
+                  />
+                );
+                const nodes: ReactNode[] = [card];
+                if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) {
+                  const k = ((idx + 1) / 10 - 1) % feedStrips.length;
+                  nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />);
+                }
+                return nodes;
+              })}
+            </div>
+          )}
           {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
           {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-[var(--sem-neg)]">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>
@@ -2783,20 +2845,27 @@ function StorefrontContent() {
         </div>
       </footer>
 
-      {/* شريط السلة العائم */}
+      {/* جزيرة السلة العائمة الحديثة (Dynamic Island Cart Dock) */}
       {cartCount > 0 && panel == null && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-emerald-100 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
-          <div className="mx-auto max-w-6xl px-4 py-3">
-            <button
-              onClick={() => setPanel("cart")}
-              className="flex w-full items-center justify-between rounded-xl bg-emerald-700 px-4 py-3.5 text-white shadow-sm shadow-emerald-700/25 transition motion-safe:active:scale-[0.98] hover:bg-emerald-800"
-            >
-              <span className="flex items-center gap-2 text-sm font-extrabold">
-                <span className="flex size-6 items-center justify-center rounded-full bg-white/20 text-xs">{cartCount}</span>
-                عرض السلة
-              </span>
-              <span className="text-sm font-extrabold">{money(cartSubtotal)} د.ع</span>
-            </button>
+        <div className="fixed inset-x-3 bottom-4 z-30 mx-auto max-w-lg sm:bottom-6 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2">
+          <div className="store-dynamic-dock flex flex-col gap-2 rounded-2xl border border-white/20 bg-slate-950/95 p-2.5 sm:p-3 text-white shadow-2xl backdrop-blur-xl ring-1 ring-black/40">
+            <StorefrontMilestoneBar cartSubtotal={cartSubtotal} compact />
+            <div className="flex items-center justify-between gap-3">
+              <button type="button" onClick={() => setPanel("cart")} className="flex min-w-0 items-center gap-2.5 text-right focus:outline-none">
+                <div className="relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/15 bg-white/10">
+                  {lastAddedItem?.imageUrl ? <img src={lastAddedItem.imageUrl} alt="" className="size-full object-cover" /> : <ShoppingBag aria-hidden className="size-5 text-emerald-400" />}
+                  <span className="absolute -bottom-1 -right-1 flex min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[9px] font-black text-white shadow-sm">{cartCount}</span>
+                </div>
+                <div className="min-w-0">
+                  <span className="block truncate text-xs font-bold text-stone-300">سلة المشتريات ({cartCount})</span>
+                  <span className="block font-mono text-sm font-black text-amber-300 tabular-nums">{money(cartSubtotal)} د.ع</span>
+                </div>
+              </button>
+              <button type="button" onClick={() => setPanel("cart")} className="group flex shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-l from-emerald-600 to-teal-600 px-4 py-2.5 text-xs font-black text-white shadow-md shadow-emerald-600/30 transition hover:from-emerald-500 hover:to-teal-500 active:scale-95">
+                <span>عرض السلة وإتمام الطلب</span>
+                <ArrowRight aria-hidden className="size-3.5 rotate-180 transition-transform group-hover:-translate-x-0.5" />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3102,14 +3171,15 @@ function StorefrontContent() {
                 ))}
               </div>
               {cartRecommendationsQ.data && cartRecommendationsQ.data.length > 0 && (
-                <div className="mt-5 rounded-2xl bg-[#fff8df] px-3 py-3 ring-1 ring-[#f0d991]">
-                  <ProductRow
+                <div className="mt-5 rounded-2xl border border-amber-200/70 bg-amber-50/60 p-3.5 dark:border-slate-800 dark:bg-slate-900/60">
+                  <CuratedRow
                     title="أكمل تجهيزك"
-                    icon={<Tag aria-hidden className="size-4 text-[#c58d22]" />}
+                    icon={<Tag aria-hidden className="size-4 text-orange-600" />}
                     products={cartRecommendationsQ.data}
                     onSelect={setSelectedId}
                     onAdd={addFeaturedToCart}
                     recentlyAddedId={recentlyAddedProductId}
+                    canBeOrdered={storefrontProductCanBeOrdered}
                   />
                 </div>
               )}
@@ -3119,16 +3189,11 @@ function StorefrontContent() {
                   <span className="font-extrabold text-slate-800 tabular-nums dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
                 </div>
               </div>
-              {freeThreshold > 0 &&
-                (qualifiesFree ? (
-                  <div className="mt-3 flex items-center justify-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-2.5 text-xs font-bold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
-                    <Truck aria-hidden className="size-4" /> رائع! حصلت على توصيل مجاني
-                  </div>
-                ) : (
-                  <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-center text-xs font-bold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
-                    أضِف <span className="tabular-nums">{money(remainingForFree)}</span> د.ع لتحصل على <span className="font-extrabold">توصيل مجاني</span>
-                  </div>
-                ))}
+              <StorefrontShippingBar
+                cartSubtotal={cartSubtotal}
+                freeShippingThreshold={freeThreshold}
+                className="mt-3"
+              />
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button type="button" onClick={() => { setPanel(null); setShowWishlist(false); scrollToResults(); }} className="flex items-center justify-center gap-1.5 rounded-xl border border-[#1e4a63]/30 bg-[#f5f8fa] py-3 text-xs font-black text-[#1e4a63] transition hover:bg-[#eaf1f4]"><Plus aria-hidden className="size-4" /> أضف المزيد</button>
                 <button type="button" onClick={shareCart} disabled={cartHasUnsupportedCustomization} className={`store-action-button flex items-center justify-center gap-1.5 rounded-xl border border-[#e65f4a]/30 bg-[#fff6f2] py-3 text-xs font-black text-[#a4513f] transition hover:bg-[#ffede7] disabled:cursor-not-allowed disabled:opacity-50 ${sharePulseTarget === "cart" ? "store-action-button--active" : ""}`}><Share2 key={`share-cart-${sharePulseNonce}`} aria-hidden className={`size-4 ${sharePulseTarget === "cart" ? "animate__animated animate__pulse animate__faster" : ""}`} /> مشاركة السلة</button>
@@ -3482,81 +3547,7 @@ export default function Storefront() {
   );
 }
 
-function StoreTrustAndHelp({
-  whatsappNumber,
-  freeShippingThreshold,
-}: {
-  whatsappNumber?: string | null;
-  freeShippingThreshold: number;
-}) {
-  const whatsappHref = whatsappNumber ? `https://wa.me/${whatsappNumber.replace(/[^\d]/g, "")}` : null;
 
-  return (
-    <section aria-labelledby="store-help-title" className="mt-8 rounded-xl border border-emerald-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">تسوّق بوضوح</p>
-          <h2 id="store-help-title" className="mt-0.5 text-base font-extrabold text-slate-900 dark:text-white">معلومات تساعدك قبل الطلب</h2>
-        </div>
-        {whatsappHref && (
-          <a
-            href={whatsappHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
-          >
-            <MessageCircle aria-hidden className="size-3.5" /> اسألنا عبر واتساب
-          </a>
-        )}
-      </div>
-
-      <div className="mt-4 grid gap-2.5 sm:grid-cols-3">
-        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
-          <Banknote aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
-          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">الدفع عند الاستلام</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">ادفع نقداً للمندوب بعد تأكيد طلبك.</p>
-        </div>
-        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
-          <Truck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
-          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">التوصيل محسوب بوضوح</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">اختر محافظتك لترى الأجرة قبل تأكيد الطلب.</p>
-        </div>
-        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
-          <ShieldCheck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
-          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">تأكيد قبل الإرسال</p>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">نتواصل معك لتأكيد بيانات الطلب والتوصيل.</p>
-        </div>
-      </div>
-
-      <div className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-100 px-3 dark:divide-slate-800 dark:border-slate-800">
-        <details className="group py-3" open>
-          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
-            <span className="flex items-center justify-between gap-3">كيف أعرف السعر النهائي؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
-          </summary>
-          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">يعرض المتجر سعر المنتجات وأجرة التوصيل والإجمالي في شاشة الدفع قبل زر تأكيد الطلب.</p>
-        </details>
-        <details className="group py-3">
-          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
-            <span className="flex items-center justify-between gap-3">هل يوجد توصيل مجاني؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
-          </summary>
-          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
-            {freeShippingThreshold > 0
-              ? `يصبح التوصيل مجانياً تلقائياً عندما تبلغ قيمة المنتجات ${money(freeShippingThreshold)} د.ع، ويظهر لك مقدار المتبقي في السلة.`
-              : "تظهر أجرة التوصيل حسب المحافظة التي تختارها قبل تأكيد الطلب."}
-          </p>
-        </details>
-        <details className="group py-3">
-          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
-            <span className="flex items-center justify-between gap-3">كيف أعدّل الطلب أو أستفسر عن الاستبدال؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
-          </summary>
-          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
-            {whatsappHref ? "راسلنا عبر واتساب مع رقم الطلب، وسيراجع الفريق الحالة معك قبل اتخاذ الإجراء المناسب." : "تواصل مع فريق المتجر وأرسل رقم الطلب ليتمكن من مراجعة الحالة معك."}
-          </p>
-        </details>
-      </div>
-    </section>
-  );
-}
 
 /** غلاف لوح بملء الشاشة (سلة/دفع/تأكيد) — ترويسة ثابتة + محتوى قابل للتمرير. */
 function PanelShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {

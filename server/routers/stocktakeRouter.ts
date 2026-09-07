@@ -79,10 +79,10 @@ const statusEnum = z.enum(["COUNTING", "REVIEW", "APPROVED", "CANCELLED"]);
  * رقم = افرض هذا الفرع في كل الاستعلامات/الإنشاء. حساب مخزن بلا فرع = خطأ صريح لا تسريب.
  */
 function restrictedBranchOf(ctx: {
-  user: { role: string; branchId: number | null };
+  user: { role: string; branchId: number | null; isOwner?: boolean };
 }): number | null {
   // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط بلا قيد؛ مدير الفرع يُجبَر على فرعه (كان يعبُر).
-  if (ctx.user.role === "admin") return null;
+  if (ctx.user.role === "admin" || ctx.user.isOwner === true) return null;
   const b = ctx.user.branchId;
   if (b == null) {
     throw new TRPCError({
@@ -94,10 +94,10 @@ function restrictedBranchOf(ctx: {
 }
 
 async function assertManagerStocktakeBranch(
-  ctx: { user: { role: string; branchId: number | null } },
+  ctx: { user: { role: string; branchId: number | null; isOwner?: boolean } },
   sessionId: number,
 ): Promise<void> {
-  if (ctx.user.role === "admin") return;
+  if (ctx.user.role === "admin" || ctx.user.isOwner === true) return;
   if (ctx.user.branchId == null) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -163,11 +163,12 @@ export const stocktakeRouter = router({
       // الحوكمة (إلزام إعادة العدّ فوق الحدّ) صلاحية مدير فأعلى — تُطابق بوّابة الواجهة isManagerPlus.
       // ⚠️ لا تُجرَّد داخل كتلة restricted: مديرُ الفرع مُقيَّدٌ بفرعه (restrictedBranchOf ≠ null) لكنه
       // يملك الحوكمة (Codex P2: تجريدها هناك كان يجعل الميزة تعمل للأدمن فقط). تُجرَّد عمّن دونه فقط.
-      const canGovern = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const canGovern = ctx.user.role === "admin" || ctx.user.role === "manager" || ctx.user.isOwner === true;
       if (!canGovern) delete effective.requireRecountOverThreshold;
       const res = await createStocktakeSession(effective, {
         userId: ctx.user.id,
         role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
       });
       await logAudit(ctx, {
         action:
@@ -654,6 +655,7 @@ export const stocktakeRouter = router({
       return refreshOpeningValuationBasis(input, {
         userId: ctx.user.id,
         role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
       });
     }),
 
@@ -711,6 +713,7 @@ export const stocktakeRouter = router({
       const res = await approveStocktake(input.sessionId, {
         userId: ctx.user.id,
         role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
       });
       // لا تدقيق مكرّراً لإعادة استدعاء idempotent — الاعتماد الفعلي سُجّل في مرّته الأولى.
       if (!res.alreadyApproved) {

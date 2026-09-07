@@ -436,34 +436,54 @@ async function aggregateVouchers(input: VoucherListFilters) {
   };
 }
 
+import { createTtlCache } from "../lib/ttlCache";
+
+const voucherCategoriesCache = createTtlCache<string, any[]>({
+  ttlMs: 60_000,
+  maxEntries: 5,
+});
+
+export function invalidateVoucherCategoriesCache(): void {
+  voucherCategoriesCache.clear();
+}
+
+async function fetchVoucherCategories(includeInactive: boolean) {
+  const db = getDb();
+  if (!db) return [];
+  const wheres: any[] = [];
+  if (!includeInactive) wheres.push(eq(voucherCategories.isActive, true));
+  const [rows, counts] = await Promise.all([
+    db.select().from(voucherCategories)
+      .where(wheres.length ? and(...wheres) : undefined)
+      .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
+    db
+      .select({
+        categoryId: receipts.voucherCategoryId,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(receipts)
+      .where(isNotNull(receipts.voucherCategoryId))
+      .groupBy(receipts.voucherCategoryId),
+  ]);
+  const countById = new Map(
+    counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    usedReceiptCount: countById.get(Number(row.id)) ?? 0,
+  }));
+}
+
 export const voucherCategoryRouter = router({
   list: treasuryGlobalReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
-      const db = getDb();
-      if (!db) return [];
-      const wheres: any[] = [];
-      if (!input?.includeInactive) wheres.push(eq(voucherCategories.isActive, true));
-      const [rows, counts] = await Promise.all([
-        db.select().from(voucherCategories)
-        .where(wheres.length ? and(...wheres) : undefined)
-        .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
-        db
-          .select({
-            categoryId: receipts.voucherCategoryId,
-            count: sql<number>`COUNT(*)`,
-          })
-          .from(receipts)
-          .where(isNotNull(receipts.voucherCategoryId))
-          .groupBy(receipts.voucherCategoryId),
-      ]);
-      const countById = new Map(
-        counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
-      );
-      return rows.map((row) => ({
-        ...row,
-        usedReceiptCount: countById.get(Number(row.id)) ?? 0,
-      }));
+      const includeInactive = !!input?.includeInactive;
+      const cacheKey = includeInactive ? "all" : "active";
+      if (process.env.NODE_ENV === "test") {
+        return fetchVoucherCategories(includeInactive);
+      }
+      return voucherCategoriesCache.get(cacheKey, () => fetchVoucherCategories(includeInactive));
     }),
 
   create: treasuryGlobalProcedure
@@ -498,6 +518,7 @@ export const voucherCategoryRouter = router({
           }),
         );
         await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: id, newValue: { ...input, name } });
+        invalidateVoucherCategoriesCache();
         // نُعيد الصفّ كاملاً كي تنتقيه شاشة السند فوراً بلا جولةِ قراءةٍ ثانية.
         return {
           id,
@@ -535,6 +556,7 @@ export const voucherCategoryRouter = router({
         },
       });
     }
+    invalidateVoucherCategoriesCache();
     return result;
   }),
 
@@ -612,6 +634,7 @@ export const voucherCategoryRouter = router({
           return next;
         });
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
+        invalidateVoucherCategoriesCache();
         return { ok: true };
       } catch (e: any) {
         if (isDupEntry(e)) {
@@ -656,6 +679,7 @@ export const voucherCategoryRouter = router({
         entityType: "voucherCategory",
         entityId: input.id,
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 
@@ -727,6 +751,7 @@ export const voucherCategoryRouter = router({
         entityId: input.fromId,
         newValue: { mergedInto: input.toId },
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 

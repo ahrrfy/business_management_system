@@ -79,6 +79,7 @@ export interface ListSuppliersInput {
   offset?: number;
   // بضاعة الأمانة: فلتر نوع الطرف (منتقي المودِعين + فلتر شاشة الموردين).
   kind?: "REGULAR" | "CONSIGNOR";
+  skipTotal?: boolean;
 }
 
 const norm = (s: string | null | undefined): string | null => {
@@ -539,6 +540,11 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
     .orderBy(asc(suppliers.name), desc(suppliers.id))
     .limit(limit)
     .offset(offset);
+
+  if (input.skipTotal) {
+    return { rows, total: rows.length };
+  }
+
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(suppliers).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };
 }

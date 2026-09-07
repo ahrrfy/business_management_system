@@ -141,11 +141,18 @@ export default function PurchaseReturnsGovernance() {
   }
   const requestReturn = trpc.purchaseReturnGovernance.requestReturn.useMutation(
     {
-      onSuccess: async () => {
-        notify.info(
-          "تم إرسال طلب المرتجع للاعتماد",
-          "لم يتغير المخزون أو رصيد المورد بعد",
-        );
+      onSuccess: async (result) => {
+        if (result.status === "APPROVED") {
+          notify.ok(
+            "تم تنفيذ مرتجع الشراء فوراً",
+            `رقم المرتجع #${(result as { purchaseReturnId?: number }).purchaseReturnId ?? result.requestId} — تم تحديث المخزون ورصيد المورد.`,
+          );
+        } else {
+          notify.info(
+            "تم إرسال طلب المرتجع للاعتماد",
+            "لم يتغير المخزون أو رصيد المورد بعد",
+          );
+        }
         await invalidateAll();
       },
       onError: (error) => notify.err(error),
@@ -153,11 +160,18 @@ export default function PurchaseReturnsGovernance() {
   );
   const requestReversal =
     trpc.purchaseReturnGovernance.requestReversal.useMutation({
-      onSuccess: async () => {
-        notify.info(
-          "تم إرسال طلب عكس المرتجع",
-          "لم يتغير المخزون أو الرصيد بعد",
-        );
+      onSuccess: async (result) => {
+        if (result.status === "APPROVED") {
+          notify.ok(
+            "تم تنفيذ عكس المرتجع فوراً",
+            `رقم العكس #${(result as { purchaseReturnReversalId?: number }).purchaseReturnReversalId ?? result.requestId} — تم عكس حركة المخزون والرصيد.`,
+          );
+        } else {
+          notify.info(
+            "تم إرسال طلب عكس المرتجع",
+            "لم يتغير المخزون أو الرصيد بعد",
+          );
+        }
         await invalidateAll();
       },
       onError: (error) => notify.err(error),

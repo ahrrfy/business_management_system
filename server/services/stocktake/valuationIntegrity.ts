@@ -291,7 +291,7 @@ export async function refreshOpeningValuationBasis(
 ): Promise<RefreshOpeningValuationResult> {
   // دفاع في العمق: حتى الاستدعاء الداخلي المباشر للخدمة لا يتجاوز سلطة الإنقاذ.
   // بوابة الراوتر تضيف inventory:FULL + admin؛ وهذه الطبقة تمنع أي مسار خدمة بديل.
-  if (actor.role !== "admin") {
+  if (actor.role !== "admin" && actor.isOwner !== true) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "إنقاذ أساس تكلفة الجرد متاح للمدير العام فقط",

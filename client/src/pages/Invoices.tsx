@@ -37,6 +37,8 @@ import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDial
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
+import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
+import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -254,6 +256,8 @@ export default function Invoices() {
   const [printingReceiptId, setPrintingReceiptId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
   const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
+  const [drawerInvoiceId, setDrawerInvoiceId] = useState<number | null>(null);
+  const [returnDrawerInvoiceId, setReturnDrawerInvoiceId] = useState<number | null>(null);
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
@@ -481,7 +485,17 @@ export default function Invoices() {
           const r = row.original;
           return (
             <div className="flex min-w-0 flex-col items-start gap-0.5">
-              <CopyInline value={r.invoiceNumber} />
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setDrawerInvoiceId(r.id)}
+                  className="font-mono font-medium text-primary hover:underline cursor-pointer text-right"
+                  title="معاينة تفاصيل الفاتورة"
+                >
+                  {r.invoiceNumber}
+                </button>
+                <CopyInline value={r.invoiceNumber} />
+              </div>
               {/* نسب التصحيح (0168): كانت تُكتَب ويقرؤها `get` وحده ⤇ فاتورةٌ
                 مُستبدَلة تبدو في القائمة كأيّ غيرها (طلب المالك ١٧/٨). */}
               {r.correctedByInvoiceId != null && <span className="rounded bg-[var(--sem-warn-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-warn)]">مُستبدَلة — لها تصحيح</span>}
@@ -672,8 +686,8 @@ export default function Invoices() {
                 {
                   key: "view",
                   kind: "view",
-                  label: "عرض",
-                  href: `/invoices/${r.id}`,
+                  label: "معاينة الفاتورة",
+                  onSelect: () => setDrawerInvoiceId(r.id),
                   gate: { module: "sales", level: "READ" },
                 },
                 {
@@ -776,8 +790,8 @@ export default function Invoices() {
                 {
                   key: "return",
                   kind: "reverse",
-                  label: "إرجاع",
-                  href: `/returns?invoiceId=${r.id}`,
+                  label: "إرجاع فوري",
+                  onSelect: () => setReturnDrawerInvoiceId(r.id),
                   hidden: !returnable,
                   gate: { roles: ["manager"], module: "sales", level: "FULL" },
                 },
@@ -1232,6 +1246,21 @@ export default function Invoices() {
               }
             : null
         }
+      />
+      <InvoiceDetailDrawer
+        invoiceId={drawerInvoiceId}
+        onClose={() => setDrawerInvoiceId(null)}
+        onOpenReturn={(id) => {
+          setDrawerInvoiceId(null);
+          setReturnDrawerInvoiceId(id);
+        }}
+        onPrintThermal={(id) => void reprintThermal(id)}
+        onPrintA4={(id) => void printA4(id)}
+      />
+      <SalesReturnDrawer
+        invoiceId={returnDrawerInvoiceId}
+        onClose={() => setReturnDrawerInvoiceId(null)}
+        onSuccess={() => void utils.sales.list.invalidate()}
       />
     </div>
   );

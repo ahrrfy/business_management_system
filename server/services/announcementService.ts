@@ -44,18 +44,23 @@ function managementWhere(scope: AnnouncementManagementScope) {
 /** هل يُطابق جمهور الإعلان مستخدماً بعينه؟ (حارس القراءة/الإقرار.) */
 function audienceMatchesUser(
   a: { audienceType: string; audienceBranchId: number | null; audienceRole: string | null },
-  u: { role: string; branchId: number | null },
+  u: { id?: number; role: string; branchId: number | null },
 ): boolean {
   if (a.audienceType === "ALL") return true;
   if (a.audienceType === "BRANCH") {
     return a.audienceBranchId != null && u.branchId != null && Number(u.branchId) === Number(a.audienceBranchId);
   }
-  if (a.audienceType === "ROLE") return a.audienceRole != null && u.role === a.audienceRole;
+  if (a.audienceType === "ROLE") {
+    if (a.audienceRole?.startsWith("user:")) {
+      return u.id != null && a.audienceRole === `user:${u.id}`;
+    }
+    return a.audienceRole != null && u.role === a.audienceRole;
+  }
   return false;
 }
 
 /** شرط SQL: الإعلانات الفعّالة غير المنتهية التي تستهدف هذا المستخدم. */
-function targetingWhere(user: { role: string; branchId: number | null }) {
+function targetingWhere(user: { id?: number; role: string; branchId: number | null }) {
   const audienceClauses = [eq(announcements.audienceType, "ALL")];
   if (user.branchId != null) {
     audienceClauses.push(
@@ -63,6 +68,11 @@ function targetingWhere(user: { role: string; branchId: number | null }) {
     );
   }
   audienceClauses.push(and(eq(announcements.audienceType, "ROLE"), eq(announcements.audienceRole, user.role))!);
+  if (user.id != null) {
+    audienceClauses.push(
+      and(eq(announcements.audienceType, "ROLE"), eq(announcements.audienceRole, `user:${user.id}`))!,
+    );
+  }
   return and(
     eq(announcements.isActive, true),
     or(isNull(announcements.expiresAt), gt(announcements.expiresAt, new Date())),
@@ -79,7 +89,14 @@ async function countTargetedActiveUsers(
   const db = requireDb();
   const clauses = [eq(users.isActive, true)];
   if (audienceType === "BRANCH" && audienceBranchId != null) clauses.push(eq(users.branchId, audienceBranchId));
-  if (audienceType === "ROLE" && audienceRole != null) clauses.push(sql`${users.role} = ${audienceRole}`);
+  if (audienceType === "ROLE" && audienceRole != null) {
+    if (audienceRole.startsWith("user:")) {
+      const targetUserId = Number(audienceRole.replace("user:", ""));
+      clauses.push(eq(users.id, targetUserId));
+    } else {
+      clauses.push(sql`${users.role} = ${audienceRole}`);
+    }
+  }
   const [row] = await db.select({ n: count() }).from(users).where(and(...clauses));
   return Number(row?.n ?? 0);
 }
@@ -94,7 +111,14 @@ async function targetedActiveUserIds(
   const db = requireDb();
   const clauses = [eq(users.isActive, true)];
   if (audienceType === "BRANCH" && audienceBranchId != null) clauses.push(eq(users.branchId, audienceBranchId));
-  if (audienceType === "ROLE" && audienceRole != null) clauses.push(sql`${users.role} = ${audienceRole}`);
+  if (audienceType === "ROLE" && audienceRole != null) {
+    if (audienceRole.startsWith("user:")) {
+      const targetUserId = Number(audienceRole.replace("user:", ""));
+      clauses.push(eq(users.id, targetUserId));
+    } else {
+      clauses.push(sql`${users.role} = ${audienceRole}`);
+    }
+  }
   const rows = await db.select({ id: users.id }).from(users).where(and(...clauses));
   return rows.map((r) => Number(r.id)).filter((id) => id !== excludeUserId);
 }
@@ -257,7 +281,7 @@ export async function myAnnouncements(user: { id: number; role: string; branchId
       announcementReads,
       and(eq(announcementReads.announcementId, announcements.id), eq(announcementReads.userId, user.id)),
     )
-    .where(targetingWhere({ role: user.role, branchId: user.branchId }))
+    .where(targetingWhere({ id: user.id, role: user.role, branchId: user.branchId }))
     .orderBy(desc(announcements.createdAt))
     .limit(capped);
   // عدّاد غير المقروء الحقيقيّ (كل المستهدَف بلا صفّ قراءة، لا صفحة النتائج فقط).
@@ -268,7 +292,7 @@ export async function myAnnouncements(user: { id: number; role: string; branchId
       announcementReads,
       and(eq(announcementReads.announcementId, announcements.id), eq(announcementReads.userId, user.id)),
     )
-    .where(and(targetingWhere({ role: user.role, branchId: user.branchId }), isNull(announcementReads.readAt)));
+    .where(and(targetingWhere({ id: user.id, role: user.role, branchId: user.branchId }), isNull(announcementReads.readAt)));
   return { rows, unreadCount: Number(unread?.n ?? 0) };
 }
 
@@ -277,7 +301,7 @@ async function assertTargeted(user: { id: number; role: string; branchId: number
   const db = requireDb();
   const [row] = await db.select().from(announcements).where(eq(announcements.id, announcementId)).limit(1);
   if (!row) throw new Error("الإعلان غير موجود");
-  if (!audienceMatchesUser(row, { role: user.role, branchId: user.branchId })) {
+  if (!audienceMatchesUser(row, { id: user.id, role: user.role, branchId: user.branchId })) {
     throw new Error("هذا الإعلان لا يخصّك");
   }
   return row;
