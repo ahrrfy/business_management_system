@@ -1,6 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import { trpc } from "@/lib/trpc";
-import { AnnouncementDetailModal, type AnnouncementItem } from "./AnnouncementDetailModal";
+import type { AnnouncementItem } from "./AnnouncementDetailModal";
+
+const AnnouncementDetailModal = lazy(() =>
+  import("./AnnouncementDetailModal").then((m) => ({ default: m.AnnouncementDetailModal })),
+);
 import {
   Radio,
   ChevronRight,
@@ -266,13 +270,17 @@ export function BroadcastTicker() {
     </div>
 
       {/* نافذة التفاصيل والإقرار الإداري */}
-      <AnnouncementDetailModal
-        announcement={selectedAnnouncement}
-        open={Boolean(selectedAnnouncement)}
-        onOpenChange={(open) => {
-          if (!open) setSelectedAnnouncement(null);
-        }}
-      />
+      {selectedAnnouncement && (
+        <Suspense fallback={null}>
+          <AnnouncementDetailModal
+            announcement={selectedAnnouncement}
+            open={Boolean(selectedAnnouncement)}
+            onOpenChange={(open) => {
+              if (!open) setSelectedAnnouncement(null);
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

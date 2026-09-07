@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useState, Suspense, lazy } from "react";
 import { useQuranAudio } from "./QuranAudioContext";
-import { QuranReciterModal } from "./QuranReciterModal";
 import { Button } from "@/components/ui/button";
+
+const QuranReciterModal = lazy(() =>
+  import("./QuranReciterModal").then((m) => ({ default: m.QuranReciterModal })),
+);
 import {
   BookOpen,
   Play,
@@ -277,10 +280,14 @@ export function QuranSidebarCard() {
       </div>
 
       {/* نافذة اختيار القارئ المنفصلة السلسة */}
-      <QuranReciterModal
-        open={reciterModalOpen}
-        onOpenChange={setReciterModalOpen}
-      />
+      {reciterModalOpen && (
+        <Suspense fallback={null}>
+          <QuranReciterModal
+            open={reciterModalOpen}
+            onOpenChange={setReciterModalOpen}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

@@ -4,7 +4,6 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { QuranAudioProvider } from "@/components/quran/QuranAudioContext";
 import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
-import { QuranStationDrawer } from "@/components/quran/QuranStationDrawer";
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -31,7 +30,11 @@ import {
   ClipboardCheck, History, Star,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
+
+const QuranStationDrawer = lazy(() =>
+  import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
+);
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -555,7 +558,9 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
       )}
 
       {/* محطة القرآن الكريم الموسعة — تفتح كدرج جانبي عند الطلب فقط */}
-      <QuranStationDrawer />
+      <Suspense fallback={null}>
+        <QuranStationDrawer />
+      </Suspense>
     </div>
   );
 }
