@@ -10,13 +10,13 @@
       "module-gate": 628,
       "module-map": 395,
       "admin": 67,
-      "none": 53,
+      "none": 50,
       "raw-role": 34,
       "self-assignment": 24,
       "owner": 12,
       "public": 11,
+      "public-read": 9,
       "platform": 6,
-      "public-read": 6,
       "token": 2,
       "device-bootstrap": 1
     },
@@ -26,7 +26,7 @@
       "HIGH": 170
     },
     "byModule": {
-      "(none)": 189,
+      "(none)": 186,
       "reports": 102,
       "hr": 101,
       "store": 99,
@@ -58,6 +58,7 @@
       "settings": 4,
       "consignments": 4,
       "sales|workorders|pos": 4,
+      "kiosk": 3,
       "users": 2,
       "crm|workorders": 2,
       "sales|workorders": 1
@@ -69,7 +70,7 @@
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 44,
       "UNAUTHENTICATED": 37,
-      "READ_WITHOUT_MODULE_GATE": 30,
+      "READ_WITHOUT_MODULE_GATE": 27,
       "WRITE_WITHOUT_MODULE_GATE": 23,
       "HANDLER_ROLE_CHECK": 6
     },
@@ -176,7 +177,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:152"
+      "loc": "server/routers/announcementsRouter.ts:158"
     },
     {
       "surface": "trpc",
@@ -193,7 +194,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:73"
+      "loc": "server/routers/announcementsRouter.ts:79"
     },
     {
       "surface": "trpc",
@@ -210,7 +211,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:120"
+      "loc": "server/routers/announcementsRouter.ts:126"
     },
     {
       "surface": "trpc",
@@ -227,7 +228,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/announcementsRouter.ts:116"
+      "loc": "server/routers/announcementsRouter.ts:122"
     },
     {
       "surface": "trpc",
@@ -244,7 +245,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:147"
+      "loc": "server/routers/announcementsRouter.ts:153"
     },
     {
       "surface": "trpc",
@@ -261,7 +262,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:141"
+      "loc": "server/routers/announcementsRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -278,7 +279,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/announcementsRouter.ts:126"
+      "loc": "server/routers/announcementsRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -9518,14 +9519,14 @@
       "name": "banner",
       "kind": "query",
       "procedure": "kioskReadProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
+      "authority": "public-read",
+      "module": "kiosk",
+      "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "device",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE|LOCAL_GATE",
+      "flags": "LOCAL_GATE",
       "loc": "server/routers/kioskRouter.ts:76"
     },
     {
@@ -9671,14 +9672,14 @@
       "name": "lookup",
       "kind": "query",
       "procedure": "kioskReadProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
+      "authority": "public-read",
+      "module": "kiosk",
+      "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "device",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE|LOCAL_GATE",
+      "flags": "LOCAL_GATE",
       "loc": "server/routers/kioskRouter.ts:81"
     },
     {
@@ -9688,14 +9689,14 @@
       "name": "promotions",
       "kind": "query",
       "procedure": "kioskReadProcedure",
-      "authority": "none",
-      "module": "",
-      "level": "",
+      "authority": "public-read",
+      "module": "kiosk",
+      "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "device",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "READ_WITHOUT_MODULE_GATE|LOCAL_GATE",
+      "flags": "LOCAL_GATE",
       "loc": "server/routers/kioskRouter.ts:86"
     },
     {

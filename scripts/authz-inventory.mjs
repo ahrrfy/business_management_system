@@ -729,9 +729,9 @@ const PROCEDURES = {
     local: "server/routers/auditRouter.ts:9",
   },
   kioskReadProcedure: {
-    authority: "none",
-    module: null,
-    level: null,
+    authority: "public-read",
+    module: "kiosk",
+    level: "READ",
     roles: [],
     branch: "device",
     local: "server/routers/kioskRouter.ts:49",
@@ -987,6 +987,8 @@ function scanLocalGates(src) {
     );
     // بوابة QR الموقّع: لا جلسة، لكن الخدمة تتحقق من HMAC قبل تمرير الملخص للمعالج.
     const tokenGate = /requireOnlineOrderLabel\b/.test(rhs);
+    // بوابة الكشك: جهاز موثق بالكوكي أو وصول عام لقارئ الأسعار
+    const kioskGate = /resolveKioskDevice\b/.test(rhs) || /kioskRead\b/.test(rhs) || name === "kioskReadProcedure";
     const roleGate = rhs.match(/ctx\.user\.role\s*!==\s*["']([a-z_]+)["']/g);
     const requireRole = rhs.match(/requireRole\(([^)]*)\)/);
     // (P1) الأساس مُقيَّد بالدور (raw-role) أو admin ⇒ البوّابة مركّبة: يبقى قيد الدور المورَّث فاعلاً
@@ -1010,11 +1012,13 @@ function scanLocalGates(src) {
           ? "raw-role"
           : tokenGate
             ? "token"
-            : (inherited?.authority ?? "none"),
-      module: mod ? mod[1] : (inherited?.module ?? null),
-      level: mod ? mod[2] : (inherited?.level ?? null),
+            : kioskGate
+              ? "public-read"
+              : (inherited?.authority ?? "none"),
+      module: mod ? mod[1] : kioskGate ? "kiosk" : (inherited?.module ?? null),
+      level: mod ? mod[2] : kioskGate ? "READ" : (inherited?.level ?? null),
       roles: localRoles ?? inherited?.roles ?? [],
-      branch: tokenGate ? "token" : (inherited?.branch ?? false),
+      branch: tokenGate ? "token" : kioskGate ? "device" : (inherited?.branch ?? false),
       local: true,
       base,
       // مصدر سلطة الدور المورَّث (raw-role/admin من الأساس) يبقى مسجَّلاً حتى مع requireModule.
