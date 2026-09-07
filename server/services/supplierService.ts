@@ -541,7 +541,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
     .limit(limit)
     .offset(offset);
 
-  if (input.skipTotal) {
+  if (input.skipTotal || (offset === 0 && rows.length < limit)) {
     return { rows, total: rows.length };
   }
 

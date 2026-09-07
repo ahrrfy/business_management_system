@@ -758,7 +758,7 @@ export async function listCustomers(input: ListCustomersInput = {}) {
     .limit(limit)
     .offset(offset);
 
-  if (input.skipTotal) {
+  if (input.skipTotal || (offset === 0 && rows.length < limit)) {
     return { rows, total: rows.length };
   }
 
