@@ -15,8 +15,8 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, subscribeOutbox } from "@/lib/offline/outbox";
+import { getLastSyncAt, offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, OFFLINE_CACHE_MAX_AGE_MS, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
@@ -49,6 +49,7 @@ import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
+import { POSFundingBanner } from "@/components/pos/POSFundingBanner";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -722,10 +723,24 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
-      const row = offline
-        ? await offlineFindByBarcode(code, effectiveTier, branchId)
-        : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+      // ش٢ أوفلاين: أثناء الانقطاع أو تذبذب الشبكة تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
+      let row;
+      if (offline) {
+        row = await offlineFindByBarcode(code, effectiveTier, branchId);
+      } else {
+        try {
+          row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+        } catch (fetchErr) {
+          if (!activeTab.customerId) {
+            const lastSync = await getLastSyncAt();
+            const isFresh = Boolean(lastSync && Date.now() - new Date(lastSync).getTime() <= OFFLINE_CACHE_MAX_AGE_MS);
+            if (isFresh) {
+              row = await offlineFindByBarcode(code, effectiveTier, branchId);
+            }
+          }
+          if (!row) throw fetchErr;
+        }
+      }
       if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row as PosRow);
     } catch (e: unknown) {
@@ -1485,6 +1500,7 @@ export default function POS() {
         cardsDisabled={offline}
         cardsDisabledReason={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : undefined}
         branchName={activeBranchName}
+        offline={offline}
       />
 
       {headerActionsNode && createPortal(
@@ -1551,73 +1567,17 @@ export default function POS() {
         }}
       />
 
-      {posFundingRequests.length > 0 && (
-        <div
-          data-testid="pos-shift-funding-banner"
-          style={{
-            margin: "6px 8px 0",
-            border: `1px solid ${C.amber}`,
-            background: C.amberSoft,
-            borderRadius: 8,
-            padding: "8px 10px",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 900, fontSize: 13 }}>عهدة نقدية بانتظار استلامك</div>
-            <div style={{ fontSize: 12, color: C.mutedFg }}>
-              لا تُضاف إلى الدرج إلا بعد عدّ النقد فعلياً وتأكيد الاستلام.
-            </div>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {posFundingRequests.map((request) => (
-              <div key={request.requestReceiptId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontWeight: 800, fontSize: 13 }}>{fmt(Number(request.amount))} د.ع</span>
-                <button
-                  type="button"
-                  disabled={acceptFundingM.isPending}
-                  onClick={() =>
-                    acceptFundingM.mutate({
-                      requestReceiptId: request.requestReceiptId,
-                      decision: "ACCEPT",
-                    })
-                  }
-                  style={{
-                    border: 0,
-                    borderRadius: 6,
-                    padding: "6px 10px",
-                    background: C.success,
-                    color: "white",
-                    fontWeight: 900,
-                    cursor: acceptFundingM.isPending ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {acceptFundingM.isPending ? "جارٍ التثبيت…" : "استلمت النقد"}
-                </button>
-              </div>
-            ))}
-            <Link
-              href="/shifts"
-              style={{
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-                padding: "6px 10px",
-                color: C.fg,
-                fontSize: 12,
-                fontWeight: 800,
-                textDecoration: "none",
-                background: C.card,
-              }}
-            >
-              مراجعة الطلب أو رفضه
-            </Link>
-          </div>
-        </div>
-      )}
+      <POSFundingBanner
+        C={C}
+        posFundingRequests={posFundingRequests}
+        isPending={acceptFundingM.isPending}
+        onAccept={(requestReceiptId) =>
+          acceptFundingM.mutate({
+            requestReceiptId,
+            decision: "ACCEPT",
+          })
+        }
+      />
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />

@@ -4,10 +4,15 @@ import { describe, expect, it } from "vitest";
 
 describe("POS — استلام العهدة الإضافية", () => {
   it("يظهر الطلب في محطة الكاشير ولا ينسب النقد للدرج قبل التأكيد", () => {
-    const source = readFileSync(
+    const posSource = readFileSync(
       path.resolve(process.cwd(), "client/src/pages/POS.tsx"),
       "utf8",
     );
+    const bannerSource = readFileSync(
+      path.resolve(process.cwd(), "client/src/components/pos/POSFundingBanner.tsx"),
+      "utf8",
+    );
+    const source = posSource + bannerSource;
 
     expect(source).toContain("trpc.shifts.fundingRequests.useQuery");
     expect(source).toContain("trpc.shifts.respondFunding.useMutation");
