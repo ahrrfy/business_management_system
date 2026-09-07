@@ -139,6 +139,7 @@ async function fanOutAnnouncementNotifications(
     const ids = await targetedActiveUserIds(input.audienceType, audienceBranchId, audienceRole, actorUserId);
     const title = input.title.trim().slice(0, 180);
     const body = input.body.trim().slice(0, 600);
+    const isCritical = input.priority === "CRITICAL";
     for (const userId of ids) {
       try {
         await createAppNotification({
@@ -146,11 +147,11 @@ async function fanOutAnnouncementNotifications(
           kind: "ANNOUNCEMENT",
           title,
           body,
-          route: "/my-work#announcements",
+          route: `/announcements?id=${announcementId}`,
           eventKey: `ANNOUNCEMENT:${announcementId}:${userId}`,
           entityType: "announcement",
           entityId: announcementId,
-          requiresAction: input.requiresAck ?? false,
+          requiresAction: (input.requiresAck ?? false) || isCritical,
           push: true,
         });
       } catch {

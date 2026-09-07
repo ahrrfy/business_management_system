@@ -26,6 +26,8 @@ interface QuranAudioContextValue {
   openDrawer: () => void;
   closeDrawer: () => void;
   setFloatingBarVisible: (visible: boolean) => void;
+  savedPosition: number;
+  resumeFromBookmark: () => void;
 }
 
 const QuranAudioContext = createContext<QuranAudioContextValue | null>(null);
@@ -33,6 +35,7 @@ const QuranAudioContext = createContext<QuranAudioContextValue | null>(null);
 const STORAGE_RECITER_KEY = "erp.quran.lastReciterId";
 const STORAGE_SURAH_KEY = "erp.quran.lastSurahId";
 const STORAGE_VOLUME_KEY = "erp.quran.volume";
+const STORAGE_POSITION_KEY = "erp.quran.lastPositionSeconds";
 
 export function QuranAudioProvider({ children }: { children: React.ReactNode }) {
   const [currentReciter, setCurrentReciterState] = useState<QuranReciter>(() => {
@@ -70,6 +73,15 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
   const [isMuted, setIsMuted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [hasStartedOnce, setHasStartedOnce] = useState(false);
+  const [savedPosition, setSavedPosition] = useState<number>(() => {
+    try {
+      const pos = Number(localStorage.getItem(STORAGE_POSITION_KEY));
+      return !isNaN(pos) && pos > 0 ? pos : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const lastSavedTimeRef = useRef<number>(0);
   const [floatingBarVisible, setFloatingBarVisibleState] = useState(() => {
     try {
       const saved = localStorage.getItem("erp.quran.bar_visible");
@@ -98,7 +110,18 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
     audioRef.current = audio;
 
     const onTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
+      const t = audio.currentTime;
+      setCurrentTime(t);
+      if (Math.abs(t - lastSavedTimeRef.current) >= 3) {
+        lastSavedTimeRef.current = t;
+        const rounded = Math.floor(t);
+        setSavedPosition(rounded);
+        try {
+          localStorage.setItem(STORAGE_POSITION_KEY, String(rounded));
+        } catch {
+          // ignore
+        }
+      }
     };
     const onLoadedMetadata = () => {
       setDuration(audio.duration || 0);
@@ -116,6 +139,12 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
     };
     const onEnded = () => {
       setIsPlaying(false);
+      setSavedPosition(0);
+      try {
+        localStorage.setItem(STORAGE_POSITION_KEY, "0");
+      } catch {
+        // ignore
+      }
       // الانتقال التلقائي للسورة التالية
       setCurrentSurah((prev) => {
         const nextId = prev.id >= 114 ? 1 : prev.id + 1;
@@ -163,9 +192,12 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
       setIsPlaying(false);
     });
     setHasStartedOnce(true);
+    setSavedPosition(0);
+    lastSavedTimeRef.current = 0;
     try {
       localStorage.setItem(STORAGE_SURAH_KEY, String(surah.id));
       localStorage.setItem(STORAGE_RECITER_KEY, reciter.id);
+      localStorage.setItem(STORAGE_POSITION_KEY, "0");
     } catch {
       // تجاهل أخطاء التخزين
     }
@@ -192,13 +224,41 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
       audio.pause();
     } else {
       if (!audio.src || audio.src === window.location.href) {
-        playTrack(currentSurah, currentReciter);
+        const url = getSurahAudioUrl(currentReciter.serverUrl, currentSurah.id);
+        audio.src = url;
+        const savedPos = Number(localStorage.getItem(STORAGE_POSITION_KEY) || "0");
+        if (savedPos > 5) {
+          audio.currentTime = savedPos;
+          setCurrentTime(savedPos);
+        }
+        audio.play().catch(() => setIsPlaying(false));
       } else {
         audio.play().catch(() => setIsPlaying(false));
       }
       setHasStartedOnce(true);
     }
-  }, [isPlaying, currentSurah, currentReciter, playTrack]);
+  }, [isPlaying, currentSurah, currentReciter]);
+
+  const resumeFromBookmark = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    try {
+      const savedPos = Number(localStorage.getItem(STORAGE_POSITION_KEY) || "0");
+      if (savedPos > 0) {
+        if (!audio.src || audio.src === window.location.href) {
+          const url = getSurahAudioUrl(currentReciter.serverUrl, currentSurah.id);
+          audio.src = url;
+        }
+        audio.currentTime = savedPos;
+        setCurrentTime(savedPos);
+        audio.play().catch(() => setIsPlaying(false));
+        setHasStartedOnce(true);
+        setIsPlaying(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentReciter.serverUrl, currentSurah.id]);
 
   const pause = useCallback(() => {
     audioRef.current?.pause();
@@ -298,6 +358,8 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
         openDrawer,
         closeDrawer,
         setFloatingBarVisible,
+        savedPosition,
+        resumeFromBookmark,
       }}
     >
       {children}

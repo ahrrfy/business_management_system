@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import { trpc } from "@/lib/trpc";
+import { playAnnouncementChime } from "@/lib/notifyBeep";
 import type { AnnouncementItem } from "./AnnouncementDetailModal";
 
 const AnnouncementDetailModal = lazy(() =>
@@ -71,6 +72,24 @@ export function BroadcastTicker() {
       setCurrentIndex(0);
     }
   }, [announcements.length, currentIndex]);
+
+  // نغمة تنبيه إدارية خفيفة عند وجود إعلانات حرجة جديدة غير مقروءة
+  useEffect(() => {
+    if (!announcements || announcements.length === 0) return;
+    const criticals = announcements.filter((a) => a.priority === "CRITICAL" && !a.readAt);
+    if (criticals.length === 0) return;
+
+    try {
+      const highestId = Math.max(...criticals.map((a) => a.id));
+      const lastChimed = Number(sessionStorage.getItem("erp.announcements.lastChimedId") || "0");
+      if (highestId > lastChimed) {
+        sessionStorage.setItem("erp.announcements.lastChimedId", String(highestId));
+        playAnnouncementChime("CRITICAL");
+      }
+    } catch {
+      // ignore
+    }
+  }, [announcements]);
 
   const toggleCollapsed = () => {
     setIsCollapsed((prev) => {
@@ -166,42 +185,10 @@ export function BroadcastTicker() {
   const current = announcements[currentIndex] || announcements[0];
 
   const priorityStyles = {
-    CRITICAL: {
-      badgeBg: "bg-gradient-to-r from-red-600 via-rose-600 to-red-700",
-      badgeText: "عاجل وطارئ",
-      tickerBorder: "border-red-500/40 dark:border-red-500/50",
-      glow: "shadow-[0_0_15px_-3px_rgba(239,68,68,0.3)]",
-      barBg: "bg-red-500/5 dark:bg-red-950/20",
-      Icon: Flame,
-      pulse: "animate-pulse",
-    },
-    IMPORTANT: {
-      badgeBg: "bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700",
-      badgeText: "توجيه إداري",
-      tickerBorder: "border-amber-500/40 dark:border-amber-500/50",
-      glow: "shadow-[0_0_15px_-3px_rgba(245,158,11,0.25)]",
-      barBg: "bg-amber-500/5 dark:bg-amber-950/20",
-      Icon: AlertCircle,
-      pulse: "",
-    },
-    NORMAL: {
-      badgeBg: "bg-gradient-to-r from-blue-700 via-indigo-600 to-sky-700",
-      badgeText: "إعلان داخلي",
-      tickerBorder: "border-blue-500/30 dark:border-blue-500/40",
-      glow: "shadow-[0_0_15px_-3px_rgba(59,130,246,0.2)]",
-      barBg: "bg-blue-500/5 dark:bg-blue-950/20",
-      Icon: Radio,
-      pulse: "",
-    },
-  }[current.priority] || {
-    badgeBg: "bg-muted",
-    badgeText: "إعلان",
-    tickerBorder: "border-border",
-    glow: "",
-    barBg: "bg-card",
-    Icon: Info,
-    pulse: "",
-  };
+    CRITICAL: { badgeBg: "bg-gradient-to-r from-red-600 via-rose-600 to-red-700", badgeText: "عاجل وطارئ", tickerBorder: "border-red-500/40 dark:border-red-500/50", glow: "shadow-[0_0_15px_-3px_rgba(239,68,68,0.3)]", barBg: "bg-red-500/5 dark:bg-red-950/20", Icon: Flame, pulse: "animate-pulse" },
+    IMPORTANT: { badgeBg: "bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700", badgeText: "توجيه إداري", tickerBorder: "border-amber-500/40 dark:border-amber-500/50", glow: "shadow-[0_0_15px_-3px_rgba(245,158,11,0.25)]", barBg: "bg-amber-500/5 dark:bg-amber-950/20", Icon: AlertCircle, pulse: "" },
+    NORMAL: { badgeBg: "bg-gradient-to-r from-blue-700 via-indigo-600 to-sky-700", badgeText: "إعلان داخلي", tickerBorder: "border-blue-500/30 dark:border-blue-500/40", glow: "shadow-[0_0_15px_-3px_rgba(59,130,246,0.2)]", barBg: "bg-blue-500/5 dark:bg-blue-950/20", Icon: Radio, pulse: "" },
+  }[current.priority] || { badgeBg: "bg-muted", badgeText: "إعلان", tickerBorder: "border-border", glow: "", barBg: "bg-card", Icon: Info, pulse: "" };
 
   const BadgeIcon = priorityStyles.Icon;
 
@@ -337,6 +324,17 @@ export function BroadcastTicker() {
                 <Plus className="size-3.5" aria-hidden />
               </Link>
             )}
+
+            {/* زر نغمة التنبيه الإدارية */}
+            <button
+              type="button"
+              onClick={() => playAnnouncementChime(current.priority)}
+              className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition"
+              title="سماع نغمة التنبيه الإدارية"
+              aria-label="سماع نغمة التنبيه الإدارية"
+            >
+              <Volume2 className="size-3.5" aria-hidden />
+            </button>
 
             {/* زر فتح التفاصيل */}
             <button
