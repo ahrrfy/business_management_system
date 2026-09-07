@@ -780,7 +780,7 @@ export default function Treasury() {
         )}
       </div>
 
-      <DeliveryCustodyCard />
+      <DeliveryCustodyCard branchId={branchId !== "" ? Number(branchId) : undefined} />
 
       <PendingHandoversSection
         canGovernHandovers={canGovernHandovers}

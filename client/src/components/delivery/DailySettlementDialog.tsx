@@ -137,10 +137,10 @@ export function DailySettlementDialog({ party, open, onOpenChange, preview, prev
                   className="gap-1.5 text-xs font-semibold"
                   onClick={() => {
                     printRemittanceReceipt(party?.name ?? "جهة التوصيل", {
-                      remittanceNumber: `DR-${result.remittanceId}`,
-                      collectedTotal: preview?.expectedCash ?? "0.00",
-                      feesTotal: preview?.feeDue ?? "0.00",
-                      netRemitted: counted || (preview?.net ?? "0.00"),
+                      remittanceNumber: result.remittanceNumber || `DR-${result.remittanceId}`,
+                      collectedTotal: result.collectedTotal || preview?.expectedCash || "0.00",
+                      feesTotal: result.feesTotal || preview?.feeDue || "0.00",
+                      netRemitted: result.netRemitted || counted || (preview?.net ?? "0.00"),
                       shortfallTotal: result.shortfallTotal ?? "0.00",
                     });
                   }}
