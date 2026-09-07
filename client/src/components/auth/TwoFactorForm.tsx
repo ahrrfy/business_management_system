@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,6 +36,7 @@ export function TwoFactorForm({
   const [recoveryCode, setRecoveryCode] = useState("");
   const [twoFactorStatus, setTwoFactorStatus] = useState<"idle" | "verifying" | "success" | "error">("idle");
   const [shakeKey, setShakeKey] = useState(0);
+  const shouldReduceMotion = Boolean(useReducedMotion());
 
   const verify2fa = trpc.auth.twoFactorVerify.useMutation({
     onMutate: () => {
@@ -68,11 +69,11 @@ export function TwoFactorForm({
   });
 
   function submitOtp(code?: string) {
-    if (!ticket) return;
-    setTwoFactorStatus("verifying");
+    if (!ticket || verify2fa.isPending) return;
     if (useRecovery) {
-      if (!recoveryCode.trim()) return;
-      verify2fa.mutate({ ticket, recoveryCode: recoveryCode.trim() });
+      const trimmed = recoveryCode.trim();
+      if (!trimmed) return;
+      verify2fa.mutate({ ticket, recoveryCode: trimmed });
     } else {
       const c = (code ?? otp).trim();
       if (c.length !== 6) return;
@@ -83,9 +84,9 @@ export function TwoFactorForm({
   return (
     <motion.form
       key="otp-form"
-      initial={{ opacity: 0, x: -16 }}
+      initial={shouldReduceMotion ? false : { opacity: 0, x: -16 }}
       animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 16 }}
+      exit={shouldReduceMotion ? undefined : { opacity: 0, x: 16 }}
       transition={{ duration: 0.2 }}
       onSubmit={(e) => {
         e.preventDefault();
@@ -97,13 +98,19 @@ export function TwoFactorForm({
         <div className="relative flex items-center justify-center size-20">
           <motion.div
             animate={
-              twoFactorStatus === "verifying"
+              shouldReduceMotion
+                ? undefined
+                : twoFactorStatus === "verifying"
                 ? { scale: [1, 1.4, 1], opacity: [0.3, 0.7, 0.3] }
                 : twoFactorStatus === "error"
                 ? { scale: [1, 1.25, 1], opacity: [0.4, 0.8, 0.4] }
                 : { scale: [1, 1.15, 1], opacity: [0.15, 0.35, 0.15] }
             }
-            transition={{ repeat: Infinity, duration: twoFactorStatus === "verifying" ? 1.2 : 3, ease: "easeInOut" }}
+            transition={
+              shouldReduceMotion
+                ? undefined
+                : { repeat: Infinity, duration: twoFactorStatus === "verifying" ? 1.2 : 3, ease: "easeInOut" }
+            }
             className={cn(
               "absolute inset-0 rounded-full border",
               twoFactorStatus === "success"
@@ -117,8 +124,8 @@ export function TwoFactorForm({
           />
 
           <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 8, ease: "linear" }}
+            animate={shouldReduceMotion ? undefined : { rotate: 360 }}
+            transition={shouldReduceMotion ? undefined : { repeat: Infinity, duration: 8, ease: "linear" }}
             className={cn(
               "absolute -inset-1 rounded-full border border-dashed pointer-events-none",
               twoFactorStatus === "success"
@@ -209,12 +216,12 @@ export function TwoFactorForm({
         <div className="flex flex-col items-center gap-3">
           <motion.div
             key={shakeKey}
-            animate={shakeKey > 0 ? { x: [0, -14, 14, -10, 10, -5, 5, 0] } : {}}
+            animate={shakeKey > 0 && !shouldReduceMotion ? { x: [0, -14, 14, -10, 10, -5, 5, 0] } : {}}
             transition={{ duration: 0.45, ease: "easeInOut" }}
             dir="ltr"
             className="relative p-1"
           >
-            {twoFactorStatus === "verifying" && (
+            {twoFactorStatus === "verifying" && !shouldReduceMotion && (
               <motion.div
                 className="absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent z-30 pointer-events-none"
                 animate={{ top: ["0%", "100%", "0%"] }}

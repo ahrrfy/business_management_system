@@ -127,9 +127,11 @@ export function StorefrontHero({
       </div>
 
       {/* جانب البانر الإبداعي أو الإطار الترويجي */}
-      <div className="relative flex min-h-[320px] items-center justify-center bg-black/30 p-4 sm:p-6 lg:min-h-[460px]">
+      <div className="relative flex min-h-[320px] w-full items-center justify-center bg-black/30 p-4 sm:p-6 lg:min-h-[460px]">
         {bannerCarouselComponent ? (
-          bannerCarouselComponent
+          <div className="flex size-full w-full flex-col items-center justify-center">
+            {bannerCarouselComponent}
+          </div>
         ) : featuredHero ? (
           <div className="size-full overflow-hidden rounded-2xl shadow-xl">
             <BannerFrame banner={featuredHero} slot="HERO" active />

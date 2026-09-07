@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 
 export interface LoginShowcaseProps {
   mouseCoord: { x: number; y: number };
@@ -6,6 +6,7 @@ export interface LoginShowcaseProps {
 }
 
 export function LoginShowcase({ mouseCoord, baghdadTime }: LoginShowcaseProps) {
+  const shouldReduceMotion = Boolean(useReducedMotion());
   return (
     <div className="hidden lg:flex lg:w-1/2 flex-col justify-between p-8 xl:p-12 relative overflow-hidden border-e border-white/[0.08] select-none">
       {/* توهج كاوستيك ناعم خلف الشعار يتنفس حيوية */}
@@ -31,30 +32,32 @@ export function LoginShowcase({ mouseCoord, baghdadTime }: LoginShowcaseProps) {
       <div className="relative z-10 my-auto flex flex-col items-center justify-center py-6">
         <motion.div
           style={{
-            transform: `perspective(1000px) rotateX(${-mouseCoord.y * 6}deg) rotateY(${mouseCoord.x * 6}deg)`,
+            transform: shouldReduceMotion
+              ? undefined
+              : `perspective(1000px) rotateX(${-mouseCoord.y * 6}deg) rotateY(${mouseCoord.x * 6}deg)`,
           }}
-          transition={{ type: "spring", stiffness: 90, damping: 20 }}
+          transition={shouldReduceMotion ? undefined : { type: "spring", stiffness: 90, damping: 20 }}
           className="relative flex flex-col items-center justify-center"
         >
           {/* هالات أبل المتمركزة (Apple Keynote Orbit Rings) */}
           <motion.div
             aria-hidden
-            animate={{ scale: [0.98, 1.03, 0.98], opacity: [0.2, 0.4, 0.2] }}
-            transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
+            animate={shouldReduceMotion ? undefined : { scale: [0.98, 1.03, 0.98], opacity: [0.2, 0.4, 0.2] }}
+            transition={shouldReduceMotion ? undefined : { duration: 7, repeat: Infinity, ease: "easeInOut" }}
             className="absolute -inset-10 sm:-inset-14 rounded-[56px] border border-white/[0.07] pointer-events-none"
           />
           <motion.div
             aria-hidden
-            animate={{ scale: [1.02, 0.97, 1.02], opacity: [0.1, 0.25, 0.1] }}
-            transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
+            animate={shouldReduceMotion ? undefined : { scale: [1.02, 0.97, 1.02], opacity: [0.1, 0.25, 0.1] }}
+            transition={shouldReduceMotion ? undefined : { duration: 9, repeat: Infinity, ease: "easeInOut" }}
             className="absolute -inset-20 sm:-inset-24 rounded-[72px] border border-white/[0.035] pointer-events-none"
           />
 
           {/* وهج شفق كاوستيك ناعم يتنفس بألوان الشعار (الأخضر الزمردي والعنبري) */}
           <motion.div
             aria-hidden
-            animate={{ scale: [0.95, 1.15, 0.95], opacity: [0.3, 0.55, 0.3] }}
-            transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
+            animate={shouldReduceMotion ? undefined : { scale: [0.95, 1.15, 0.95], opacity: [0.3, 0.55, 0.3] }}
+            transition={shouldReduceMotion ? undefined : { duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
             className="absolute -inset-8 rounded-full blur-3xl pointer-events-none"
             style={{
               background: "linear-gradient(to bottom, rgba(16,123,99,0.22), rgba(13,110,87,0.12), rgba(200,90,39,0.20))",
@@ -63,18 +66,20 @@ export function LoginShowcase({ mouseCoord, baghdadTime }: LoginShowcaseProps) {
 
           {/* حاوية الشعار العائمة بالفيزياء المستمرة */}
           <motion.div
-            animate={{ y: [-8, 8, -8], rotateZ: [-0.4, 0.4, -0.4] }}
-            transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+            animate={shouldReduceMotion ? undefined : { y: [-8, 8, -8], rotateZ: [-0.4, 0.4, -0.4] }}
+            transition={shouldReduceMotion ? undefined : { duration: 6, repeat: Infinity, ease: "easeInOut" }}
             className="relative p-6 sm:p-8 rounded-[40px] bg-white/[0.035] border border-white/[0.12] backdrop-blur-2xl shadow-[0_30px_90px_-20px_rgba(0,0,0,0.85)] ring-1 ring-white/10 group overflow-hidden"
           >
             {/* وميض الزجاج الخارجي المستمر (Apple Outer Specular Sheen) */}
-            <motion.div aria-hidden className="absolute inset-0 pointer-events-none z-10 overflow-hidden rounded-[40px]">
-              <motion.div
-                className="w-[180%] h-full bg-gradient-to-r from-transparent via-white/[0.12] to-transparent -skew-x-25"
-                animate={{ x: ["-130%", "230%"] }}
-                transition={{ duration: 4.5, repeat: Infinity, repeatDelay: 2.8, ease: [0.25, 0.1, 0.25, 1] }}
-              />
-            </motion.div>
+            {!shouldReduceMotion && (
+              <motion.div aria-hidden className="absolute inset-0 pointer-events-none z-10 overflow-hidden rounded-[40px]">
+                <motion.div
+                  className="w-[180%] h-full bg-gradient-to-r from-transparent via-white/[0.12] to-transparent -skew-x-25"
+                  animate={{ x: ["-130%", "230%"] }}
+                  transition={{ duration: 4.5, repeat: Infinity, repeatDelay: 2.8, ease: [0.25, 0.1, 0.25, 1] }}
+                />
+              </motion.div>
+            )}
 
             {/* مجسم الشعار المعلق مع طبقات التدفق والانسياب الضوئي الحي بين الحروف والزوايا */}
             <div className="relative z-20 w-56 sm:w-64 xl:w-72 aspect-[3/4] flex items-center justify-center select-none">
@@ -86,13 +91,14 @@ export function LoginShowcase({ mouseCoord, baghdadTime }: LoginShowcaseProps) {
               />
 
               {/* طبقة الانسياب والتغلغل الضوئي بين حروف الخط العربي وزوايا الشعار */}
-              <div
-                className="absolute inset-0 pointer-events-none overflow-hidden rounded-[30px] sm:rounded-[36px]"
-                style={{
-                  maskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
-                  WebkitMaskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
-                }}
-              >
+              {!shouldReduceMotion && (
+                <div
+                  className="absolute inset-0 pointer-events-none overflow-hidden rounded-[30px] sm:rounded-[36px]"
+                  style={{
+                    maskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
+                    WebkitMaskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
+                  }}
+                >
                 {/* ١. شعاع الانسياب القطري العريض المتناغم مع ميلان قطة القلم العربي (135°) */}
                 <motion.div
                   className="absolute inset-0 pointer-events-none"
@@ -251,6 +257,7 @@ export function LoginShowcase({ mouseCoord, baghdadTime }: LoginShowcaseProps) {
                   transition={{ duration: 3.4, repeat: Infinity, repeatDelay: 0.4, ease: "easeInOut" }}
                 />
               </div>
+            )}
             </div>
           </motion.div>
 

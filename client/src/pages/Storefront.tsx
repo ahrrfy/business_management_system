@@ -66,6 +66,7 @@ import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { normalizeArabicSearch } from "@shared/storefrontSearchNormalize";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
+import { BannerCarousel } from "@/components/store/BannerCarousel";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { ConsentChoice, ConsentProvider } from "@/components/storefront/ConsentChoice";
@@ -1231,58 +1232,6 @@ function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber
     <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
       <BannerFrame banner={banner} slot="INLINE" />
     </div>
-  );
-}
-function BannerCarousel({ banners, slot = "HERO", className = "" }: { banners: BannerItem[]; slot?: "HERO" | "INLINE"; className?: string }) {
-  const [cur, setCur] = useState(0);
-  const [interactionPaused, setInteractionPaused] = useState(false);
-  const [autoPlayPaused, setAutoPlayPaused] = useState(false);
-  useEffect(() => {
-    if (banners.length <= 1 || interactionPaused || autoPlayPaused || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const t = setInterval(() => setCur((i) => (i + 1) % banners.length), 4500);
-    return () => clearInterval(t);
-  }, [autoPlayPaused, banners.length, interactionPaused]);
-  useEffect(() => {
-    setCur((current) => Math.min(current, Math.max(0, banners.length - 1)));
-  }, [banners.length]);
-  if (banners.length === 0) return null;
-  const active = cur % banners.length;
-  const aspect = slot === "HERO" ? "aspect-[2/1]" : "aspect-[3.2/1]";
-  return (
-    <section
-      className={`mb-4 ${className}`}
-      aria-roledescription="carousel"
-      aria-label={slot === "HERO" ? "العروض الرئيسية" : "العروض الترويجية بين المنتجات"}
-      onMouseEnter={() => setInteractionPaused(true)}
-      onMouseLeave={() => setInteractionPaused(false)}
-      onFocusCapture={() => setInteractionPaused(true)}
-      onBlurCapture={() => setInteractionPaused(false)}
-      onPointerDown={() => setInteractionPaused(true)}
-    >
-      <div className={`relative overflow-hidden rounded-2xl shadow-sm ring-1 ring-black/5 ${aspect}`}>
-        {banners.map((b, i) => (
-          <div key={`${b.id}-${b.imageIndex ?? 0}`} aria-hidden={i !== active} inert={i !== active} className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${i === active ? "opacity-100" : "pointer-events-none opacity-0"}`}>
-            <BannerFrame banner={b} slot={slot} active={i === active} />
-          </div>
-        ))}
-        {banners.length > 1 && <span className="absolute right-3 top-3 rounded-full bg-[#183d36]/85 px-2.5 py-1 text-[10px] font-black text-white shadow-sm">{active + 1} / {banners.length}</span>}
-      </div>
-      {banners.length > 1 && (
-        <div className="mt-2.5 flex items-center justify-center gap-1.5" aria-label="اختيار البنر">
-          <button type="button" onClick={() => setAutoPlayPaused((value) => !value)} aria-label={autoPlayPaused ? "تشغيل تبديل البنرات تلقائياً" : "إيقاف تبديل البنرات تلقائياً"} aria-pressed={autoPlayPaused} className="flex size-11 items-center justify-center rounded-full border border-[#d7d2ca] bg-white text-[#1e4a63]">{autoPlayPaused ? <Play aria-hidden className="size-4" /> : <Pause aria-hidden className="size-4" />}</button>
-          {banners.map((b, i) => (
-            <button
-              type="button"
-              key={`${b.id}-${b.imageIndex ?? 0}`}
-              onClick={() => { setCur(i); setAutoPlayPaused(true); }}
-              aria-current={i === active ? "true" : undefined}
-              aria-label={`الانتقال للبنر ${i + 1}`}
-              className={`flex size-6 items-center justify-center rounded-full transition-colors motion-reduce:transition-none ${i === active ? "bg-[var(--store-accent)]" : "bg-[#f3b85a]/60 hover:bg-[var(--store-accent)]"}`}
-            />
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -2605,7 +2554,7 @@ function StorefrontContent() {
             <StorefrontHero
               heroBanners={heroBanners}
               featuredHero={featuredHero}
-              bannerCarouselComponent={heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 h-full" /> : undefined}
+              bannerCarouselComponent={heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 size-full" /> : undefined}
               onScrollToProducts={() => scrollToResults()}
               onExplorePicks={() => {
                 const el = document.getElementById("store-picks");
