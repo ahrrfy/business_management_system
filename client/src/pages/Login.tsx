@@ -11,7 +11,8 @@ import { resetSessionForLogin } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
 import { useQueryClient } from "@tanstack/react-query";
 import { INTERNAL_ORIGIN, isPublicHost } from "@/lib/siteHosts";
-import { useEffect, useState, useMemo, Suspense, lazy } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
+import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 
 const TwoFactorForm = lazy(() => import("@/components/auth/TwoFactorForm"));
 const LoginShowcase = lazy(() => import("@/components/auth/LoginShowcase"));
