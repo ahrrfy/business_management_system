@@ -853,18 +853,26 @@ function InTransitTab() {
               )}
               {/*
                 ٢٣/٨ — الجسر المفقود: الطرد سُلِّم لكن نقده لم يُورَّد بعد ⇒ زرٌّ واحد
-                يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند.
+                يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند،
+                مع خيار الانتقال المباشر لتبويب التسوية.
               */}
               {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
-                <Button
-                  size="sm"
-                  variant="default"
-                  className="font-bold gap-1"
-                  title="قبض النقد من المندوب وإصدار سند التوريد فوراً"
-                  onClick={() => setCollectTarget(r)}
-                >
-                  <Wallet aria-hidden className="size-3" /> سجّل التحصيل
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="font-bold gap-1"
+                    title="قبض النقد من المندوب وإصدار سند التوريد فوراً"
+                    onClick={() => setCollectTarget(r)}
+                  >
+                    <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+                  </Button>
+                  <Button size="sm" variant="ghost" asChild title="الانتقال إلى تسوية الجهة بالكامل">
+                    <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
+                      تسوية الجهة
+                    </Link>
+                  </Button>
+                </>
               )}
               {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
               {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
