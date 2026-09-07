@@ -21,7 +21,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
-import { ROLES } from "@shared/permissions";
+import { ROLES, hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import {
   BellRing,
   Plus,
@@ -59,10 +59,25 @@ interface AnnouncementRow {
 
 export default function Announcements() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+
+  const isOwnerOrAdmin = me.data?.role === "admin" || me.data?.isOwner === true;
+  const canManage =
+    isOwnerOrAdmin ||
+    me.data?.role === "manager" ||
+    (!!me.data?.role &&
+      hasModuleAccess(
+        me.data.role,
+        me.data.permissionsOverride as PermissionMap | null | undefined,
+        "announcements",
+        "FULL",
+      ));
+  const userBranchId = me.data?.branchId != null ? String(me.data.branchId) : "";
+
   const [includeInactive, setIncludeInactive] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [priorityFilter, setPriorityFilter] = useState("ALL");
-  const [audienceFilter, setAudienceFilter] = useState("ALL");
+  const [audienceFilter, setAudienceFilter] = useState("ALL_AUDIENCES");
 
   // نوافذ الحوار
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -82,9 +97,9 @@ export default function Announcements() {
   const branchesQuery = trpc.branches.list.useQuery();
   const branches = branchesQuery.data || [];
 
-  // استعلام الإعلانات الإداري
+  // استعلام الإعلانات الإداري (حجم كافٍ لتجنب الاقتصاص المبكر)
   const announcementsQuery = trpc.announcements.list.useQuery(
-    { includeInactive },
+    { includeInactive, limit: 200 },
     { refetchOnWindowFocus: false },
   );
 
@@ -124,15 +139,29 @@ export default function Announcements() {
     setTitle("");
     setBody("");
     setPriority("IMPORTANT");
-    setAudienceType("ALL");
-    setAudienceBranchId("");
+    if (isOwnerOrAdmin) {
+      setAudienceType("ALL");
+      setAudienceBranchId("");
+    } else {
+      setAudienceType("BRANCH");
+      setAudienceBranchId(userBranchId);
+    }
     setAudienceRole("");
     setRequiresAck(false);
     setExpiresAtDate("");
   };
 
+  const openCreateDialog = () => {
+    resetForm();
+    setCreateDialogOpen(true);
+  };
+
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canManage) {
+      notify.err("ليست لديك صلاحية نشر إعلانات");
+      return;
+    }
     if (!title.trim()) {
       notify.err("يرجى إدخال عنوان الإعلان");
       return;
@@ -141,18 +170,28 @@ export default function Announcements() {
       notify.err("يرجى إدخال نص وتفاصيل الإعلان");
       return;
     }
-    if (audienceType === "BRANCH" && !audienceBranchId) {
-      notify.err("يرجى تحديد الفرع المستهدف للإعلان");
-      return;
-    }
-    if (audienceType === "ROLE" && !audienceRole) {
-      notify.err("يرجى تحديد الدور الوظيفي المستهدف");
-      return;
+
+    // حوكمة الفرع للمدير غير الأدمن
+    if (!isOwnerOrAdmin) {
+      if (audienceType !== "BRANCH" || audienceBranchId !== userBranchId) {
+        notify.err("مدير الفرع يبث إلى فرعه وحده");
+        return;
+      }
+    } else {
+      if (audienceType === "BRANCH" && !audienceBranchId) {
+        notify.err("يرجى تحديد الفرع المستهدف للإعلان");
+        return;
+      }
+      if (audienceType === "ROLE" && !audienceRole) {
+        notify.err("يرجى تحديد الدور الوظيفي المستهدف");
+        return;
+      }
     }
 
     let parsedExpires: string | undefined = undefined;
     if (expiresAtDate) {
-      const d = new Date(expiresAtDate + "T23:59:59.999Z");
+      // توقيت بغداد القياسي UTC+03:00 (العراق لا يطبّق التوقيت الصيفي)
+      const d = new Date(`${expiresAtDate}T23:59:59.999+03:00`);
       if (d.getTime() <= Date.now()) {
         notify.err("تاريخ الانتهاء يجب أن يكون في المستقبل");
         return;
@@ -180,7 +219,7 @@ export default function Announcements() {
       if (priorityFilter !== "ALL" && item.priority !== priorityFilter) {
         return false;
       }
-      if (audienceFilter !== "ALL" && item.audienceType !== audienceFilter) {
+      if (audienceFilter !== "ALL_AUDIENCES" && item.audienceType !== audienceFilter) {
         return false;
       }
       if (searchQuery.trim()) {
@@ -193,11 +232,14 @@ export default function Announcements() {
     });
   }, [rawRows, priorityFilter, audienceFilter, searchQuery]);
 
-  // المؤشرات العلوية
-  const activeCount = rawRows.filter((r) => r.isActive).length;
+  // استبعاد الإعلانات منتهية الصلاحية من المؤشرات النشطة الحقيقية
+  const isEffectiveActive = (r: AnnouncementRow) =>
+    r.isActive && (!r.expiresAt || new Date(r.expiresAt).getTime() > Date.now());
+
+  const activeCount = rawRows.filter(isEffectiveActive).length;
   const totalReads = rawRows.reduce((acc, r) => acc + (r.readCount || 0), 0);
   const totalAcks = rawRows.reduce((acc, r) => acc + (r.ackCount || 0), 0);
-  const criticalCount = rawRows.filter((r) => r.isActive && r.priority === "CRITICAL").length;
+  const criticalCount = rawRows.filter((r) => isEffectiveActive(r) && r.priority === "CRITICAL").length;
 
   const branchMap = useMemo(() => {
     return new Map<number, string>(branches.map((b) => [b.id, b.name]));
@@ -295,13 +337,17 @@ export default function Announcements() {
       header: "تاريخ النشر والانتهاء",
       cell: ({ row }) => {
         const item = row.original;
+        const expired = item.expiresAt && new Date(item.expiresAt).getTime() <= Date.now();
         return (
           <div className="text-xs space-y-0.5 text-muted-foreground">
             <div>نُشر: {fmtDate(item.createdAt)}</div>
             {item.expiresAt ? (
               <div className="flex items-center gap-1 text-[11px]">
                 <Clock className="size-3 text-muted-foreground" aria-hidden />
-                ينتهي: {fmtDate(item.expiresAt)}
+                <span className={expired ? "text-destructive font-semibold" : ""}>
+                  ينتهي: {fmtDate(item.expiresAt)}
+                </span>
+                {expired && <Badge variant="outline" className="text-[9px] px-1 py-0 text-destructive border-destructive/30">منتهي</Badge>}
               </div>
             ) : (
               <div className="text-[11px]">صلاحية دائمة</div>
@@ -340,7 +386,7 @@ export default function Announcements() {
           <div className="flex items-center gap-2">
             <Switch
               checked={item.isActive}
-              disabled={toggleActiveMutation.isPending}
+              disabled={!canManage || toggleActiveMutation.isPending}
               onCheckedChange={(checked) => {
                 toggleActiveMutation.mutate({ id: item.id, isActive: checked });
               }}
@@ -384,14 +430,16 @@ export default function Announcements() {
           { label: "الإعلانات والتوجيهات" },
         ]}
         actions={
-          <Button
-            type="button"
-            onClick={() => setCreateDialogOpen(true)}
-            className="font-bold flex items-center gap-2"
-          >
-            <Plus className="size-4" aria-hidden />
-            <span>نشر إعلان جديد</span>
-          </Button>
+          canManage ? (
+            <Button
+              type="button"
+              onClick={openCreateDialog}
+              className="font-bold flex items-center gap-2"
+            >
+              <Plus className="size-4" aria-hidden />
+              <span>نشر إعلان جديد</span>
+            </Button>
+          ) : null
         }
       />
 
@@ -409,7 +457,7 @@ export default function Announcements() {
               {activeCount.toLocaleString("ar-IQ-u-nu-latn")}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">
-              من إجمالي {rawRows.length.toLocaleString("ar-IQ-u-nu-latn")} إعلاناً مسجلاً
+              إعلانات سارية الصلاحية
             </p>
           </CardContent>
         </Card>
@@ -501,8 +549,8 @@ export default function Announcements() {
                   onValueChange={setAudienceFilter}
                   placeholder="كل الجماهير"
                 >
-                  <option value="ALL">كل المستهدفين</option>
-                  <option value="ALL_USERS">كافة الفروع والموظفين</option>
+                  <option value="ALL_AUDIENCES">كل المستهدفين</option>
+                  <option value="ALL">كافة الفروع والموظفين</option>
                   <option value="BRANCH">فروع محددة</option>
                   <option value="ROLE">أدوار وظيفية</option>
                 </AppSelect>
@@ -519,7 +567,7 @@ export default function Announcements() {
                 </Label>
               </div>
 
-              {(searchQuery || priorityFilter !== "ALL" || audienceFilter !== "ALL") && (
+              {(searchQuery || priorityFilter !== "ALL" || audienceFilter !== "ALL_AUDIENCES") && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -527,7 +575,7 @@ export default function Announcements() {
                   onClick={() => {
                     setSearchQuery("");
                     setPriorityFilter("ALL");
-                    setAudienceFilter("ALL");
+                    setAudienceFilter("ALL_AUDIENCES");
                   }}
                   className="h-9 px-2 text-xs"
                 >
@@ -616,14 +664,16 @@ export default function Announcements() {
                 <AppSelect
                   value={audienceType}
                   onValueChange={(val) => {
+                    if (!isOwnerOrAdmin && val !== "BRANCH") return;
                     setAudienceType(val as AnnouncementAudienceType);
-                    setAudienceBranchId("");
+                    setAudienceBranchId(isOwnerOrAdmin ? "" : userBranchId);
                     setAudienceRole("");
                   }}
+                  disabled={!isOwnerOrAdmin}
                 >
-                  <option value="ALL">كافة الفروع وكامل الكادر</option>
+                  {isOwnerOrAdmin && <option value="ALL">كافة الفروع وكامل الكادر</option>}
                   <option value="BRANCH">فرع محدد بعينه</option>
-                  <option value="ROLE">دور وظيفي محدد</option>
+                  {isOwnerOrAdmin && <option value="ROLE">دور وظيفي محدد</option>}
                 </AppSelect>
               </div>
             </div>
@@ -635,18 +685,21 @@ export default function Announcements() {
                   value={audienceBranchId}
                   onValueChange={setAudienceBranchId}
                   placeholder="اختر الفرع…"
+                  disabled={!isOwnerOrAdmin}
                 >
-                  <option value="">اختر الفرع…</option>
-                  {branches.map((b) => (
-                    <option key={b.id} value={String(b.id)}>
-                      {b.name}
-                    </option>
-                  ))}
+                  {isOwnerOrAdmin && <option value="">اختر الفرع…</option>}
+                  {branches
+                    .filter((b) => isOwnerOrAdmin || String(b.id) === userBranchId)
+                    .map((b) => (
+                      <option key={b.id} value={String(b.id)}>
+                        {b.name}
+                      </option>
+                    ))}
                 </AppSelect>
               </div>
             )}
 
-            {audienceType === "ROLE" && (
+            {audienceType === "ROLE" && isOwnerOrAdmin && (
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold">اختر الدور الوظيفي</Label>
                 <AppSelect
@@ -732,6 +785,18 @@ export default function Announcements() {
             {readersQuery.isLoading ? (
               <div className="text-center py-6 text-xs text-muted-foreground">
                 جارٍ تحميل سجل القراء…
+              </div>
+            ) : readersQuery.isError ? (
+              <div className="text-center py-6 text-xs text-destructive space-y-2">
+                <div>تعذّر تحميل سجل القراء ({readersQuery.error?.message || "حدث خطأ أثناء جلب البيانات"})</div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void readersQuery.refetch()}
+                >
+                  إعادة المحاولة
+                </Button>
               </div>
             ) : !readersQuery.data?.readers || readersQuery.data.readers.length === 0 ? (
               <div className="text-center py-8 text-xs text-muted-foreground">

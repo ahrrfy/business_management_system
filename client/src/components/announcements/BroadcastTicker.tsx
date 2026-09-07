@@ -84,6 +84,10 @@ export function BroadcastTicker() {
     });
   };
 
+  if (announcementsQuery.isLoading || announcementsQuery.isError) {
+    return null;
+  }
+
   if (!announcements || announcements.length === 0) {
     if (isCollapsed) {
       return (
