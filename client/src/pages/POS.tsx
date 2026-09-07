@@ -731,7 +731,9 @@ export default function POS() {
         try {
           row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
         } catch (fetchErr) {
-          row = await offlineFindByBarcode(code, effectiveTier, branchId);
+          if (!activeTab.customerId) {
+            row = await offlineFindByBarcode(code, effectiveTier, branchId);
+          }
           if (!row) throw fetchErr;
         }
       }
@@ -1563,7 +1565,7 @@ export default function POS() {
 
       <POSFundingBanner
         C={C}
-        requests={posFundingRequests}
+        posFundingRequests={posFundingRequests}
         isPending={acceptFundingM.isPending}
         onAccept={(requestReceiptId) =>
           acceptFundingM.mutate({

@@ -13,13 +13,13 @@ export interface FundingRequestItem {
 
 export interface POSFundingBannerProps {
   C: C;
-  requests: FundingRequestItem[];
+  posFundingRequests: FundingRequestItem[];
   isPending: boolean;
   onAccept: (requestReceiptId: number) => void;
 }
 
-export function POSFundingBanner({ C, requests, isPending, onAccept }: POSFundingBannerProps) {
-  if (!requests.length) return null;
+export function POSFundingBanner({ C, posFundingRequests, isPending, onAccept }: POSFundingBannerProps) {
+  if (!posFundingRequests.length) return null;
 
   return (
     <div
@@ -44,7 +44,7 @@ export function POSFundingBanner({ C, requests, isPending, onAccept }: POSFundin
         </div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {requests.map((request) => (
+        {posFundingRequests.map((request) => (
           <div key={request.requestReceiptId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ fontWeight: 800, fontSize: 13 }}>{fmt(Number(request.amount))} د.ع</span>
             <button
