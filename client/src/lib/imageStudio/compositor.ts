@@ -11,6 +11,7 @@ import {
   applyUnsharpMask,
   enhanceVibranceAndContrast,
   findProductBoundingBox,
+  findOpaqueProductBoundingBox,
   renderMultiTierStudioShadow,
   type BoundingBox,
   type StudioPreset,
@@ -92,7 +93,7 @@ export function compositeOnTemplate(
   let sh = srcH;
 
   if (isCutout) {
-    // استخراج ألفا وتحديد صندوق المحيط الفعلي
+    // استخراج ألفا وتحديد صندوق المحيط الفعلي للقصاصة
     const alpha = new Uint8ClampedArray(srcW * srcH);
     for (let i = 0; i < srcW * srcH; i++) {
       alpha[i] = data[i * 4 + 3];
@@ -104,19 +105,28 @@ export function compositeOnTemplate(
       sw = bbox.width;
       sh = bbox.height;
     }
-
-    // تطبيق معالجة الألوان والإنارة على بكسلات القصاصة
-    if (enhanceColors) {
-      autoWhiteBalance(imgData);
-      const vibrance = preset === "VIBRANT_COMMERCIAL" ? 0.32 : 0.22;
-      const contrast = preset === "VIBRANT_COMMERCIAL" ? 0.18 : 0.12;
-      enhanceVibranceAndContrast(imgData, { vibrance, contrast, shadowLift: 0.08 });
+  } else {
+    // صورة معتمة: كشف واقتصاص ذكي للهوامش البيضاء/المصمتة المسبقة (Smart Auto-Trim)
+    const bbox = options.boundingBox ?? findOpaqueProductBoundingBox(imgData);
+    if (bbox.hasContent && bbox.width > 20 && bbox.height > 20) {
+      sx = bbox.minX;
+      sy = bbox.minY;
+      sw = bbox.width;
+      sh = bbox.height;
     }
-    if (sharpen) {
-      applyUnsharpMask(imgData, srcW, srcH, 0.3);
-    }
-    tempCtx.putImageData(imgData, 0, 0);
   }
+
+  // تطبيق معالجة الألوان والإنارة والحِدة دون تشويه الهوية
+  if (enhanceColors) {
+    autoWhiteBalance(imgData);
+    const vibrance = preset === "VIBRANT_COMMERCIAL" ? 0.32 : 0.22;
+    const contrast = preset === "VIBRANT_COMMERCIAL" ? 0.18 : 0.12;
+    enhanceVibranceAndContrast(imgData, { vibrance, contrast, shadowLift: 0.08 });
+  }
+  if (sharpen) {
+    applyUnsharpMask(imgData, srcW, srcH, isCutout ? 0.3 : 0.22);
+  }
+  tempCtx.putImageData(imgData, 0, 0);
 
   // ٢. حساب الأبعاد والتوسيط في الكادر المربع (83% نسبة الأمان)
   const targetMaxDim = size * STUDIO_TEMPLATE.productMaxRatio;

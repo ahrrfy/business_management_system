@@ -7,6 +7,7 @@ import { ProductImageGallery } from "@/components/product-studio/ProductImageGal
 import { StudioStandaloneImageManagerCard } from "@/components/product-studio/StudioStandaloneImageManagerCard";
 import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioImageDiscoveryPanel";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
+import { StudioPreviewPair } from "@/components/product-studio/StudioPreviewPair";
 import { useStudioSelectedTask } from "@/components/product-studio/useStudioSelectedTask";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -87,67 +88,6 @@ const BULK_ASSIGN_MAX = 100;
 
 /** الحالات التي يجوز إلغاؤها — تُطابق حارس الخادم؛ المعتمدة لها «استرجاع الأصل». */
 const CANCELLABLE_STATUSES: StudioTask["status"][] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
-
-
-
-function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidatePreview"] }) {
-  const [mobileImage, setMobileImage] = useState<StudioReviewImage>("candidate");
-  const [zoom, setZoom] = useState(1);
-  const urls = useMemo(() => {
-    function make(base64: string, mime: string): string {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return URL.createObjectURL(new Blob([bytes], { type: mime }));
-    }
-    return {
-      original: make(data.originalBase64, data.originalMime),
-      processed: make(data.processedBase64, data.processedMime),
-    };
-  }, [data]);
-  useEffect(() => () => {
-    URL.revokeObjectURL(urls.original);
-    URL.revokeObjectURL(urls.processed);
-  }, [urls]);
-  return (
-    <div className="space-y-3">
-      <div className="sm:hidden">
-        <div className="grid grid-cols-2 gap-2" role="group" aria-label="اختيار صورة المراجعة">
-          <Button type="button" variant={mobileImage === "original" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("original")}>
-            الصورة الأصلية
-          </Button>
-          <Button type="button" variant={mobileImage === "candidate" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("candidate")}>
-            المرشّح
-          </Button>
-        </div>
-        <figure className="mt-3 space-y-2 overflow-hidden rounded-md border p-2">
-          <div className="flex min-h-11 items-center justify-between gap-2">
-            <figcaption className="text-xs text-muted-foreground">{mobileImage === "original" ? "الأصل المحفوظ" : "المرشّح قبل النشر"}</figcaption>
-            <div className="flex gap-1">
-              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تصغير الصورة" disabled={zoom <= 0.5} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "out"))}>
-                <Minus aria-hidden className="size-4" />
-              </Button>
-              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تكبير الصورة" disabled={zoom >= 3} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "in"))}>
-                <Plus aria-hidden className="size-4" />
-              </Button>
-            </div>
-          </div>
-          <img src={mobileImage === "original" ? urls.original : urls.processed} alt={mobileImage === "original" ? "الصورة الأصلية" : "الصورة المرشحة"} className="mx-auto aspect-square max-h-80 w-full object-contain transition-transform" style={{ transform: `scale(${zoom})` }} />
-        </figure>
-      </div>
-      <div className="hidden gap-3 sm:grid sm:grid-cols-2">
-        <figure className="space-y-1 rounded-md border p-2">
-          <img src={urls.original} alt="الصورة الأصلية" className="mx-auto aspect-square max-h-72 w-full object-contain" />
-          <figcaption className="text-center text-xs text-muted-foreground">الأصل المحفوظ</figcaption>
-        </figure>
-        <figure className="space-y-1 rounded-md border p-2">
-          <img src={urls.processed} alt="الصورة المرشحة" className="mx-auto aspect-square max-h-72 w-full object-contain" />
-          <figcaption className="text-center text-xs text-muted-foreground">المرشّح قبل النشر</figcaption>
-        </figure>
-      </div>
-    </div>
-  );
-}
 
 export default function ProductImageStudio() {
   const [scope, setScope] = useState<Scope>("MINE");
@@ -2456,7 +2396,7 @@ export default function ProductImageStudio() {
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {preview.isLoading && <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />}
-                        {preview.data && <PreviewPair data={preview.data} />}
+                        {preview.data && <StudioPreviewPair data={preview.data} />}
                         {/* اعتمادٌ بلا رؤية = نشرُ صورةٍ لم يرها المراجع. يُمنع صراحةً ويُفسَّر. */}
                         {preview.isError && (
                           <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">

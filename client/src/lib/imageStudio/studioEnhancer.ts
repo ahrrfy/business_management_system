@@ -73,6 +73,176 @@ export function findProductBoundingBox(
 }
 
 /**
+ * يكتشف الصندوق المحيط بالمنتج في الصور المعتمة ذات الخلفيات الموحدة أو البيضاء (Smart Auto-Trim).
+ * يزيل الفراغات والهوامش المسبقة الزائدة حول غلاف الكتاب أو عبوة المنتج قبل التوسيط بالقالب،
+ * مع فحص أمان صارم: إن كانت الخلفية معقدة أو متغيرة، يعود للصندوق الكامل فوراً بلا أي اقتطاع.
+ */
+export function findOpaqueProductBoundingBox(
+  imageData: ImageData,
+  options: {
+    colorTolerance?: number;
+    safetyPaddingRatio?: number;
+  } = {},
+): BoundingBox {
+  const { width, height, data } = imageData;
+  if (width <= 20 || height <= 20) {
+    return { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height, hasContent: true };
+  }
+
+  const tolerance = options.colorTolerance ?? 26;
+  const paddingRatio = options.safetyPaddingRatio ?? 0.015;
+
+  // ١. عيّنة من زوايا الصورة الأربع لفحص لون وتجانس الخلفية
+  const sampleCorner = (cx: number, cy: number): [number, number, number] => {
+    const idx = (cy * width + cx) * 4;
+    return [data[idx], data[idx + 1], data[idx + 2]];
+  };
+
+  const corners = [
+    sampleCorner(2, 2),
+    sampleCorner(width - 3, 2),
+    sampleCorner(2, height - 3),
+    sampleCorner(width - 3, height - 3),
+  ];
+
+  // حساب متوسط لون الزوايا وفحص تباينها
+  let avgR = 0, avgG = 0, avgB = 0;
+  for (const [r, g, b] of corners) {
+    avgR += r;
+    avgG += g;
+    avgB += b;
+  }
+  avgR = Math.round(avgR / 4);
+  avgG = Math.round(avgG / 4);
+  avgB = Math.round(avgB / 4);
+
+  // إذا لم تكن الزوايا متجانسة (صورة معقدة أو طبيعية) أو كانت مظلمة جداً وليست خلفية استوديو
+  const cornerVariance = corners.reduce((max, [r, g, b]) => {
+    const diff = Math.max(Math.abs(r - avgR), Math.abs(g - avgG), Math.abs(b - avgB));
+    return Math.max(max, diff);
+  }, 0);
+
+  const avgBrightness = (avgR * 299 + avgG * 587 + avgB * 114) / 1000;
+
+  // شرط الأمان: نقتص فقط إذا كانت الزوايا متجانسة، وخلفية فاتحة/بيضاء نمطية للاستوديو (brightness > 185)
+  if (cornerVariance > 32 || avgBrightness < 185) {
+    return { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height, hasContent: true };
+  }
+
+  const isBackground = (r: number, g: number, b: number): boolean => {
+    if (avgBrightness >= 240 && r >= 240 && g >= 240 && b >= 240) {
+      return true;
+    }
+    return (
+      Math.abs(r - avgR) <= tolerance &&
+      Math.abs(g - avgG) <= tolerance &&
+      Math.abs(b - avgB) <= tolerance
+    );
+  };
+
+  // ٢. مسح الصفوف من الأعلى للأسفل لكشف بداية المنتج
+  const rowThreshold = Math.max(3, Math.round(width * 0.015));
+  let top = 0;
+  for (let y = 0; y < height; y++) {
+    let nonBgCount = 0;
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x += 2) {
+      const idx = rowOffset + x * 4;
+      if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+        nonBgCount++;
+        if (nonBgCount >= rowThreshold) break;
+      }
+    }
+    if (nonBgCount >= rowThreshold) {
+      top = y;
+      break;
+    }
+  }
+
+  // مسح الصفوف من الأسفل للأعلى
+  let bottom = height - 1;
+  for (let y = height - 1; y >= 0; y--) {
+    let nonBgCount = 0;
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x += 2) {
+      const idx = rowOffset + x * 4;
+      if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+        nonBgCount++;
+        if (nonBgCount >= rowThreshold) break;
+      }
+    }
+    if (nonBgCount >= rowThreshold) {
+      bottom = y;
+      break;
+    }
+  }
+
+  // ٣. مسح الأعمدة من اليمين واليسار
+  const colThreshold = Math.max(3, Math.round(height * 0.015));
+  let left = 0;
+  for (let x = 0; x < width; x++) {
+    let nonBgCount = 0;
+    for (let y = 0; y < height; y += 2) {
+      const idx = (y * width + x) * 4;
+      if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+        nonBgCount++;
+        if (nonBgCount >= colThreshold) break;
+      }
+    }
+    if (nonBgCount >= colThreshold) {
+      left = x;
+      break;
+    }
+  }
+
+  let right = width - 1;
+  for (let x = width - 1; x >= 0; x--) {
+    let nonBgCount = 0;
+    for (let y = 0; y < height; y += 2) {
+      const idx = (y * width + x) * 4;
+      if (!isBackground(data[idx], data[idx + 1], data[idx + 2])) {
+        nonBgCount++;
+        if (nonBgCount >= colThreshold) break;
+      }
+    }
+    if (nonBgCount >= colThreshold) {
+      right = x;
+      break;
+    }
+  }
+
+  // ٤. التحقق من سلامة الأبعاد الناتجة
+  if (bottom <= top || right <= left) {
+    return { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height, hasContent: true };
+  }
+
+  const padX = Math.round(width * paddingRatio);
+  const padY = Math.round(height * paddingRatio);
+
+  const minX = Math.max(0, left - padX);
+  const minY = Math.max(0, top - padY);
+  const maxX = Math.min(width - 1, right + padX);
+  const maxY = Math.min(height - 1, bottom + padY);
+
+  const cropW = maxX - minX + 1;
+  const cropH = maxY - minY + 1;
+
+  if (cropW < width * 0.12 || cropH < height * 0.12) {
+    return { minX: 0, minY: 0, maxX: width - 1, maxY: height - 1, width, height, hasContent: true };
+  }
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: cropW,
+    height: cropH,
+    hasContent: true,
+  };
+}
+
+/**
  * تصحيح توازن البياض التلقائي (Auto White Balance - Gray World with Damped Gains)
  * يزيل الاصفرار الشائع في تصوير الهواتف والمحلات ويعيد للأبيض والرمادي نقاءهما.
  */

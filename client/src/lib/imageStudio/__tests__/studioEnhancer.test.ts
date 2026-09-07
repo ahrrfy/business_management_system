@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findProductBoundingBox,
+  findOpaqueProductBoundingBox,
   autoWhiteBalance,
   enhanceVibranceAndContrast,
   applyUnsharpMask,
@@ -93,5 +94,66 @@ describe("studioEnhancer — محرك تحسين صور الاستوديو", () 
     applyUnsharpMask(mockImageData, W, H, 0.4);
 
     expect(data[centerIdx]).toBeGreaterThanOrEqual(200);
+  });
+
+  describe("findOpaqueProductBoundingBox — الاقتصاص التلقائي الذكي للصور المعتمة", () => {
+    it("يكتشف حدود المنتج ويقص الهوامش البيضاء الزائدة حوله بدقة", () => {
+      const W = 100;
+      const H = 100;
+      const data = new Uint8ClampedArray(W * H * 4);
+      // املأ الصورة كاملة بخلفية بيضاء نقية (255, 255, 255)
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = 255;
+        data[i + 1] = 255;
+        data[i + 2] = 255;
+        data[i + 3] = 255;
+      }
+      // ضع غلاف كتاب أو منتج بلون داكن في النطاق [25..75] عرضاً و [20..80] ارتفاعاً
+      for (let y = 20; y <= 80; y++) {
+        for (let x = 25; x <= 75; x++) {
+          const idx = (y * W + x) * 4;
+          data[idx] = 40;     // R
+          data[idx + 1] = 60; // G
+          data[idx + 2] = 90; // B
+        }
+      }
+
+      const mockImageData = { data, width: W, height: H } as unknown as ImageData;
+      const bbox = findOpaqueProductBoundingBox(mockImageData);
+
+      expect(bbox.hasContent).toBe(true);
+      // يجب أن يكون الصندوق قريباً جداً من [25..75] و [20..80] مع هامش الأمان
+      expect(bbox.minX).toBeLessThanOrEqual(25);
+      expect(bbox.maxX).toBeGreaterThanOrEqual(75);
+      expect(bbox.minY).toBeLessThanOrEqual(20);
+      expect(bbox.maxY).toBeGreaterThanOrEqual(80);
+      // ويجب أن يكون قد قص الهوامش البيضاء الخارجية (لا يرجع الصورة كاملة 0..99)
+      expect(bbox.minX).toBeGreaterThan(0);
+      expect(bbox.minY).toBeGreaterThan(0);
+      expect(bbox.maxX).toBeLessThan(99);
+      expect(bbox.maxY).toBeLessThan(99);
+    });
+
+    it("يسقط بأمان للصندوق الكامل إذا كانت الخلفية معقدة أو غير متجانسة", () => {
+      const W = 60;
+      const H = 60;
+      const data = new Uint8ClampedArray(W * H * 4);
+      // زوايا بألوان مختلفة تماماً (صورة غير معزولة)
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = (i % 255);
+        data[i + 1] = ((i * 2) % 255);
+        data[i + 2] = ((i * 3) % 255);
+        data[i + 3] = 255;
+      }
+
+      const mockImageData = { data, width: W, height: H } as unknown as ImageData;
+      const bbox = findOpaqueProductBoundingBox(mockImageData);
+
+      expect(bbox.hasContent).toBe(true);
+      expect(bbox.minX).toBe(0);
+      expect(bbox.minY).toBe(0);
+      expect(bbox.width).toBe(W);
+      expect(bbox.height).toBe(H);
+    });
   });
 });
