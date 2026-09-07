@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
+  Ban,
   Check,
   CheckCircle2,
   FileCheck2,
@@ -42,6 +43,9 @@ import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestBu
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
+import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
+import { StaffConfirmDialog } from "@/components/delivery/StaffConfirmDialog";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -510,6 +514,8 @@ function InTransitTab() {
   const [declareTarget, setDeclareTarget] = useState<InTransitRow | null>(null);
   /** الطردُ المفتوحُ حوارُ إرجاعه — يحمل درجَ الردّ الذي كانت الشاشةُ عاجزةً عن تحديده. */
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
+  const [collectTarget, setCollectTarget] = useState<InTransitRow | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{ id: number; number: string } | null>(null);
 
   const canFulfil = !!me.data
     && moduleAccessAllowed(
@@ -847,13 +853,29 @@ function InTransitTab() {
               )}
               {/*
                 ٢٣/٨ — الجسر المفقود: الطرد سُلِّم لكن نقده لم يُورَّد بعد ⇒ زرٌّ واحد
-                ينقل الكاشير إلى «تسوية المناديب» بالجهة مختارةً سلفاً كي يُدخل الكشف.
+                يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند.
               */}
               {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
-                <Button size="sm" variant="default" asChild title="اذهب لتسجيل النقد المقبوض من هذه الجهة">
-                  <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
-                    <Wallet aria-hidden className="size-3" /> سجّل التحصيل
-                  </Link>
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="font-bold gap-1"
+                  title="قبض النقد من المندوب وإصدار سند التوريد فوراً"
+                  onClick={() => setCollectTarget(r)}
+                >
+                  <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+                </Button>
+              )}
+              {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
+              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  title="إلغاء إسناد الطرد للمندوب وتحرير العهدة وإعادته للفرز"
+                  onClick={() => setCancelTarget({ id: rowId, number: r.consignmentNumber ?? String(rowId) })}
+                >
+                  <Ban aria-hidden className="size-3" /> إلغاء الإسناد
                 </Button>
               )}
               {canFulfil && r.viewKey === "FAILED" && r.returnDeclaredAt == null && (
@@ -1115,168 +1137,53 @@ function InTransitTab() {
           }}
         />
       )}
+
+      {/* ─── حوار قبض النقد وتوريد العهدة (مفرد أو كامل الذمة) ─── */}
+      <CollectConsignmentDialog
+        consignment={
+          collectTarget
+            ? {
+                id: Number(collectTarget.id),
+                consignmentNumber: collectTarget.consignmentNumber,
+                partyId: Number(collectTarget.partyId),
+                partyName: collectTarget.partyName,
+                orderNumber: collectTarget.orderNumber,
+                invoiceNumber: collectTarget.invoiceNumber,
+                customerName: collectTarget.recipientName ?? collectTarget.customerName,
+                recipientPhone: collectTarget.recipientPhone,
+                codDue: collectTarget.codDue,
+                codAmount: collectTarget.codDue,
+                collectedAmount: collectTarget.collectedAmount,
+                parcelStatus: collectTarget.parcelStatus,
+              }
+            : null
+        }
+        open={collectTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCollectTarget(null);
+        }}
+        onCompleted={() => {
+          setCollectTarget(null);
+          invalidateAll();
+        }}
+      />
+
+      {/* ─── حوار إلغاء إسناد الإرسالية وتحرير العهدة ─── */}
+      <CancelDeliveryAssignmentDialog
+        consignment={cancelTarget}
+        open={cancelTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null);
+        }}
+        onCompleted={() => {
+          setCancelTarget(null);
+          invalidateAll();
+        }}
+      />
     </div>
   );
 }
 
-/**
- * حوار «تم التسليم» بيد الكاشير — Slice DFP1 (٣٠/٨/٢٦، redesign):
- *
- * قبلَ اليوم: يعرض «المطلوب تحصيله» ثمّ يفتح `MoneyInput` حرّاً مُهيَّأً بالقيمة — الكاشير يستطيع
- * كتابة قيمةٍ مختلفة دون تنبيه، والحوار يُرسلها كأنّها التحصيل الحقيقيّ. بلاغ المالك (٣٠/٨):
- * «لا شي زيادة ونقصان ولا دينار غير محسوب أو ليس له مسار» — الحرّية بلا تصنيف كذبٌ على المالك.
- *
- * التصميم الجديد بمسارَين مغلَقَين، مطابقٌ لسير عمل الكاشير الفعليّ:
- *   ١) «قَبَض المطلوب كاملاً» — الحالة السائدة (٩٠٪+). زرٌّ رئيسٌ بلا حقول: يُثبِت المطلوب.
- *   ٢) «مبلغ مختلف» — يفتح: (أ) المبلغ الفعليّ، (ب) سببٌ إلزاميّ من enum ثابت،
- *      (ج) ملخّصُ الفرق «متبقٍّ Y د.ع على المندوب» ليعرف الكاشير أنّ العجز صار ذمّةً.
- *
- * لماذا لا نصّ حرّ للسبب: النصّ الحرّ يُنتج «مشاكل» غير قابلة للتحليل. القائمة الثابتة تسمح
- * بتقرير «أسباب العجز الأكثر تكراراً» ⇒ قرارٌ عمليٌّ لا انطباع.
- */
-function StaffConfirmDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string, shortfallReason: ShortfallReason | undefined) => void }) {
-  const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
-  const [mode, setMode] = useState<"exact" | "different">("exact");
-  const [amount, setAmount] = useState(String(remaining));
-  const [note, setNote] = useState("");
-  const [shortfallReason, setShortfallReason] = useState<ShortfallReason | "">("");
-  const QUICK_NOTES = ["اتصال المندوب", "رسالة واتساب من المندوب", "تأكيد من العميل"];
-  const amountTrimmed = amount.trim();
-  const amountNum = Number(amountTrimmed);
-  const isAmountValid = amountTrimmed !== "" && Number.isFinite(amountNum) && amountNum >= 0;
-  const effectiveAmount = mode === "exact" ? remaining : (isAmountValid ? amountNum : 0);
-  const diff = remaining - effectiveAmount;
-  const isShort = diff > 0.005;
-  const isOver = diff < -0.005;
-  const noteValid = note.trim().length >= 3;
-  const reasonRequired = mode === "different" && isShort;
-  const reasonValid = !reasonRequired || (shortfallReason !== "" && SHORTFALL_REASONS.includes(shortfallReason as ShortfallReason));
-  const canConfirm =
-    !pending &&
-    noteValid &&
-    (mode === "exact" || (isAmountValid && !isOver)) &&
-    reasonValid;
-
-  const handleConfirm = () => {
-    onConfirm(
-      effectiveAmount.toFixed(2),
-      note.trim(),
-      isShort && shortfallReason ? (shortfallReason as ShortfallReason) : undefined,
-    );
-  };
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-pos)]">
-          <CheckCircle2 aria-hidden className="size-5" />
-          تم التسليم — {row.consignmentNumber}
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سُلِّم الطردُ للزبون. المبلغُ يصير عهدةً على {row.partyName ?? "المندوب"} حتى تُوَرَّده لاحقاً في «تسوية المناديب». يُسجَّل التأكيدُ باسمك في سجلّ التدقيق.
-        </p>
-        <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-2 text-xs">
-          <span className="text-muted-foreground">المطلوب تحصيله من الزبون</span>
-          <span className="text-end font-black tabular-nums" dir="ltr">{fmt(String(remaining))} د.ع</span>
-        </div>
-
-        {/* اختيار المسار — رأسٌ واضحٌ لكيلا يخطئ الكاشير */}
-        <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-lg border bg-muted/20 p-1">
-          <button
-            type="button"
-            onClick={() => { setMode("exact"); setAmount(String(remaining)); setShortfallReason(""); }}
-            className={cn(
-              "rounded-md px-3 py-2 text-sm font-bold transition",
-              mode === "exact" ? "bg-[var(--sem-pos)] text-background shadow-sm" : "text-muted-foreground hover:bg-accent",
-            )}
-          >
-            قَبَض المطلوب كاملاً
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode("different")}
-            className={cn(
-              "rounded-md px-3 py-2 text-sm font-bold transition",
-              mode === "different" ? "bg-[var(--sem-warn)] text-background shadow-sm" : "text-muted-foreground hover:bg-accent",
-            )}
-          >
-            مبلغ مختلف
-          </button>
-        </div>
-
-        {mode === "different" && (
-          <>
-            <Label htmlFor="staff-amount" className="text-xs">المبلغ الذي قبضه المندوب فعلاً</Label>
-            <div className="mb-3">
-              <MoneyInput id="staff-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المقبوض" />
-            </div>
-            {isOver && (
-              <p className="mb-3 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2 text-xs font-medium text-[var(--sem-neg)]">
-                المبلغ أكبر من المطلوب — تحقّق من الرقم أو استعمل مسار الفائض المستقلّ.
-              </p>
-            )}
-            {isShort && (
-              <>
-                <div className="mb-3 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs">
-                  <div className="font-bold text-[var(--sem-warn)]">
-                    عجزٌ في التحصيل: {fmt(String(diff))} د.ع
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    سيُقيَّد هذا الفرق ذمّةً فوريّة على {row.partyName ?? "المندوب"} — لا يبقى على الزبون.
-                  </div>
-                </div>
-                <Label className="text-xs">سبب العجز <span className="text-[var(--sem-neg)]">*</span></Label>
-                <div className="mb-3 grid grid-cols-1 gap-1.5">
-                  {SHORTFALL_REASONS.map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => setShortfallReason(r)}
-                      className={cn(
-                        "flex items-start gap-2 rounded-md border p-2 text-start text-xs transition",
-                        shortfallReason === r
-                          ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]"
-                          : "border-muted bg-muted/20 hover:bg-accent",
-                      )}
-                    >
-                      <span className="mt-0.5 inline-block size-3 shrink-0 rounded-full border-2"
-                        style={{
-                          borderColor: shortfallReason === r ? "var(--sem-warn)" : "var(--muted-foreground)",
-                          backgroundColor: shortfallReason === r ? "var(--sem-warn)" : "transparent",
-                        }}
-                      />
-                      <div className="flex-1">
-                        <div className="font-bold">{SHORTFALL_REASON_LABEL_AR[r]}</div>
-                        <div className="text-muted-foreground">{SHORTFALL_REASON_DESCRIPTION_AR[r]}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </>
-        )}
-
-        <Label className="text-xs">مصدر التأكيد (اختصار سريع أو نصّ حرّ)</Label>
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {QUICK_NOTES.map((n) => (
-            <button key={n} type="button" onClick={() => setNote(n)} className={cn(
-              "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              note === n ? "bg-[var(--sem-pos)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
-            )}>{n}</button>
-          ))}
-        </div>
-        <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="مثلاً: اتصال ٦:٤٥م من المندوب…" className="mb-4" />
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button size="sm" disabled={!canConfirm} onClick={handleConfirm}>
-            {pending ? "جارٍ…" : "تأكيد التسليم"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ───────────────────────── حوارات مساعِدة ─────────────────────────
 

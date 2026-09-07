@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
+import { type ShortfallReason } from "@shared/shortfallReason";
 import { deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
@@ -283,6 +284,7 @@ export const deliveryRouter = router({
         defaultFee: moneyStr.nullish(),
         floatLimit: moneyStr.nullish(),
         notes: z.string().max(1000).nullish(),
+        maxOpenParcelAgeDays: z.number().int().min(0).max(365).nullish(),
         /** H2 (٢٩/٨/٢٦): استبدال الأجرة بالعمولة عند التسوية — اختيار لكلّ جهة. */
         useCommissionForSettlement: z.boolean().optional(),
       }),
@@ -595,17 +597,45 @@ export const deliveryRouter = router({
             });
           }),
         countedCash: moneyStr,
+        shortfall: z
+          .object({
+            reason: z.enum(SHORTFALL_REASONS as readonly [string, ...string[]]),
+            notes: z.string().trim().max(500).nullish(),
+          })
+          .nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       // IDOR كتابة (F7): كاشير فرعٍ لا يُوَرِّد على جهة فرعٍ آخر.
-      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
-      const branchId = effectiveBranch(ctx, input.branchId);
+      const party = await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const branchId = settlementBranchOf(ctx, input.branchId, party);
       const res = await retryOnDeadlock(() => retryOnDup(() =>
-        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+        recordDeliveryRemittance(
+          {
+            branchId,
+            partyId: input.partyId,
+            lines: input.lines,
+            countedCash: input.countedCash,
+            shiftType: input.shiftType,
+            shortfall: input.shortfall as { reason: ShortfallReason; notes?: string | null } | null | undefined,
+            clientRequestId: input.clientRequestId,
+          },
+          actorOf(ctx),
+        ),
       ));
-      await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
+      await logAudit(ctx, {
+        action: "delivery.remit",
+        entityType: "deliveryRemittance",
+        entityId: res.remittanceId,
+        newValue: {
+          partyId: input.partyId,
+          collectedTotal: res.collectedTotal,
+          feesTotal: res.feesTotal,
+          netRemitted: res.netRemitted,
+          shortfallTotal: res.shortfallTotal,
+        },
+      });
       return res;
     }),
 

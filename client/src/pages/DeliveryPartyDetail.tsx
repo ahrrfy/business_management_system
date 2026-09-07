@@ -6,7 +6,7 @@
 // → توريدات → كشف حساب حيّ (يشمل أمانات الأجرة التي كان الكشف المطبوع يُسقطها صامتاً)
 // → بيانات الجهة وتعديلها (سقف العهدة كان غير قابل للضبط من أي شاشة = حارس ميت).
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Banknote, PackageOpen, Printer, Truck, X } from "lucide-react";
+import { AlertTriangle, Ban, Banknote, PackageOpen, Printer, Truck, Wallet, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,8 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { EmptyState } from "@/components/EmptyState";
 import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
+import { CollectConsignmentDialog, type TargetConsignment } from "@/components/delivery/CollectConsignmentDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
@@ -148,8 +150,16 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
     "FULL",
     ["manager"],
   );
+  const canSettle = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? undefined) as PermissionMap | undefined,
+    "store",
+    "FULL",
+    ["cashier", "manager"],
+  );
   const canRecover = canManageParty;
   const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "commission" | "settings">("consignments");
+  const [showCollectModal, setShowCollectModal] = useState(false);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm md:p-8" dir="rtl" onClick={onClose}>
@@ -180,6 +190,16 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
               <span className="text-muted-foreground">نقد بذمّتها: </span>
               <b className={cn("tabular-nums", balanceDirection(party, "deliveryParty") === "receivable" ? "text-destructive" : "")} dir="ltr">{fmt(party.currentBalance)} د.ع</b>
             </div>
+            {canSettle && (
+              <Button
+                size="sm"
+                className="gap-1.5 font-bold"
+                onClick={() => setShowCollectModal(true)}
+                title="قبض النقد من المندوب وتصفير رصيده بسند توريد فوري"
+              >
+                <Wallet aria-hidden className="size-4" /> قبض الرصيد وتصفير الذمة
+              </Button>
+            )}
             <StoreInTransitChip partyId={party.id} />
             <Button variant="ghost" size="icon" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></Button>
           </div>
@@ -202,6 +222,19 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
         {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "commission" && <CommissionRuleTab partyId={party.id} canEdit={canManageParty} />}
         {tab === "settings" && <SettingsTab party={party} canManage={canManageParty} canRecover={canRecover} onChanged={onChanged} />}
+
+        {showCollectModal && (
+          <CollectConsignmentDialog
+            partyId={party.id}
+            partyName={party.name}
+            open={showCollectModal}
+            onOpenChange={setShowCollectModal}
+            onCompleted={() => {
+              setShowCollectModal(false);
+              onChanged();
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -346,6 +379,8 @@ function StoreInTransitChip({ partyId }: { partyId: number }) {
 // ───────────────────────── الإرساليات والفواتير ─────────────────────────
 function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
   const [openOnly, setOpenOnly] = useState(false);
+  const [collectConsignmentTarget, setCollectConsignmentTarget] = useState<ConsignmentRow | null>(null);
+  const [cancelConsignmentTarget, setCancelConsignmentTarget] = useState<{ id: number; number: string } | null>(null);
   const q = trpc.delivery.consignments.useQuery({ partyId, openOnly });
   const members = trpc.delivery.partyMembers.useQuery({ partyId });
   const utils = trpc.useUtils();
@@ -358,6 +393,44 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
   const drivers = (members.data ?? []).filter((m) => m.isActive && m.memberRole === "DRIVER");
   // الأعمدة تُغلِق على طفرة إعادة الإسناد وقائمة السائقين ⇒ تُبنى في كل تصيير (بلا تجميد يُقادم الحالة).
   const columns: ColumnDef<ConsignmentRow, unknown>[] = [
+    {
+      id: "actions",
+      header: "الإجراءات",
+      enableSorting: false,
+      meta: { kind: "actions", align: "start" },
+      cell: ({ row }) => {
+        const c = row.original;
+        const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
+        const canRemit = c.parcelStatus === "DELIVERED" && c.moneyStatus !== "SETTLED" && remaining > 0;
+        const canCancel = (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && Number(c.collectedAmount ?? 0) === 0;
+        return (
+          <div className="flex items-center gap-1">
+            {canRemit && (
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 px-2 text-xs font-bold gap-1"
+                onClick={() => setCollectConsignmentTarget(c)}
+                title="قبض وتحصيل هذا الطرد فوراً"
+              >
+                <Wallet aria-hidden className="size-3" /> سجّل التحصيل
+              </Button>
+            )}
+            {canEdit && canCancel && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={() => setCancelConsignmentTarget({ id: Number(c.id), number: c.consignmentNumber })}
+                title="إلغاء إسناد الطرد للمندوب وتحرير العهدة"
+              >
+                <Ban aria-hidden className="size-3" /> إلغاء الإسناد
+              </Button>
+            )}
+          </div>
+        );
+      },
+    },
     {
       id: "consignmentNumber",
       header: "الإرسالية",
@@ -494,6 +567,44 @@ function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boole
           تعرض {list.length} إرسالية — هناك المزيد. استعمل «المالية المفتوحة فقط» للتصفية.
         </div>
       )}
+
+      {collectConsignmentTarget && (
+        <CollectConsignmentDialog
+          consignment={{
+            id: Number(collectConsignmentTarget.id),
+            consignmentNumber: collectConsignmentTarget.consignmentNumber,
+            partyId,
+            orderNumber: collectConsignmentTarget.invoiceNumber ?? (collectConsignmentTarget.invoiceId ? `#${collectConsignmentTarget.invoiceId}` : null),
+            invoiceNumber: collectConsignmentTarget.invoiceNumber,
+            customerName: collectConsignmentTarget.customerName ?? collectConsignmentTarget.recipientName,
+            recipientPhone: collectConsignmentTarget.recipientPhone,
+            codDue: Math.max(0, Number(collectConsignmentTarget.codAmount) - Number(collectConsignmentTarget.collectedAmount)),
+            codAmount: collectConsignmentTarget.codAmount,
+            collectedAmount: collectConsignmentTarget.collectedAmount,
+            parcelStatus: collectConsignmentTarget.parcelStatus,
+          }}
+          open={collectConsignmentTarget != null}
+          onOpenChange={(open) => { if (!open) setCollectConsignmentTarget(null); }}
+          onCompleted={() => {
+            setCollectConsignmentTarget(null);
+            void utils.delivery.consignments.invalidate({ partyId });
+            void utils.delivery.getParty.invalidate({ id: partyId });
+            void utils.delivery.partyFinancials.invalidate({ partyId });
+          }}
+        />
+      )}
+
+      <CancelDeliveryAssignmentDialog
+        consignment={cancelConsignmentTarget}
+        open={cancelConsignmentTarget != null}
+        onOpenChange={(open) => { if (!open) setCancelConsignmentTarget(null); }}
+        onCompleted={() => {
+          setCancelConsignmentTarget(null);
+          void utils.delivery.consignments.invalidate({ partyId });
+          void utils.delivery.getParty.invalidate({ id: partyId });
+          void utils.delivery.partyFinancials.invalidate({ partyId });
+        }}
+      />
     </div>
   );
 }
@@ -956,6 +1067,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
   const [form, setForm] = useState<{
     name: string; phone: string; phone2: string; defaultFee: string; floatLimit: string;
     nationalId: string; vehicleInfo: string; notes: string; userId: number | null;
+    maxOpenParcelAgeDays: number;
   } | null>(null);
   // تهيئة النموذج من الجلب الكامل مرّة واحدة (getParty يحمل الحقول التي لا تعيدها listParties).
   useEffect(() => {
@@ -970,6 +1082,9 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
         vehicleInfo: full.data.vehicleInfo ?? "",
         notes: full.data.notes ?? "",
         userId: full.data.userId != null ? Number(full.data.userId) : null,
+        maxOpenParcelAgeDays: (full.data as { maxOpenParcelAgeDays?: number | null }).maxOpenParcelAgeDays != null
+          ? Number((full.data as { maxOpenParcelAgeDays?: number | null }).maxOpenParcelAgeDays)
+          : 7,
       });
     }
   }, [full.data, form]);
@@ -1029,6 +1144,19 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
               <Input value={form.vehicleInfo} onChange={(e) => setForm({ ...form, vehicleInfo: e.target.value })} className="mt-1 h-10" placeholder="نوع/لون/رقم اللوحة" />
             </label>
           </div>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <label className="block text-sm font-bold">مهلة إغلاق الطرود المفتوحة (بالأيام — 0 = بلا حظر SLA)
+              <Input
+                type="number"
+                min={0}
+                max={365}
+                value={form.maxOpenParcelAgeDays}
+                onChange={(e) => setForm({ ...form, maxOpenParcelAgeDays: e.target.value === "" ? 7 : Number(e.target.value) })}
+                className="mt-1 h-10 text-end tabular-nums"
+              />
+              <span className="mt-1 block text-xs font-normal text-muted-foreground">الافتراضي 7 أيام. القيمة 0 تعني جهة موثوقة لا تُحظر برمجياً عند تأخر إغلاق الطرود.</span>
+            </label>
+          </div>
           <label className="block text-sm font-bold">ملاحظات
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
@@ -1060,6 +1188,7 @@ function SettingsTab({ party, canManage, canRecover, onChanged }: { party: Party
                 vehicleInfo: form.vehicleInfo || null,
                 notes: form.notes || null,
                 userId: form.userId,
+                maxOpenParcelAgeDays: form.maxOpenParcelAgeDays,
               })}
             >{update.isPending ? ACTION_LABELS.saving : "حفظ"}</Button>
             <Button

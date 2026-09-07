@@ -257,6 +257,8 @@ export interface UpdateDeliveryPartyInput {
   defaultFee?: string | null;
   floatLimit?: string | null;
   notes?: string | null;
+  /** سقف عمر الطرود المفتوحة بالأيام (0 = بلا حظر). */
+  maxOpenParcelAgeDays?: number | null;
   /** H2 (٢٩/٨/٢٦): opt-in لاستبدال الأجرة بالعمولة عند التسوية — يتطلّب قاعدة عمولةٍ فعّالة. */
   useCommissionForSettlement?: boolean;
 }
@@ -350,6 +352,9 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
     if (input.defaultFee !== undefined) patch.defaultFee = toDbMoney(input.defaultFee ?? "0");
     if (input.floatLimit !== undefined) patch.floatLimit = input.floatLimit != null && input.floatLimit !== "" ? toDbMoney(input.floatLimit) : null;
     if (input.notes !== undefined) patch.notes = input.notes;
+    if (input.maxOpenParcelAgeDays !== undefined) {
+      patch.maxOpenParcelAgeDays = input.maxOpenParcelAgeDays != null ? Math.max(0, Math.min(365, Number(input.maxOpenParcelAgeDays))) : 7;
+    }
     if (input.useCommissionForSettlement !== undefined) {
       // H2: قبل التفعيل يجب وجود قاعدة عمولةٍ فعّالة (وإلّا العلَم لا يُحدث أثراً وسيُحيّر المدير).
       if (input.useCommissionForSettlement === true) {
