@@ -423,11 +423,14 @@ export const deliveryRouter = router({
    * + طرود متأخّرة (SLA). `branchScopedProcedure`: المالك/الأدمن يعبُران (scopedBranchId=null ⇒ كلّ الفروع)،
    * وغيرُهما مثبَّتٌ على فرعه — نفس عزل `listParties`.
    */
-  partyBoard: deliveryReadProcedure.query(({ ctx }) =>
-    withTx((tx) =>
-      listPartyBoardTx(tx, { branchId: ctx.scopedBranchId, canCrossBranches: ctx.scopedBranchId == null }, actorOf(ctx)),
-    ),
-  ),
+  partyBoard: deliveryReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().nullish() }).optional())
+    .query(({ input, ctx }) => {
+      const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId ?? null;
+      return withTx((tx) =>
+        listPartyBoardTx(tx, { branchId: effectiveBranchId, canCrossBranches: effectiveBranchId == null }, actorOf(ctx)),
+      );
+    }),
 
   /** المعاينة المحسوبة سلفاً: المتوقَّع · الأجرة المستحقّة · الاستقطاعات · الصافي · الأسطر · المرتجعات المُعلَنة. */
   settlementPreview: deliveryReadProcedure
