@@ -472,7 +472,6 @@ async function computeManagementAlerts(opts: {
   // كواشف ذكية حتمية تكشف: بيع دون الكلفة / حسومات غير اعتيادية / تكرار المرتجعات / فروقات وعجوزات النقد / عهد التوصيل المتقادمة / فجوات الترقيم
   if (anomalyRes) {
     const k = anomalyRes.kpis;
-    let radarSpecificFired = false;
 
     if (k.belowCostLines > 0) {
       alerts.push({
@@ -484,7 +483,6 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "فحص الكلفة",
       });
-      radarSpecificFired = true;
     }
 
     if (k.flaggedDiscountCashiers > 0) {
@@ -497,7 +495,6 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "كشف الخصومات",
       });
-      radarSpecificFired = true;
     }
 
     if (k.flaggedReturnSellers > 0) {
@@ -510,7 +507,6 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "كشف المرتجعات",
       });
-      radarSpecificFired = true;
     }
 
     if (k.flaggedShortageCashiers > 0) {
@@ -523,7 +519,6 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "كشف العجوزات",
       });
-      radarSpecificFired = true;
     }
 
     if (k.flaggedDeliveryCustody > 0) {
@@ -536,7 +531,6 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "متابعة العهد",
       });
-      radarSpecificFired = true;
     }
 
     if (k.sequenceGapDays > 0) {
@@ -549,26 +543,27 @@ async function computeManagementAlerts(opts: {
         href: "/reports/anomaly-watch",
         actionLabel: "فحص التسلسل",
       });
-      radarSpecificFired = true;
     }
 
-    if (!radarSpecificFired) {
-      const indicators =
-        (k.reversedVouchers > 0 ? 1 : 0) +
-        (k.flaggedConsignWithdrawers > 0 ? 1 : 0) +
-        (k.flaggedCancelledFundedDrafters > 0 ? 1 : 0) +
-        (k.flaggedTelecomCollectors > 0 ? 1 : 0);
-      if (indicators > 0) {
-        alerts.push({
-          key: "anomaly-watch",
-          severity: "warning",
-          title: "رادار التدقيق: مؤشرات شذوذ تشغيلي إضافية (عكوسات وسحوبات)",
-          count: indicators,
-          amount: null,
-          href: "/reports/anomaly-watch",
-          actionLabel: "رقيب الشذوذ",
-        });
-      }
+    const otherIndicators =
+      (k.reversedVouchers > 0 ? 1 : 0) +
+      (k.flaggedConsignWithdrawers > 0 ? 1 : 0) +
+      (k.flaggedCancelledFundedDrafters > 0 ? 1 : 0) +
+      (k.flaggedTelecomCollectors > 0 ? 1 : 0) +
+      (k.fundedStaleDrafts > 0 ? 1 : 0) +
+      (k.flaggedOthersCollectors > 0 ? 1 : 0) +
+      (k.flaggedFundedReducers > 0 ? 1 : 0) +
+      (k.flaggedDeliveryShortRemits > 0 ? 1 : 0);
+    if (otherIndicators > 0) {
+      alerts.push({
+        key: "anomaly-watch",
+        severity: "warning",
+        title: "رادار التدقيق: مؤشرات شذوذ تشغيلي إضافية (عكوسات وسحوبات)",
+        count: otherIndicators,
+        amount: null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "رقيب الشذوذ",
+      });
     }
   }
 

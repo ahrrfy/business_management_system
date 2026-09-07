@@ -22,16 +22,52 @@ export interface RadarAlertItem {
 interface OperationalRadarCardProps {
   alerts: RadarAlertItem[];
   loading?: boolean;
+  error?: boolean;
+  sourceErrors?: string[];
 }
 
-export function OperationalRadarCard({ alerts, loading }: OperationalRadarCardProps) {
+export function OperationalRadarCard({
+  alerts,
+  loading,
+  error = false,
+  sourceErrors = [],
+}: OperationalRadarCardProps) {
   if (loading) return null;
+
+  const isDegraded = error || sourceErrors.includes("anomalyWatch");
 
   const radarAlerts = alerts.filter(
     (a) => a.key.startsWith("radar-") || a.key === "anomaly-watch",
   );
 
   if (radarAlerts.length === 0) {
+    if (isDegraded) {
+      return (
+        <Card className="border-border/60 bg-muted/30">
+          <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                <AlertTriangle className="size-5" aria-hidden />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">تعذّر التحقق الكامل من رادار العمليات</p>
+                <p className="text-xs text-muted-foreground">
+                  تعذّر مسح بعض مؤشرات الشذوذ مؤقتاً بسبب خطأ في مصدر البيانات. يمكنك فتح رقيب الشذوذ مباشرة للتحقق.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/reports/anomaly-watch"
+              className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              فتح رقيب الشذوذ
+              <ArrowLeft className="size-3" aria-hidden />
+            </Link>
+          </CardContent>
+        </Card>
+      );
+    }
+
     return (
       <Card className="border-border/60 bg-card/60">
         <CardContent className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4">
@@ -80,6 +116,14 @@ export function OperationalRadarCard({ alerts, loading }: OperationalRadarCardPr
                   <span className="inline-flex items-center gap-1 rounded-full bg-destructive/20 px-2 py-0.5 text-[11px] font-medium text-destructive">
                     <AlertTriangle className="size-3" aria-hidden />
                     {fmtAr(criticalCount)} حرج
+                  </span>
+                )}
+                {isDegraded && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    title="تعذّر استكمال بعض مصادر الرادار"
+                  >
+                    فحص جزئي
                   </span>
                 )}
               </div>

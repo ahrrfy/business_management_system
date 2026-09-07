@@ -252,7 +252,12 @@ export default function ReportsOverview() {
 
       {/* ② لوحة الإجراءات ذات الأولوية — أين الخطر؟ وماذا أفعل الآن؟ */}
       <section className="space-y-3">
-        <OperationalRadarCard alerts={alerts.data?.alerts ?? []} loading={alerts.isLoading} />
+        <OperationalRadarCard
+          alerts={alerts.data?.alerts ?? []}
+          loading={alerts.isLoading}
+          error={alerts.isError}
+          sourceErrors={alerts.data?.sourceErrors}
+        />
 
         <div className="space-y-2">
           <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
