@@ -1335,6 +1335,28 @@ describe("فصل المهام على الجرد الدوري NORMAL (تدقيق 
     expect(ok.ok).toBe(true);
   });
 
+  it("المالك isOwner: true مُستثنى من قيود SOD-04: يُنشئ ويعتمد جلسة دورية بنفسه", async () => {
+    await setStockRow(1, 100);
+    const ownerActor = { userId: 2, role: "manager", isOwner: true };
+    const r = await createStocktakeSession(
+      {
+        name: "دوري للمالك",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [1],
+        assignments: [{ name: "عامل", method: "PIN" }],
+      },
+      ownerActor,
+    );
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 99);
+    await forceStocktakeReview(r.sessionId, ownerActor);
+    await approveAllReadyItems(r.sessionId, ownerActor);
+    // المالك ينشئ ويعتمد بنفسه دون حجب SOD-04
+    const ok = await approveStocktake(r.sessionId, ownerActor);
+    expect(ok.ok).toBe(true);
+    expect(await stockOf(1)).toBe(99);
+  });
+
   it("راجع الصنف عالي القيمة مرحلياً بنفسه لا يعتمد نهائياً ولو وقّع غيره أولاً (البوابة الثالثة)", async () => {
     await setStockRow(4, 10); // تكلفة 100,000
     const r = await mkSession({ variantIds: [4] }); // منشئ = actor (admin)

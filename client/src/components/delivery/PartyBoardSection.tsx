@@ -36,15 +36,16 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   // فرعُ التسوية = فرعُ الفاعل المُسنَد. غيابُه (أدمن/مالك عابرُ الفروع) ⇒ اللوحةُ مجمَّعةٌ لكلّ الفروع بينما
   // النقدُ يدخل درجَ فرعٍ بعينه: نحجب «سوِّ اليوم» حتى لا تُفتَح معاينةٌ فرعُها ≠ فرعُ صفوف اللوحة (Codex #1012 P2).
   const settleBranchId = me.data?.branchId ?? null;
-  const canSettle = hasSettleRole && settleBranchId != null;
+  const canSettle = hasSettleRole && (settleBranchId != null || role === "admin");
   // علَما الطرح التدريجيّ (مصدر الحقيقة: الخادم): يحكمان عرضَ «نقد بيده» في اللوحة (المصدر الفعّال).
   const uiFlags = trpc.delivery.deliveryUiFlags.useQuery(undefined, { staleTime: 5 * 60_000 });
   const ledgerDerived = uiFlags.data?.courierLedgerDerived ?? false;
   const board = trpc.delivery.partyBoard.useQuery(undefined, { refetchInterval: 30_000 });
   const [settleFor, setSettleFor] = useState<PartyBoardRow | null>(null);
+  const effectiveBranchId = settleBranchId ?? undefined;
   const preview = trpc.delivery.settlementPreview.useQuery(
-    { partyId: settleFor?.partyId ?? 0, branchId: settleBranchId ?? undefined },
-    { enabled: settleFor != null && settleBranchId != null, staleTime: 0 },
+    { partyId: settleFor?.partyId ?? 0, branchId: effectiveBranchId },
+    { enabled: settleFor != null && (settleBranchId != null || role === "admin"), staleTime: 0 },
   );
   const settle = trpc.delivery.settleDaily.useMutation();
 
@@ -63,7 +64,7 @@ export function PartyBoardSection({ outstandingOnly = false, shiftType = "RECEPT
   const onSettle = async (payload: SettleDailyPayload) => {
     try {
       // نُرسل فرعَ الفاعل صراحةً كي تطابق التسويةُ الفرعَ الذي عُرضت عليه المعاينة (لا الاشتقاق الخادميّ).
-      const res = await settle.mutateAsync({ ...payload, branchId: settleBranchId ?? undefined });
+      const res = await settle.mutateAsync({ ...payload, branchId: effectiveBranchId });
       notify.ok(res.status === "BALANCED" ? "أُقفل اليوم مطابقاً" : "أُقفل اليوم بعجزٍ مُصنَّف", `سند التوريد #${res.remittanceId}`);
       await invalidateAll();
       return res;

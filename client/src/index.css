@@ -422,23 +422,25 @@ option:disabled {
 @layer components {
   /* Storefront only: a joyful stationery palette anchored by a calm navy. */
   .storefront {
-    --store-brand: #25406f;
-    --store-brand-strong: #1b3158;
-    /* أبيض فوق اللونين يحقق 4.5:1 للنص العادي (5.75:1 و7.90:1 تقريباً). */
+    --store-brand: #1e3a8a;
+    --store-brand-strong: #172554;
     --store-accent: #b43d31;
     --store-accent-strong: #922f28;
-    --store-sun: #f4c84d;
-    --store-mint: #dff4ee;
-    --store-lilac: #eee6f6;
-    --store-peach: #ffe5d5;
-    --store-canvas: #fbf8f2;
-    --store-ink: #20252a;
-    --store-muted: #5f696e;
-    --store-sale: #b43d31;
+    --store-sun: #f59e0b;
+    --store-mint: #10b981;
+    --store-lilac: #8b5cf6;
+    --store-peach: #ffedd5;
+    --store-canvas: #f8fafc;
+    --store-ink: #0f172a;
+    --store-muted: #64748b;
+    --store-sale: #ef4444;
     background-color: var(--store-canvas);
     color: var(--store-ink);
-    background-image: radial-gradient(circle at 10px 10px, rgb(37 64 111 / 7%) 1.25px, transparent 1.5px);
-    background-size: 24px 24px;
+    background-image:
+      radial-gradient(ellipse 65% 45% at 50% 0%, rgba(30, 58, 138, 0.05) 0%, transparent 80%),
+      radial-gradient(circle at 12px 12px, rgba(30, 58, 138, 0.035) 1px, transparent 1.5px);
+    background-size: 100% 650px, 24px 24px;
+    background-repeat: no-repeat, repeat;
   }
 
   .storefront :where(a, button, input, select, textarea, [tabindex]):focus-visible,
@@ -449,14 +451,17 @@ option:disabled {
   }
 
   .storefront .store-product-card {
-    border: 1px solid #e8e0d8;
-    box-shadow: 0 2px 8px rgb(27 27 27 / 6%);
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.05), 0 2px 6px -1px rgba(15, 23, 42, 0.02);
+    border-radius: 1.25rem;
+    transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1), border-color 240ms ease;
   }
 
   .storefront .store-category-grid > button {
     position: relative;
     overflow: hidden;
-    border-radius: 1rem;
+    border-radius: 1.25rem;
+    transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
   }
 
   .storefront .store-category-grid > button::after {
@@ -470,18 +475,18 @@ option:disabled {
     pointer-events: none;
   }
 
-  .storefront .store-category-grid > button:nth-child(3n + 1) { background: #fff8df; border-color: #f0d991; }
-  .storefront .store-category-grid > button:nth-child(3n + 2) { background: #e9f7f2; border-color: #c5e8dc; }
-  .storefront .store-category-grid > button:nth-child(3n) { background: #f3ebf8; border-color: #dfcdea; }
-  .storefront .store-category-grid > button:hover { transform: translateY(-2px); }
-  .storefront .store-category-grid > button:nth-child(3n + 1) > span:first-child { background: #f4c84d; color: #25406f; }
-  .storefront .store-category-grid > button:nth-child(3n + 2) > span:first-child { background: #8ed8c3; color: #25406f; }
-  .storefront .store-category-grid > button:nth-child(3n) > span:first-child { background: #d7b4e8; color: #5e3e6e; }
+  .storefront .store-category-grid > button:nth-child(3n + 1) { background: #eff6ff; border-color: #bfdbfe; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) { background: #ecfdf5; border-color: #a7f3d0; }
+  .storefront .store-category-grid > button:nth-child(3n) { background: #faf5ff; border-color: #e9d5ff; }
+  .storefront .store-category-grid > button:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -3px rgba(30, 58, 138, 0.08); }
+  .storefront .store-category-grid > button:nth-child(3n + 1) > span:first-child { background: #3b82f6; color: #ffffff; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) > span:first-child { background: #10b981; color: #ffffff; }
+  .storefront .store-category-grid > button:nth-child(3n) > span:first-child { background: #8b5cf6; color: #ffffff; }
 
   .storefront .store-product-card:hover {
-    border-color: color-mix(in srgb, var(--store-brand) 32%, white);
-    box-shadow: 0 6px 14px rgb(27 27 27 / 10%);
-    transform: translateY(-1px);
+    border-color: rgba(30, 58, 138, 0.35);
+    box-shadow: 0 16px 36px -4px rgba(30, 58, 138, 0.12), 0 6px 16px -2px rgba(15, 23, 42, 0.06);
+    transform: translateY(-3px);
   }
 
   /* صور المنتجات والبكجات على سطح أبيض موحّد؛ لا نلوّن الحاوية حسب ترتيب البطاقة. */
@@ -490,31 +495,71 @@ option:disabled {
   }
 
   .storefront .store-product-image {
-    transition: transform 180ms ease;
+    transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .storefront .store-product-card:hover .store-product-image {
-    transform: scale(1.025);
+    transform: scale(1.06);
   }
 
   .storefront .store-product-image-placeholder {
-    background: #f1ece4;
+    background: #f1f5f9;
     color: var(--store-brand);
   }
 
   .storefront .store-primary-action {
     background-color: var(--store-accent);
     color: #fff;
-    box-shadow: 0 8px 0 rgb(37 64 111 / 10%);
+    box-shadow: 0 4px 14px 0 rgba(249, 115, 22, 0.32);
+    transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
   }
 
   .storefront .store-primary-action:hover:not(:disabled) {
     background-color: var(--store-accent-strong);
-    box-shadow: 0 5px 0 rgb(37 64 111 / 12%);
+    box-shadow: 0 6px 20px 0 rgba(234, 88, 12, 0.42);
+    transform: translateY(-1px);
+  }
+
+  .storefront .store-primary-action:active:not(:disabled) {
+    transform: scale(0.97);
   }
 
   .storefront .store-primary-action:disabled {
     box-shadow: none;
+  }
+
+  .storefront .store-badge-glow {
+    box-shadow: 0 0 12px rgba(249, 115, 22, 0.35);
+  }
+
+  .storefront .store-badge-emerald-glow {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.35);
+  }
+
+  .storefront .store-glass-card {
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(226, 232, 240, 0.85);
+    box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.05);
+  }
+
+  @keyframes storefront-shimmer-sweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  .storefront .store-shimmer-bar {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .storefront .store-shimmer-bar::after {
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+    animation: storefront-shimmer-sweep 2.4s infinite;
+    content: "";
   }
 
   /* Important storefront actions get a short, role-specific feedback ring. */
@@ -569,6 +614,25 @@ option:disabled {
     animation: storefront-cart-flight 620ms cubic-bezier(.2,.72,.24,1) both;
   }
 
+  .storefront .mask-gradient-x {
+    mask-image: linear-gradient(to right, transparent, black 4%, black 96%, transparent);
+    -webkit-mask-image: linear-gradient(to right, transparent, black 4%, black 96%, transparent);
+  }
+
+  .storefront .store-dynamic-dock {
+    box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+  }
+
+  @keyframes storefront-spring-pop {
+    0% { transform: scale(0.92); opacity: 0; }
+    60% { transform: scale(1.04); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  .storefront .animate-spring-pop {
+    animation: storefront-spring-pop 240ms cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  }
+
   .storefront .store-cart-flight-fallback {
     display: flex;
     align-items: center;
@@ -608,14 +672,14 @@ option:disabled {
 
   .storefront .bg-emerald-600 { background-color: var(--store-brand) !important; }
   .storefront .hover\:bg-emerald-700:hover { background-color: var(--store-brand-strong) !important; }
-  .storefront .bg-emerald-50 { background-color: #f1ebe4 !important; }
+  .storefront .bg-emerald-50 { background-color: #eff6ff !important; }
   .storefront .text-emerald-600, .storefront .text-emerald-700, .storefront .text-emerald-500 { color: var(--store-brand) !important; }
   .storefront .bg-amber-500 { background-color: var(--store-accent) !important; }
   .storefront .hover\:bg-amber-600:hover { background-color: var(--store-accent-strong) !important; }
-  .storefront .bg-amber-100 { background-color: #f3e3d2 !important; }
-  .storefront .text-amber-700 { color: #9a5b2b !important; }
-  .storefront .border-emerald-100, .storefront .border-emerald-100\/70 { border-color: #e8e0d8 !important; }
-  .storefront .ring-emerald-100\/80 { --tw-ring-color: #e8e0d8 !important; }
+  .storefront .bg-amber-100 { background-color: #ffedd5 !important; }
+  .storefront .text-amber-700 { color: var(--store-accent-strong) !important; }
+  .storefront .border-emerald-100, .storefront .border-emerald-100\/70 { border-color: #e2e8f0 !important; }
+  .storefront .ring-emerald-100\/80 { --tw-ring-color: #e2e8f0 !important; }
   .storefront .focus\:ring-emerald-400:focus { --tw-ring-color: var(--store-accent) !important; }
 
   .dark .storefront {

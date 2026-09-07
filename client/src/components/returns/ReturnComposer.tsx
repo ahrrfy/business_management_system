@@ -272,8 +272,10 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
        * العائدُ نوعٌ مُميَّزٌ بـ`mode` (قرار المالك ١/٩/٢٦): المالكُ يُنفَّذ مرتجعُه فوراً،
        * وغيرُه يُرسل طلباً. الشاشة تقول أيَّهما وقع — لا نصّاً واحداً يصف الحالتين.
        */
-      if (res.mode === "EXECUTED") {
-        setDone(`نُفِّذ المرتجع فعلاً بقيمة ${fmt(String(res.returnedTotal ?? "0"))} د.ع — تحرّك المخزون والمال.`);
+      const isExecuted = res.mode === "EXECUTED" || (res as { status?: string }).status === "APPROVED";
+      if (isExecuted) {
+        const total = "returnedTotal" in res && res.returnedTotal ? ` بقيمة ${fmt(String(res.returnedTotal))} د.ع` : "";
+        setDone(`نُفِّذ المرتجع فعلاً${total} — تحرّك المخزون والمال.`);
       } else {
         setDone(`أُرسل طلب المرتجع #${res.requestId} للاعتماد — لم يتغيّر المخزون أو المال بعد.`);
       }
@@ -285,8 +287,11 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         utils.returns.getInvoice.invalidate({ invoiceId }),
         utils.salesControl.list.invalidate(),
       ]);
-      if (res.mode === "EXECUTED") {
-        onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
+      if (isExecuted) {
+        onDone?.({
+          fullyReturned: "fullyReturned" in res ? !!res.fullyReturned : false,
+          returnedTotal: "returnedTotal" in res ? String(res.returnedTotal ?? "0") : "0",
+        });
       }
     },
     onError: (e) => {

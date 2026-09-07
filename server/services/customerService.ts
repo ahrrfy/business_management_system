@@ -80,6 +80,7 @@ export interface ListCustomersInput {
   includeInactive?: boolean;
   limit?: number;
   offset?: number;
+  skipTotal?: boolean;
 }
 
 /**
@@ -756,6 +757,10 @@ export async function listCustomers(input: ListCustomersInput = {}) {
     .orderBy(asc(customers.name), desc(customers.id))
     .limit(limit)
     .offset(offset);
+
+  if (input.skipTotal || (offset === 0 && rows.length < limit)) {
+    return { rows, total: rows.length };
+  }
 
   const totalRow = (
     await db.select({ n: sql<number>`COUNT(*)` }).from(customers).where(where as any)

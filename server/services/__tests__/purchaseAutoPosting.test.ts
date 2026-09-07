@@ -438,15 +438,20 @@ describe("أمر الشراء النقدي يُسدَّد فوراً عند اع
       },
       treasurer, // isOwner: true
     );
-    expect(approved).toMatchObject({ status: "APPROVED", orderStatus: "RECEIVED" });
     expect(
       (
         await db()
-          .select({ status: s.purchaseOrders.status })
+          .select({
+            status: s.purchaseOrders.status,
+            paidAmount: s.purchaseOrders.paidAmount,
+          })
           .from(s.purchaseOrders)
           .where(eq(s.purchaseOrders.id, purchaseOrderId))
-      )[0]?.status,
-    ).toBe("RECEIVED");
+      )[0],
+    ).toMatchObject({
+      status: "RECEIVED",
+      paidAmount: "60.00",
+    });
 
     const [invoice] = await db()
       .select()

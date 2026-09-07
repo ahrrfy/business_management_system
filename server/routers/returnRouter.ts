@@ -157,7 +157,13 @@ export const returnRouter = router({
           reason,
         },
       });
-      return { mode: "REQUESTED" as const, requestId: res.id, status: res.status, replayed: res.replayed };
+      const isApproved = res.status === "APPROVED";
+      return {
+        mode: isApproved ? ("EXECUTED" as const) : ("REQUESTED" as const),
+        requestId: res.id,
+        status: res.status,
+        replayed: res.replayed,
+      };
     }),
 
   // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════
@@ -413,13 +419,20 @@ export const returnRouter = router({
         .limit(limit)
         .offset(offset);
 
-      const totalRow = await db
-        .select({ c: sql<number>`COUNT(*)` })
-        .from(accountingEntries)
-        .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
-        .where(and(...where));
+      let total: number;
+      if (offset === 0 && rows.length < limit) {
+        // إذا كانت نتائج الصفحة الأولى أقل من الحد الأقصى، فالإجمالي هو عدد الصفوف نفسه دون حاجة لاستعلام COUNT(*) إضافي
+        total = rows.length;
+      } else {
+        const totalRow = await db
+          .select({ c: sql<number>`COUNT(*)` })
+          .from(accountingEntries)
+          .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
+          .where(and(...where));
+        total = Number(totalRow[0]?.c ?? 0);
+      }
 
-      return { rows, total: Number(totalRow[0]?.c ?? 0) };
+      return { rows, total };
     }),
 
   /** منفّذو المرتجعات (createdBy مميّز على قيود RETURN المطابقة لنطاق الفرع) — يغذّي فلتر

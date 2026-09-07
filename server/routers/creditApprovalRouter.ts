@@ -252,10 +252,18 @@ export const creditApprovalRouter = router({
         .limit(limit)
         .offset(offset);
 
-      const totalRow = (
-        await db.select({ n: sql<number>`COUNT(*)` }).from(creditApprovals).where(where as any)
-      )[0];
-      return { rows, total: Number(totalRow?.n ?? 0) };
+      const total =
+        offset === 0 && rows.length < limit
+          ? rows.length
+          : Number(
+              (
+                await db
+                  .select({ n: sql<number>`COUNT(*)` })
+                  .from(creditApprovals)
+                  .where(where as any)
+              )[0]?.n ?? 0
+            );
+      return { rows, total };
     }),
 
   /** إلغاء موافقة قائمة لم تُستهلَك بعد — تُوسَم بنفس آلية الاستهلاك (consumedAt) بلا

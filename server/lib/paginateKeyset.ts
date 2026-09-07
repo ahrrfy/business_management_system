@@ -56,10 +56,23 @@ export async function paginateKeyset<T extends { id: number | bigint | string }>
   return { rows, hasMore, nextCursor, usingCursor };
 }
 
-/** COUNT(*) فقط عند offset التَوافقي. عند keyset يُرجع 0 (تَجنّب مَسحٍ ثانٍ كَامل). */
+/**
+ * COUNT(*) فقط عند offset التَوافقي. عند keyset يُرجع 0 (تَجنّب مَسحٍ ثانٍ كَامل).
+ * يدعم مساراً سريعاً (fastPath): إذا كانت نتائج الصفحة الأولى أقل من الحد الأقصى المطلوب،
+ * فالإجمالي هو طول النتائج مباشرة دون حاجة لتشغيل استعلام COUNT(*) إضافي.
+ */
 export async function countIfOffset(
   usingCursor: boolean,
   runCount: () => Promise<number>,
+  fastPath?: { rowsLength: number; limit: number; offset?: number },
 ): Promise<number> {
-  return usingCursor ? 0 : await runCount();
+  if (usingCursor) return 0;
+  if (
+    fastPath &&
+    (fastPath.offset == null || fastPath.offset === 0) &&
+    fastPath.rowsLength < fastPath.limit
+  ) {
+    return fastPath.rowsLength;
+  }
+  return await runCount();
 }

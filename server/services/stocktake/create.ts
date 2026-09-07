@@ -276,7 +276,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   if (sessionType === "OPENING") {
     // (أ) مدير فأعلى: نوع الجلسة قرار حوكمي (يلغي العتبات الصنفية ويتخطى قيدَي العجز/الزيادة) —
     // لا يُترك لأمين المخزن وإن كان إنشاء الجرد الدوري من صلاحياته.
-    if (actor.role !== "admin" && actor.role !== "manager") {
+    if (actor.role !== "admin" && actor.role !== "manager" && actor.isOwner !== true) {
       throw new TRPCError({ code: "FORBIDDEN", message: "إنشاء جلسة جرد افتتاحي محصور بمدير فأعلى" });
     }
     // (ب) النافذة فعّالة: بلا هذا الشرط تبقى جلسات OPENING قناة تسويةٍ دائمة بلا أثر P&L بعد الإطلاق.

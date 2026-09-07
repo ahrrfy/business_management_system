@@ -34,6 +34,7 @@ import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMater
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
 import { ReclassifyDeliveryDialog } from "@/components/workorder/ReclassifyDeliveryDialog";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { WorkOrderDeliverySection } from "@/components/delivery/WorkOrderDeliverySection";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -141,6 +142,7 @@ export default function WorkOrderDetail() {
   const [cancelOutcomeUncertain, setCancelOutcomeUncertain] = useState(false);
   // تحرير بنود الأمر (١٧/٨/٢٦) — الفجوة التي اشتكاها المالك: لا مسار لإضافة/حذف منتج.
   const [editingMaterials, setEditingMaterials] = useState(false);
+
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
@@ -759,6 +761,16 @@ export default function WorkOrderDetail() {
           <DesignFileCard images={(data.images ?? []) as never} workOrderId={Number(data.id)} canEdit={canEditWorkOrder && data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
         </CardContent>
       </Card>
+
+      {/* بطاقة دورة حياة التوصيل وإسناد المندوب والتحصيل */}
+      <WorkOrderDeliverySection
+        data={data}
+        role={role}
+        onInvalidate={() => {
+          void utils.workOrders.invalidate();
+          void refresh();
+        }}
+      />
 
       {editingMaterials ? (
         <WorkOrderMaterialsEditor

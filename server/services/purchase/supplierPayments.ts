@@ -1189,6 +1189,28 @@ export async function decideSupplierPaymentInTx(
           : null,
       })
       .where(eq(supplierInvoices.id, Number(invoice.id)));
+
+    // ═══ تحديث ذري لأمر الشراء المرتبط (إن وُجد) ═══
+    // سداد الفاتورة يجب أن ينعكس فوراً على paidAmount لأمر الشراء، فلا يبقى الأمر
+    // يطالب بمبلغٍ متبقٍّ بعد سداد فاتورته، ولا يظهر كدينٍ غير مدفوع في كشف الحساب.
+    const invoicePoIds = await resolveInvoicePurchaseOrderIds(tx, [
+      Number(invoice.id),
+    ]);
+    if (invoicePoIds.length === 1) {
+      const targetPoId = invoicePoIds[0];
+      await tx
+        .update(purchaseOrders)
+        .set({
+          paidAmount: sql`${purchaseOrders.paidAmount} + ${toDbMoney(row.requestedAmount)}`,
+          ...(request.currency === "USD"
+            ? {
+                paidUsd: sql`${purchaseOrders.paidUsd} + ${toDbMoney(row.requestedCurrencyAmount)}`,
+              }
+            : {}),
+          version: sql`${purchaseOrders.version} + 1`,
+        })
+        .where(eq(purchaseOrders.id, targetPoId));
+    }
   }
   await tx
     .update(supplierPaymentRequests)
@@ -1715,6 +1737,26 @@ export async function decideSupplierPaymentRefund(
           amount: row.amount,
           currencyAmount: row.currencyAmount,
         });
+      const allocation = byId.get(Number(row.supplierPaymentAllocationId));
+      if (allocation) {
+        const invoicePoIds = await resolveInvoicePurchaseOrderIds(tx, [
+          Number(allocation.supplierInvoiceId),
+        ]);
+        if (invoicePoIds.length === 1) {
+          await tx
+            .update(purchaseOrders)
+            .set({
+              paidAmount: sql`GREATEST(${purchaseOrders.paidAmount} - ${toDbMoney(row.amount)}, 0)`,
+              ...(payment.currency === "USD"
+                ? {
+                    paidUsd: sql`GREATEST(${purchaseOrders.paidUsd} - ${toDbMoney(row.currencyAmount)}, 0)`,
+                  }
+                : {}),
+              version: sql`${purchaseOrders.version} + 1`,
+            })
+            .where(eq(purchaseOrders.id, invoicePoIds[0]));
+        }
+      }
     }
     const affectedInvoiceIds = sortedUniquePurchaseOrderIds(
       allocations.map((row) => Number(row.supplierInvoiceId)),

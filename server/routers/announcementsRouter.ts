@@ -50,7 +50,7 @@ const createInput = z
     priority: z.enum(["NORMAL", "IMPORTANT", "CRITICAL"]).optional(),
     audienceType: z.enum(["ALL", "BRANCH", "ROLE"]),
     audienceBranchId: z.number().int().positive().nullish(),
-    audienceRole: z.enum(roleKeys).nullish(),
+    audienceRole: z.string().trim().min(1).max(40).nullish(),
     requiresAck: z.boolean().optional(),
     expiresAt: z.string().datetime().nullish(),
   })
@@ -58,10 +58,16 @@ const createInput = z
     message: "اختر الفرع المستهدَف",
     path: ["audienceBranchId"],
   })
-  .refine((v) => v.audienceType !== "ROLE" || v.audienceRole != null, {
-    message: "اختر الدور المستهدَف",
-    path: ["audienceRole"],
-  })
+  .refine(
+    (v) =>
+      v.audienceType !== "ROLE" ||
+      (v.audienceRole != null &&
+        (roleKeys.includes(v.audienceRole) || /^user:\d+$/.test(v.audienceRole))),
+    {
+      message: "اختر الدور المستهدَف أو حساب الموظف",
+      path: ["audienceRole"],
+    },
+  )
   .refine((v) => !v.expiresAt || new Date(v.expiresAt).getTime() > Date.now(), {
     message: "تاريخ انتهاء الإعلان يجب أن يكون في المستقبل",
     path: ["expiresAt"],
