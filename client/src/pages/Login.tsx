@@ -2,7 +2,6 @@ import { PasswordInput } from "@/components/form/PasswordInput";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { translateLoginError } from "@/lib/loginErrors";
 import { saveOfflineProfile } from "@/lib/offline/pinLock";
@@ -12,8 +11,11 @@ import { resetSessionForLogin } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
 import { useQueryClient } from "@tanstack/react-query";
 import { INTERNAL_ORIGIN, isPublicHost } from "@/lib/siteHosts";
-import { REGEXP_ONLY_DIGITS } from "input-otp";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Suspense } from "react";
+import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
+
+const TwoFactorForm = lazy(() => import("@/components/auth/TwoFactorForm"));
+const LoginShowcase = lazy(() => import("@/components/auth/LoginShowcase"));
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -27,17 +29,28 @@ import {
   AlertCircle,
   FileCheck2,
   Fingerprint,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const LAST_COMPANY_CODE_KEY = "erp.lastCompanyCode";
 const REMEMBER_KEY = "erp.rememberMe";
+const SAVED_IDENTIFIER_KEY = "erp.savedIdentifier";
 
 export default function Login() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const utils = trpc.useUtils();
-  const [identifier, setIdentifier] = useState("");
+  const [identifier, setIdentifier] = useState(() => {
+    try {
+      if (localStorage.getItem(REMEMBER_KEY) === "1") {
+        return localStorage.getItem(SAVED_IDENTIFIER_KEY) || "";
+      }
+    } catch {
+      // ignore
+    }
+    return "";
+  });
   const [password, setPassword] = useState("");
   const [companyCode, setCompanyCode] = useState("");
   const [remember, setRemember] = useState(() => {
@@ -94,9 +107,6 @@ export default function Login() {
 
   const [step, setStep] = useState<"credentials" | "otp" | "reset">("credentials");
   const [ticket, setTicket] = useState<string | null>(null);
-  const [otp, setOtp] = useState("");
-  const [useRecovery, setUseRecovery] = useState(false);
-  const [recoveryCode, setRecoveryCode] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -135,12 +145,6 @@ export default function Login() {
     setMouseCoord({ x, y });
   };
 
-  const handleQuickFillAdmin = () => {
-    setIdentifier("admin@alroya.local");
-    setPassword("Admin@12345");
-    setError("");
-  };
-
   async function finishLogin(data: { mustChangePassword: boolean }) {
     if (multiTenant && companyCode.trim()) {
       localStorage.setItem(LAST_COMPANY_CODE_KEY, companyCode.trim());
@@ -176,32 +180,12 @@ export default function Login() {
     onSuccess: async (data) => {
       if (data.requiresTwoFactor) {
         setTicket(data.ticket);
-        setOtp("");
-        setRecoveryCode("");
-        setUseRecovery(false);
         setStep("otp");
         return;
       }
       await finishLogin(data);
     },
     onError: (e) => setError(translateLoginError(e.message)),
-  });
-
-  const verify2fa = trpc.auth.twoFactorVerify.useMutation({
-    onSuccess: async (data) => {
-      if (data.recoveryCodesRemaining != null && data.recoveryCodesRemaining <= 3) {
-        console.warn(`رموز الاسترداد المتبقية: ${data.recoveryCodesRemaining}`);
-      }
-      await finishLogin(data);
-    },
-    onError: (e) => {
-      setError(translateLoginError(e.message));
-      setOtp("");
-      if (e.message.includes("انتهت مهلة التحقق")) {
-        setStep("credentials");
-        setTicket(null);
-      }
-    },
   });
 
   const resetPassword = trpc.auth.resetPasswordWithToken.useMutation({
@@ -215,25 +199,9 @@ export default function Login() {
     onError: (e) => setError(e.message),
   });
 
-  function submitOtp(code?: string) {
-    if (!ticket) return;
-    setError("");
-    if (useRecovery) {
-      if (!recoveryCode.trim()) return;
-      verify2fa.mutate({ ticket, recoveryCode: recoveryCode.trim() });
-    } else {
-      const c = (code ?? otp).trim();
-      if (c.length !== 6) return;
-      verify2fa.mutate({ ticket, code: c });
-    }
-  }
-
   function backToCredentials() {
     setStep("credentials");
     setTicket(null);
-    setOtp("");
-    setRecoveryCode("");
-    setUseRecovery(false);
     setResetDone(false);
     setError("");
   }
@@ -268,282 +236,12 @@ export default function Login() {
         />
       </div>
 
-      {/* الجانب الجانبي: المعرض الأيقوني لشعار الرؤية العربية بنمط تصميم أبل الفاخر */}
-      <div className="hidden lg:flex lg:w-1/2 relative bg-[#040711] flex-col justify-between p-8 xl:p-12 overflow-hidden border-e border-white/[0.06] h-full select-none">
-        {/* خلفية أبل السينمائية مع تدرج خافت مستوحى من ألوان الشعار بألوان مباشرة غير خاضعة لحارس الكلاسات */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          <div
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[680px] h-[680px] blur-3xl"
-            style={{
-              background: "radial-gradient(circle, rgba(16,123,99,0.16) 0%, rgba(200,90,39,0.10) 45%, transparent 70%)",
-            }}
-          />
-        </div>
+      {/* الجانب الجانبي: واجهة الاستعراض البصري والشعار بنمط أبل الصافي (محمّلة بالطلب لتخفيف الحزمة الأساسية) */}
+      <Suspense fallback={<div className="hidden lg:flex lg:w-1/2 bg-[#040711]" />}>
+        <LoginShowcase mouseCoord={mouseCoord} baghdadTime={baghdadTime} />
+      </Suspense>
 
-        {/* إشعار أبل العلوي الرقيق */}
-        <div className="relative z-10 flex items-center justify-between">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.08] backdrop-blur-xl text-[11px] font-medium text-slate-300 shadow-sm">
-            <span className="size-1.5 rounded-full bg-money-positive animate-pulse" />
-            <span className="tracking-wide">المنظومة المؤسسية المركزية</span>
-          </div>
-          <span className="text-[11px] font-mono text-slate-500 tracking-wider">BAGHDAD · IQ</span>
-        </div>
-
-        {/* قلب المشهد: الشعار الأيقوني المعلق بتأثيرات حركية مستمرة وإضاءة انعكاسية انسيابية */}
-        <div className="relative z-10 my-auto flex flex-col items-center justify-center py-6">
-          <motion.div
-            style={{
-              transform: `perspective(1000px) rotateX(${-mouseCoord.y * 6}deg) rotateY(${mouseCoord.x * 6}deg)`,
-            }}
-            transition={{ type: "spring", stiffness: 90, damping: 20 }}
-            className="relative flex flex-col items-center justify-center"
-          >
-            {/* هالات أبل المتمركزة (Apple Keynote Orbit Rings) */}
-            <motion.div
-              aria-hidden
-              animate={{ scale: [0.98, 1.03, 0.98], opacity: [0.2, 0.4, 0.2] }}
-              transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
-              className="absolute -inset-10 sm:-inset-14 rounded-[56px] border border-white/[0.07] pointer-events-none"
-            />
-            <motion.div
-              aria-hidden
-              animate={{ scale: [1.02, 0.97, 1.02], opacity: [0.1, 0.25, 0.1] }}
-              transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
-              className="absolute -inset-20 sm:-inset-24 rounded-[72px] border border-white/[0.035] pointer-events-none"
-            />
-
-            {/* وهج شفق كاوستيك ناعم يتنفس بألوان الشعار (الأخضر الزمردي والعنبري) */}
-            <motion.div
-              aria-hidden
-              animate={{ scale: [0.95, 1.15, 0.95], opacity: [0.3, 0.55, 0.3] }}
-              transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
-              className="absolute -inset-8 rounded-full blur-3xl pointer-events-none"
-              style={{
-                background: "linear-gradient(to bottom, rgba(16,123,99,0.22), rgba(13,110,87,0.12), rgba(200,90,39,0.20))",
-              }}
-            />
-
-            {/* حاوية الشعار العائمة بالفيزياء المستمرة */}
-            <motion.div
-              animate={{ y: [-8, 8, -8], rotateZ: [-0.4, 0.4, -0.4] }}
-              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
-              className="relative p-6 sm:p-8 rounded-[40px] bg-white/[0.035] border border-white/[0.12] backdrop-blur-2xl shadow-[0_30px_90px_-20px_rgba(0,0,0,0.85)] ring-1 ring-white/10 group overflow-hidden"
-            >
-              {/* وميض الزجاج الخارجي المستمر (Apple Outer Specular Sheen) */}
-              <motion.div aria-hidden className="absolute inset-0 pointer-events-none z-10 overflow-hidden rounded-[40px]">
-                <motion.div
-                  className="w-[180%] h-full bg-gradient-to-r from-transparent via-white/[0.12] to-transparent -skew-x-25"
-                  animate={{ x: ["-130%", "230%"] }}
-                  transition={{ duration: 4.5, repeat: Infinity, repeatDelay: 2.8, ease: [0.25, 0.1, 0.25, 1] }}
-                />
-              </motion.div>
-
-              {/* مجسم الشعار المعلق مع طبقات التدفق والانسياب الضوئي الحي بين الحروف والزوايا */}
-              <div className="relative z-20 w-56 sm:w-64 xl:w-72 aspect-[3/4] flex items-center justify-center select-none">
-                {/* الشعار الرسمي بدقته الكاملة دون أي تشويه أو تغيير لحروفه */}
-                <img
-                  src="/logo.png"
-                  alt="شعار شركة الرؤية العربية"
-                  className="w-full h-full object-contain select-none pointer-events-none drop-shadow-[0_20px_35px_rgba(0,0,0,0.6)]"
-                />
-
-                {/* طبقة الانسياب والتغلغل الضوئي بين حروف الخط العربي وزوايا الشعار */}
-                <div
-                  className="absolute inset-0 pointer-events-none overflow-hidden rounded-[30px] sm:rounded-[36px]"
-                  style={{
-                    maskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
-                    WebkitMaskImage: "radial-gradient(circle at center, black 88%, transparent 100%)",
-                  }}
-                >
-                  {/* ١. شعاع الانسياب القطري العريض المتناغم مع ميلان قطة القلم العربي (135°) */}
-                  <motion.div
-                    className="absolute inset-0 pointer-events-none"
-                    style={{ mixBlendMode: "color-dodge" }}
-                  >
-                    <motion.div
-                      className="w-[240%] h-[240%] -top-[70%] -left-[70%] absolute"
-                      style={{
-                        background:
-                          "linear-gradient(135deg, transparent 32%, rgba(255,255,255,0.08) 40%, rgba(16,185,129,0.55) 46%, rgba(255,255,255,0.98) 50%, rgba(245,158,11,0.55) 54%, rgba(255,255,255,0.08) 60%, transparent 68%)",
-                        filter: "blur(2px)",
-                      }}
-                      animate={{
-                        x: ["-85%", "85%"],
-                        y: ["-85%", "85%"],
-                      }}
-                      transition={{
-                        duration: 3.4,
-                        repeat: Infinity,
-                        repeatDelay: 1.8,
-                        ease: [0.25, 0.1, 0.25, 1],
-                      }}
-                    />
-                  </motion.div>
-
-                  {/* ٢. تيار انكساري أفقي يمسح خطوط ارتكاز الحروف وزوايا الانحناء */}
-                  <motion.div
-                    className="absolute inset-0 pointer-events-none"
-                    style={{ mixBlendMode: "screen" }}
-                  >
-                    <motion.div
-                      className="w-[200%] h-full absolute top-0"
-                      style={{
-                        background:
-                          "linear-gradient(90deg, transparent 30%, rgba(255,255,255,0.2) 44%, rgba(255,255,255,0.85) 50%, rgba(255,255,255,0.2) 56%, transparent 70%)",
-                        filter: "blur(6px)",
-                      }}
-                      animate={{
-                        x: ["-130%", "230%"],
-                      }}
-                      transition={{
-                        duration: 4.8,
-                        repeat: Infinity,
-                        repeatDelay: 2.8,
-                        ease: "easeInOut",
-                      }}
-                    />
-                  </motion.div>
-
-                  {/* ٣. نواة الضوء السائلة العلوية المتغلغلة بين حروف الأخضر الزمردي */}
-                  <motion.div
-                    aria-hidden
-                    className="absolute size-32 rounded-full pointer-events-none -translate-x-1/2 -translate-y-1/2"
-                    style={{
-                      left: "50%",
-                      top: "38%",
-                      background:
-                        "radial-gradient(circle, rgba(255,255,255,0.9) 0%, rgba(16,185,129,0.65) 30%, rgba(16,185,129,0.2) 60%, transparent 80%)",
-                      filter: "blur(16px)",
-                      mixBlendMode: "color-dodge",
-                    }}
-                    animate={{
-                      x: ["-35%", "35%", "-15%", "25%", "-35%"],
-                      y: ["-25%", "-8%", "-22%", "-5%", "-25%"],
-                      scale: [0.85, 1.35, 0.95, 1.25, 0.85],
-                      opacity: [0.4, 0.9, 0.5, 0.85, 0.4],
-                    }}
-                    transition={{
-                      duration: 6.5,
-                      repeat: Infinity,
-                      ease: "easeInOut",
-                    }}
-                  />
-
-                  {/* ٤. نواة الضوء السائلة السفلية المنسابة بين ثنايا الخط العنبري */}
-                  <motion.div
-                    aria-hidden
-                    className="absolute size-32 rounded-full pointer-events-none -translate-x-1/2 -translate-y-1/2"
-                    style={{
-                      left: "50%",
-                      top: "65%",
-                      background:
-                        "radial-gradient(circle, rgba(255,245,215,0.9) 0%, rgba(200,90,39,0.65) 30%, rgba(200,90,39,0.2) 60%, transparent 80%)",
-                      filter: "blur(16px)",
-                      mixBlendMode: "screen",
-                    }}
-                    animate={{
-                      x: ["30%", "-30%", "18%", "-22%", "30%"],
-                      y: ["5%", "25%", "-2%", "20%", "5%"],
-                      scale: [1.2, 0.85, 1.3, 0.9, 1.2],
-                      opacity: [0.35, 0.85, 0.45, 0.8, 0.35],
-                    }}
-                    transition={{
-                      duration: 8,
-                      repeat: Infinity,
-                      ease: "easeInOut",
-                    }}
-                  />
-
-                  {/* ٥. ذرات ضوئية سيّالة تتصاعد بنعومة بين فراغات الحروف العربية كأفلاك كاوستيك */}
-                  {[
-                    { left: "28%", bottom: "20%", delay: 0.2, dur: 4.5, xShift: 8 },
-                    { left: "45%", bottom: "25%", delay: 1.1, dur: 5.2, xShift: -10 },
-                    { left: "62%", bottom: "18%", delay: 2.0, dur: 4.8, xShift: 12 },
-                    { left: "38%", bottom: "35%", delay: 2.8, dur: 5.5, xShift: -8 },
-                    { left: "54%", bottom: "40%", delay: 0.7, dur: 4.2, xShift: 10 },
-                  ].map((ember, i) => (
-                    <motion.div
-                      key={i}
-                      aria-hidden
-                      className="absolute size-1.5 rounded-full pointer-events-none"
-                      style={{
-                        left: ember.left,
-                        bottom: ember.bottom,
-                        background: i % 2 === 0 ? "rgba(220,255,240,0.95)" : "rgba(255,230,195,0.95)",
-                        boxShadow:
-                          i % 2 === 0
-                            ? "0 0 10px rgba(16,185,129,0.9)"
-                            : "0 0 10px rgba(245,158,11,0.9)",
-                        mixBlendMode: "screen",
-                      }}
-                      animate={{
-                        y: [0, -110, -180],
-                        x: [0, ember.xShift, -ember.xShift * 0.5],
-                        opacity: [0, 0.95, 0],
-                        scale: [0.5, 1.4, 0.3],
-                      }}
-                      transition={{
-                        duration: ember.dur,
-                        repeat: Infinity,
-                        delay: ember.delay,
-                        ease: "easeInOut",
-                      }}
-                    />
-                  ))}
-
-                  {/* ٦. وميض بريق الزوايا الأربع (Corner Angle Bevel Glints) */}
-                  <motion.div
-                    aria-hidden
-                    className="absolute top-2.5 right-2.5 size-4 rounded-full pointer-events-none"
-                    style={{
-                      background: "radial-gradient(circle, rgba(255,255,255,0.95) 0%, transparent 70%)",
-                      filter: "blur(1px)",
-                    }}
-                    animate={{ opacity: [0.2, 0.95, 0.2], scale: [0.8, 1.3, 0.8] }}
-                    transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
-                  />
-                  <motion.div
-                    aria-hidden
-                    className="absolute bottom-2.5 left-2.5 size-4 rounded-full pointer-events-none"
-                    style={{
-                      background: "radial-gradient(circle, rgba(255,255,255,0.95) 0%, transparent 70%)",
-                      filter: "blur(1px)",
-                    }}
-                    animate={{ opacity: [0.15, 0.9, 0.15], scale: [0.8, 1.3, 0.8] }}
-                    transition={{ duration: 3.4, repeat: Infinity, repeatDelay: 0.4, ease: "easeInOut" }}
-                  />
-                </div>
-              </div>
-            </motion.div>
-
-            {/* عنوان الهوية المؤسسية بنمط خطوط أبل الأنيقة الواضحة */}
-            <div className="text-center space-y-1.5 mt-8 select-none">
-              <div role="heading" aria-level={1} className="text-2xl xl:text-3xl font-bold tracking-tight text-white/95">
-                شركة الرؤية العربية
-              </div>
-              <p className="text-xs xl:text-sm text-slate-400 font-light tracking-wide">
-                المنظومة المؤسسية الموحدة للتجارة العامة والطباعة
-              </p>
-            </div>
-          </motion.div>
-        </div>
-
-        {/* شريط أبل السفلي البسيط: حالة الاتصال وتوقيت العاصمة */}
-        <div className="relative z-10 flex items-center justify-between text-xs text-slate-400 border-t border-white/[0.06] pt-4">
-          <div className="flex items-center gap-2">
-            <span className="size-1.5 rounded-full bg-money-positive" />
-            <span className="text-[11px] text-slate-400 font-medium">بغداد — العامرية</span>
-          </div>
-          <div className="flex items-center gap-3 font-mono text-[11px]">
-            <span className="text-slate-300 bg-white/[0.04] px-2 py-0.5 rounded border border-white/[0.08] font-bold">
-              {baghdadTime || "15:00:00"}
-            </span>
-            <span className="text-slate-500">TLS 1.3</span>
-          </div>
-        </div>
-      </div>
-
-      {/* الجانب الأيسر: بوابة الولوج التنفيذية بنمط تصميم أبل الفاخر (Apple Executive Terminal) */}
+{/* الجانب الأيسر: بوابة الولوج التنفيذية بنمط تصميم أبل الفاخر (Apple Executive Terminal) */}
       <div className="w-full lg:w-1/2 flex items-center justify-center p-4 sm:p-6 lg:p-10 relative overflow-hidden bg-[#03060d]/50 backdrop-blur-3xl h-full overflow-y-auto lg:overflow-hidden select-none">
         <div className="w-full max-w-md relative z-10">
           {/* ترويسة الشاشات الصغيرة للموبايل بنمط أبل المنظم */}
@@ -595,17 +293,7 @@ export default function Login() {
                 <span>بوابة الولوج المعتمدة</span>
               </div>
 
-              {step === "credentials" ? (
-                <button
-                  type="button"
-                  onClick={handleQuickFillAdmin}
-                  className="text-[11px] text-slate-300 hover:text-white transition inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] active:scale-[0.96] border border-white/[0.08] shadow-sm font-medium"
-                  title="تعبئة حساب الإدارة للتجربة السريعة"
-                >
-                  <User className="size-3 text-slate-400" aria-hidden />
-                  <span>حساب المدير (تجريبي)</span>
-                </button>
-              ) : (
+              {step !== "credentials" && (
                 <button
                   type="button"
                   onClick={backToCredentials}
@@ -681,7 +369,13 @@ export default function Login() {
                     e.preventDefault();
                     setError("");
                     try {
-                      localStorage.setItem(REMEMBER_KEY, remember ? "1" : "0");
+                      if (remember && identifier.trim()) {
+                        localStorage.setItem(SAVED_IDENTIFIER_KEY, identifier.trim());
+                        localStorage.setItem(REMEMBER_KEY, "1");
+                      } else {
+                        localStorage.removeItem(SAVED_IDENTIFIER_KEY);
+                        localStorage.setItem(REMEMBER_KEY, "0");
+                      }
                     } catch {
                       // ignore
                     }
@@ -731,10 +425,20 @@ export default function Login() {
                         autoCapitalize="none"
                         value={identifier}
                         onChange={(e) => setIdentifier(e.target.value)}
-                        className="pe-10 ps-4 h-12 text-sm bg-white/[0.04] hover:bg-white/[0.06] focus:bg-white/[0.07] border border-white/[0.1] focus:border-white/30 rounded-2xl text-white placeholder:text-slate-500 shadow-[0_2px_8px_rgba(0,0,0,0.25)_inset] focus:ring-2 focus:ring-white/15 focus:outline-none transition-all duration-200"
-                        placeholder="admin@alroya.local"
+                        className="pe-10 ps-10 h-12 text-sm bg-white/[0.04] hover:bg-white/[0.06] focus:bg-white/[0.07] border border-white/[0.1] focus:border-white/30 rounded-2xl text-white placeholder:text-slate-500 shadow-[0_2px_8px_rgba(0,0,0,0.25)_inset] focus:ring-2 focus:ring-white/15 focus:outline-none transition-all duration-200"
+                        placeholder="اسم المستخدم أو البريد الإلكتروني"
                         required
                       />
+                      {identifier && (
+                        <button
+                          type="button"
+                          onClick={() => setIdentifier("")}
+                          className="absolute left-3.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-white hover:bg-white/[0.1] transition"
+                          title="مسح الحقل"
+                        >
+                          <X className="size-3.5" aria-hidden />
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -974,105 +678,28 @@ export default function Login() {
                   )}
                 </motion.form>
               ) : (
-                <motion.form
-                  key="otp-form"
-                  initial={{ opacity: 0, x: -16 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 16 }}
-                  transition={{ duration: 0.2 }}
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submitOtp();
-                  }}
-                  className="space-y-4 relative z-20"
+                <Suspense
+                  fallback={
+                    <div className="flex items-center justify-center p-8">
+                      <span className="size-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    </div>
+                  }
                 >
-                  <p className="text-xs text-slate-400 leading-relaxed font-light">
-                    {useRecovery
-                      ? "أدخل أحد رموز الاسترداد التي حفظتها عند إعداد المصادقة الثنائية."
-                      : "أدخل الرمز المكون من 6 أرقام من تطبيق المصادقة (Google Authenticator) على هاتفك."}
-                  </p>
-
-                  {useRecovery ? (
-                    <div className="space-y-1.5">
-                      <Label htmlFor="recoveryCode" className="text-xs font-medium text-slate-300 tracking-wide block">
-                        رمز الاسترداد
-                      </Label>
-                      <Input
-                        id="recoveryCode"
-                        type="text"
-                        dir="ltr"
-                        autoComplete="one-time-code"
-                        placeholder="XXXXX-XXXXX"
-                        value={recoveryCode}
-                        onChange={(e) => setRecoveryCode(e.target.value)}
-                        className="h-12 font-mono text-center tracking-widest bg-white/[0.04] hover:bg-white/[0.06] border border-white/[0.1] rounded-2xl text-white"
-                        autoFocus
-                        required
-                      />
-                    </div>
-                  ) : (
-                    <div dir="ltr" className="flex justify-center py-2">
-                      <InputOTP
-                        maxLength={6}
-                        pattern={REGEXP_ONLY_DIGITS}
-                        inputMode="numeric"
-                        autoFocus
-                        value={otp}
-                        onChange={setOtp}
-                        onComplete={(v: string) => submitOtp(v)}
-                        disabled={verify2fa.isPending}
-                      >
-                        <InputOTPGroup className="gap-2">
-                          {[0, 1, 2, 3, 4, 5].map((i) => (
-                            <InputOTPSlot
-                              key={i}
-                              index={i}
-                              className="h-13 w-11 rounded-2xl border border-white/[0.12] bg-white/[0.04] text-xl font-mono font-bold text-white shadow-[0_2px_8px_rgba(0,0,0,0.25)_inset] focus:border-white/40 focus:ring-2 focus:ring-white/20 transition-all"
-                            />
-                          ))}
-                        </InputOTPGroup>
-                      </InputOTP>
-                    </div>
-                  )}
-
-                  <Button
-                    type="submit"
-                    className="w-full h-12 rounded-2xl font-semibold text-sm bg-gradient-to-b from-[#2563eb] to-[#1d4ed8] hover:from-[#3b82f6] hover:to-[#2563eb] text-white shadow-[0_4px_18px_rgba(37,99,235,0.35),0_1px_0_rgba(255,255,255,0.25)_inset] border border-blue-400/30 active:scale-[0.98] transition-all duration-200 flex items-center justify-center gap-2"
-                    disabled={verify2fa.isPending}
-                  >
-                    {verify2fa.isPending ? (
-                      <>
-                        <span className="size-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        <span>جارٍ التحقق وتأكيد الهوية…</span>
-                      </>
-                    ) : (
-                      <>
-                        <ShieldCheck className="size-4" aria-hidden />
-                        <span>تأكيد ومتابعة</span>
-                      </>
-                    )}
-                  </Button>
-
-                  <div className="flex items-center justify-between text-xs pt-1">
-                    <button
-                      type="button"
-                      className="text-blue-400 hover:text-blue-300 font-medium transition-colors"
-                      onClick={() => {
-                        setUseRecovery((v) => !v);
-                        setError("");
-                      }}
-                    >
-                      {useRecovery ? "استخدم رمز التطبيق" : "فقدت هاتفك؟ رمز الاسترداد"}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-slate-400 hover:text-white transition"
-                      onClick={backToCredentials}
-                    >
-                      رجوع
-                    </button>
-                  </div>
-                </motion.form>
+                  <TwoFactorForm
+                    ticket={ticket}
+                    onSuccess={async (data: { mustChangePassword: boolean; recoveryCodesRemaining?: number | null }) => {
+                      await finishLogin(data);
+                    }}
+                    onError={(err: string) => {
+                      setError(err);
+                    }}
+                    onBack={backToCredentials}
+                    onExpired={() => {
+                      setStep("credentials");
+                      setTicket(null);
+                    }}
+                  />
+                </Suspense>
               )}
             </AnimatePresence>
 
