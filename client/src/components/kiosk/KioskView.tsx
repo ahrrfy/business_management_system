@@ -29,6 +29,19 @@ export type KProduct = {
   imageUrl: string | null;
 };
 
+export type KPromo = {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  imageUrl: string | null;
+  ctaLabel: string | null;
+};
+
+export type SlideItem =
+  | { type: "product"; product: KProduct; id: string }
+  | { type: "promo"; promo: KPromo; id: string };
+
+
 type Settings = {
   branchId: number | null;
   theme: "light" | "dark";
@@ -146,8 +159,20 @@ function PriceBlock({ p, priceScale }: { p: KProduct; priceScale: number }) {
   );
 }
 
+// ── صورة الشريحة الترويجية ──────────────────────────────────────────────
+function PromoSlideMedia({ promo, defer = false }: { promo: KPromo; defer?: boolean }) {
+  if (defer) return <div className="kpc-ph" aria-hidden="true" />;
+  if (promo.imageUrl) return <img className="kpc-img" src={promo.imageUrl} alt={promo.title} />;
+  return (
+    <div className="kpc-ph">
+      <span className="kpc-ph-cat">عرض خاص</span>
+      <span className="kpc-ph-sub">الرؤية العربية</span>
+    </div>
+  );
+}
+
 // ── خلط Fisher-Yates (نسخة جديدة — لا يطال المصدر) ─────────────────────────
-function fisherYates(arr: KProduct[]): KProduct[] {
+function fisherYates<T>(arr: T[]): T[] {
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -156,33 +181,71 @@ function fisherYates(arr: KProduct[]): KProduct[] {
   return copy;
 }
 
-// ── البنر المتحرك — خلط مستمر بلا تكرار ─────────────────────────────────────
-function Banner({ products: source, rotateSec, priceScale, paused }: { products: KProduct[]; rotateSec: number; priceScale: number; paused: boolean }) {
-  const [display, setDisplay] = useState<KProduct[]>([]);
+// ── بناء حلقة الشرائح بدمج المنتجات مع البنرات الإعلانية الترويجية ─────────
+function buildSlideDeck(products: KProduct[], promos: KPromo[]): SlideItem[] {
+  if (products.length === 0 && promos.length === 0) return [];
+  if (promos.length === 0) {
+    return products.map((p) => ({ type: "product", product: p, id: `prod-${p.productId}` }));
+  }
+  if (products.length === 0) {
+    return promos.map((pr) => ({ type: "promo", promo: pr, id: `promo-${pr.id}` }));
+  }
+
+  const deck: SlideItem[] = [];
+  let promoIndex = 0;
+  for (let i = 0; i < products.length; i++) {
+    deck.push({ type: "product", product: products[i], id: `prod-${products[i].productId}` });
+    // إدراج شريحة إعلانية كل ٥ منتجات بتناوب تسويقي جذاب
+    if ((i + 1) % 5 === 0 && promos.length > 0) {
+      const pr = promos[promoIndex % promos.length];
+      deck.push({ type: "promo", promo: pr, id: `promo-${pr.id}-${i}` });
+      promoIndex++;
+    }
+  }
+  return deck;
+}
+
+// ── البنر المتحرك — خلط مستمر وعرض المنتجات والعروض بلا تكرار ────────────────
+function Banner({
+  products: source,
+  promos = [],
+  rotateSec,
+  priceScale,
+  paused,
+}: {
+  products: KProduct[];
+  promos?: KPromo[];
+  rotateSec: number;
+  priceScale: number;
+  paused: boolean;
+}) {
+  const [display, setDisplay] = useState<SlideItem[]>([]);
   const [idx, setIdx] = useState(0);
   const n = display.length;
   const rotateMs = Math.max(2, rotateSec) * 1000;
 
   // خلط أوّلي عند تغيّر البيانات المصدرية (تحميل أوّل أو إعادة جلب كل ٥ دقائق)
   useEffect(() => {
-    setDisplay(source.length > 1 ? fisherYates(source) : source);
+    const shuffled = source.length > 1 ? fisherYates(source) : source;
+    setDisplay(buildSlideDeck(shuffled, promos));
     setIdx(0);
-  }, [source]);
+  }, [source, promos]);
 
   // دوران مع إعادة خلط عند إتمام دورة كاملة — كل منتج يُعرض قبل أي تكرار
   useEffect(() => {
     if (paused || n <= 1) return;
     const id = setInterval(() => {
-      setIdx(prev => {
+      setIdx((prev) => {
         if (prev + 1 >= n) {
-          setDisplay(d => d.length > 1 ? fisherYates(d) : d);
+          const shuffled = source.length > 1 ? fisherYates(source) : source;
+          setDisplay(buildSlideDeck(shuffled, promos));
           return 0;
         }
         return prev + 1;
       });
     }, rotateMs);
     return () => clearInterval(id);
-  }, [paused, n, rotateMs]);
+  }, [paused, n, rotateMs, source, promos]);
 
   if (n === 0) {
     return (
@@ -198,16 +261,42 @@ function Banner({ products: source, rotateSec, priceScale, paused }: { products:
   return (
     <div className="banner">
       <div className="slides">
-        {display.map((p, i) => (
-          <div key={p.productId} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
-            <div className="slide-media"><KioskImage p={p} defer={!isNearActive(i, idx, n)} /></div>
-            <div className="slide-info">
-              <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
-              <h1 className="prod-name">{p.productName}</h1>
-              <PriceBlock p={p} priceScale={priceScale} />
+        {display.map((item, i) => {
+          const defer = !isNearActive(i, idx, n);
+          if (item.type === "promo") {
+            const pr = item.promo;
+            return (
+              <div key={item.id} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
+                <div className="slide-promo">
+                  <div className="promo-banner-media">
+                    <PromoSlideMedia promo={pr} defer={defer} />
+                  </div>
+                  <div className="promo-info">
+                    <div className="promo-badge">عرض خاص</div>
+                    <h1 className="promo-title">{pr.title}</h1>
+                    {pr.subtitle && <p className="promo-subtitle">{pr.subtitle}</p>}
+                    {pr.ctaLabel && (
+                      <div className="promo-callout">
+                        <span>{pr.ctaLabel}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          const p = item.product;
+          return (
+            <div key={item.id} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
+              <div className="slide-media"><KioskImage p={p} defer={defer} /></div>
+              <div className="slide-info">
+                <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
+                <h1 className="prod-name">{p.productName}</h1>
+                <PriceBlock p={p} priceScale={priceScale} />
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       {n > 1 && (
         <div className="banner-progress">
@@ -306,12 +395,24 @@ export default function KioskView({
   const staffBranchId = settings.branchId ?? branches[0]?.id ?? null;
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
-  // البنر: كامل الكتالوج بلا سقف. الخلط يتمّ داخل مكوّن Banner عند كل دورة عرض كاملة.
+  // البنر: كامل الكتالوج بلا سقف. مع الاحتفاظ بالبيانات السابقة ضد انقطاع الشبكة المؤقت.
+  const cachedProductsRef = useRef<KProduct[]>([]);
   const bannerQ = trpc.kiosk.banner.useQuery(
     isDevice ? {} : { branchId: staffBranchId ?? 0 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
-  const products = (bannerQ.data ?? []) as KProduct[];
+  if (bannerQ.data && bannerQ.data.length > 0) {
+    cachedProductsRef.current = bannerQ.data as KProduct[];
+  }
+  const products = (bannerQ.data && bannerQ.data.length > 0 ? bannerQ.data : cachedProductsRef.current) as KProduct[];
+
+  // العروض والبنرات الإعلانية لشاشة الكشك
+  const promosQ = trpc.kiosk.promotions.useQuery(
+    isDevice ? undefined : { branchId: staffBranchId ?? undefined },
+    { enabled: isDevice || staffBranchId != null, refetchInterval: 10 * 60 * 1000, refetchOnWindowFocus: false }
+  );
+  const promos = (promosQ.data ?? []) as KPromo[];
+
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();
@@ -400,7 +501,7 @@ export default function KioskView({
             </div>
           </header>
 
-          <Banner products={products} rotateSec={settings.rotateSec} priceScale={settings.priceScale} paused={scan.mode !== "idle"} />
+          <Banner products={products} promos={promos} rotateSec={settings.rotateSec} priceScale={settings.priceScale} paused={scan.mode !== "idle"} />
 
           {/* التذييل: تعليمات + QR */}
           <footer className="kiosk-footer">
