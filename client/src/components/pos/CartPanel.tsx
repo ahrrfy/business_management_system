@@ -5,13 +5,14 @@
 
 import { variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-react";
 import { motion } from "framer-motion";
 import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
 import { type Tier, type NumMode, type CartItem, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
 import { CartCustomerButton } from "./CartCustomerButton";
 import { CartDeliveryPanel } from "./CartDeliveryPanel";
+import { CartPanelFooter } from "./CartPanelFooter";
 import type { DeliveryCustomerIdentity } from "./DeliveryCustomerSection";
 import { emptyDeliveryDraft, type DeliveryDraft } from "./deliveryMode";
 
@@ -78,12 +79,18 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
   // الأساس لكل صنف (variant) عبر كل وحداته في السلّة، لأنّ رصيد الفرع (stockBase) واحدٌ للصنف
   // ويُشترَك بين وحداته (قطعة/درزن/كرتون). المقارنة بالمجموع لا بكل سطر ⇒ يُكتشف النقص حتى حين
   // يُباع الصنف نفسه بوحدات متعددة (١ درزن + ١ قطعة قد يتجاوزان المتاح رغم أنّ كلّ سطر وحده لا يتجاوزه).
-  const demandByVariant = new Map<number, number>();
-  for (const c of cart) {
-    const f = Number(c.row.conversionFactor) || 1;
-    demandByVariant.set(c.row.variantId, (demandByVariant.get(c.row.variantId) ?? 0) + c.qty * f);
-  }
-  const reservationVariantIds = Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId)));
+  const demandByVariant = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const c of cart) {
+      const f = Number(c.row.conversionFactor) || 1;
+      map.set(c.row.variantId, (map.get(c.row.variantId) ?? 0) + c.qty * f);
+    }
+    return map;
+  }, [cart]);
+  const reservationVariantIds = useMemo(
+    () => Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId))),
+    [cart],
+  );
   const allocationsQ = trpc.reservations.activeAllocations.useQuery(
     { branchId, variantIds: reservationVariantIds },
     { enabled: reservationVariantIds.length > 0, staleTime: 15_000 },
@@ -378,25 +385,14 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
         </table>
       </div>
 
-      {/* Footer */}
-      {cart.length > 0 && (
-        <div style={{ borderTop: `2px solid ${C.border}`, padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.muted, flexShrink: 0, gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <span style={{ fontSize: 13, color: C.mutedFg, whiteSpace: "nowrap" }}>{cart.length} منتج · {itemCount} قطعة</span>
-            {flaggedCount > 0 && (
-              // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
-              <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <AlertTriangle aria-hidden size={13} /> {flaggedCount} منتج ناقص المخزون
-              </span>
-            )}
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-            <span style={{ fontSize: 13.5, color: C.mutedFg }}>المجموع:</span>
-            <span style={{ fontSize: 28, fontWeight: 900, direction: "ltr", color: C.fg }}>{fmt(total)}</span>
-            <span style={{ fontSize: 13, color: C.mutedFg }}>د.ع</span>
-          </div>
-        </div>
-      )}
+      <CartPanelFooter
+        C={C}
+        cartLength={cart.length}
+        itemCount={itemCount}
+        flaggedCount={flaggedCount}
+        anyOut={anyOut}
+        total={total}
+      />
     </div>
   );
 }

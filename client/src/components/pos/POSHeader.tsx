@@ -5,7 +5,7 @@
 
 import type { RouterOutputs } from "@/lib/trpc";
 import { useEffect, useRef } from "react";
-import { Store, Search, X, CreditCard } from "lucide-react";
+import { Store, Search, X, CreditCard, WifiOff } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { SHOP, fmt, type PosColors as C } from "./posShared";
 
@@ -26,9 +26,10 @@ export interface POSHeaderProps {
   cardsDisabled: boolean;
   cardsDisabledReason?: string;
   branchName: string;
+  offline?: boolean;
 }
 
-export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, lastInv, onOpenCards, cardsDisabled, cardsDisabledReason, branchName }: POSHeaderProps) {
+export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, lastInv, onOpenCards, cardsDisabled, cardsDisabledReason, branchName, offline }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -52,6 +53,28 @@ export function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results
           <div style={{ fontSize: 11, color: C.mutedFg, lineHeight: 1.2 }}>نقطة البيع</div>
         </div>
       </div>
+
+      {offline && (
+        <div
+          role="status"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            background: "var(--sem-warn-bg)",
+            color: "var(--sem-warn)",
+            border: "1px solid var(--sem-warn)",
+            borderRadius: 8,
+            padding: "4px 10px",
+            fontSize: 12,
+            fontWeight: 800,
+            flexShrink: 0,
+          }}
+        >
+          <WifiOff aria-hidden size={15} />
+          <span>أوفلاين (حفظ محلي)</span>
+        </div>
+      )}
 
       <div style={{ width: 1, height: 28, background: C.border, flexShrink: 0 }} />
 
