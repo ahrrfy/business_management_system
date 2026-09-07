@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Truck, ArrowLeft, CheckCircle2, AlertTriangle, Wallet } from "lucide-react";
+import { Truck, ArrowLeft, CheckCircle2, AlertTriangle, Wallet, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -11,11 +11,12 @@ export function DeliveryCustodyCard() {
   });
 
   const rows = board.data ?? [];
-  const couriersWithCash = rows.filter(
-    (r) => Number(r.deliveredUnremitted?.amount || 0) > 0 || Number(r.cashInHandLedger || 0) > 0
-  );
+  const rowEffectiveCash = (r: (typeof rows)[number]) =>
+    Math.max(Number(r.deliveredUnremitted?.amount || 0), Number(r.cashInHandLedger || 0));
+
+  const couriersWithCash = rows.filter((r) => rowEffectiveCash(r) > 0);
   const totalUnremittedCash = rows.reduce(
-    (acc, r) => acc + Number(r.deliveredUnremitted?.amount || 0),
+    (acc, r) => acc + rowEffectiveCash(r),
     0
   );
   const totalStaleParcels = rows.reduce(
@@ -35,7 +36,26 @@ export function DeliveryCustodyCard() {
   }
 
   if (board.isError) {
-    return null;
+    return (
+      <div
+        role="alert"
+        className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-xs text-destructive"
+      >
+        <span className="flex items-center gap-2">
+          <AlertTriangle className="size-4 shrink-0" />
+          تعذّر فحص عهد وأمانات التوصيل؛ لا يمكن افتراض خلو ذمم المناديب من النقد المعلّق.
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5"
+          onClick={() => void board.refetch()}
+        >
+          <RefreshCcw className="size-3.5" /> إعادة المحاولة
+        </Button>
+      </div>
+    );
   }
 
   const isClear = totalUnremittedCash <= 0 && couriersWithCash.length === 0;

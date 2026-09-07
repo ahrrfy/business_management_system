@@ -71,7 +71,12 @@ describe("عقد صلاحيات وحالات تحميل المطابقة الي�
   });
 
   it("لا يخفي فشل تحميل طابور العهد أو العهد الشخصية أو قائمة المستلمين", () => {
-    const source = readPage("Treasury.tsx");
+    const treasurySource = readPage("Treasury.tsx");
+    const handoversSectionSource = readFileSync(
+      new URL("../../components/treasury/PendingHandoversSection.tsx", import.meta.url),
+      "utf8",
+    );
+    const source = `${treasurySource}\n${handoversSectionSource}`;
 
     for (const query of ["pendingQueue", "pendingHandovers", "handoverRecipients"]) {
       expect(source).toContain(`${query}.isLoading`);
