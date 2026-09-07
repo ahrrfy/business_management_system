@@ -269,142 +269,109 @@ export default function Login() {
         />
       </div>
 
-      {/* الجانب الأيمن: قمرة العمليات والنشاط التجاري لشركة الرؤية العربية (شاشات lg فما فوق) */}
-      <div className="hidden lg:flex lg:w-1/2 relative bg-[#080d1a]/80 backdrop-blur-md flex-col justify-between p-6 xl:p-10 overflow-hidden border-e border-white/[0.08] h-full">
-        {/* ترويسة الهوية المؤسسية الرسمية مع شعار الخط العربي المعتمد */}
-        <div className="relative z-10 space-y-3">
-          <div className="flex items-center gap-3.5">
-            {/* الشعار الرسمي للشركة */}
-            <div className="size-13 rounded-2xl bg-white/[0.08] border border-white/20 p-2 backdrop-blur-md shadow-xl flex items-center justify-center shrink-0 ring-1 ring-white/10">
-              <img
-                src="/logo.png"
-                alt="شعار شركة الرؤية العربية"
-                className="w-full h-full object-contain"
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-white/[0.04] border border-white/10 text-[11px] font-medium text-slate-300">
-                <span className="relative flex size-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-money-positive opacity-75" />
-                  <span className="relative inline-flex rounded-full size-2 bg-money-positive" />
-                </span>
-                <span>المنظومة الإدارية والمالية المركزية</span>
-              </div>
-              <div role="heading" aria-level={1} className="text-2xl xl:text-3xl font-black tracking-tight text-white leading-tight">
-                شركة الرؤية العربية للتجارة العامة
-              </div>
-            </div>
-          </div>
-
-          <p className="text-xs sm:text-sm text-slate-400 max-w-lg leading-relaxed">
-            منظومة مؤسسية موحدة لإدارة العمليات التجارية، خطوط الإنتاج والطباعة، سلاسل الإمداد ونقاط البيع المركزية — بغداد، العامرية.
-          </p>
+      {/* الجانب الجانبي: المعرض الأيقوني لشعار الرؤية العربية بنمط تصميم أبل الفاخر */}
+      <div className="hidden lg:flex lg:w-1/2 relative bg-[#040711] flex-col justify-between p-8 xl:p-12 overflow-hidden border-e border-white/[0.06] h-full select-none">
+        {/* خلفية أبل السينمائية مع تدرج خافت مستوحى من ألوان الشعار بألوان مباشرة غير خاضعة لحارس الكلاسات */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[680px] h-[680px] blur-3xl"
+            style={{
+              background: "radial-gradient(circle, rgba(16,123,99,0.16) 0%, rgba(200,90,39,0.10) 45%, transparent 70%)",
+            }}
+          />
         </div>
 
-        {/* قلب المعرض: بوابة الحوكمة والأمان المؤسسي المعتمدة (Institutional Security & Governance Panel) */}
-        <div className="relative z-10 my-auto py-2 select-none w-full max-w-xl mx-auto">
+        {/* إشعار أبل العلوي الرقيق */}
+        <div className="relative z-10 flex items-center justify-between">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.08] backdrop-blur-xl text-[11px] font-medium text-slate-300 shadow-sm">
+            <span className="size-1.5 rounded-full bg-money-positive animate-pulse" />
+            <span className="tracking-wide">المنظومة المؤسسية المركزية</span>
+          </div>
+          <span className="text-[11px] font-mono text-slate-500 tracking-wider">BAGHDAD · IQ</span>
+        </div>
+
+        {/* قلب المشهد: الشعار الأيقوني المعلق بتأثيرات حركية مستمرة وإضاءة انعكاسية انسيابية */}
+        <div className="relative z-10 my-auto flex flex-col items-center justify-center py-6">
           <motion.div
             style={{
-              transform: `perspective(1000px) rotateX(${-mouseCoord.y * 7}deg) rotateY(${mouseCoord.x * 7}deg)`,
+              transform: `perspective(1000px) rotateX(${-mouseCoord.y * 6}deg) rotateY(${mouseCoord.x * 6}deg)`,
             }}
-            transition={{ type: "spring", stiffness: 120, damping: 22 }}
-            className="rounded-3xl border border-white/10 bg-[#0c1424]/90 backdrop-blur-2xl p-5 xl:p-6 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)] ring-1 ring-white/5 space-y-5"
+            transition={{ type: "spring", stiffness: 90, damping: 20 }}
+            className="relative flex flex-col items-center justify-center"
           >
-            {/* ترويسة الحوكمة: معايير الأمان المعتمدة */}
-            <div className="flex items-center justify-between border-b border-white/10 pb-3.5">
-              <div className="flex items-center gap-2.5">
-                <div className="size-8 rounded-lg bg-primary/10 border border-primary/25 flex items-center justify-center text-primary">
-                  <ShieldCheck className="size-4" aria-hidden />
-                </div>
-                <div>
-                  <h2 className="text-xs font-bold text-white">معايير الأمان وحوكمة النفاذ المؤسسي</h2>
-                  <p className="text-[10px] text-slate-400">بيئة سحابية ومحلية محمية وفق أعلى ضوابط الامتثال الإداري</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-money-positive/10 border border-money-positive/20 text-money-positive text-[11px] font-bold">
-                <span className="size-1.5 rounded-full bg-money-positive animate-pulse" />
-                <span>جلسة مشفرة ومعتمدة</span>
-              </div>
-            </div>
+            {/* هالات أبل المتمركزة (Apple Keynote Orbit Rings) */}
+            <motion.div
+              aria-hidden
+              animate={{ scale: [0.98, 1.03, 0.98], opacity: [0.2, 0.4, 0.2] }}
+              transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
+              className="absolute -inset-10 sm:-inset-14 rounded-[56px] border border-white/[0.07] pointer-events-none"
+            />
+            <motion.div
+              aria-hidden
+              animate={{ scale: [1.02, 0.97, 1.02], opacity: [0.1, 0.25, 0.1] }}
+              transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
+              className="absolute -inset-20 sm:-inset-24 rounded-[72px] border border-white/[0.035] pointer-events-none"
+            />
 
-            {/* بطاقة بروتوكول حماية سرية البيانات والامتثال الفدرالي */}
-            <div className="p-4 rounded-2xl bg-white/[0.025] border border-white/[0.06] space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="size-7 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center">
-                    <Lock className="size-3.5" aria-hidden />
-                  </div>
-                  <div>
-                    <span className="text-xs font-bold text-white block">حماية مشددة لكافة قنوات التداول</span>
-                    <span className="text-[10px] text-slate-400">تشفير القنوات عبر TLS 1.3 مع عزل تام للبيانات المالية الحساسة</span>
-                  </div>
-                </div>
-                <span className="text-[10px] font-mono font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
-                  E2EE / TLS 1.3
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="flex items-center gap-2 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                  <CheckCircle2 className="size-3.5 text-money-positive shrink-0" aria-hidden />
-                  <span className="text-[11px] text-slate-300">عزل تام للبيانات قبل المصادقة</span>
-                </div>
-                <div className="flex items-center gap-2 p-2 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-                  <CheckCircle2 className="size-3.5 text-money-positive shrink-0" aria-hidden />
-                  <span className="text-[11px] text-slate-300">مطابقة الهوية والأجهزة المرخصة</span>
-                </div>
-              </div>
-            </div>
+            {/* وهج شفق كاوستيك ناعم يتنفس بألوان الشعار (الأخضر الزمردي والعنبري) */}
+            <motion.div
+              aria-hidden
+              animate={{ scale: [0.95, 1.15, 0.95], opacity: [0.3, 0.55, 0.3] }}
+              transition={{ duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
+              className="absolute -inset-8 rounded-full blur-3xl pointer-events-none"
+              style={{
+                background: "linear-gradient(to bottom, rgba(16,123,99,0.22), rgba(13,110,87,0.12), rgba(200,90,39,0.20))",
+              }}
+            />
 
-            {/* ركائز الحوكمة الإدارية والأمنية الثلاث */}
-            <div className="grid grid-cols-3 gap-2.5">
-              <div className="p-3 rounded-xl bg-white/[0.025] border border-white/[0.06] space-y-1">
-                <div className="size-6 rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center justify-center">
-                  <KeyRound className="size-3.5" aria-hidden />
-                </div>
-                <div className="text-xs font-bold text-white">فصل الصلاحيات (RBAC)</div>
-                <p className="text-[10px] text-slate-400 leading-tight">صلاحيات وظيفية دقيقة بحسب الواجب الإداري</p>
-              </div>
+            {/* حاوية الشعار العائمة بالفيزياء المستمرة */}
+            <motion.div
+              animate={{ y: [-8, 8, -8], rotateZ: [-0.4, 0.4, -0.4] }}
+              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+              className="relative p-6 sm:p-8 rounded-[40px] bg-white/[0.035] border border-white/[0.12] backdrop-blur-2xl shadow-[0_30px_90px_-20px_rgba(0,0,0,0.85)] ring-1 ring-white/10 group overflow-hidden"
+            >
+              {/* وميض الضوء المستمر (Apple Specular Sheen) يمر فوق الحاوية دون تشويه الشعار */}
+              <motion.div aria-hidden className="absolute inset-0 pointer-events-none z-20 overflow-hidden rounded-[40px]">
+                <motion.div
+                  className="w-[180%] h-full bg-gradient-to-r from-transparent via-white/[0.20] to-transparent -skew-x-25"
+                  animate={{ x: ["-130%", "230%"] }}
+                  transition={{ duration: 3.8, repeat: Infinity, repeatDelay: 2.5, ease: [0.25, 0.1, 0.25, 1] }}
+                />
+              </motion.div>
 
-              <div className="p-3 rounded-xl bg-white/[0.025] border border-white/[0.06] space-y-1">
-                <div className="size-6 rounded-md bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center justify-center">
-                  <FileCheck2 className="size-3.5" aria-hidden />
-                </div>
-                <div className="text-xs font-bold text-white">سجل التدقيق الصارم</div>
-                <p className="text-[10px] text-slate-400 leading-tight">توثيق زمني غير قابل للتعديل لكافة الحركات</p>
+              {/* الشعار الرسمي بدقته الكاملة دون أي تشويه أو تغيير لحروفه */}
+              <div className="relative z-10 w-56 sm:w-64 xl:w-72 aspect-[3/4] flex items-center justify-center">
+                <img
+                  src="/logo.png"
+                  alt="شعار شركة الرؤية العربية"
+                  className="w-full h-full object-contain select-none pointer-events-none drop-shadow-[0_20px_35px_rgba(0,0,0,0.6)]"
+                />
               </div>
+            </motion.div>
 
-              <div className="p-3 rounded-xl bg-white/[0.025] border border-white/[0.06] space-y-1">
-                <div className="size-6 rounded-md bg-primary/10 text-primary border border-primary/20 flex items-center justify-center">
-                  <Fingerprint className="size-3.5" aria-hidden />
-                </div>
-                <div className="text-xs font-bold text-white">توثيق الأجهزة</div>
-                <p className="text-[10px] text-slate-400 leading-tight">حظر الأجهزة غير المعرفة ومكافحة التخمين</p>
+            {/* عنوان الهوية المؤسسية بنمط خطوط أبل الأنيقة الواضحة */}
+            <div className="text-center space-y-1.5 mt-8 select-none">
+              <div role="heading" aria-level={1} className="text-2xl xl:text-3xl font-bold tracking-tight text-white/95">
+                شركة الرؤية العربية
               </div>
-            </div>
-
-            {/* إشعار الاستخدام المصرح به والتحذير الأمني التنظيمي */}
-            <div className="p-3 rounded-xl bg-[var(--sem-warn)]/[0.04] border border-[var(--sem-warn)]/20 flex items-center gap-2.5">
-              <AlertCircle className="size-4 text-[var(--sem-warn)] shrink-0" aria-hidden />
-              <p className="text-[11px] text-slate-300 leading-snug">
-                <strong className="text-[var(--sem-warn)] font-semibold">تنبيه نظامي:</strong> هذه البوابة مخصصة حصراً لكوادر شركة الرؤية العربية المصرح لهم. تخضع كافة عمليات الدخول للرقابة والتدقيق الدوري لحماية أصول المنظومة.
+              <p className="text-xs xl:text-sm text-slate-400 font-light tracking-wide">
+                المنظومة المؤسسية الموحدة للتجارة العامة والطباعة
               </p>
             </div>
           </motion.div>
         </div>
 
-        {/* شريط حالة المقر والتوقيت أسفل الشاشة */}
-        <div className="relative z-10 w-full max-w-xl mx-auto border-t border-white/10 pt-3.5 flex items-center justify-between text-xs text-slate-400">
+        {/* شريط أبل السفلي البسيط: حالة الاتصال وتوقيت العاصمة */}
+        <div className="relative z-10 flex items-center justify-between text-xs text-slate-400 border-t border-white/[0.06] pt-4">
           <div className="flex items-center gap-2">
-            <span className="size-2 rounded-full bg-money-positive" />
-            <span className="text-slate-300 font-medium text-[11px]">
-              بغداد — العامرية / شارع العمل الشعبي
-            </span>
+            <span className="size-1.5 rounded-full bg-money-positive" />
+            <span className="text-[11px] text-slate-400 font-medium">بغداد — العامرية</span>
           </div>
           <div className="flex items-center gap-3 font-mono text-[11px]">
-            <span className="text-slate-200 bg-white/[0.05] px-2 py-0.5 rounded border border-white/10 font-bold">
-              {baghdadTime || "14:50:00"}
+            <span className="text-slate-300 bg-white/[0.04] px-2 py-0.5 rounded border border-white/[0.08] font-bold">
+              {baghdadTime || "15:00:00"}
             </span>
-            <span className="text-slate-400">استجابة 22ms · TLS 1.3</span>
+            <span className="text-slate-500">TLS 1.3</span>
           </div>
         </div>
       </div>
