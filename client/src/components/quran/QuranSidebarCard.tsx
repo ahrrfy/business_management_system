@@ -18,6 +18,7 @@ import {
   Mic2,
   ChevronDown,
   ChevronUp,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -43,6 +44,8 @@ export function QuranSidebarCard() {
     toggleMute,
     seek,
     openDrawer,
+    savedPosition,
+    resumeFromBookmark,
   } = useQuranAudio();
 
   const [reciterModalOpen, setReciterModalOpen] = useState(false);
@@ -149,18 +152,31 @@ export function QuranSidebarCard() {
           <div className="px-2.5 pb-2 pt-1 space-y-2">
             {/* معلومات السورة وزر اختيار القارئ التفاعلي */}
             <div className="flex items-center justify-between gap-1 text-xs">
-              {/* اسم السورة — ينقر لفتح درج السور */}
-              <button
-                type="button"
-                onClick={openDrawer}
-                className="font-bold text-foreground hover:text-primary transition-colors truncate max-w-[110px] text-start"
-                title="اضغط لتغيير السورة من الفهرس"
-              >
-                {currentSurah.name}
-                <span className="text-[10px] font-normal text-muted-foreground ms-1">
-                  ({currentSurah.type})
-                </span>
-              </button>
+              {/* اسم السورة وزر الاستئناف — ينقر لفتح درج السور */}
+              <div className="flex items-center gap-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={openDrawer}
+                  className="font-bold text-foreground hover:text-primary transition-colors truncate max-w-[95px] text-start"
+                  title="اضغط لتغيير السورة من الفهرس"
+                >
+                  {currentSurah.name}
+                  <span className="text-[10px] font-normal text-muted-foreground ms-0.5">
+                    ({currentSurah.type})
+                  </span>
+                </button>
+                {!isPlaying && savedPosition > 10 && (
+                  <button
+                    type="button"
+                    onClick={resumeFromBookmark}
+                    className="inline-flex items-center gap-0.5 px-1 py-0.2 text-[9px] font-bold rounded bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer shrink-0"
+                    title={`استئناف التلاوة من الدقيقة ${formatTime(savedPosition)}`}
+                  >
+                    <RotateCcw className="size-2" aria-hidden />
+                    <span>{formatTime(savedPosition)}</span>
+                  </button>
+                )}
+              </div>
 
               {/* زر اختيار القارئ البارز — يفتح نافذة القراء الـ17 */}
               <button

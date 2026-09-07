@@ -44,6 +44,8 @@ export function QuranFloatingBar() {
     toggleMute,
     openDrawer,
     setFloatingBarVisible,
+    savedPosition,
+    resumeFromBookmark,
   } = useQuranAudio();
 
   if (!floatingBarVisible) {
@@ -105,6 +107,17 @@ export function QuranFloatingBar() {
                   <span className="inline-flex items-center px-1.5 py-0.2 text-[10px] font-medium rounded-full bg-muted text-muted-foreground">
                     {currentSurah.type}
                   </span>
+                  {!isPlaying && savedPosition > 10 && (
+                    <button
+                      type="button"
+                      onClick={resumeFromBookmark}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer"
+                      title={`استئناف التلاوة من الدقيقة ${formatTime(savedPosition)}`}
+                    >
+                      <RotateCcw className="size-2.5" aria-hidden />
+                      <span>استئناف {formatTime(savedPosition)}</span>
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-muted-foreground truncate">
                   بصوت القارئ {currentReciter.name}

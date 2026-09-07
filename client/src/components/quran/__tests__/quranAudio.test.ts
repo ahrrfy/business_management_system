@@ -52,4 +52,18 @@ describe("Quran Audio & Catalog Contracts", () => {
     const urlNas = getSurahAudioUrl("https://server7.mp3quran.net/basit", 114);
     expect(urlNas).toBe("https://server7.mp3quran.net/basit/114.mp3");
   });
+
+  it("defines standard persistence storage keys for Quran playback bookmarking", () => {
+    const keys = {
+      reciter: "erp.quran.lastReciterId",
+      surah: "erp.quran.lastSurahId",
+      volume: "erp.quran.volume",
+      position: "erp.quran.lastPositionSeconds",
+      barVisible: "erp.quran.bar_visible",
+    };
+
+    expect(keys.reciter).toBe("erp.quran.lastReciterId");
+    expect(keys.surah).toBe("erp.quran.lastSurahId");
+    expect(keys.position).toBe("erp.quran.lastPositionSeconds");
+  });
 });

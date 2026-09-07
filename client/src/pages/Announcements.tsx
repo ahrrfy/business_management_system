@@ -21,6 +21,8 @@ import {
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
+import { printReportDoc } from "@/lib/printing/reportDoc";
+import { playAnnouncementChime } from "@/lib/notifyBeep";
 import { ROLES, hasModuleAccess, type PermissionMap } from "@shared/permissions";
 import {
   BellRing,
@@ -36,6 +38,8 @@ import {
   AlertTriangle,
   RotateCcw,
   CheckCheck,
+  Printer,
+  FileText,
 } from "lucide-react";
 
 type AnnouncementPriority = "NORMAL" | "IMPORTANT" | "CRITICAL";
@@ -113,6 +117,7 @@ export default function Announcements() {
   const createMutation = trpc.announcements.create.useMutation({
     onSuccess: () => {
       notify.ok("تم نشر الإعلان الإداري بنجاح وتعميمه");
+      playAnnouncementChime(priority);
       setCreateDialogOpen(false);
       resetForm();
       utils.announcements.list.invalidate();
@@ -209,6 +214,112 @@ export default function Announcements() {
       requiresAck,
       expiresAt: parsedExpires,
     });
+  };
+
+  // طباعة وتصدير تقرير الإقرارات الرسمي بنسق PDF
+  const handlePrintComplianceReport = (
+    announcementData?: {
+      id: number;
+      title: string;
+      body: string;
+      priority: AnnouncementPriority;
+      audienceType: AnnouncementAudienceType;
+      requiresAck: boolean;
+      createdAt?: string | Date;
+    },
+    readersList?: Array<{
+      userId: number;
+      userName: string | null;
+      readAt: string | Date;
+      acknowledgedAt: string | Date | null;
+    }>
+  ) => {
+    const targetAnnouncement = announcementData || readersQuery.data?.announcement;
+    const readers = readersList || readersQuery.data?.readers || [];
+
+    if (!targetAnnouncement) {
+      notify.err("بيانات الإعلان غير متوفرة للطباعة");
+      return;
+    }
+
+    const priorityLabel =
+      targetAnnouncement.priority === "CRITICAL"
+        ? "عاجل وطارئ"
+        : targetAnnouncement.priority === "IMPORTANT"
+          ? "توجيه إداري هام"
+          : "إعلان داخلي عام";
+
+    const audienceLabel =
+      targetAnnouncement.audienceType === "ALL"
+        ? "كافة الفروع والموظفين"
+        : targetAnnouncement.audienceType === "BRANCH"
+          ? "فرع محدد"
+          : "دور وظيفي محدد";
+
+    const ackCount = readers.filter((r) => r.acknowledgedAt).length;
+    const totalReaders = readers.length;
+    const ackRate = totalReaders > 0 ? Math.round((ackCount / totalReaders) * 100) : 0;
+
+    printReportDoc({
+      title: "كشف إقرارات واطلاع الموظفين على التوجيه الإداري",
+      docNum: `ANN-${targetAnnouncement.id}`,
+      headerExtra: [
+        { label: "عنوان الإعلان", value: targetAnnouncement.title },
+        { label: "مستوى الأولوية", value: priorityLabel },
+        { label: "الجمهور المستهدف", value: audienceLabel },
+        { label: "طبيعة الإشعار", value: targetAnnouncement.requiresAck ? "إقرار إلزامي بالعلم" : "إشعار عام" },
+        { label: "تاريخ النشر", value: targetAnnouncement.createdAt ? fmtDate(targetAnnouncement.createdAt) : "—" },
+      ],
+      meta: [
+        {
+          title: "بيانات نص الإعلان والتوجيه الإداري",
+          fields: [
+            { label: "العنوان المعتمد", value: targetAnnouncement.title },
+            { label: "نص التوجيه الإداري", value: targetAnnouncement.body },
+          ],
+        },
+      ],
+      summary: [
+        { label: "إجمالي المطلعين", value: `${totalReaders} موظف` },
+        { label: "المقرّون بالعلم", value: `${ackCount} موظف` },
+        { label: "نسبة الالتزام بالإقرار", value: `${ackRate}%`, large: true, bold: true },
+      ],
+      columns: [
+        { key: "userName", label: "اسم الموظف" },
+        { key: "readAt", label: "تاريخ ووقت الاطلاع" },
+        { key: "ackStatus", label: "حالة الإقرار بالعلم" },
+        { key: "ackDate", label: "توقيت الإقرار" },
+        { key: "signature", label: "المصادقة الرقمية" },
+      ],
+      rows:
+        readers.length > 0
+          ? readers.map((r) => ({
+              userName: r.userName || `الموظف رقم ${r.userId}`,
+              readAt: fmtDate(r.readAt),
+              ackStatus: r.acknowledgedAt ? "تم الإقرار بالعلم" : targetAnnouncement.requiresAck ? "بانتظار الإقرار" : "اطلع فقط",
+              ackDate: r.acknowledgedAt ? fmtDate(r.acknowledgedAt) : "—",
+              signature: r.acknowledgedAt ? "إقرار إلكتروني موثق" : "—",
+            }))
+          : [
+              {
+                userName: "لا يوجد اطلاع حتى الآن",
+                readAt: "—",
+                ackStatus: "—",
+                ackDate: "—",
+                signature: "—",
+              },
+            ],
+      emptyText: "لم يسجل أي موظف اطلاعه على هذا الإعلان بعد.",
+    });
+  };
+
+  const handleDirectPrintAnnouncement = async (item: AnnouncementRow) => {
+    try {
+      const res = await utils.client.announcements.get.query({ id: item.id });
+      handlePrintComplianceReport(res.announcement as unknown as Parameters<typeof handlePrintComplianceReport>[0], res.readers);
+    } catch {
+      notify.err("تعذر جلب سجل القراء لطباعة التقرير");
+    }
   };
 
   const rawRows = (announcementsQuery.data || []) as AnnouncementRow[];
@@ -405,16 +516,29 @@ export default function Announcements() {
       cell: ({ row }) => {
         const item = row.original;
         return (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setReadersModalId(item.id)}
-            className="h-8 text-xs font-medium"
-          >
-            <Eye className="size-3.5 me-1 text-primary" aria-hidden />
-            سجل القراء
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setReadersModalId(item.id)}
+              className="h-8 text-xs font-medium"
+            >
+              <Eye className="size-3.5 me-1 text-primary" aria-hidden />
+              سجل القراء
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => void handleDirectPrintAnnouncement(item)}
+              className="h-8 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+              title="طباعة كشف الإقرارات (PDF)"
+              aria-label="طباعة كشف الإقرارات (PDF)"
+            >
+              <Printer className="size-3.5" aria-hidden />
+            </Button>
+          </div>
         );
       },
     },
@@ -835,10 +959,22 @@ export default function Announcements() {
             )}
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="flex items-center justify-between sm:justify-between w-full gap-2 pt-2">
             <Button
               type="button"
               variant="outline"
+              size="sm"
+              onClick={() => handlePrintComplianceReport()}
+              disabled={!readersQuery.data?.readers || readersQuery.data.readers.length === 0}
+              className="gap-1.5 text-xs font-semibold"
+            >
+              <Printer className="size-3.5" aria-hidden />
+              <span>طباعة كشف الإقرارات (PDF)</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               onClick={() => setReadersModalId(null)}
             >
               إغلاق
