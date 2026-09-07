@@ -15,8 +15,8 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, subscribeOutbox } from "@/lib/offline/outbox";
+import { getLastSyncAt, offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, OFFLINE_CACHE_MAX_AGE_MS, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
@@ -732,7 +732,11 @@ export default function POS() {
           row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
         } catch (fetchErr) {
           if (!activeTab.customerId) {
-            row = await offlineFindByBarcode(code, effectiveTier, branchId);
+            const lastSync = await getLastSyncAt();
+            const isFresh = Boolean(lastSync && Date.now() - new Date(lastSync).getTime() <= OFFLINE_CACHE_MAX_AGE_MS);
+            if (isFresh) {
+              row = await offlineFindByBarcode(code, effectiveTier, branchId);
+            }
           }
           if (!row) throw fetchErr;
         }
