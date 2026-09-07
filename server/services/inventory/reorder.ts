@@ -20,6 +20,7 @@ import {
   suppliers,
   variantBranchThresholds,
 } from "../../../drizzle/schema";
+import { DEAD_INVOICE_STATUSES } from "../../../shared/invoiceStatus";
 import { getDb } from "../../db";
 import { createPurchaseOrder } from "../purchaseService";
 import { withTx, type Actor } from "../tx";
@@ -72,6 +73,8 @@ export interface ListReorderAlertsInput {
   branchId?: number | null;
   limit?: number;
   offset?: number;
+  /** فترة التوريد المقدرة بالأيام (الافتراضي 14 يوماً). */
+  leadTimeDays?: number;
 }
 
 export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Promise<ReorderAlertRow[]> {
@@ -139,15 +142,19 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
   const salesMap = new Map<string, number>();
   if (variantIds.length > 0) {
     const branchCond = input.branchId != null ? sql`AND i.branchId = ${input.branchId}` : sql``;
+    const deadStatusesList = sql.join(
+      DEAD_INVOICE_STATUSES.map((s) => sql`${s}`),
+      sql`, `,
+    );
     const salesRes = await db.execute(sql`
       SELECT 
         ii.variantId,
         i.branchId,
-        COALESCE(SUM(CAST(ii.baseQuantity AS DECIMAL(15,2))), 0) AS soldQty
+        COALESCE(SUM(GREATEST(CAST(ii.baseQuantity AS DECIMAL(15,2)) - COALESCE(CAST(ii.returnedBaseQuantity AS DECIMAL(15,2)), 0), 0)), 0) AS soldQty
       FROM invoiceItems ii
       INNER JOIN invoices i ON i.id = ii.invoiceId
-      WHERE i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED', 'SUPERSEDED')
-        AND i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
+      WHERE i.invoiceStatus NOT IN (${deadStatusesList})
+        AND i.invoiceDate >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
         AND ii.variantId IN (${sql.join(variantIds.map((id) => sql`${id}`), sql`, `)})
         ${branchCond}
       GROUP BY ii.variantId, i.branchId
@@ -159,6 +166,8 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
       }
     }
   }
+
+  const effectiveLeadTime = Math.max(1, Math.min(input.leadTimeDays ?? 14, 180));
 
   return rows.map((r) => {
     const reorderPoint = Number(r.reorderPoint ?? 0);
@@ -182,11 +191,10 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
       urgency = "WARNING";
     }
 
-    const LEAD_TIME_DAYS = 14;
     let smartTarget = reorderPoint * 2;
     if (dailyVelocity > 0) {
       const safetyBuffer = minStock > 0 ? minStock : Math.ceil(dailyVelocity * 3);
-      const velocityTarget = Math.ceil(dailyVelocity * LEAD_TIME_DAYS + safetyBuffer);
+      const velocityTarget = Math.ceil(dailyVelocity * effectiveLeadTime + safetyBuffer);
       smartTarget = Math.max(smartTarget, velocityTarget);
     }
     const suggestedQty = Math.max(1, smartTarget - quantity);

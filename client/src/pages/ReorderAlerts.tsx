@@ -242,6 +242,18 @@ export default function ReorderAlerts() {
         { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
         { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock },
         { key: "reorderPoint", header: "حدّ إعادة الطلب", map: (r) => r.reorderPoint },
+        { key: "dailyVelocity", header: "معدل البيع اليومي", map: (r) => r.dailyVelocity },
+        { key: "sales30d", header: "مبيعات 30 يوماً", map: (r) => r.sales30d },
+        {
+          key: "daysRemaining",
+          header: "الأيام المتبقية",
+          map: (r) => (r.daysRemaining !== null ? r.daysRemaining : "غير محدد"),
+        },
+        {
+          key: "urgency",
+          header: "درجة الإلحاح",
+          map: (r) => (r.urgency === "CRITICAL" ? "حرجة" : r.urgency === "WARNING" ? "تحذيرية" : "مستقرة"),
+        },
         { key: "suggestedQty", header: "الكمية المقترحة", map: (r) => r.suggestedQty },
       ],
     });
