@@ -7,9 +7,21 @@ import { PurchaseCancellationDialog } from "@/components/purchases/PurchaseCance
 import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawer";
 import { CopyInline } from "@/components/CopyButton";
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import { QuickSupplierPaymentDialog } from "@/components/purchases/QuickSupplierPaymentDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -149,6 +161,40 @@ export default function Purchases() {
       ),
     [pendingControls.data],
   );
+  const pendingOrderControlMap = useMemo(() => {
+    const map = new Map<number, NonNullable<typeof pendingControls.data>["rows"][number]>();
+    for (const row of pendingControls.data?.rows ?? []) {
+      if (row.documentType === "PURCHASE_ORDER") {
+        map.set(Number(row.purchaseOrderId), row);
+      }
+    }
+    return map;
+  }, [pendingControls.data?.rows]);
+
+  const [quickPaymentTarget, setQuickPaymentTarget] = useState<PurchaseRow | null>(null);
+  const [quickApprovalTarget, setQuickApprovalTarget] = useState<{
+    id: number;
+    poNumber: string;
+    controlRequestId?: number;
+    version: number;
+  } | null>(null);
+  const [quickApprovalReason, setQuickApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+
+  const decideControlMut = trpc.purchases.decideControl.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.status === "APPROVED"
+          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          : "تم تحديث حالة طلب الاعتماد",
+      );
+      setQuickApprovalTarget(null);
+      await Promise.all([
+        utils.purchases.list.invalidate(),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+    },
+    onError: (err) => notify.err(err),
+  });
   const controlStateUnavailable =
     canManagePurchases &&
     (pendingControls.isLoading || pendingControls.isError);
@@ -766,6 +812,21 @@ export default function Purchases() {
                   const needsConfirmation = p.status === "DRAFT";
                   const awaitingApproval = p.status === "SENT";
                   const hasPendingControl = pendingOrderIds.has(Number(p.id));
+                  const isUsd = p.agreedCurrency === "USD";
+                  const effectivePaid = Decimal.max(
+                    D(p.paidAmount ?? 0),
+                    D(p.linkedCashPaidAmount ?? 0),
+                  );
+                  const rem = isUsd
+                    ? D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0))
+                    : positiveDiff(p.total ?? 0, effectivePaid.toString());
+                  const isSettled = rem.lte(0);
+                  const activeControl = pendingOrderControlMap.get(Number(p.id));
+                  const canDirectApprove =
+                    p.status === "SENT" &&
+                    activeControl != null &&
+                    activeControl.kind === "APPROVE_REVISION";
+
                   return (
                     <RowActions
                       mode="auto"
@@ -790,6 +851,45 @@ export default function Purchases() {
                         gate: { module: "purchases", level: "READ" },
                       }}
                       actions={[
+                        {
+                          key: "direct-approve",
+                          kind: "approve",
+                          label: "اعتماد واستلام البضاعة",
+                          hidden: !canDirectApprove,
+                          disabled:
+                            decideControlMut.isPending ||
+                            controlStateUnavailable,
+                          disabledReason: controlStateUnavailable
+                            ? "تعذّر التحقق من طلبات التحكم"
+                            : undefined,
+                          onSelect: () => {
+                            if (!activeControl) return;
+                            setQuickApprovalTarget({
+                              id: p.id,
+                              poNumber: p.poNumber,
+                              controlRequestId: Number(activeControl.id),
+                              version: Number(p.version),
+                            });
+                            setQuickApprovalReason("اعتماد واستلام البضاعة كاملة");
+                          },
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "quick-pay",
+                          kind: "edit",
+                          label: "سداد فوري للمورد",
+                          hidden: p.status !== "RECEIVED" || isSettled,
+                          onSelect: () => setQuickPaymentTarget(p),
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
                         {
                           key: "confirm",
                           kind: "approve",
@@ -945,6 +1045,90 @@ export default function Purchases() {
         onClose={() => setDrawerPoId(null)}
         onPrint={(id) => void printOrder(id)}
       />
+      {quickPaymentTarget && quickPaymentTarget.supplierId ? (
+        <QuickSupplierPaymentDialog
+          open={quickPaymentTarget != null}
+          onClose={() => setQuickPaymentTarget(null)}
+          purchaseOrderId={quickPaymentTarget.id}
+          poNumber={quickPaymentTarget.poNumber}
+          supplierId={quickPaymentTarget.supplierId}
+          supplierName={quickPaymentTarget.supplierName ?? ""}
+          branchId={Number(quickPaymentTarget.branchId)}
+          currency={quickPaymentTarget.agreedCurrency === "USD" ? "USD" : "IQD"}
+          exchangeRate={quickPaymentTarget.agreedRate}
+          remainingAmount={
+            quickPaymentTarget.agreedCurrency === "USD"
+              ? D(quickPaymentTarget.usdTotal ?? 0)
+                  .minus(D(quickPaymentTarget.paidUsd ?? 0))
+                  .toFixed(2)
+              : positiveDiff(
+                  quickPaymentTarget.total ?? 0,
+                  Decimal.max(
+                    D(quickPaymentTarget.paidAmount ?? 0),
+                    D(quickPaymentTarget.linkedCashPaidAmount ?? 0),
+                  ).toString(),
+                ).toFixed(2)
+          }
+          onSuccess={() => void utils.purchases.list.invalidate()}
+        />
+      ) : null}
+      <Dialog
+        open={quickApprovalTarget != null}
+        onOpenChange={(open) => !open && setQuickApprovalTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <CheckCircle2 aria-hidden className="size-5 text-primary" />
+              <span>اعتماد واستلام أمر الشراء {quickApprovalTarget?.poNumber}</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              اعتماد هذا الأمر يعني تأكيد استلام كامل الأصناف في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="row-approve-reason" className="text-xs">
+                بيان الاعتماد / السبب
+              </Label>
+              <Input
+                id="row-approve-reason"
+                value={quickApprovalReason}
+                onChange={(e) => setQuickApprovalReason(e.target.value)}
+                className="text-xs"
+                placeholder="اعتماد واستلام البضاعة كاملة"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setQuickApprovalTarget(null)}
+              disabled={decideControlMut.isPending}
+            >
+              إلغاء
+            </Button>
+            <SubmitButton
+              size="sm"
+              pending={decideControlMut.isPending}
+              onClick={() => {
+                if (!quickApprovalTarget?.controlRequestId) return;
+                decideControlMut.mutate({
+                  requestId: quickApprovalTarget.controlRequestId,
+                  decisionKey: `decide-row-${quickApprovalTarget.controlRequestId}-${crypto.randomUUID()}`,
+                  approve: true,
+                  reason: quickApprovalReason.trim() || "اعتماد واستلام البضاعة كاملة",
+                  confirmedFullReceipt: true,
+                });
+              }}
+              disabled={quickApprovalReason.trim().length < 3}
+            >
+              تأكيد الاعتماد والاستلام
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
