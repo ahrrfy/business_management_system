@@ -23,7 +23,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { ProductScanIdentityCard } from "@/components/scan/ProductScanIdentityCard";
-import { usePulsedCountState } from "@/hooks/usePulsedCountState";
+import { usePulsedCountState, getServerClockOffsetMs } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
 import { resolveProductBarcodeItem, type ProductBarcodeMatch } from "@shared/productScan";
 import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
@@ -157,13 +157,11 @@ export default function MyStocktakeWorkspace() {
       for (const it of pending) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            variantId: it.variantId,
-            qty: it.qty,
-            unitBreakdown: it.unitBreakdown,
-            entryMethod: it.entryMethod,
+            sessionCode: code, variantId: it.variantId, qty: it.qty,
+            unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -190,9 +188,9 @@ export default function MyStocktakeWorkspace() {
       for (const u of pendingUnknown) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId,
+            sessionCode: code, unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt, clientSentAt: new Date().toISOString(),
+            clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
@@ -423,15 +421,13 @@ export default function MyStocktakeWorkspace() {
     const item = selected;
     const mode = selectedMode;
     const clientRequestId = newClientRequestId();
+    const capturedAt = new Date().toISOString();
     const entry = selectedEntry;
     const payload = {
-      sessionCode: code,
-      variantId: item.variantId,
-      qty,
-      unitBreakdown,
-      entryMethod: entry.method,
-      scannedBarcode: entry.scannedBarcode ?? undefined,
-      clientRequestId,
+      sessionCode: code, variantId: item.variantId, qty, unitBreakdown,
+      entryMethod: entry.method, scannedBarcode: entry.scannedBarcode ?? undefined,
+      clientRequestId, clientCapturedAt: capturedAt, clientSentAt: new Date().toISOString(),
+      clientClockOffsetMs: getServerClockOffsetMs() ?? undefined,
     };
     const onAccepted = async (res: SubmitResult) => {
       // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
@@ -490,7 +486,7 @@ export default function MyStocktakeWorkspace() {
           unitBreakdown,
           entryMethod: entry.method,
           scannedBarcode: entry.scannedBarcode,
-          queuedAt: new Date().toISOString(),
+          queuedAt: capturedAt,
         });
         setQueueCount(queueSize(code));
         setSelected(null);

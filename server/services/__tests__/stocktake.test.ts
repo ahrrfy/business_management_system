@@ -336,6 +336,28 @@ describe("الإنشاء واللقطة", () => {
     ).toBe(5);
   });
 
+  it("⭐ شمول المخزون المعطل الإيجابي (Ghost Stock) في الجرد الشامل واستبعاد المعطل الصفري", async () => {
+    // منتج 7: معطل وله رصيد مخزني إيجابي (15 قطعة)
+    await db().insert(s.products).values({ id: 7, name: "منتج معطل بمخزون", isActive: false });
+    await db().insert(s.productVariants).values({ id: 7, productId: 7, sku: "INACTIVE-STOCK", isActive: false, costPrice: "500.00" });
+    await setStockRow(7, 15, 1);
+
+    // منتج 8: معطل ورصيده 0
+    await db().insert(s.products).values({ id: 8, name: "منتج معطل صفري", isActive: false });
+    await db().insert(s.productVariants).values({ id: 8, productId: 8, sku: "INACTIVE-ZERO", isActive: false, costPrice: "300.00" });
+    await setStockRow(8, 0, 1);
+
+    const session = await mkSession({ scopeType: "FULL" });
+    const items = await db()
+      .select({ variantId: s.stocktakeItems.variantId })
+      .from(s.stocktakeItems)
+      .where(eq(s.stocktakeItems.sessionId, session.sessionId));
+    const variantIds = items.map((i) => Number(i.variantId));
+
+    expect(variantIds).toContain(7); // مشمول لأن رصيده إيجابي في الفرع رغم تعطيل المتغير
+    expect(variantIds).not.toContain(8); // مستبعد لأن رصيده 0 ومتغيره معطل
+  });
+
   it("اللقطة الذرّية: expectedQty من رصيد الفرع وunitCost من تكلفة المتغيّر — ولا تتأثر بتغيير لاحق", async () => {
     await setStockRow(1, 50);
     // المتغيّر 2 بلا صفّ رصيد ⇒ اللقطة 0. المتغيّر 3 برصيد 20.
@@ -1077,6 +1099,295 @@ describe("حارس بصمة إدخال الباركود القديمة — ال�
     expect(session.approvedBy).toBeNull();
     expect(session.approvedAt).toBeNull();
     await expectNoFinalizationWrites(r.sessionId);
+  });
+});
+
+describe("تدقيق تفصيل الوحدات وختم توقيت الالتقاط — submitCount", () => {
+  it("⭐ عدم تطابق تفصيل الوحدات مع الكمية الإجمالية ⇒ يُرفض بـ BAD_REQUEST", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // الصنف 1 له: قطعة (1) ودرزن (12)
+    // تفصيل: 1 درزن (12) + 2 قطعة (2) = 14
+    // لكن تم تمرير qty: 10
+    await expectTrpc(
+      submitCount(identity, {
+        variantId: 1,
+        qty: 10,
+        unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+        clientRequestId: randomUUID(),
+      }),
+      "BAD_REQUEST",
+      /عدم تطابق في كمية الجرد|لا تطابق حاصل تفصيل الوحدات/,
+    );
+  });
+
+  it("⭐ تطابق تفصيل الوحدات مع الكمية وختم clientCapturedAt في countedAt ⇒ ينجح ويثبت التوقيت", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    const clientTime = new Date();
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: clientTime.toISOString(),
+      clientSentAt: clientTime.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    expect(counts[0].qty).toBe(14);
+    // توقيت countedAt يطابق وقت الالتقاط الفعلي (ضمن فرق ثانيتين للدقة)
+    expect(Math.abs(new Date(counts[0].countedAt).getTime() - clientTime.getTime())).toBeLessThan(2000);
+  });
+
+  it("⭐ تصحيح انحراف ساعة جهاز العميل (Clock Skew) بنمط الفارق الزمني النسبي", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // نفترض أن جهاز العميل ساعته متأخرة أو مختلفة تماماً، لكن الفارق بين الالتقاط والإرسال هو ثانية واحدة
+    const clientCaptured = new Date("2021-06-01T10:00:00.000Z");
+    const clientSent = new Date("2021-06-01T10:00:01.000Z"); // delayMs = 1000ms
+    const serverBefore = Date.now();
+
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: clientCaptured.toISOString(),
+      clientSentAt: clientSent.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    // يجب ألا يُسجل التاريخ بعام 2021، بل محسوباً كـ nowMs - 1000ms
+    expect(countedAtMs).toBeGreaterThan(serverBefore - 5000);
+    expect(countedAtMs).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  it("⭐ تصحيح وقت الالتقاط عبر انحراف مقاس خادمياً (Server-Established Clock Offset) وحد الوصول المحافظ", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // وقت وصول محدد إلى الراوتر (بعد إنشاء الجلسة بـ 10 ثوانٍ ليكون الالتقاط قبل الوصول بـ 5 ثوانٍ بعد إنشاء الجلسة)
+    const requestReceivedAt = new Date(new Date(session.createdAt).getTime() + 10_000);
+    // العميل ساعته متقدمة بـ 15 دقيقة
+    const clientOffset = -15 * 60 * 1000; // clientTime + offset = serverTime
+    const clientCaptured = new Date(requestReceivedAt.getTime() + 15 * 60 * 1000 - 5000); // قبل 5 ثوانٍ من الوصول على ساعة الخادم
+    const clientSent = new Date(requestReceivedAt.getTime() + 15 * 60 * 1000); // عند الإرسال
+
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: clientCaptured.toISOString(),
+      clientSentAt: clientSent.toISOString(),
+      clientClockOffsetMs: clientOffset,
+      requestReceivedAt: requestReceivedAt.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    // يجب أن يطابق تماماً requestReceivedAt - 5000ms بدقة
+    expect(Math.abs(countedAtMs - (requestReceivedAt.getTime() - 5000))).toBeLessThan(1000);
+  });
+
+  it("⭐ تقييد وقت الالتقاط المستقبلي (انحراف ساعة العميل) بـ now لمنع استثناء الحركات اللاحقة", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    const futureClientTime = new Date(Date.now() + 120_000); // دقيقتان في المستقبل
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: futureClientTime.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    expect(countedAtMs).toBeLessThanOrEqual(Date.now() + 1000);
+    expect(countedAtMs).toBeLessThan(futureClientTime.getTime() - 60_000);
+  });
+
+  it("⭐ رفض تفصيل الوحدات إذا كانت الوحدة معطّلة حتى لو تطابقت التسمية", async () => {
+    // تعطيل وحدة «درزن» للصنف 1
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false })
+      .where(and(eq(s.productUnits.variantId, 1), eq(s.productUnits.unitName, "درزن")));
+
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    await expectTrpc(
+      submitCount(identity, {
+        variantId: 1,
+        qty: 14,
+        unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+        clientRequestId: randomUUID(),
+      }),
+      "BAD_REQUEST",
+      /غير معرّفة أو معطّلة لهذا المنتج/,
+    );
+  });
+
+  it("⭐ قبول عدّ صنف بمخزون وهمي لا يملك أي وحدات نشطة بتفصيل افتراضي يطابق الكمية", async () => {
+    // تعطيل كل وحدات الصنف 1 (ليصبح صنفاً بمخزون وهمي بلا وحدات نشطة)
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false })
+      .where(eq(s.productUnits.variantId, 1));
+
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // إرسال تفصيل بالوحدة الافتراضية "قطعة" يطابق الكمية 5
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 5,
+      unitBreakdown: JSON.stringify({ قطعة: 5 }),
+      clientRequestId: randomUUID(),
+    });
+    expect(res.ok).toBe(true);
+
+    // تفصيل غير مطابق للكمية الإجمالية ⇒ يُرفض
+    await expectTrpc(
+      submitCount(identity, {
+        variantId: 1,
+        qty: 5,
+        unitBreakdown: JSON.stringify({ قطعة: 4 }),
+        clientRequestId: randomUUID(),
+      }),
+      "BAD_REQUEST",
+      /عدم تطابق في كمية الجرد/,
+    );
   });
 });
 

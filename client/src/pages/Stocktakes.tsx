@@ -376,6 +376,7 @@ export default function Stocktakes() {
                 key: "preview",
                 kind: "view",
                 label: "معاينة سريعة",
+                gate: { roles: ["warehouse", "manager"] },
                 onSelect: () => setPreviewSessionId(s.id),
               },
               {

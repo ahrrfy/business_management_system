@@ -24,6 +24,42 @@ import {
 
 const POLL_MS = 5_000;
 
+let lastServerClockOffsetMs: number | null = null;
+let lastOffsetRttMs: number = Infinity;
+
+/**
+ * تسجيل انحراف ساعة العميل عن الخادم بناءً على زمن الذهاب والإياب (Round-Trip Midpoint).
+ * الخادم يختم وقته بين انطلاق الطلب واستلام الرد. منتصف المدة يمثل أفضل تقدير غير متحيّز
+ * لساعة العميل المقابلة للحظة ختم الخادم، ويمنع احتساب تأخير الشبكة كانتكاس زمني يؤدي
+ * لتأخير وقت الالتقاط عن الواقع وتكرار حركات المخزون في المراجعة (Codex finding).
+ */
+export function recordServerTime(
+  serverTimeIso?: string | null,
+  requestStartedAt?: number,
+  requestFinishedAt?: number,
+): void {
+  if (!serverTimeIso) return;
+  const sMs = Date.parse(serverTimeIso);
+  if (!isNaN(sMs)) {
+    const endMs = requestFinishedAt ?? Date.now();
+    if (requestStartedAt && requestStartedAt <= endMs) {
+      const rtt = Math.max(0, endMs - requestStartedAt);
+      const midpoint = requestStartedAt + rtt / 2;
+      const offset = Math.round(sMs - midpoint);
+      if (rtt <= lastOffsetRttMs || lastServerClockOffsetMs == null) {
+        lastServerClockOffsetMs = offset;
+        lastOffsetRttMs = rtt;
+      }
+    } else if (lastServerClockOffsetMs == null) {
+      lastServerClockOffsetMs = Math.round(sMs - endMs);
+    }
+  }
+}
+
+export function getServerClockOffsetMs(): number | null {
+  return lastServerClockOffsetMs;
+}
+
 /**
  * شبكة أمان: تجاهل الوسمين كلّ دقيقتين واطلب كل شيء من جديد (بما فيه الكتالوج).
  * الوسم لا يغطّي تحرير الكتالوج نفسه (إعادة تسمية منتج/تبديل باركود أثناء الجرد) — نادر
@@ -90,6 +126,8 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
     catalog.current = null;
     merged.current = null;
     lastFullAt.current = 0;
+    lastServerClockOffsetMs = null;
+    lastOffsetRttMs = Infinity;
     setProbeError(null);
     void utils.count.state.reset();
   }, [identityEpoch, code, utils]);
@@ -99,6 +137,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
   const seededAt = q.dataUpdatedAt;
   useEffect(() => {
     const d = q.data;
+    if (d?.serverTime) recordServerTime(d.serverTime);
     if (!d?.changed || !d.dynamic) return;
     if (absorb(d.v, d.cv, d.catalog, d.dynamic)) setTick((n) => n + 1);
   }, [seededAt, q.data, absorb]);
@@ -110,6 +149,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
     // يكتب ردُّ الجلسة السابقة كتالوجها وحالتها في مراجع الجلسة الجديدة، فتُعرض بيانات
     // جلسةٍ أخرى ويُمكن أن يُتّخذ إجراءٌ عليها.
     const gen = generation.current;
+    const requestStartedAt = Date.now();
     try {
       const stale = Date.now() - lastFullAt.current >= FULL_REFRESH_MS;
       const res = await utils.client.count.state.query({
@@ -117,9 +157,11 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
         knownVersion: stale ? undefined : (version.current ?? undefined),
         knownCatalogVersion: stale ? undefined : (catalogVersion.current ?? undefined),
       });
+      const requestFinishedAt = Date.now();
       if (gen !== generation.current) return;
+      if (res.serverTime) recordServerTime(res.serverTime, requestStartedAt, requestFinishedAt);
       setProbeError(null);
-      setProbeOkAt(Date.now());
+      setProbeOkAt(requestFinishedAt);
 
       // لا تغيير ⇒ لا عمل (وهي الحالة الغالبة: ~٨٩٪).
       if (!res.changed || !res.dynamic) {
@@ -146,6 +188,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
 
   useEffect(() => {
     if (!enabled || !code) return;
+    void probe();
     const id = setInterval(() => void probe(), POLL_MS);
     return () => clearInterval(id);
   }, [enabled, code, probe]);
