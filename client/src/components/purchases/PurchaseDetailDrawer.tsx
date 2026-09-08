@@ -346,7 +346,7 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
+                  {canEdit && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -436,7 +436,7 @@ export function PurchaseDetailDrawer({
               </TabsContent>
 
               <TabsContent value="governance" className="space-y-4 pt-2">
-                <PurchaseOrderGovernance purchaseOrderId={d.id} />
+                <PurchaseOrderGovernance key={d.id} purchaseOrderId={d.id} />
               </TabsContent>
             </Tabs>
 

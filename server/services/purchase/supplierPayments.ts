@@ -1922,6 +1922,7 @@ export async function listSupplierPaymentSources(
   input: {
     branchId: number;
     supplierId?: number;
+    purchaseOrderId?: number;
     limit?: number;
     cursor?: { invoiceDate: string; id: number } | null;
   },
@@ -1988,6 +1989,19 @@ export async function listSupplierPaymentSources(
         input.supplierId == null
           ? undefined
           : eq(supplierInvoices.supplierId, input.supplierId),
+        input.purchaseOrderId == null
+          ? undefined
+          : or(
+              eq(supplierInvoices.legacyPurchaseOrderId, input.purchaseOrderId),
+              sql`EXISTS (
+                SELECT 1
+                FROM supplierInvoiceLines sil
+                INNER JOIN purchaseOrderRevisionItems pori ON pori.id = sil.purchaseOrderRevisionItemId
+                INNER JOIN purchaseOrderRevisions por ON por.id = pori.revisionId
+                WHERE sil.supplierInvoiceId = ${supplierInvoices.id}
+                  AND por.purchaseOrderId = ${input.purchaseOrderId}
+              )`,
+            ),
         eq(supplierInvoices.status, "POSTED"),
         eq(supplierInvoices.paymentGate, "OPEN"),
         or(

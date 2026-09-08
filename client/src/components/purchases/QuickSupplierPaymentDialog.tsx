@@ -81,22 +81,19 @@ export function QuickSupplierPaymentDialog({
 
   // استعلام فواتير المورد المرحلة للبحث عن الفاتورة المرتبطة بهذا الأمر
   const paymentSourcesQuery = trpc.supplierPayments.paymentSources.useQuery(
-    { branchId, supplierId, limit: 100 },
+    { branchId, supplierId, purchaseOrderId, limit: 100 },
     { enabled: open && supplierId > 0 && branchId > 0 },
   );
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
-    // مطابقة حتمية برقم أمر الشراء أو معرّفه الرقمي — منع تخصيص السداد لفاتورة أخرى بالخطأ
+    // مطابقة حتمية بمعرّف أمر الشراء — منع تخصيص السداد لفاتورة أخرى بالخطأ
     return rows.find(
       (r) =>
-        (Array.isArray((r as { purchaseOrderIds?: number[] }).purchaseOrderIds) &&
-          (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.includes(purchaseOrderId)) ||
-        r.invoiceNumber === poNumber ||
-        r.externalInvoiceNumber === poNumber ||
-        (r.externalInvoiceNumber && r.externalInvoiceNumber.startsWith(`AUTO-${poNumber}-`)),
+        Array.isArray((r as { purchaseOrderIds?: number[] }).purchaseOrderIds) &&
+        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.includes(purchaseOrderId),
     );
-  }, [paymentSourcesQuery.data?.rows, purchaseOrderId, poNumber]);
+  }, [paymentSourcesQuery.data?.rows, purchaseOrderId]);
 
   useEffect(() => {
     if (open) {
@@ -107,7 +104,7 @@ export function QuickSupplierPaymentDialog({
         : remainingAmount;
       setAmount(maxPayable || "0");
       setReason(`سداد فاتورة أمر الشراء ${poNumber}`);
-      setEvidenceReference(`PAY-PO-${poNumber}`);
+      setEvidenceReference("");
       setExternalReference("");
       setMethod("CASH");
       setEvidenceType("CASH_ACKNOWLEDGEMENT");
@@ -159,7 +156,11 @@ export function QuickSupplierPaymentDialog({
     e.preventDefault();
     if (!canSubmit || !matchedInvoice) return;
 
-    const rate = exchangeRate ? String(exchangeRate) : null;
+    const rate = matchedInvoice.agreedRate
+      ? String(matchedInvoice.agreedRate)
+      : exchangeRate
+        ? String(exchangeRate)
+        : null;
     const finalAmount = parsedAmount.toFixed(2);
 
     requestPaymentMut.mutate({

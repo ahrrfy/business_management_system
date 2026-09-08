@@ -818,7 +818,7 @@ export default function Purchases() {
                     D(p.linkedCashPaidAmount ?? 0),
                   );
                   const rem = isUsd
-                    ? D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0))
+                    ? positiveDiff(p.usdTotal, D(p.paidUsd ?? 0).plus(D(p.returnedUsd ?? 0)).toString())
                     : positiveDiff(p.total ?? 0, effectivePaid.toString());
                   const isSettled = rem.lte(0);
                   const activeControl = pendingOrderControlMap.get(Number(p.id));
