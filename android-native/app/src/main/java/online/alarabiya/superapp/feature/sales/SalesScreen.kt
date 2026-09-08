@@ -592,7 +592,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
                 )
                 OutlinedTextField(state.returnRefundAmount, actions.returnRefundAmount, Modifier.fillMaxWidth(), label = { Text("مبلغ الاسترداد") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), enabled = !state.locked)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PaymentMethod.entries.forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
+                    listOf(PaymentMethod.CASH, PaymentMethod.CARD).forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
                     Text("درج الاسترداد", fontWeight = FontWeight.SemiBold)

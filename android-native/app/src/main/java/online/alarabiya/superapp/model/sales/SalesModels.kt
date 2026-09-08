@@ -298,11 +298,14 @@ object SalesValidation {
             val refundVal = submission.refundAmount.toDoubleOrNull()
             if (refundVal == null || refundVal < 0) return "مبلغ الاسترداد غير صالح"
             if (refundVal > 0) {
+                if (submission.refundMethod !in listOf(PaymentMethod.CASH, PaymentMethod.CARD)) {
+                    return "طريقة الرد المباشر المتاحة هي النقد أو البطاقة فقط"
+                }
                 if (submission.refundMethod == PaymentMethod.CASH && submission.refundShiftId == null) {
                     return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
                 }
-                if (submission.refundMethod != PaymentMethod.CASH && submission.refundReference.isNullOrBlank()) {
-                    return "مرجع البطاقة أو التحويل مطلوب"
+                if (submission.refundMethod == PaymentMethod.CARD && submission.refundReference.isNullOrBlank()) {
+                    return "مرجع البطاقة مطلوب"
                 }
             }
         }

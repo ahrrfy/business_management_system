@@ -27,6 +27,10 @@ describe("pickDefaultRefundDrawer — درجُ المنفّذ ثمّ الوحي�
     expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42)).toBe(5);
   });
 
+  it("درجٌ وحيد لزميل مع دور كاشير ⇒ null: الكاشير مقيّد بوردية نفسه ولا يرث درج غيره", () => {
+    expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42, "cashier")).toBeNull();
+  });
+
   it("تعدّدٌ بلا درجٍ للمنفّذ ⇒ null: لا نسبةَ نقدٍ لدرجٍ لم يخرج منه", () => {
     const drawers = [drawer({ shiftId: 1, userId: 98 }), drawer({ shiftId: 2, userId: 99 })];
     expect(pickDefaultRefundDrawer(drawers, 42)).toBeNull();

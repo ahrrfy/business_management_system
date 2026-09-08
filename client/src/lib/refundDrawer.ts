@@ -46,13 +46,15 @@ export interface RefundDrawerOption {
 export function pickDefaultRefundDrawer(
   drawers: readonly RefundDrawerOption[],
   currentUserId: number | null | undefined,
+  role?: string,
 ): number | null {
   if (drawers.length === 0) return null;
   if (currentUserId != null) {
     const mine = drawers.find((d) => d.userId === currentUserId);
     if (mine) return mine.shiftId;
+    if (role === "cashier") return null;
   }
-  return drawers.length === 1 ? drawers[0].shiftId : null;
+  return role === "cashier" ? null : (drawers.length === 1 ? drawers[0].shiftId : null);
 }
 
 /**

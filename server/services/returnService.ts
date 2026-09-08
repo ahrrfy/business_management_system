@@ -12,7 +12,7 @@ import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
-import { resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
+import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
 import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
@@ -1618,6 +1618,27 @@ export async function returnSaleDirect(
           doThis: "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
         }),
       });
+    }
+
+    if (effectiveRole === "cashier") {
+      const [invBranch] = await tx
+        .select({ branchId: invoices.branchId })
+        .from(invoices)
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1);
+
+      const targetBranchId = invBranch?.branchId ?? actor.branchId;
+      const openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
+      if (!openShiftId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "يشترط وجود وردية مفتوحة للكاشير في نفس فرع الفاتورة لتنفيذ المرتجع",
+            doThis: "افتح وردية جديدة في فرع الفاتورة قبل محاولة إجراء المرتجع",
+          }),
+        });
+      }
     }
 
     const [pendingControl] = await tx

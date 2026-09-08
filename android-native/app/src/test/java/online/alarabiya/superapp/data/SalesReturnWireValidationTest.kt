@@ -71,10 +71,28 @@ class SalesReturnWireValidationTest {
         )
 
         val err = SalesValidation.salesReturn(noRefSubmission, sampleInvoice)
-        assertEquals("مرجع البطاقة أو التحويل مطلوب", err)
+        assertEquals("مرجع البطاقة مطلوب", err)
 
         val withRefSubmission = noRefSubmission.copy(refundReference = "AUTH-9988")
         assertNull(SalesValidation.salesReturn(withRefSubmission, sampleInvoice))
+    }
+
+    @Test
+    fun `salesReturn rejects non-surfaced direct refund rails`() {
+        val transferSubmission = ReturnSubmission(
+            invoiceId = 100L,
+            quantities = mapOf(10L to 1),
+            refundAmount = "10.00",
+            refundMethod = PaymentMethod.TRANSFER,
+            refundShiftId = null,
+            restock = true,
+            clientRequestId = "req-test-12345",
+            reason = "عيب في المنتج",
+            refundReference = "TR-1234",
+        )
+
+        val err = SalesValidation.salesReturn(transferSubmission, sampleInvoice)
+        assertEquals("طريقة الرد المباشر المتاحة هي النقد أو البطاقة فقط", err)
     }
 
     @Test

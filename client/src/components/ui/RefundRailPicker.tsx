@@ -97,19 +97,30 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
 
   const needed = preflight?.needsCashDrawer === true;
   const me = trpc.auth.me.useQuery(undefined, { enabled: needed });
-  // الأدراجُ تأتي مُصفّاةً بالفرع والنوع من الخادم — لا تصفيةَ ولا استعلامَ خزينةٍ هنا.
-  const drawers = preflight?.drawers ?? [];
+  const rawDrawers = preflight?.drawers ?? [];
+  const userId = me.data?.id;
+  const userRole = me.data?.role;
+  const isCashier = userRole === "cashier";
+  // كاشير الصرف مقيّد بوردية نفسه — لا يظهر له ولا يُختار له درج زميل
+  const drawers = useMemo(() => {
+    if (!isCashier || !userId) return rawDrawers;
+    return rawDrawers.filter((d) => d.userId === userId);
+  }, [isCashier, userId, rawDrawers]);
 
   // الافتراضُ يُعاد تقييمه كلّما تغيّرت القائمة (تحميلٌ أوّل، أو إغلاقُ درجٍ أثناء الفتح).
   useEffect(() => {
     if (!needed || refundShiftId != null || drawers.length === 0) return;
-    const preset = pickDefaultRefundDrawer(drawers, me.data?.id);
+    const preset = pickDefaultRefundDrawer(drawers, userId, userRole);
     if (preset != null) setRefundShiftId(preset);
-  }, [needed, refundShiftId, drawers, me.data?.id]);
+  }, [needed, refundShiftId, drawers, userId, userRole]);
+
+  const effectiveEmptyLabel = isCashier && drawers.length === 0 && rawDrawers.length > 0
+    ? "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع — افتح ورديتك الخاصة أو اطلب من المدير تنفيذ المرتجع"
+    : emptyLabel;
 
   return {
     refundShiftId: needed ? refundShiftId ?? undefined : undefined,
-    blockReason: refundDrawerBlockReason({ needed, drawers, selectedShiftId: refundShiftId, emptyLabel }),
+    blockReason: refundDrawerBlockReason({ needed, drawers, selectedShiftId: refundShiftId, emptyLabel: effectiveEmptyLabel }),
     shortfall: drawerShortfallWarning({ drawers, selectedShiftId: refundShiftId, estimatedAmount: preflight?.estimatedCashOut ?? null }),
     drawers,
     setRefundShiftId,

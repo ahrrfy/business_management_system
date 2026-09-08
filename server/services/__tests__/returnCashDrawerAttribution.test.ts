@@ -582,4 +582,24 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
+
+  it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ يُرفض التنفيذ المباشر بـ PRECONDITION_FAILED", async () => {
+    // كاشير 2 لا يملك وردية مفتوحة
+    const mgrShift = await openShiftFor(1, 1);
+    const { invoiceId, itemId } = await sellOneCash(mgrShift, { userId: 1, branchId: 1, role: "manager" });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          operatorReason: "محاولة كاشير بلا وردية",
+        },
+        { userId: 2, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("يشترط وجود وردية مفتوحة للكاشير"),
+    });
+  });
 });

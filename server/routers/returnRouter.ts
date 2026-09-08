@@ -77,7 +77,7 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 0);
       const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
-      const reason = (explicitReason || input.resolution?.reason || "مرتجع مبيعات").trim();
+      const rawReason = explicitReason || input.resolution?.reason;
 
       /**
        * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
@@ -89,6 +89,15 @@ export const returnRouter = router({
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
       const shouldExecuteDirect = ctx.user.isOwner === true || input.directExecution === true;
+
+      if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
+        });
+      }
+      const reason = (rawReason || "مرتجع مبيعات").trim();
+
       if (shouldExecuteDirect) {
         /**
          * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
@@ -104,13 +113,6 @@ export const returnRouter = router({
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
-          });
-        }
-
-        if (reason.length < 3) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
           });
         }
         const executed = ctx.user.isOwner === true
