@@ -43,7 +43,13 @@ describe("notifyBeep audio synthesizer contracts", () => {
     };
 
     const originalAudioContext = (globalThis as unknown as { AudioContext?: unknown }).AudioContext;
-    (globalThis as unknown as { AudioContext?: unknown }).AudioContext = vi.fn(() => mockCtx);
+    // Vitest 4 invokes constructor mocks with `new`; a regular function keeps
+    // this browser API double constructable (an arrow function is not).
+    (globalThis as unknown as { AudioContext?: unknown }).AudioContext = vi.fn(
+      function MockAudioContext() {
+        return mockCtx;
+      },
+    );
 
     try {
       playAnnouncementChime("CRITICAL");
