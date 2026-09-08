@@ -10592,6 +10592,8 @@ export const jobApplicants = mysqlTable(
     email: varchar("email", { length: 120 }),
     experience: varchar("experience", { length: 120 }),
     education: varchar("education", { length: 200 }),
+    residentialAddress: varchar("residentialAddress", { length: 300 }),
+    portfolioUrl: varchar("portfolioUrl", { length: 500 }),
     // 0018: DB-level CHECK (rating BETWEEN 0 AND 5، يسمح بـNULL) أُضيف في migration 0018.
     rating: int("rating").default(0),
     notes: text("notes"),

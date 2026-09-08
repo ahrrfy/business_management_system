@@ -7,13 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
@@ -30,41 +24,11 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { careersUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
-import {
-  APPLICANT_SOURCES,
-  APPLICANT_STAGES,
-  EMPLOYMENT_TYPES,
-  HR_DEPARTMENTS,
-  applicantSourceLabel,
-  applicantStageLabel,
-  employmentTypeLabel,
-  vacancyAccent,
-} from "@shared/hr";
-import {
-  Briefcase,
-  ChevronLeft,
-  Copy,
-  Download,
-  Eye,
-  ExternalLink,
-  FileSpreadsheet,
-  FileText,
-  GraduationCap,
-  Image as ImageIcon,
-  Link as LinkIcon,
-  Mail,
-  MapPin,
-  Pencil,
-  Phone,
-  Plus,
-  Star,
-  Trash2,
-  Users,
-} from "lucide-react";
+import { APPLICANT_SOURCES, APPLICANT_STAGES, EMPLOYMENT_TYPES, HR_DEPARTMENTS, applicantSourceLabel, applicantStageLabel, employmentTypeLabel, vacancyAccent } from "@shared/hr";
+import { Briefcase, ChevronLeft, Copy, Download, Eye, ExternalLink, FileSpreadsheet, FileText, GraduationCap, Image as ImageIcon, Link as LinkIcon, Mail, MapPin, Pencil, Phone, Plus, Star, Trash2, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
-
 
 const STAGE_COLOR: Record<string, string> = {
   new: "var(--status-pending)",
@@ -145,8 +109,16 @@ export default function Recruitment() {
       columns: [
         { key: "name", header: "الاسم" },
         { key: "jobTitle", header: "الوظيفة", map: (r) => r.jobTitle ?? "" },
-        { key: "source", header: "المصدر", map: (r) => applicantSourceLabel(r.source) },
-        { key: "stage", header: "المرحلة", map: (r) => applicantStageLabel(r.stage) },
+        {
+          key: "source",
+          header: "المصدر",
+          map: (r) => applicantSourceLabel(r.source),
+        },
+        {
+          key: "stage",
+          header: "المرحلة",
+          map: (r) => applicantStageLabel(r.stage),
+        },
         { key: "phone", header: "الهاتف", map: (r) => r.phone ?? "" },
         { key: "rating", header: "التقييم", map: (r) => r.rating ?? 0 },
       ],
@@ -175,10 +147,7 @@ export default function Recruitment() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="التوظيف"
-        description="أعلِن الوظائف الشاغرة على المعرض العام، وتابِع المتقدّمين عبر مسار المراحل."
-      />
+      <PageHeader title="التوظيف" description="أعلِن الوظائف الشاغرة على المعرض العام، وتابِع المتقدّمين عبر مسار المراحل." />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -201,213 +170,195 @@ export default function Recruitment() {
             </Button>
           </div>
 
-      {/* المساران: الرابط الخارجي + الاستمارة الورقية */}
-      <div className="grid md:grid-cols-2 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2">
-              <span className="text-primary"><LinkIcon className="size-5" /></span>
-              <h3 className="font-semibold">التقديم عبر الرابط الخارجي</h3>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1.5 leading-6">
-              شارك الرابط العام مع المتقدّمين. يملأ المتقدّم استمارة كاملة، فيصل طلبه مباشرة إلى مسار التوظيف
-              (مرحلة «جديد») للمراجعة والمقابلة أو الأرشفة.
-            </p>
-            <div className="flex items-center gap-2 mt-3">
-              <input
-                readOnly
-                value={publicUrl}
-                dir="ltr"
-                className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono"
-                aria-label="رابط التقديم العام"
-              />
-              <Button size="sm" variant="outline" onClick={copyLink}>
-                <Copy className="size-3.5" /> نسخ
-              </Button>
-              <Button size="sm" variant="outline" asChild>
-                <a href={publicUrl} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="size-3.5" /> فتح
-                </a>
-              </Button>
-            </div>
-            <div className="text-[11px] text-muted-foreground mt-2 tabular-nums" dir="rtl">
-              {externalCount} طلب وصل عبر الرابط
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2">
-              <span className="text-primary"><FileText className="size-5" /></span>
-              <h3 className="font-semibold">الاستمارة الورقية</h3>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1.5 leading-6">
-              يملأ المتقدّم استمارة ورقية يدوياً، ويُدخلها الموظف المختص لاحقاً إلى النظام، أو تُحفظ في الأرشيف
-              للرجوع إليها عند الحاجة.
-            </p>
-            <div className="flex gap-2 mt-3">
-              <Button size="sm" onClick={() => setPaperOpen(true)}>
-                <Plus className="size-3.5" /> إدخال استمارة ورقية
-              </Button>
-            </div>
-            <div className="text-[11px] text-muted-foreground mt-3 tabular-nums" dir="rtl">
-              {paperCount} استمارة ورقية/مؤرشفة
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* الفلاتر */}
-      <Card>
-        <CardContent className="py-3 flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground me-1">
-            <Users className="size-4" /> المتقدّمون
-            <span className="tabular-nums">({rows.length})</span>
-          </div>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="بحث (اسم/وظيفة/هاتف/بريد)"
-            className={selectClsSm + " w-56"}
-            aria-label="بحث"
-          />
-          <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
-            <option value="">كل المراحل</option>
-            {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </AppSelect>
-          <AppSelect className="h-9" value={source} onValueChange={(next) => setSource(next)} aria-label="المصدر">
-            <option value="">كل المصادر</option>
-            {APPLICANT_SOURCES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </AppSelect>
-          <AppSelect className="h-9" value={vacancyFilter} onValueChange={(next) => setVacancyFilter(next)} aria-label="الوظيفة">
-            <option value="">كل الوظائف</option>
-            {(vacancyOptsQ.data ?? []).map((v) => <option key={v.id} value={String(v.id)}>{v.title}</option>)}
-          </AppSelect>
-          <Button size="sm" variant="outline" className="ms-auto" disabled={!rows.length} onClick={exportApplicants}>
-            <FileSpreadsheet className="size-3.5" /> تصدير Excel
-          </Button>
-        </CardContent>
-      </Card>
-
-      {list.isError && (
-        <ErrorState message="تعذّر تحميل المتقدّمين." onRetry={() => list.refetch()} />
-      )}
-
-      {/* مسار المتقدّمين (Kanban) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        {APPLICANT_STAGES.map((st) => {
-          const items = rows.filter((a) => a.stage === st.key);
-          const color = STAGE_COLOR[st.key] ?? "#64748b";
-          return (
-            <div key={st.key} className="bg-muted/40 rounded-lg p-2.5 min-h-24">
-              <div className="flex items-center justify-between mb-2.5 px-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="size-2 rounded-full shrink-0" style={{ background: color }} />
-                  <span className="text-xs font-semibold">{st.label}</span>
+          {/* المساران: الرابط الخارجي + الاستمارة الورقية */}
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2">
+                  <span className="text-primary">
+                    <LinkIcon className="size-5" />
+                  </span>
+                  <h3 className="font-semibold">التقديم عبر الرابط الخارجي</h3>
                 </div>
-                <span className="text-[11px] text-muted-foreground tabular-nums">{items.length}</span>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-6">شارك الرابط العام مع المتقدّمين. يملأ المتقدّم استمارة كاملة، فيصل طلبه مباشرة إلى مسار التوظيف (مرحلة «جديد») للمراجعة والمقابلة أو الأرشفة.</p>
+                <div className="flex items-center gap-2 mt-3">
+                  <input readOnly value={publicUrl} dir="ltr" className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط التقديم العام" />
+                  <Button size="sm" variant="outline" onClick={copyLink}>
+                    <Copy className="size-3.5" /> نسخ
+                  </Button>
+                  <Button size="sm" variant="outline" asChild>
+                    <a href={publicUrl} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="size-3.5" /> فتح
+                    </a>
+                  </Button>
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-2 tabular-nums" dir="rtl">
+                  {externalCount} طلب وصل عبر الرابط
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2">
+                  <span className="text-primary">
+                    <FileText className="size-5" />
+                  </span>
+                  <h3 className="font-semibold">الاستمارة الورقية</h3>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-6">يملأ المتقدّم استمارة ورقية يدوياً، ويُدخلها الموظف المختص لاحقاً إلى النظام، أو تُحفظ في الأرشيف للرجوع إليها عند الحاجة.</p>
+                <div className="flex gap-2 mt-3">
+                  <Button size="sm" onClick={() => setPaperOpen(true)}>
+                    <Plus className="size-3.5" /> إدخال استمارة ورقية
+                  </Button>
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-3 tabular-nums" dir="rtl">
+                  {paperCount} استمارة ورقية/مؤرشفة
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* الفلاتر */}
+          <Card>
+            <CardContent className="py-3 flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground me-1">
+                <Users className="size-4" /> المتقدّمون
+                <span className="tabular-nums">({rows.length})</span>
               </div>
-              <div className="space-y-2">
-                {items.map((a) => {
-                  const next = NEXT_STAGE[a.stage];
-                  return (
-                    <div key={a.id} className="bg-card border border-border rounded-lg p-2.5 transition-shadow hover:shadow-sm">
-                      <div className="flex items-center gap-2">
-                        <EmpAvatar name={a.name} color={color} sizePx={28} />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[12px] font-medium truncate">{a.name}</div>
-                          <div className="text-[10px] text-muted-foreground truncate">{a.jobTitle || "—"}</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setDetailId(a.id)}
-                          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          aria-label={`تفاصيل ${a.name}`}
-                          title="عرض التفاصيل"
-                        >
-                          <Eye className="size-3.5" />
-                        </button>
-                      </div>
-                      <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          {a.source === "external" ? <LinkIcon className="size-3" /> : <FileText className="size-3" />}
-                          {applicantSourceLabel(a.source)}
-                        </span>
-                        <Stars rating={a.rating} />
-                      </div>
-                      {a.phone && (
-                        <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground" dir="ltr">
-                          <Phone className="size-3 shrink-0" />
-                          <span className="tabular-nums">{a.phone}</span>
-                        </div>
-                      )}
-                      {next && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="w-full mt-2 h-7 text-[11px]"
-                          disabled={move.isPending}
-                          onClick={() => move.mutate({ id: a.id, stage: next as never })}
-                        >
-                          نقل إلى «{applicantStageLabel(next)}» <ChevronLeft className="size-3.5" />
-                        </Button>
-                      )}
-                      {a.stage !== "rejected" && a.stage !== "archived" && (
-                        <div className="flex gap-1.5 mt-1.5">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="flex-1 h-6 text-[10px] text-destructive"
-                            disabled={move.isPending}
-                            onClick={async () => {
-                              if (
-                                !(await confirm({
-                                  variant: "warning",
-                                  title: "رفض المتقدّم",
-                                  description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("rejected")}»؟`,
-                                  confirmText: "رفض",
-                                }))
-                              )
-                                return;
-                              move.mutate({ id: a.id, stage: "rejected" });
-                            }}
-                          >
-                            رفض
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="flex-1 h-6 text-[10px] text-muted-foreground"
-                            disabled={move.isPending}
-                            onClick={async () => {
-                              if (
-                                !(await confirm({
-                                  variant: "warning",
-                                  title: "أرشفة المتقدّم",
-                                  description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("archived")}»؟`,
-                                  confirmText: "أرشفة",
-                                }))
-                              )
-                                return;
-                              move.mutate({ id: a.id, stage: "archived" });
-                            }}
-                          >
-                            أرشفة
-                          </Button>
-                        </div>
-                      )}
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث (اسم/وظيفة/هاتف/بريد)" className={selectClsSm + " w-56"} aria-label="بحث" />
+              <AppSelect className="h-9" value={stage} onValueChange={(next) => setStage(next)} aria-label="المرحلة">
+                <option value="">كل المراحل</option>
+                {APPLICANT_STAGES.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </AppSelect>
+              <AppSelect className="h-9" value={source} onValueChange={(next) => setSource(next)} aria-label="المصدر">
+                <option value="">كل المصادر</option>
+                {APPLICANT_SOURCES.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
+                ))}
+              </AppSelect>
+              <AppSelect className="h-9" value={vacancyFilter} onValueChange={(next) => setVacancyFilter(next)} aria-label="الوظيفة">
+                <option value="">كل الوظائف</option>
+                {(vacancyOptsQ.data ?? []).map((v) => (
+                  <option key={v.id} value={String(v.id)}>
+                    {v.title}
+                  </option>
+                ))}
+              </AppSelect>
+              <Button size="sm" variant="outline" className="ms-auto" disabled={!rows.length} onClick={exportApplicants}>
+                <FileSpreadsheet className="size-3.5" /> تصدير Excel
+              </Button>
+            </CardContent>
+          </Card>
+
+          {list.isError && <ErrorState message="تعذّر تحميل المتقدّمين." onRetry={() => list.refetch()} />}
+
+          {/* مسار المتقدّمين (Kanban) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+            {APPLICANT_STAGES.map((st) => {
+              const items = rows.filter((a) => a.stage === st.key);
+              const color = STAGE_COLOR[st.key] ?? "#64748b";
+              return (
+                <div key={st.key} className="bg-muted/40 rounded-lg p-2.5 min-h-24">
+                  <div className="flex items-center justify-between mb-2.5 px-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full shrink-0" style={{ background: color }} />
+                      <span className="text-xs font-semibold">{st.label}</span>
                     </div>
-                  );
-                })}
-                {items.length === 0 && (
-                  <div className="text-[11px] text-muted-foreground text-center py-4">لا طلبات</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+                    <span className="text-[11px] text-muted-foreground tabular-nums">{items.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {items.map((a) => {
+                      const next = NEXT_STAGE[a.stage];
+                      return (
+                        <div key={a.id} className="bg-card border border-border rounded-lg p-2.5 transition-shadow hover:shadow-sm">
+                          <div className="flex items-center gap-2">
+                            <EmpAvatar name={a.name} color={color} sizePx={28} />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[12px] font-medium truncate">{a.name}</div>
+                              <div className="text-[10px] text-muted-foreground truncate">{a.jobTitle || "—"}</div>
+                            </div>
+                            <button type="button" onClick={() => setDetailId(a.id)} className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`تفاصيل ${a.name}`} title="عرض التفاصيل">
+                              <Eye className="size-3.5" />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
+                            <span className="inline-flex items-center gap-1">
+                              {a.source === "external" ? <LinkIcon className="size-3" /> : <FileText className="size-3" />}
+                              {applicantSourceLabel(a.source)}
+                            </span>
+                            <Stars rating={a.rating} />
+                          </div>
+                          {a.phone && (
+                            <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground" dir="ltr">
+                              <Phone className="size-3 shrink-0" />
+                              <span className="tabular-nums">{a.phone}</span>
+                            </div>
+                          )}
+                          {next && (
+                            <Button size="sm" variant="outline" className="w-full mt-2 h-7 text-[11px]" disabled={move.isPending} onClick={() => move.mutate({ id: a.id, stage: next as never })}>
+                              نقل إلى «{applicantStageLabel(next)}» <ChevronLeft className="size-3.5" />
+                            </Button>
+                          )}
+                          {a.stage !== "rejected" && a.stage !== "archived" && (
+                            <div className="flex gap-1.5 mt-1.5">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="flex-1 h-6 text-[10px] text-destructive"
+                                disabled={move.isPending}
+                                onClick={async () => {
+                                  if (
+                                    !(await confirm({
+                                      variant: "warning",
+                                      title: "رفض المتقدّم",
+                                      description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("rejected")}»؟`,
+                                      confirmText: "رفض",
+                                    }))
+                                  )
+                                    return;
+                                  move.mutate({ id: a.id, stage: "rejected" });
+                                }}
+                              >
+                                رفض
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="flex-1 h-6 text-[10px] text-muted-foreground"
+                                disabled={move.isPending}
+                                onClick={async () => {
+                                  if (
+                                    !(await confirm({
+                                      variant: "warning",
+                                      title: "أرشفة المتقدّم",
+                                      description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("archived")}»؟`,
+                                      confirmText: "أرشفة",
+                                    }))
+                                  )
+                                    return;
+                                  move.mutate({ id: a.id, stage: "archived" });
+                                }}
+                              >
+                                أرشفة
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {items.length === 0 && <div className="text-[11px] text-muted-foreground text-center py-4">لا طلبات</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
           <PaperDialog open={paperOpen} onClose={() => setPaperOpen(false)} onSaved={() => void utils.recruitment.list.invalidate()} />
           <ApplicantDetailDialog id={detailId} onClose={() => setDetailId(null)} vacancies={vacancyOptsQ.data ?? []} />
@@ -418,21 +369,18 @@ export default function Recruitment() {
 }
 
 /* ====================== حوار تفاصيل المتقدّم ====================== */
-function ApplicantDetailDialog({
-  id,
-  onClose,
-  vacancies,
-}: {
-  id: number | null;
-  onClose: () => void;
-  vacancies: { id: number; title: string }[];
-}) {
+function ApplicantDetailDialog({ id, onClose, vacancies }: { id: number | null; onClose: () => void; vacancies: { id: number; title: string }[] }) {
   const q = trpc.recruitment.get.useQuery({ id: id ?? 0 }, { enabled: id != null });
   const a = q.data;
-  const vacancyTitle = a?.vacancyId != null ? vacancies.find((v) => v.id === a.vacancyId)?.title ?? null : null;
+  const vacancyTitle = a?.vacancyId != null ? (vacancies.find((v) => v.id === a.vacancyId)?.title ?? null) : null;
 
   return (
-    <Dialog open={id != null} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog
+      open={id != null}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
       <DialogContent dir="rtl">
         <DialogHeader>
           <DialogTitle>تفاصيل المتقدّم</DialogTitle>
@@ -461,14 +409,22 @@ function ApplicantDetailDialog({
               </div>
               {a.phone && (
                 <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Phone className="size-3" /> الهاتف</div>
-                  <div className="font-medium tabular-nums" dir="ltr">{a.phone}</div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
+                    <Phone className="size-3" /> الهاتف
+                  </div>
+                  <div className="font-medium tabular-nums" dir="ltr">
+                    {a.phone}
+                  </div>
                 </div>
               )}
               {a.email && (
                 <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Mail className="size-3" /> البريد</div>
-                  <div className="font-medium" dir="ltr">{a.email}</div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
+                    <Mail className="size-3" /> البريد
+                  </div>
+                  <div className="font-medium" dir="ltr">
+                    {a.email}
+                  </div>
                 </div>
               )}
               {a.experience && (
@@ -479,20 +435,43 @@ function ApplicantDetailDialog({
               )}
               {a.education && (
                 <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><GraduationCap className="size-3" /> المؤهل</div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
+                    <GraduationCap className="size-3" /> المؤهل
+                  </div>
                   <div className="font-medium">{a.education}</div>
+                </div>
+              )}
+              {a.residentialAddress && (
+                <div className="col-span-2">
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
+                    <MapPin className="size-3" /> عنوان السكن / المنطقة
+                  </div>
+                  <div className="font-medium">{a.residentialAddress}</div>
+                </div>
+              )}
+              {a.portfolioUrl && (
+                <div className="col-span-2">
+                  <div className="text-muted-foreground mb-0.5">الأعمال النموذجية</div>
+                  <a href={a.portfolioUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 font-medium text-primary underline underline-offset-2" dir="ltr">
+                    <span className="truncate">{a.portfolioUrl}</span>
+                    <ExternalLink className="size-3 shrink-0" />
+                  </a>
                 </div>
               )}
               {vacancyTitle && (
                 <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1"><Briefcase className="size-3" /> الوظيفة المتقدَّم لها</div>
+                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
+                    <Briefcase className="size-3" /> الوظيفة المتقدَّم لها
+                  </div>
                   <div className="font-medium">{vacancyTitle}</div>
                 </div>
               )}
               {a.appliedDate && (
                 <div>
                   <div className="text-muted-foreground mb-0.5">تاريخ التقديم</div>
-                  <div className="font-medium tabular-nums" dir="ltr">{fmtDate(a.appliedDate)}</div>
+                  <div className="font-medium tabular-nums" dir="ltr">
+                    {fmtDate(a.appliedDate)}
+                  </div>
                 </div>
               )}
             </div>
@@ -516,7 +495,9 @@ function ApplicantDetailDialog({
           </div>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إغلاق</Button>
+          <Button variant="outline" onClick={onClose}>
+            إغلاق
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -531,6 +512,8 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
   const [email, setEmail] = useState("");
   const [experience, setExperience] = useState("");
   const [education, setEducation] = useState("");
+  const [residentialAddress, setResidentialAddress] = useState("");
+  const [portfolioUrl, setPortfolioUrl] = useState("");
   const [source, setSource] = useState<"paper" | "archive">("paper");
   const [stage, setStage] = useState<string>("new");
   const [rating, setRating] = useState(0);
@@ -547,9 +530,18 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
   });
 
   function reset() {
-    setName(""); setJobTitle(""); setPhone(""); setEmail("");
-    setExperience(""); setEducation(""); setSource("paper"); setStage("new");
-    setRating(0); setNotes("");
+    setName("");
+    setJobTitle("");
+    setPhone("");
+    setEmail("");
+    setExperience("");
+    setEducation("");
+    setResidentialAddress("");
+    setPortfolioUrl("");
+    setSource("paper");
+    setStage("new");
+    setRating(0);
+    setNotes("");
   }
 
   function submit() {
@@ -561,6 +553,8 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
       email: email.trim() || undefined,
       experience: experience.trim() || undefined,
       education: education.trim() || undefined,
+      residentialAddress: residentialAddress.trim() || undefined,
+      portfolioUrl: portfolioUrl.trim() || undefined,
       notes: notes.trim() || undefined,
       source,
       stage: stage as never,
@@ -569,7 +563,12 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
       <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle>إدخال استمارة ورقية إلى النظام</DialogTitle>
@@ -577,7 +576,9 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
 
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           <div className="space-y-1.5">
-            <Label>اسم المتقدّم <span className="text-destructive">*</span></Label>
+            <Label>
+              اسم المتقدّم <span className="text-destructive">*</span>
+            </Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" />
           </div>
           <div className="space-y-1.5">
@@ -588,7 +589,9 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
             <Label>الوظيفة المتقدّم لها</Label>
             <Input value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" list="rec-jobs" />
             <datalist id="rec-jobs">
-              {HR_DEPARTMENTS.map((d) => <option key={d} value={d} />)}
+              {HR_DEPARTMENTS.map((d) => (
+                <option key={d} value={d} />
+              ))}
             </datalist>
           </div>
           <div className="space-y-1.5">
@@ -603,6 +606,14 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
             <Label>المؤهل الدراسي</Label>
             <Input value={education} onChange={(e) => setEducation(e.target.value)} placeholder="مثال: بكالوريوس" />
           </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>عنوان السكن / المنطقة</Label>
+            <Input value={residentialAddress} onChange={(e) => setResidentialAddress(e.target.value)} maxLength={300} placeholder="مثال: بغداد — الكرادة" autoComplete="street-address" />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
+            <Label>الأعمال النموذجية</Label>
+            <Input value={portfolioUrl} onChange={(e) => setPortfolioUrl(e.target.value)} maxLength={500} type="url" dir="ltr" placeholder="https://portfolio.example.com" autoComplete="url" />
+          </div>
           <div className="space-y-1.5">
             <Label>المصدر</Label>
             <AppSelect className={selectClsSm + " w-full"} value={source} onValueChange={(next) => setSource(next as "paper" | "archive")}>
@@ -613,21 +624,24 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
           <div className="space-y-1.5">
             <Label>المرحلة</Label>
             <AppSelect className={selectClsSm + " w-full"} value={stage} onValueChange={(next) => setStage(next)}>
-              {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              {APPLICANT_STAGES.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))}
             </AppSelect>
           </div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>التقييم المبدئي</Label>
             <div className="flex items-center gap-1">
               {[1, 2, 3, 4, 5].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setRating(rating === n ? 0 : n)}
-                  className="p-0.5 text-[var(--sem-warn)]"
-                  aria-label={`${n} نجوم`}
-                >
-                  <Star className="size-5" style={{ fill: n <= rating ? "currentColor" : "transparent" }} />
+                <button key={n} type="button" onClick={() => setRating(rating === n ? 0 : n)} className="p-0.5 text-[var(--sem-warn)]" aria-label={`${n} نجوم`}>
+                  <Star
+                    className="size-5"
+                    style={{
+                      fill: n <= rating ? "currentColor" : "transparent",
+                    }}
+                  />
                 </button>
               ))}
               {rating > 0 && (
@@ -644,7 +658,9 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button variant="outline" onClick={onClose}>
+            إلغاء
+          </Button>
           <Button onClick={submit} disabled={create.isPending}>
             {create.isPending ? ACTION_LABELS.saving : "حفظ في مسار التوظيف"}
           </Button>
@@ -667,6 +683,7 @@ type Vacancy = {
   openings: number;
   imageUrl: string | null;
   isPublished: boolean;
+  publicPublicationStatus: "published" | "details_required" | "hidden";
   sortOrder: number;
 };
 
@@ -679,7 +696,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
 
   const [editing, setEditing] = useState<Vacancy | "new" | null>(null);
 
-  const publishedCount = rows.filter((v) => v.isPublished).length;
+  const publishedCount = rows.filter((v) => v.publicPublicationStatus === "published").length;
 
   const publish = trpc.recruitment.vacancyPublish.useMutation({
     onSuccess: () => {
@@ -713,26 +730,19 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-primary"><Briefcase className="size-5" /></span>
+                <span className="text-primary">
+                  <Briefcase className="size-5" />
+                </span>
                 <h3 className="font-semibold">معرض الوظائف العام</h3>
               </div>
-              <p className="text-xs text-muted-foreground mt-1.5 leading-6 max-w-xl">
-                الوظائف المنشورة تظهر للزوّار في صفحة المعرض العام، فيتصفّحونها ويقدّمون عليها مباشرة —
-                ويصل طلب كل متقدّم مربوطاً بالوظيفة إلى مسار «المتقدّمين».
-              </p>
+              <p className="text-xs text-muted-foreground mt-1.5 leading-6 max-w-xl">الوظائف المنشورة تظهر للزوّار في صفحة المعرض العام، فيتصفّحونها ويقدّمون عليها مباشرة — ويصل طلب كل متقدّم مربوطاً بالوظيفة إلى مسار «المتقدّمين».</p>
             </div>
             <Button onClick={() => setEditing("new")}>
               <Plus className="size-4" /> وظيفة جديدة
             </Button>
           </div>
           <div className="flex items-center gap-2 mt-3">
-            <input
-              readOnly
-              value={publicUrl}
-              dir="ltr"
-              className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono"
-              aria-label="رابط المعرض العام"
-            />
+            <input readOnly value={publicUrl} dir="ltr" className="flex-1 h-8 rounded-md border border-input bg-muted px-2.5 text-xs tabular-nums font-mono" aria-label="رابط المعرض العام" />
             <Button size="sm" variant="outline" onClick={copyLink}>
               <Copy className="size-3.5" /> نسخ
             </Button>
@@ -748,16 +758,18 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
         </CardContent>
       </Card>
 
-      {list.isError && (
-        <ErrorState message="تعذّر تحميل الوظائف." onRetry={() => list.refetch()} />
-      )}
+      {list.isError && <ErrorState message="تعذّر تحميل الوظائف." onRetry={() => list.refetch()} />}
 
       {!list.isLoading && rows.length === 0 && (
-        <Card><CardContent className="py-10 text-center">
-          <Briefcase className="size-8 mx-auto text-muted-foreground/50" />
-          <p className="text-sm text-muted-foreground mt-3">لا وظائف بعد. أضِف أول وظيفة لتظهر في المعرض العام.</p>
-          <Button className="mt-4" onClick={() => setEditing("new")}><Plus className="size-4" /> وظيفة جديدة</Button>
-        </CardContent></Card>
+        <Card>
+          <CardContent className="py-10 text-center">
+            <Briefcase className="size-8 mx-auto text-muted-foreground/50" />
+            <p className="text-sm text-muted-foreground mt-3">لا وظائف بعد. أضِف أول وظيفة لتظهر في المعرض العام.</p>
+            <Button className="mt-4" onClick={() => setEditing("new")}>
+              <Plus className="size-4" /> وظيفة جديدة
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {/* بطاقات الوظائف */}
@@ -765,19 +777,26 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
         {rows.map((v) => {
           const ac = vacancyAccent(v.department);
           const applicants = countMap[String(v.id)] ?? 0;
+          const requiresDetails = v.publicPublicationStatus === "details_required";
+          const publiclyPublished = v.publicPublicationStatus === "published";
           return (
             <Card key={v.id} className="overflow-hidden">
               <div className="relative h-24 flex items-end">
                 {v.imageUrl ? (
                   <img src={v.imageUrl} alt={v.title} className="absolute inset-0 w-full h-full object-cover" />
                 ) : (
-                  <div className="absolute inset-0" style={{ background: `linear-gradient(135deg, ${ac.from}, ${ac.to})` }} />
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      background: `linear-gradient(135deg, ${ac.from}, ${ac.to})`,
+                    }}
+                  />
                 )}
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                 <div className="relative z-10 p-3 w-full flex items-center justify-between">
                   {v.department && <Badge className="bg-black/40 text-white border-white/30">{v.department}</Badge>}
-                  <Badge variant={v.isPublished ? "default" : "secondary"} className={v.isPublished ? "badge-status-active border-transparent" : ""}>
-                    {v.isPublished ? "منشورة" : "مخفية"}
+                  <Badge variant={publiclyPublished ? "default" : "secondary"} className={publiclyPublished ? "badge-status-active border-transparent" : ""}>
+                    {publiclyPublished ? "منشورة" : requiresDetails ? "تحتاج تفاصيل" : "مخفية"}
                   </Badge>
                 </div>
               </div>
@@ -785,9 +804,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                 <div className="font-semibold leading-tight">{v.title}</div>
                 {v.summary && <p className="text-xs text-muted-foreground line-clamp-2 leading-5">{v.summary}</p>}
                 <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-                  <span className="inline-flex items-center gap-1 bg-muted rounded px-1.5 py-0.5">
-                    {employmentTypeLabel(v.employmentType)}
-                  </span>
+                  <span className="inline-flex items-center gap-1 bg-muted rounded px-1.5 py-0.5">{employmentTypeLabel(v.employmentType)}</span>
                   {v.location && (
                     <span className="inline-flex items-center gap-1 bg-muted rounded px-1.5 py-0.5">
                       <MapPin className="size-3" /> {v.location}
@@ -798,13 +815,9 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-1 border-t">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer pt-2">
-                    <Switch
-                      checked={v.isPublished}
-                      disabled={publish.isPending}
-                      onCheckedChange={(c) => publish.mutate({ id: v.id, isPublished: c })}
-                    />
-                    نشر في المعرض
+                  <label className={`flex items-center gap-2 text-xs text-muted-foreground pt-2 ${requiresDetails ? "cursor-not-allowed" : "cursor-pointer"}`}>
+                    <Switch checked={publiclyPublished} disabled={publish.isPending || requiresDetails} onCheckedChange={(c) => publish.mutate({ id: v.id, isPublished: c })} />
+                    {requiresDetails ? "أكمل التفاصيل للنشر" : "نشر في المعرض"}
                   </label>
                   <div className="flex items-center gap-1 pt-2">
                     <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditing(v)}>
@@ -864,22 +877,34 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
   const [description, setDescription] = useState(vacancy?.description ?? "");
   const [requirements, setRequirements] = useState(vacancy?.requirements ?? "");
   const [isPublished, setIsPublished] = useState(vacancy?.isPublished ?? false);
-  const [images, setImages] = useState<ImageItem[]>(
-    vacancy?.imageUrl ? [{ id: "existing", dataUrl: vacancy.imageUrl, isPrimary: true }] : [],
-  );
+  const [images, setImages] = useState<ImageItem[]>(vacancy?.imageUrl ? [{ id: "existing", dataUrl: vacancy.imageUrl, isPrimary: true }] : []);
 
   const create = trpc.recruitment.vacancyCreate.useMutation({
-    onSuccess: () => { notify.ok("أُنشئت الوظيفة"); onSaved(); onClose(); },
+    onSuccess: () => {
+      notify.ok("أُنشئت الوظيفة");
+      onSaved();
+      onClose();
+    },
     onError: (e) => notify.err(e),
   });
   const update = trpc.recruitment.vacancyUpdate.useMutation({
-    onSuccess: () => { notify.ok("حُفظت التعديلات"); onSaved(); onClose(); },
+    onSuccess: () => {
+      notify.ok("حُفظت التعديلات");
+      onSaved();
+      onClose();
+    },
     onError: (e) => notify.err(e),
   });
   const pending = create.isPending || update.isPending;
 
   function submit() {
     if (!title.trim()) return notify.err("عنوان الوظيفة مطلوب");
+    if (isPublished && description.trim().length < 30) {
+      return notify.err("لا يمكن نشر الوظيفة قبل كتابة وصف تفصيلي واضح لا يقل عن 30 حرفاً");
+    }
+    if (isPublished && requirements.trim().length < 10) {
+      return notify.err("لا يمكن نشر الوظيفة قبل كتابة المتطلبات الأساسية بوضوح");
+    }
     const payload = {
       title: title.trim(),
       department: department.trim() || undefined,
@@ -897,7 +922,12 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
   }
 
   return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
       <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle>{isEdit ? "تعديل وظيفة" : "وظيفة شاغرة جديدة"}</DialogTitle>
@@ -905,20 +935,28 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
 
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>عنوان الوظيفة <span className="text-destructive">*</span></Label>
+            <Label>
+              عنوان الوظيفة <span className="text-destructive">*</span>
+            </Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" />
           </div>
           <div className="space-y-1.5">
             <Label>القسم</Label>
             <Input value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="اختر أو اكتب" list="vac-depts" />
             <datalist id="vac-depts">
-              {HR_DEPARTMENTS.map((d) => <option key={d} value={d} />)}
+              {HR_DEPARTMENTS.map((d) => (
+                <option key={d} value={d} />
+              ))}
             </datalist>
           </div>
           <div className="space-y-1.5">
             <Label>نوع التعاقد</Label>
             <AppSelect className={selectClsSm + " w-full"} value={employmentType} onValueChange={(next) => setEmploymentType(next)}>
-              {EMPLOYMENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+              {EMPLOYMENT_TYPES.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
             </AppSelect>
           </div>
           <div className="space-y-1.5">
@@ -934,34 +972,32 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
             <Input value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="جملة قصيرة جذّابة تلخّص الوظيفة" maxLength={200} />
           </div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>الوصف</Label>
+            <Label>الوصف {isPublished && <span className="text-destructive">*</span>}</Label>
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="مهام الوظيفة وتفاصيلها…" />
           </div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label>المتطلّبات</Label>
+            <Label>المتطلّبات {isPublished && <span className="text-destructive">*</span>}</Label>
             <Textarea value={requirements} onChange={(e) => setRequirements(e.target.value)} rows={3} placeholder="الخبرة والمهارات والمؤهلات المطلوبة…" />
           </div>
           <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
-            <Label className="flex items-center gap-1.5"><ImageIcon className="size-4" /> صورة الوظيفة (اختيارية)</Label>
-            <ImageUploader
-              value={images}
-              onChange={setImages}
-              maxItems={1}
-              singlePrimary={false}
-              hint="صورة واحدة تظهر أعلى بطاقة الوظيفة (بيئة العمل/القسم) — تُضغط تلقائياً"
-            />
+            <Label className="flex items-center gap-1.5">
+              <ImageIcon className="size-4" /> صورة الوظيفة (اختيارية)
+            </Label>
+            <ImageUploader value={images} onChange={setImages} maxItems={1} singlePrimary={false} hint="صورة واحدة تظهر أعلى بطاقة الوظيفة (بيئة العمل/القسم) — تُضغط تلقائياً" />
           </div>
           <div className="sm:col-span-2 lg:col-span-3 flex items-center justify-between rounded-lg border p-3 bg-muted/30">
             <div>
               <div className="text-sm font-medium">نشر في المعرض العام</div>
-              <div className="text-xs text-muted-foreground">عند التفعيل تظهر الوظيفة للزوّار في صفحة /apply</div>
+              <div className="text-xs text-muted-foreground">يلزم وصف تفصيلي ومتطلبات واضحة قبل النشر في صفحة /apply</div>
             </div>
             <Switch checked={isPublished} onCheckedChange={setIsPublished} />
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>إلغاء</Button>
+          <Button variant="outline" onClick={onClose}>
+            إلغاء
+          </Button>
           <Button onClick={submit} disabled={pending}>
             {pending ? ACTION_LABELS.saving : isEdit ? "حفظ التعديلات" : "إنشاء الوظيفة"}
           </Button>
