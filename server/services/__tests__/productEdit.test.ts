@@ -12,6 +12,7 @@ import { updateProduct } from "../catalog/productUpdate";
 import { createOnlineOrder } from "../onlineOrderService";
 import { loadProductForUpdateOrThrow } from "../catalog/productUpdateGuards";
 import { withTx } from "../tx";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -29,8 +30,8 @@ const TABLES = [
   "productVariants",
   "products",
   "customers",
-  "branches",
   "users",
+  "branches",
 ];
 
 function db() {
@@ -40,10 +41,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -265,6 +263,39 @@ describe("updateProductWithVariants — الكتابة", () => {
     );
     const base = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.id, 1), eq(s.productUnits.isBaseUnit, true))))[0];
     expect(base?.unitName).toBe("علبة"); // نفس الصفّ id=1 أُعيدت تسميته وما زال الأساس
+  });
+
+  it("⭐ إعادة تسمية وحدة فرعية مع الاحتفاظ بنفس الباركود ⇒ تحديث مكاني ناجح وبلا خطأ ER_DUP_ENTRY", async () => {
+    // الوحدة 2 اسمها «درزن» وباركودها BC-DOZEN-1
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: renamedTemplate,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1", دزينة: "BC-DOZEN-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    expect(units).toHaveLength(2);
+    const renamedUnit = units.find((u) => u.barcode === "BC-DOZEN-1");
+    expect(renamedUnit).toBeDefined();
+    expect(renamedUnit?.unitName).toBe("دزينة");
+    expect(renamedUnit?.id).toBe(2); // تم التحديث في مكان نفس الصف دون كسر مراجع المعرّف
+    expect(renamedUnit?.isActive).toBe(true);
   });
 
   it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {

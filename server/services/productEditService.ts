@@ -198,7 +198,17 @@ async function upsertVariantUnits(
   for (const t of template) {
     const name = t.unitName.trim();
     const barcode = canonicalizeBarcodeInput(unitBarcodes[name] ?? "") || null;
-    const match = existing.find((u) => u.unitName === name);
+    // مطابقة الوحدة القائمة الذكية:
+    // ١. بالاسم أولاً إن لم تكن محجوزة مسبقاً
+    // ٢. بالباركود إن كان محدداً (سيناريو إعادة تسمية وحدة قائمة مع الاحتفاظ بباركودها)
+    // ٣. بوحدة الأساس إن كانت هذه وحدة أساس ولم تُطابق بعد
+    let match = existing.find((u) => !keep.has(Number(u.id)) && u.unitName === name);
+    if (!match && barcode) {
+      match = existing.find((u) => !keep.has(Number(u.id)) && u.barcode === barcode);
+    }
+    if (!match && t.isBaseUnit) {
+      match = existing.find((u) => !keep.has(Number(u.id)) && u.isBaseUnit);
+    }
     let unitId: number;
     // أسعارُ الوحدة القائمة **قبل** المسح — لسجلّ تغيّر السعر (Codex INV-05: هذا المسار لم يكن يكتبه).
     let previousByTier: Map<string, string> | null = null;
@@ -222,6 +232,13 @@ async function upsertVariantUnits(
       previousByTier = new Map(previous.map((row) => [row.priceTier, row.price] as const));
       await tx.delete(productPrices).where(eq(productPrices.productUnitId, unitId));
     } else {
+      // إن كان الباركود محجوزاً في وحدة قديمة غير محتفظ بها ضمن هذا المتغيّر، نفرّغ باركودها القديم أولاً لنقله
+      if (barcode) {
+        const clashingOld = existing.find((u) => !keep.has(Number(u.id)) && u.barcode === barcode);
+        if (clashingOld) {
+          await tx.update(productUnits).set({ barcode: null }).where(eq(productUnits.id, Number(clashingOld.id)));
+        }
+      }
       const res = await tx.insert(productUnits).values({
         variantId,
         unitName: name,
