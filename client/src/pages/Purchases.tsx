@@ -162,7 +162,13 @@ export default function Purchases() {
     [pendingControls.data],
   );
   const pendingOrderControlMap = useMemo(() => {
-    const map = new Map<number, NonNullable<typeof pendingControls.data>["rows"][number]>();
+    const map = new Map<
+      number,
+      Extract<
+        NonNullable<typeof pendingControls.data>["rows"][number],
+        { documentType: "PURCHASE_ORDER" }
+      >
+    >();
     for (const row of pendingControls.data?.rows ?? []) {
       if (row.documentType === "PURCHASE_ORDER") {
         map.set(Number(row.purchaseOrderId), row);
@@ -822,10 +828,23 @@ export default function Purchases() {
                     : positiveDiff(p.total ?? 0, effectivePaid.toString());
                   const isSettled = rem.lte(0);
                   const activeControl = pendingOrderControlMap.get(Number(p.id));
+                  const currentUserId = me.data?.id;
+                  const violatesSod =
+                    currentUserId == null ||
+                    (activeControl != null &&
+                      [
+                        activeControl.requestedBy,
+                        activeControl.creatorId,
+                        activeControl.lastEditedBy,
+                        p.createdBy,
+                        (p as { lastEditedBy?: number | null }).lastEditedBy,
+                        (p as { submittedBy?: number | null }).submittedBy,
+                      ].some((id) => id != null && Number(id) === Number(currentUserId)));
                   const canDirectApprove =
                     p.status === "SENT" &&
                     activeControl != null &&
-                    activeControl.kind === "APPROVE_REVISION";
+                    activeControl.kind === "APPROVE_REVISION" &&
+                    !violatesSod;
 
                   return (
                     <RowActions
