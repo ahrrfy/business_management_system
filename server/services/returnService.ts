@@ -291,15 +291,21 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       const branchForRefund = Number(invPreview.branchId);
       let explicitShiftId = refund.shiftId ?? null;
       if (explicitShiftId == null && actor.role === "cashier") {
-        const callerOpenShift = (
-          await tx
-            .select({ id: shifts.id })
-            .from(shifts)
-            .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.userId, actor.userId), eq(shifts.status, "OPEN")))
-            .limit(1)
-        )[0];
-        if (callerOpenShift) {
-          explicitShiftId = Number(callerOpenShift.id);
+        const callerOpenShifts = await tx
+          .select({ id: shifts.id })
+          .from(shifts)
+          .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.userId, actor.userId), eq(shifts.status, "OPEN")));
+        if (callerOpenShifts.length === 1) {
+          explicitShiftId = Number(callerOpenShifts[0].id);
+        } else if (callerOpenShifts.length > 1) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعدّد أدراج الكاشير المفتوحة",
+              why: `لديك أكثر من وردية مفتوحة في هذا الفرع (${callerOpenShifts.length}) — حدّد درج الوردية المستهدف للاسترداد صراحةً`,
+              doThis: "اختر الوردية التي سيخرج منها النقد فعلياً قبل تأكيد المرتجع",
+            }),
+          });
         }
       }
       const openShiftCount = explicitShiftId != null

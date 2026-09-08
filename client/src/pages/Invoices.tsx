@@ -793,7 +793,7 @@ export default function Invoices() {
                   label: "إرجاع فوري",
                   onSelect: () => setReturnDrawerInvoiceId(r.id),
                   hidden: !returnable,
-                  gate: { roles: ["manager"], module: "sales", level: "FULL" },
+                  gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" },
                 },
               ]}
             />

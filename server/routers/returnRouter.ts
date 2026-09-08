@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, returnRequests, salesControlRequests, users } from "../../drizzle/schema";
@@ -105,6 +106,35 @@ export const returnRouter = router({
             message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
           });
         }
+
+        /**
+         * ⛔ **حظر التنفيذ المباشر مع وجود طلبٍ معلّق** (أمسكه Codex P2 على #1048).
+         *
+         * لا يجوز تنفيذ مرتجعٍ مباشر على فاتورة لها طلب تحكم أو طلب مرتجع معلّق؛
+         * وإلا تظل القيود الفريدة (`activeInvoiceId`) عالقة في القاعدة وتصبح الفاتورة شاردة.
+         */
+        const [pendingControl] = await withTx(async (tx) => tx
+          .select({ id: salesControlRequests.id })
+          .from(salesControlRequests)
+          .where(and(eq(salesControlRequests.invoiceId, invoiceId), eq(salesControlRequests.status, "PENDING")))
+          .limit(1), { gate: "NONE" });
+        const [pendingLegacy] = await withTx(async (tx) => tx
+          .select({ id: returnRequests.id })
+          .from(returnRequests)
+          .where(and(eq(returnRequests.invoiceId, invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+          .limit(1), { gate: "NONE" });
+
+        if (pendingControl || pendingLegacy) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: appErrorMessage({
+              what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+              why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+              doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
+            }),
+          });
+        }
+
         if (reason.trim().length < 3) {
           throw new TRPCError({
             code: "BAD_REQUEST",
@@ -129,20 +159,23 @@ export const returnRouter = router({
           ? "OWNER_IMMEDIATE"
           : "DIRECT_EXECUTION";
 
-        await logAudit(ctx, {
-          action: RETURN_EXECUTED_AUDIT_ACTION,
-          entityType: "invoice",
-          entityId: invoiceId,
-          newValue: {
-            mode: executionMode satisfies ReturnExecutionMode,
-            reason,
-            lines: input.lines.length,
-            returnedTotal: String(executed.returnedTotal ?? "0"),
-            fullyReturned: !!executed.fullyReturned,
-            refund: input.refund?.amount ?? input.resolution?.amount ?? null,
-            restock: input.restock ?? input.resolution?.disposition ?? null,
-          },
-        });
+        const isReplay = "idempotentReplay" in executed && executed.idempotentReplay === true;
+        if (!isReplay) {
+          await logAudit(ctx, {
+            action: RETURN_EXECUTED_AUDIT_ACTION,
+            entityType: "invoice",
+            entityId: invoiceId,
+            newValue: {
+              mode: executionMode satisfies ReturnExecutionMode,
+              reason,
+              lines: input.lines.length,
+              returnedTotal: String(executed.returnedTotal ?? "0"),
+              fullyReturned: !!executed.fullyReturned,
+              refund: input.refund?.amount ?? input.resolution?.amount ?? null,
+              restock: input.restock ?? input.resolution?.disposition ?? null,
+            },
+          });
+        }
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
       }
 
@@ -480,7 +513,7 @@ export const returnRouter = router({
       return rows.map((r) => ({ id: Number(r.id), name: r.name }));
     }),
 
-  getInvoice: salesManagerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  getInvoice: salesCashierProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (

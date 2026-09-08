@@ -384,7 +384,7 @@ export default function App() {
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
-      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
+      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager", "cashier"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
       <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
       <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>

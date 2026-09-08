@@ -301,6 +301,26 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     const cashOut = (report?.payments ?? []).find((p) => p.method === "CASH" && p.direction === "OUT");
     expect(Number(cashOut?.total ?? 0)).toBeCloseTo(10, 2);
   });
+
+  it("كاشير يملك ورديتين مفتوحتين ويحذف shiftId ⇒ يُرفَض ويُلزم بالتحديد الصريح", async () => {
+    const cashierShift1 = await openShiftFor(2, 1);
+    await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift1);
+
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" };
+    await expect(
+      returnSale(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(),
+        },
+        cashierActor,
+      ),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+  });
 });
 
 describe("resolveBranchCashShiftTx", () => {
