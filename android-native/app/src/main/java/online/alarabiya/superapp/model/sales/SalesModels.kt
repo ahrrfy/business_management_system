@@ -32,9 +32,9 @@ data class SalesCapabilities(
     val canReadSales: Boolean get() = sales.canRead
     val canSearchCustomers: Boolean get() = customers.canRead
     val canReadShifts: Boolean get() = treasury.canRead && branchId != null
-    val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager")
-    /** المرتجعُ يُنفَّذ فوراً للمالك، ويُصبح طلباً بانتظار مراجعٍ مستقلّ لغيره (قرار المالك ١/٩/٢٦). */
-    val returnExecutesImmediately: Boolean get() = isOwner
+    val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager" || role == "cashier")
+    /** المرتجعُ يُنفَّذ فوراً للمالك ومسؤولي النظام والمدراء والكاشير (محرك المرتجعات الفوري الذري). */
+    val returnExecutesImmediately: Boolean get() = isOwner || role == "admin" || role == "manager" || role == "cashier"
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): SalesCapabilities {
@@ -228,6 +228,7 @@ data class ReturnSubmission(
     val refundShiftId: Long?,
     val restock: Boolean,
     val clientRequestId: String,
+    val reason: String = "مرتجع مبيعات عبر التطبيق",
 )
 
 /**

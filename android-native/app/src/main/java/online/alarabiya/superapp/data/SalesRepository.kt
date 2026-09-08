@@ -144,6 +144,8 @@ internal object SalesWire {
             })
             .put("restock", submission.restock)
             .put("clientRequestId", submission.clientRequestId)
+            .put("directExecution", true)
+            .put("reason", submission.reason.ifBlank { "مرتجع مبيعات عبر التطبيق" })
         val amount = submission.refundAmount.trim()
         if (amount.isNotEmpty() && amount.toDoubleOrNull()?.let { it > 0 } == true) {
             val refund = JSONObject().put("amount", amount).put("method", submission.refundMethod.name)

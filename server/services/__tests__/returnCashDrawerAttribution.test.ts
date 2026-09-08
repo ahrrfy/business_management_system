@@ -34,6 +34,7 @@ const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "suppliers", "branches", "roles", "users",
+  "salesControlRequests", "returnRequests",
 ];
 
 function db() {
@@ -431,5 +432,125 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     );
 
     expect(res.returnedTotal).toBe("10.00");
+  });
+
+  it("دور مخصّص مجرّد من صلاحية المبيعات (sales: NONE) ⇒ يُرفض التنفيذ المباشر بـ FORBIDDEN", async () => {
+    const roleRes = await db().insert(s.roles).values({
+      key: "custom-no-sales",
+      label: "كاشير بلا مبيعات",
+      baseRole: "cashier",
+      isActive: true,
+      permissions: { sales: "NONE" },
+    });
+    const roleId = extractInsertId(roleRes);
+
+    await db().insert(s.users).values({
+      id: 6,
+      openId: "user6",
+      name: "كاشير مسلوب الصلاحية",
+      role: "cashier",
+      customRoleId: roleId,
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(6, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(shift),
+          operatorReason: "محاولة تنفيذ بصلاحية مبيعات مسلوبة",
+        },
+        { userId: 6, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("استثناء فردي يجرّد المبيعات (permissionsOverride: { sales: 'NONE' }) ⇒ يُرفض التنفيذ بـ FORBIDDEN", async () => {
+    await db().insert(s.users).values({
+      id: 7,
+      openId: "user7",
+      name: "مدير مسلوب المبيعات",
+      role: "manager",
+      permissionsOverride: { sales: "NONE" },
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(shift),
+          operatorReason: "محاولة تنفيذ بـ override مسلوب",
+        },
+        { userId: 7, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("وجود طلب تحكّم معلّق (salesControlRequests: PENDING) ⇒ يُرفض التنفيذ بـ CONFLICT ذرياً", async () => {
+    const shift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    await db().insert(s.salesControlRequests).values({
+      requestKey: "req-key-pending-test",
+      invoiceId,
+      branchId: 1,
+      requestType: "SALES_RETURN",
+      requestedBy: 2,
+      reason: "طلب معلق في المراجعة",
+      status: "PENDING",
+      payload: {},
+      payloadHash: "hash-pending-test",
+      invoiceSnapshot: {},
+      snapshotHash: "snap-hash-pending-test",
+    });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(shift),
+          operatorReason: "تنفيذ مباشر بوجود طلب معلق",
+        },
+        { userId: 1, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("وجود طلب إرجاع تقليدي معلّق (returnRequests: PENDING_APPROVAL) ⇒ يُرفض بـ CONFLICT ذرياً", async () => {
+    const shift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    await db().insert(s.returnRequests).values({
+      invoiceId,
+      branchId: 1,
+      linesJson: JSON.stringify([{ invoiceItemId: itemId, baseQuantity: 1 }]),
+      reason: "طلب إرجاع تقليدي معلق",
+      returnRequestStatus: "PENDING_APPROVAL",
+      createdBy: 2,
+    });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(shift),
+          operatorReason: "تنفيذ مباشر بوجود طلب إرجاع معلق",
+        },
+        { userId: 1, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

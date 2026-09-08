@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TRPCError } from "@trpc/server";
 import type { TrpcContext } from "../../context";
 
 const mocks = vi.hoisted(() => {
@@ -6,7 +7,15 @@ const mocks = vi.hoisted(() => {
   return {
     returnSaleInTx: vi.fn(),
     returnSaleAsOwner: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true })),
-    returnSaleDirect: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true })),
+    returnSaleDirect: vi.fn(async () => {
+      if (hasPending) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+        });
+      }
+      return { returnedTotal: "1250.00", fullyReturned: true };
+    }),
     requestSalesControl: vi.fn(async () => ({ id: 101, status: "PENDING", payloadHash: "abc", replayed: false })),
     logAudit: vi.fn(async () => undefined),
     setHasPending: (val: boolean) => { hasPending = val; },

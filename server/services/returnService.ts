@@ -3,7 +3,8 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, roles, shifts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, returnRequests, roles, salesControlRequests, shifts, users } from "../../drizzle/schema";
+import { applyPermissionOverrides, diffFromTemplate, moduleAccessAllowed, resolvePermissions, ROLE_TEMPLATES, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -414,6 +415,35 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       });
     }
     await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
+
+    /**
+     * ⛔ **حظر التنفيذ المباشر مع وجود معاملة رقابية معلّقة** (Codex P2).
+     *
+     * يُفحص ويُقفل ذرياً مع الفاتورة داخل الترانزاكشن لمنع أيّ تسابق بين إنشاء الطلب وتنفيذ المرتجع.
+     */
+    const [pendingControl] = await tx
+      .select({ id: salesControlRequests.id })
+      .from(salesControlRequests)
+      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .for("update")
+      .limit(1);
+    const [pendingLegacy] = await tx
+      .select({ id: returnRequests.id })
+      .from(returnRequests)
+      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .for("update")
+      .limit(1);
+
+    if (pendingControl || pendingLegacy) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
+        }),
+      });
+    }
     // المرتجع يغيّر الفاتورة وبنودها والمخزون والذمم تاريخياً. قيدٌ بتاريخ اليوم لا
     // يبرر إعادة كتابة حقيقة فاتورة داخل شهر مقفل؛ التصحيح السابق يجب أن يمر بمسار
     // prior-period adjustment مستقل بدلاً من تعديل المستند الأصلي.
@@ -1527,7 +1557,14 @@ export async function returnSaleDirect(
 
   return withTx(async (tx) => {
     const [userRow] = await tx
-      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner, role: users.role, customRoleId: users.customRoleId })
+      .select({
+        id: users.id,
+        isActive: users.isActive,
+        isOwner: users.isOwner,
+        role: users.role,
+        customRoleId: users.customRoleId,
+        permissionsOverride: users.permissionsOverride,
+      })
       .from(users)
       .where(eq(users.id, actor.userId))
       .for("share")
@@ -1547,26 +1584,41 @@ export async function returnSaleDirect(
     }
 
     let effectiveRole = userRow.role;
+    const basePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
+    let effectivePermissions = applyPermissionOverrides(basePermissions, userRow.permissionsOverride as PermissionMap | null);
+
     if (userRow.customRoleId != null) {
       const [customRole] = await tx
-        .select({ baseRole: roles.baseRole, isActive: roles.isActive })
+        .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
         .from(roles)
         .where(eq(roles.id, userRow.customRoleId))
         .for("share")
         .limit(1);
-      effectiveRole = (customRole && customRole.isActive) ? customRole.baseRole : "user";
+
+      if (customRole && customRole.isActive) {
+        effectiveRole = customRole.baseRole as RoleKey;
+        const roleBasePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
+        const rolePermissions = applyPermissionOverrides(roleBasePermissions, customRole.permissions as PermissionMap | null);
+        effectivePermissions = applyPermissionOverrides(rolePermissions, userRow.permissionsOverride as PermissionMap | null);
+      } else {
+        effectiveRole = "user";
+        effectivePermissions = ROLE_TEMPLATES.user;
+      }
     }
 
     const isOwner = Boolean(userRow.isOwner);
-    const isAuthorized = isOwner || ["admin", "manager", "cashier"].includes(effectiveRole);
+    const hasSalesFull = effectivePermissions.sales === "FULL";
+    const isAuthorized =
+      isOwner ||
+      (["admin", "manager", "cashier"].includes(effectiveRole) && hasSalesFull);
 
     if (!isAuthorized) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
           what: "تعذّر تنفيذ المرتجع المباشر",
-          why: `دورك الحالي (${effectiveRole}) لا يملك صلاحية تنفيذ المرتجع المباشر`,
-          doThis: "يجب أن تكون مالكاً، مديراً، مسؤول نظام، أو كاشيراً لتنفيذ المرتجع",
+          why: `دورك الحالي (${effectiveRole}) أو صلاحياتك الفعّالة لا تملك صلاحية تنفيذ المرتجع المباشر`,
+          doThis: "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
         }),
       });
     }

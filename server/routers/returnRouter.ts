@@ -77,13 +77,13 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 0);
       const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
-      const reason = explicitReason ?? input.resolution?.reason ?? "";
+      const reason = (explicitReason || input.resolution?.reason || "مرتجع مبيعات").trim();
 
       /**
        * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
        *
        * المالكُ ينفّذ مرتجعه مباشرةً، ومسؤولو النظام والمدراء والكاشير ينفّذون مباشرةً عبر
-       * `returnSaleDirect` عند اختيار التنفيذ المباشر (أو افتراضياً عبر واجهة ReturnComposer).
+       * `returnSaleDirect` افتراضياً (أو عند صراحة directExecution !== false).
        * الأثرُ يمرّ بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
        *
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
@@ -107,35 +107,7 @@ export const returnRouter = router({
           });
         }
 
-        /**
-         * ⛔ **حظر التنفيذ المباشر مع وجود طلبٍ معلّق** (أمسكه Codex P2 على #1048).
-         *
-         * لا يجوز تنفيذ مرتجعٍ مباشر على فاتورة لها طلب تحكم أو طلب مرتجع معلّق؛
-         * وإلا تظل القيود الفريدة (`activeInvoiceId`) عالقة في القاعدة وتصبح الفاتورة شاردة.
-         */
-        const [pendingControl] = await withTx(async (tx) => tx
-          .select({ id: salesControlRequests.id })
-          .from(salesControlRequests)
-          .where(and(eq(salesControlRequests.invoiceId, invoiceId), eq(salesControlRequests.status, "PENDING")))
-          .limit(1), { gate: "NONE" });
-        const [pendingLegacy] = await withTx(async (tx) => tx
-          .select({ id: returnRequests.id })
-          .from(returnRequests)
-          .where(and(eq(returnRequests.invoiceId, invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
-          .limit(1), { gate: "NONE" });
-
-        if (pendingControl || pendingLegacy) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: appErrorMessage({
-              what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
-              why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
-              doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
-            }),
-          });
-        }
-
-        if (reason.trim().length < 3) {
+        if (reason.length < 3) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
