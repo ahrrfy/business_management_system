@@ -415,11 +415,22 @@ export default function Stocktakes() {
         title="الجرد والتسوية"
         description="جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي."
         actions={
-          canCreate ? (
-            <Button asChild size="lg">
-              <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild variant="outline">
+              <Link href="/count-portal">بوابة العد الميداني</Link>
             </Button>
-          ) : undefined
+            <Button asChild variant="outline">
+              <Link href="/my-stocktake">فضاء عملي</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/reconcile">مطابقة الأرصدة</Link>
+            </Button>
+            {canCreate ? (
+              <Button asChild size="lg">
+                <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
+              </Button>
+            ) : null}
+          </div>
         }
       />
 
