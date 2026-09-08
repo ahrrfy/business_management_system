@@ -1478,6 +1478,11 @@ export async function returnSaleAsOwner(
       }),
     });
   }
+  const { ownerReason: _, ...restInput } = input;
+  const coreInput: ReturnSaleInput = {
+    ...restInput,
+    operatorReason: reason,
+  };
   return withTx(async (tx) => {
     const [owner] = await tx
       .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner })
@@ -1501,24 +1506,24 @@ export async function returnSaleAsOwner(
     }
 
     // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تتعطّل بالطلبات المعلّقة
-    if (input.clientRequestId) {
-      const fingerprint = idempotencyHash(input);
-      const existingRefId = await checkIdempotency(tx, "sale.return", input.clientRequestId, fingerprint);
+    if (coreInput.clientRequestId) {
+      const fingerprint = idempotencyHash(coreInput);
+      const existingRefId = await checkIdempotency(tx, "sale.return", coreInput.clientRequestId, fingerprint);
       if (existingRefId != null) {
-        return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
+        return returnSaleInTx(tx, coreInput, actor);
       }
     }
 
     const [pendingControl] = await tx
       .select({ id: salesControlRequests.id })
       .from(salesControlRequests)
-      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .where(and(eq(salesControlRequests.invoiceId, coreInput.invoiceId), eq(salesControlRequests.status, "PENDING")))
       .for("update")
       .limit(1);
     const [pendingLegacy] = await tx
       .select({ id: returnRequests.id })
       .from(returnRequests)
-      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .where(and(eq(returnRequests.invoiceId, coreInput.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
       .for("update")
       .limit(1);
 
@@ -1533,7 +1538,7 @@ export async function returnSaleAsOwner(
       });
     }
 
-    return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
+    return returnSaleInTx(tx, coreInput, actor);
   });
 }
 
@@ -1559,6 +1564,11 @@ export async function returnSaleDirect(
       }),
     });
   }
+
+  const coreInput: ReturnSaleInput = {
+    ...input,
+    operatorReason: reason,
+  };
 
   return withTx(async (tx) => {
     const [userRow] = await tx
@@ -1631,11 +1641,11 @@ export async function returnSaleDirect(
     }
 
     // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
-    if (input.clientRequestId) {
-      const fingerprint = idempotencyHash(input);
-      const existingRefId = await checkIdempotency(tx, "sale.return", input.clientRequestId, fingerprint);
+    if (coreInput.clientRequestId) {
+      const fingerprint = idempotencyHash(coreInput);
+      const existingRefId = await checkIdempotency(tx, "sale.return", coreInput.clientRequestId, fingerprint);
       if (existingRefId != null) {
-        return returnSaleInTx(tx, { ...input, operatorReason: reason }, {
+        return returnSaleInTx(tx, coreInput, {
           userId: actor.userId,
           branchId: actor.branchId,
           role: effectiveRole,
@@ -1647,7 +1657,7 @@ export async function returnSaleDirect(
       const [invBranch] = await tx
         .select({ branchId: invoices.branchId })
         .from(invoices)
-        .where(eq(invoices.id, input.invoiceId))
+        .where(eq(invoices.id, coreInput.invoiceId))
         .limit(1);
 
       const targetBranchId = invBranch?.branchId ?? actor.branchId;
@@ -1667,13 +1677,13 @@ export async function returnSaleDirect(
     const [pendingControl] = await tx
       .select({ id: salesControlRequests.id })
       .from(salesControlRequests)
-      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .where(and(eq(salesControlRequests.invoiceId, coreInput.invoiceId), eq(salesControlRequests.status, "PENDING")))
       .for("update")
       .limit(1);
     const [pendingLegacy] = await tx
       .select({ id: returnRequests.id })
       .from(returnRequests)
-      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .where(and(eq(returnRequests.invoiceId, coreInput.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
       .for("update")
       .limit(1);
 
@@ -1688,7 +1698,7 @@ export async function returnSaleDirect(
       });
     }
 
-    return returnSaleInTx(tx, { ...input, operatorReason: reason }, {
+    return returnSaleInTx(tx, coreInput, {
       userId: actor.userId,
       branchId: actor.branchId,
       role: effectiveRole,

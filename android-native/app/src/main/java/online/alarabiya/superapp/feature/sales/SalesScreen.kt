@@ -615,21 +615,17 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                         )
+                    } else if (returnShifts.isEmpty()) {
+                        Text(
+                            "لا توجد ورديات مفتوحة في هذا الفرع — سيتم صرف الاسترداد النقدي من خزينة الفرع (إداري)",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     } else {
                         LazyRow(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            if (!isCashier) {
-                                item {
-                                    FilterChip(
-                                        selected = state.returnShiftId == null,
-                                        onClick = { actions.returnShift(null) },
-                                        label = { Text("خزينة الفرع (مباشر)") },
-                                        enabled = !state.locked,
-                                    )
-                                }
-                            }
                             items(returnShifts, key = { it.id }) { shift ->
                                 FilterChip(
                                     selected = state.returnShiftId == shift.id,

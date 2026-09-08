@@ -96,8 +96,9 @@ class SalesViewModel(
         val returnShifts = capabilities.filterReturnShifts(availableShifts)
         if (capabilities.role == "cashier") {
             if (value == null || returnShifts.none { it.id == value }) return
-        } else if (value != null && returnShifts.none { it.id == value }) {
-            return
+        } else {
+            if (value == null && returnShifts.isNotEmpty()) return
+            if (value != null && returnShifts.none { it.id == value }) return
         }
         state = state.copy(returnShiftId = value, error = null)
     }
@@ -203,7 +204,7 @@ class SalesViewModel(
                 validShifts.firstOrNull { it.userId == capabilities.userId }?.id
             } else {
                 validShifts.firstOrNull { it.userId == capabilities.userId }?.id
-                    ?: validShifts.singleOrNull()?.id
+                    ?: validShifts.firstOrNull()?.id
             }
             state = state.copy(
                 section = SalesSection.RETURNS,
