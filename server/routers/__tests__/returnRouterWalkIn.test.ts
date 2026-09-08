@@ -157,4 +157,22 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     );
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
+
+  it("⭐ التنفيذ المباشر للكاشير (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
+    const caller = returnRouter.createCaller(context({ role: "cashier" }));
+    const res = await caller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "تنفيذ الكاشير المباشر",
+      directExecution: true,
+    });
+
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ الكاشير المباشر" }),
+      expect.objectContaining({ userId: 1, role: "cashier" }),
+    );
+    expect(res).toMatchObject({ mode: "EXECUTED" });
+  });
 });

@@ -3,7 +3,7 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, shifts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, roles, shifts, users } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -289,7 +289,19 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     } | null = null;
     if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
       const branchForRefund = Number(invPreview.branchId);
-      const explicitShiftId = refund.shiftId ?? null;
+      let explicitShiftId = refund.shiftId ?? null;
+      if (explicitShiftId == null && actor.role === "cashier") {
+        const callerOpenShift = (
+          await tx
+            .select({ id: shifts.id })
+            .from(shifts)
+            .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.userId, actor.userId), eq(shifts.status, "OPEN")))
+            .limit(1)
+        )[0];
+        if (callerOpenShift) {
+          explicitShiftId = Number(callerOpenShift.id);
+        }
+      }
       const openShiftCount = explicitShiftId != null
         ? 1
         : (await tx
@@ -299,6 +311,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           ).length;
       if (explicitShiftId != null || openShiftCount > 0) {
         const resolved = await resolveBranchCashShiftTx(tx, branchForRefund, explicitShiftId);
+        if (actor.role === "cashier" && resolved.userId !== actor.userId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
+              why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
+              doThis: "اختر درج ورديتك المفتوحة أو اطلب من مدير الفرع اعتماد وصرف الاسترداد",
+            }),
+          });
+        }
         prelockedRefundSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
       } else {
         // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
@@ -1499,7 +1521,7 @@ export async function returnSaleDirect(
 
   return withTx(async (tx) => {
     const [userRow] = await tx
-      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner, role: users.role })
+      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner, role: users.role, customRoleId: users.customRoleId })
       .from(users)
       .where(eq(users.id, actor.userId))
       .for("share")
@@ -1518,7 +1540,17 @@ export async function returnSaleDirect(
       });
     }
 
-    const effectiveRole = userRow.role;
+    let effectiveRole = userRow.role;
+    if (userRow.customRoleId != null) {
+      const [customRole] = await tx
+        .select({ baseRole: roles.baseRole, isActive: roles.isActive })
+        .from(roles)
+        .where(eq(roles.id, userRow.customRoleId))
+        .for("share")
+        .limit(1);
+      effectiveRole = (customRole && customRole.isActive) ? customRole.baseRole : "user";
+    }
+
     const isOwner = Boolean(userRow.isOwner);
     const isAuthorized = isOwner || ["admin", "manager", "cashier"].includes(effectiveRole);
 

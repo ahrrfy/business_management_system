@@ -11,7 +11,7 @@ import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { router, salesCashierProcedure, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import {
   createReturnRequest,
   listReturnRequests,
@@ -43,9 +43,9 @@ const walkInResolution = z.object({
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
-// المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
+// المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
-  create: salesManagerProcedure
+  create: salesCashierProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),

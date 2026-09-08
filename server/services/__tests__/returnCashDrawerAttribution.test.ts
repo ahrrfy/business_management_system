@@ -21,7 +21,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { returnSale } from "../returnService";
+import { returnSale, returnSaleDirect } from "../returnService";
 import { createSale } from "../saleService";
 import { getShiftReport, resolveBranchCashShiftTx } from "../shiftService";
 import { withTx } from "../tx";
@@ -33,7 +33,7 @@ const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "customers", "suppliers", "branches", "users",
+  "shifts", "customers", "suppliers", "branches", "roles", "users",
 ];
 
 function db() {
@@ -75,7 +75,7 @@ async function openShiftFor(userId: number, branchId = 1): Promise<number> {
 }
 
 /** بيع نقديّ كامل لقطعة واحدة (١٠.٠٠) من الفرع ١، على وردية shiftId، بفاعل الكاشير. */
-async function sellOneCash(shiftId: number) {
+async function sellOneCash(shiftId: number, saleActor: { userId: number; branchId: number; role?: string } = cashier) {
   await setStock(1, 1, 10);
   const sale = await createSale(
     {
@@ -85,7 +85,7 @@ async function sellOneCash(shiftId: number) {
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
       payment: { amount: "10.00", method: "CASH" },
     },
-    cashier,
+    saleActor,
   );
   const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
   return { invoiceId: sale.invoiceId, itemId: Number(item.id) };
@@ -255,6 +255,52 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
     expect(item.returnedBaseQuantity).toBe(1);
   });
+
+  it("كاشير يحاول الصرف من وردية زميل له ⇒ يُرفَض بـ FORBIDDEN", async () => {
+    await db().insert(s.users).values({
+      id: 3,
+      openId: "cashier2",
+      name: "كاشير زميل",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
+    });
+    const coworkerShift = await openShiftFor(3, 1);
+    const { invoiceId, itemId } = await sellOneCash(coworkerShift, { userId: 3, branchId: 1, role: "cashier" });
+
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" };
+    await expect(
+      returnSale(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(coworkerShift),
+        },
+        cashierActor,
+      ),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
+
+  it("كاشير ينفّذ استرداداً من ورديته المفتوحة ⇒ ينجح", async () => {
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift);
+
+    const cashierActor = { userId: 2, branchId: 1, role: "cashier" };
+    await returnSale(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(cashierShift),
+      },
+      cashierActor,
+    );
+
+    const report = await getShiftReport(cashierShift);
+    const cashOut = (report?.payments ?? []).find((p) => p.method === "CASH" && p.direction === "OUT");
+    expect(Number(cashOut?.total ?? 0)).toBeCloseTo(10, 2);
+  });
 });
 
 describe("resolveBranchCashShiftTx", () => {
@@ -291,5 +337,79 @@ describe("resolveBranchCashShiftTx", () => {
     await expect(
       withTx((tx) => resolveBranchCashShiftTx(tx, 1, otherBranchShift)),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+});
+
+describe("returnSaleDirect — حلّ الدور المخصّص ديناميكياً", () => {
+  it("مستخدم بدور مخصّص تم تنزيله إلى مستخدم عادي ⇒ يُرفَض التنفيذ المباشر", async () => {
+    const roleRes = await db().insert(s.roles).values({
+      key: "custom-demoted",
+      label: "دور مخفض",
+      baseRole: "user",
+      isActive: true,
+      permissions: {},
+    });
+    const roleId = extractInsertId(roleRes);
+
+    await db().insert(s.users).values({
+      id: 4,
+      openId: "user4",
+      name: "مستخدم مخفض",
+      role: "cashier", // دور قديم راكد في users
+      customRoleId: roleId,
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(4, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    await expect(
+      returnSaleDirect(
+        {
+          invoiceId,
+          lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+          resolution: walkInCashResolution(shift),
+          operatorReason: "محاولة تنفيذ بدور ملغي",
+        },
+        { userId: 4, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("مستخدم بدور مخصّص نشط ككاشير ورول راكد كـuser ⇒ يُقبل التنفيذ المباشر", async () => {
+    const roleRes = await db().insert(s.roles).values({
+      key: "custom-promoted",
+      label: "كاشير مخصص",
+      baseRole: "cashier",
+      isActive: true,
+      permissions: {},
+    });
+    const roleId = extractInsertId(roleRes);
+
+    await db().insert(s.users).values({
+      id: 5,
+      openId: "user5",
+      name: "كاشير مرقى",
+      role: "user", // دور راكد قديم
+      customRoleId: roleId,
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(5, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    const res = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(shift),
+        operatorReason: "تنفيذ كاشير مرقى بنجاح",
+      },
+      { userId: 5, branchId: 1 },
+    );
+
+    expect(res.returnedTotal).toBe("10.00");
   });
 });
