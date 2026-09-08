@@ -1174,6 +1174,81 @@ describe("تدقيق تفصيل الوحدات وختم توقيت الالتق�
     // توقيت countedAt يطابق وقت الالتقاط الفعلي (ضمن فرق ثانيتين للدقة)
     expect(Math.abs(new Date(counts[0].countedAt).getTime() - clientTime.getTime())).toBeLessThan(2000);
   });
+
+  it("⭐ تقييد وقت الالتقاط المستقبلي (انحراف ساعة العميل) بـ now لمنع استثناء الحركات اللاحقة", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    const futureClientTime = new Date(Date.now() + 120_000); // دقيقتان في المستقبل
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: futureClientTime.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    expect(countedAtMs).toBeLessThanOrEqual(Date.now() + 1000);
+    expect(countedAtMs).toBeLessThan(futureClientTime.getTime() - 60_000);
+  });
+
+  it("⭐ رفض تفصيل الوحدات إذا كانت الوحدة معطّلة حتى لو تطابقت التسمية", async () => {
+    // تعطيل وحدة «درزن» للصنف 1
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false })
+      .where(and(eq(s.productUnits.variantId, 1), eq(s.productUnits.unitName, "درزن")));
+
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    await expectTrpc(
+      submitCount(identity, {
+        variantId: 1,
+        qty: 14,
+        unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+        clientRequestId: randomUUID(),
+      }),
+      "BAD_REQUEST",
+      /غير معرّفة أو معطّلة لهذا المنتج/,
+    );
+  });
 });
 
 describe("حواجز الاعتماد", () => {

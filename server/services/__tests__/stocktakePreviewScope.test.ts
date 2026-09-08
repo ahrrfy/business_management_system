@@ -380,4 +380,16 @@ describe("previewScope — حارس مطابقة (regression)", () => {
     expect(preview.variantCount).toBe(expected);
     expect(preview.excludedOpened).toBe(Number(openedCount));
   });
+
+  it("FULL NORMAL: يشمل الأصناف المعطلة التي لها رصيد موجب أو سالب في الفرع", async () => {
+    // الصنف 40 (منتج 4 معطل) له رصيد موجب 7
+    // الصنف 70 (متغير معطل لمنتج 2) له رصيد سالب -3
+    await db().insert(s.branchStock).values([
+      { branchId: 1, variantId: 40, quantity: 7 },
+      { branchId: 1, variantId: 70, quantity: -3 },
+    ]);
+    const preview = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
+    // الأصناف النشطة الأساسية (10, 11, 12, 20, 30, 60 = 6) + الصنفين المعطلين برصيد (40, 70) = 8
+    expect(preview.variantCount).toBe(8);
+  });
 });

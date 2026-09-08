@@ -366,18 +366,30 @@ export async function submitCount(
         );
         if (userEntries.length > 0) {
           let expectedBaseQty = new Decimal(0);
+          const activeUnits = units.filter((u) => u.isActive !== false);
           for (const [uName, count] of userEntries) {
-            const unitObj = units.find((u) => u.unitName === uName);
-            if (!unitObj) {
+            const matches = activeUnits.filter((u) => u.unitName === uName);
+            if (matches.length === 0) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: appErrorMessage({
                   what: "تعذّر تسجيل تفصيل الوحدات",
-                  why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة لهذا المنتج`,
+                  why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة أو معطّلة لهذا المنتج`,
                   doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
                 }),
               });
             }
+            if (matches.length > 1) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعارض في تعريف الوحدات",
+                  why: `توجد أكثر من وحدة نشطة بالاسم نفسه «${uName}» لهذا المنتج`,
+                  doThis: "صحّح أسماء الوحدات في بطاقة المنتج أولاً قبل تسجيل الجرد",
+                }),
+              });
+            }
+            const unitObj = matches[0];
             expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
           }
           if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
@@ -488,7 +500,7 @@ export async function submitCount(
         const nowMs = now.getTime();
         const sessionCreatedMs = new Date(session.createdAt).getTime();
         if (!isNaN(capMs) && capMs >= sessionCreatedMs - 60_000 && capMs <= nowMs + 300_000) {
-          countedAtDate = cap;
+          countedAtDate = capMs > nowMs ? now : cap;
         }
       }
 

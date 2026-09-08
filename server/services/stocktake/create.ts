@@ -127,7 +127,7 @@ async function resolveScope(
       : and(eq(products.isService, false), eq(products.isBundle, false))!;
 
   if (input.scopeType === "FULL") {
-    // يشمل الأصناف النشطة، بالإضافة إلى أي أصناف معطلة لها رصيد فعلي في هذا الفرع لتمكين جردها وتصفيتها
+    // يشمل الأصناف النشطة، بالإضافة إلى أي أصناف معطلة لها رصيد فعلي (موجب أو سالب) في هذا الفرع لتمكين جردها وتصفيتها
     const rows = await tx
       .select({ id: productVariants.id })
       .from(productVariants)
@@ -140,7 +140,7 @@ async function resolveScope(
         and(
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`
           ),
           stockableProductCond
         )
@@ -167,7 +167,7 @@ async function resolveScope(
           gte(inventoryMovements.createdAt, since),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`
           ),
           stockableProductCond
         )
@@ -200,7 +200,7 @@ async function resolveScope(
           inArray(products.categoryId, catIds),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`
           ),
           stockableProductCond
         )
