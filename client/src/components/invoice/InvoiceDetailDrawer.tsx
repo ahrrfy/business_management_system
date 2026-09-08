@@ -1,10 +1,11 @@
+import { useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { trpc } from "@/lib/trpc";
 import { D, fmt } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
-import { ExternalLink, FileText, Printer, RotateCcw, User } from "lucide-react";
+import { ExternalLink, FileText, HandCoins, Printer, RotateCcw, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,6 +15,7 @@ import { invoiceItemColumns, type InvoiceItemRow } from "./InvoiceDetailComponen
 import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
 
 export interface InvoiceDetailDrawerProps {
   invoiceId: number | null;
@@ -47,6 +49,15 @@ export function InvoiceDetailDrawer({
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&
     inv.status !== "SUPERSEDED";
+
+  const canPay =
+    inv &&
+    inv.status !== "CANCELLED" &&
+    inv.status !== "RETURNED" &&
+    inv.status !== "SUPERSEDED" &&
+    remaining.gt(0);
+
+  const [payOpen, setPayOpen] = useState(false);
 
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -168,6 +179,12 @@ export function InvoiceDetailDrawer({
             {/* الإجراءات الموضعية المباشرة */}
             <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
+                {canPay ? (
+                  <Button size="sm" variant="outline" onClick={() => setPayOpen(true)}>
+                    <HandCoins aria-hidden className="size-4 text-primary" />
+                    تسديد دفعة
+                  </Button>
+                ) : null}
                 {canReturn && onOpenReturn ? (
                   <Button size="sm" variant="outline" onClick={() => onOpenReturn(inv.id)}>
                     <RotateCcw aria-hidden className="size-4 text-warning" />
@@ -202,6 +219,23 @@ export function InvoiceDetailDrawer({
                 </Link>
               </Button>
             </div>
+
+            {canPay ? (
+              <QuickSalesPaymentDialog
+                open={payOpen}
+                onClose={() => setPayOpen(false)}
+                invoiceId={inv.id}
+                invoiceNumber={inv.invoiceNumber}
+                customerName={inv.customerName}
+                remainingAmount={remaining.toFixed(2)}
+                totalAmount={inv.total}
+                paidAmount={inv.paidAmount}
+                branchId={Number(inv.branchId)}
+                onSuccess={() => {
+                  void q.refetch();
+                }}
+              />
+            ) : null}
           </div>
         ) : null}
       </SheetContent>
