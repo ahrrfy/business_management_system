@@ -614,7 +614,21 @@ export default function Products() {
                 header: "الرصيد الفعلي",
                 accessorFn: (r) => r.stockBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => row.original.stockBase,
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const unitQty = isBase ? row.original.stockBase : Math.floor(row.original.stockBase / factor);
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">{unitQty} {row.original.unitName}</span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.stockBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "reservedBase",
@@ -628,12 +642,24 @@ export default function Products() {
                 header: "المتاح للبيع",
                 accessorFn: (r) => r.availableBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => (
-                  <span className="font-medium">
-                    {row.original.availableBase}
-                    {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
-                  </span>
-                ),
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const availQty = isBase ? row.original.availableBase : Math.floor(row.original.availableBase / factor);
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">
+                        {availQty} {row.original.unitName}
+                        {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
+                      </span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.availableBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "status",

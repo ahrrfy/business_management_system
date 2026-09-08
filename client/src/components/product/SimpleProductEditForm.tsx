@@ -148,6 +148,8 @@ export default function SimpleProductEditForm({
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
   const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
+  const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) > 0), [currentStock]);
+  const isCostLocked = hasStock && !consignment.isConsignment;
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
 
@@ -624,7 +626,18 @@ export default function SimpleProductEditForm({
             required
             hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "سعر الشراء الموحّد."}
           >
-            <MoneyInput id="simpleedit-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
+            <MoneyInput
+              id="simpleedit-cost"
+              value={costPrice}
+              onChange={setCostPrice}
+              placeholder="150"
+              disabled={isCostLocked}
+            />
+            {isCostLocked && (
+              <p className="text-[11px] text-[var(--sem-warn)] mt-1 font-medium leading-normal">
+                مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
+              </p>
+            )}
             <SimpleEditCostCoach
               costPrice={costPrice}
               baseRetail={units.find((u) => u.isBase)?.retail ?? ""}

@@ -498,8 +498,15 @@ function VariantRow({
                 </label>
                 {v.priceOverride ? (
                   <div className="flex gap-2">
-                    <Field label="تكلفة">
-                      <MoneyInput value={v.costPrice} onChange={(val) => patch({ costPrice: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="تكلفة المتغيّر (سعر خاص)" />
+                    <Field label="تكلفة" hint={!stockEditable && Object.values(v.stockByBranch ?? {}).some((q) => Number(q) > 0) ? "مقفل لوجود رصيد" : undefined}>
+                      <MoneyInput
+                        value={v.costPrice}
+                        onChange={(val) => patch({ costPrice: val })}
+                        disabled={!stockEditable && Object.values(v.stockByBranch ?? {}).some((q) => Number(q) > 0)}
+                        className="h-8 text-xs w-24"
+                        placeholder="—"
+                        ariaLabel="تكلفة المتغيّر (سعر خاص)"
+                      />
                     </Field>
                     <Field label="بيع (المفرد)">
                       <MoneyInput value={v.retail} onChange={(val) => patch({ retail: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="سعر بيع المتغيّر (سعر خاص)" />
