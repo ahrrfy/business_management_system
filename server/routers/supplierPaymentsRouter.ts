@@ -163,6 +163,7 @@ export const supplierPaymentsRouter = router({
     .input(
       z.object({
         ...sourcePageCommon,
+        purchaseOrderId: z.number().int().positive().optional(),
         cursor: z.object({
           invoiceDate: z.string().date(),
           id: z.number().int().positive(),

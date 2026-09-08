@@ -6,10 +6,13 @@ import {
   accountingEntries,
   goodsReceiptItems,
   purchaseOrderItems,
+  purchaseOrderRevisionItems,
+  purchaseOrderRevisions,
   purchaseOrders,
   purchaseReturnReversals,
   purchaseReturns,
   receipts,
+  supplierInvoiceLines,
   supplierInvoiceMatchRuns,
   supplierInvoiceMatchAllocations,
   supplierInvoices,
@@ -1919,6 +1922,7 @@ export async function listSupplierPaymentSources(
   input: {
     branchId: number;
     supplierId?: number;
+    purchaseOrderId?: number;
     limit?: number;
     cursor?: { invoiceDate: string; id: number } | null;
   },
@@ -1985,6 +1989,19 @@ export async function listSupplierPaymentSources(
         input.supplierId == null
           ? undefined
           : eq(supplierInvoices.supplierId, input.supplierId),
+        input.purchaseOrderId == null
+          ? undefined
+          : or(
+              eq(supplierInvoices.legacyPurchaseOrderId, input.purchaseOrderId),
+              sql`EXISTS (
+                SELECT 1
+                FROM supplierInvoiceLines sil
+                INNER JOIN purchaseOrderRevisionItems pori ON pori.id = sil.purchaseOrderRevisionItemId
+                INNER JOIN purchaseOrderRevisions por ON por.id = pori.revisionId
+                WHERE sil.supplierInvoiceId = ${supplierInvoices.id}
+                  AND por.purchaseOrderId = ${input.purchaseOrderId}
+              )`,
+            ),
         eq(supplierInvoices.status, "POSTED"),
         eq(supplierInvoices.paymentGate, "OPEN"),
         or(
@@ -2025,6 +2042,44 @@ export async function listSupplierPaymentSources(
       if (!page.length) return { rows: [], hasMore: false, nextCursor: null, total };
       const ids = page.map((row) => Number(row.id));
       const reservations = await invoiceReservations(tx, ids);
+
+      let invoicePoMap = new Map<number, number[]>();
+      if (ids.length > 0) {
+        const invoicePoRows = await tx
+          .select({
+            supplierInvoiceId: supplierInvoiceLines.supplierInvoiceId,
+            purchaseOrderId: purchaseOrderRevisions.purchaseOrderId,
+          })
+          .from(supplierInvoiceLines)
+          .innerJoin(
+            purchaseOrderRevisionItems,
+            eq(purchaseOrderRevisionItems.id, supplierInvoiceLines.purchaseOrderRevisionItemId),
+          )
+          .innerJoin(
+            purchaseOrderRevisions,
+            eq(purchaseOrderRevisions.id, purchaseOrderRevisionItems.revisionId),
+          )
+          .where(inArray(supplierInvoiceLines.supplierInvoiceId, ids));
+
+        const tempMap = new Map<number, Set<number>>();
+        for (const r of invoicePoRows) {
+          const invId = Number(r.supplierInvoiceId);
+          const poId = Number(r.purchaseOrderId);
+          if (!tempMap.has(invId)) tempMap.set(invId, new Set<number>());
+          tempMap.get(invId)!.add(poId);
+        }
+        for (const inv of page) {
+          const invId = Number(inv.id);
+          if (inv.legacyPurchaseOrderId != null) {
+            if (!tempMap.has(invId)) tempMap.set(invId, new Set<number>());
+            tempMap.get(invId)!.add(Number(inv.legacyPurchaseOrderId));
+          }
+        }
+        invoicePoMap = new Map(
+          Array.from(tempMap.entries()).map(([k, v]) => [k, Array.from(v)]),
+        );
+      }
+
       const rows = page.map((invoice) => {
           const paid = reservations.posted.get(Number(invoice.id)) ?? {
             amount: money(0),
@@ -2055,6 +2110,7 @@ export async function listSupplierPaymentSources(
             version: Number(invoice.version),
             currency: invoice.currency,
             agreedRate: invoice.agreedRate,
+            purchaseOrderIds: invoicePoMap.get(Number(invoice.id)) ?? [],
             totalAmount: toDbMoney(invoice.totalAmount),
             currencyTotal: toDbMoney(sourceCurrency),
             legacySettledAmount: toDbMoney(invoice.legacySettledAmount),

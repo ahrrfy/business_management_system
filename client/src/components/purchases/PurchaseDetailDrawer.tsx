@@ -1,18 +1,44 @@
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Card, CardContent } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
 import { D, fmt, fmtAr, positiveDiff } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { ExternalLink, Package, Pencil, Printer, User } from "lucide-react";
+import {
+  CheckCircle2,
+  ExternalLink,
+  HandCoins,
+  Package,
+  Pencil,
+  Printer,
+  ShieldCheck,
+  Undo2,
+  User,
+} from "lucide-react";
 import { Link } from "wouter";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
 import { hasModuleAccess } from "@shared/permissions";
+import { PurchaseOrderGovernance } from "./PurchaseOrderGovernance";
+import { QuickSupplierPaymentDialog } from "./QuickSupplierPaymentDialog";
 
 type PoItemRow = NonNullable<RouterOutputs["purchases"]["get"]>["items"][number];
 
@@ -99,6 +125,7 @@ export function PurchaseDetailDrawer({
   onClose,
   onPrint,
 }: PurchaseDetailDrawerProps) {
+  const utils = trpc.useUtils();
   const isOpen = purchaseOrderId != null && purchaseOrderId > 0;
   const po = trpc.purchases.get.useQuery(
     { purchaseOrderId: purchaseOrderId ?? 0 },
@@ -106,12 +133,61 @@ export function PurchaseDetailDrawer({
   );
   const me = trpc.auth.me.useQuery();
 
+  const [activeTab, setActiveTab] = useState<"details" | "governance">("details");
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [isApprovalOpen, setIsApprovalOpen] = useState(false);
+  const [approvalReason, setApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+
   const canEdit = hasModuleAccess(
     me.data?.role ?? "",
     (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
     "purchases",
     "FULL",
   );
+
+  const pendingControls = trpc.purchases.pendingControls.useQuery(
+    { limit: 200 },
+    { enabled: isOpen && canEdit },
+  );
+
+  const activeControlRequest = useMemo(() => {
+    return (pendingControls.data?.rows ?? []).find(
+      (row) =>
+        row.documentType === "PURCHASE_ORDER" &&
+        Number(row.purchaseOrderId) === purchaseOrderId &&
+        row.kind === "APPROVE_REVISION",
+    );
+  }, [pendingControls.data?.rows, purchaseOrderId]);
+
+  const orderDecisionMut = trpc.purchases.decideControl.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.status === "APPROVED"
+          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          : "تم تحديث حالة طلب الاعتماد",
+      );
+      setIsApprovalOpen(false);
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
+        utils.purchases.list.invalidate(),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+    },
+    onError: (err) => notify.err(err),
+  });
+
+  const confirmMut = trpc.purchases.confirmOrder.useMutation({
+    onSuccess: async () => {
+      notify.ok("تم إرسال أمر الشراء للاعتماد");
+      setIsApprovalOpen(false);
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId: purchaseOrderId ?? 0 }),
+        utils.purchases.list.invalidate(),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+    },
+    onError: (err) => notify.err(err),
+  });
 
   const d = po.data;
   const isUsd = d?.agreedCurrency === "USD";
@@ -127,6 +203,33 @@ export function PurchaseDetailDrawer({
     !d.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0) &&
     !D(d.paidAmount ?? 0).gt(0) &&
     !D(d.paidUsd ?? 0).gt(0);
+
+  const canApproveDirectly =
+    canEdit &&
+    d &&
+    ((d.status === "SENT" && activeControlRequest != null) || d.status === "DRAFT");
+
+  function handleApproveAndReceive() {
+    if (!d) return;
+    if (d.status === "SENT" && activeControlRequest) {
+      orderDecisionMut.mutate({
+        requestId: Number(activeControlRequest.id),
+        decisionKey: `decide-drawer-${activeControlRequest.id}-${crypto.randomUUID()}`,
+        approve: true,
+        reason: approvalReason.trim() || "اعتماد واستلام البضاعة كاملة",
+        confirmedFullReceipt: true,
+      });
+    } else if (d.status === "DRAFT") {
+      confirmMut.mutate({
+        purchaseOrderId: d.id,
+        expectedVersion: d.version,
+        reason: approvalReason.trim() || "إرسال أمر الشراء للاعتماد والاستلام",
+        clientRequestId: `confirm-drawer-${d.id}-${crypto.randomUUID()}`,
+      });
+    }
+  }
+
+  const isApproving = orderDecisionMut.isPending || confirmMut.isPending;
 
   return (
     <Sheet open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -158,120 +261,254 @@ export function PurchaseDetailDrawer({
           <div className="space-y-4">
             <NextActionChip nextAction={d.nextAction ?? null} terminalReason={d.nextActionReason ?? null} />
 
-            {/* بطاقة الرأس والملخص */}
-            <Card>
-              <CardContent className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <div className="text-xs text-muted-foreground">المورّد</div>
-                  <div className="font-semibold truncate">
-                    {d.supplierId ? (
-                      <Link
-                        href={`/suppliers-statement?id=${d.supplierId}`}
-                        className="text-primary hover:underline"
-                        title="كشف الحساب"
-                      >
-                        {d.supplierName ?? `#${d.supplierId}`}
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "details" | "governance")} className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="details">تفاصيل الأمر والبنود</TabsTrigger>
+                <TabsTrigger value="governance" className="flex items-center gap-1.5">
+                  <ShieldCheck aria-hidden className="size-4" />
+                  <span>سجل الحوكمة والمراجعات</span>
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="details" className="space-y-4 pt-2">
+                {/* بطاقة الرأس والملخص */}
+                <Card>
+                  <CardContent className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <div className="text-xs text-muted-foreground">المورّد</div>
+                      <div className="font-semibold truncate">
+                        {d.supplierId ? (
+                          <Link
+                            href={`/suppliers-statement?id=${d.supplierId}`}
+                            className="text-primary hover:underline"
+                            title="كشف الحساب"
+                          >
+                            {d.supplierName ?? `#${d.supplierId}`}
+                          </Link>
+                        ) : (
+                          d.supplierName ?? "—"
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">التاريخ</div>
+                      <div className="tabular-nums">{fmtDate(d.orderDate)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">العملة</div>
+                      <div>{d.agreedCurrency ?? "IQD"} {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-muted-foreground">التسوية</div>
+                      <div>{d.settlementType === "CASH" ? "نقدي" : "آجل"}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* الأرقام المالية السريعة */}
+                {!costHidden ? (
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-lg border bg-card p-2 text-center">
+                      <div className="text-xs text-muted-foreground">الإجمالي</div>
+                      <div className="font-bold text-sm tabular-nums">
+                        {isUsd ? `${fmt(d.usdTotal)} $` : `${fmt(d.total)} د.ع`}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border bg-card p-2 text-center">
+                      <div className="text-xs text-muted-foreground">المدفوع</div>
+                      <div className="font-bold text-sm text-money-positive tabular-nums">
+                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(d.paidAmount ?? "0")} د.ع`}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border bg-card p-2 text-center">
+                      <div className="text-xs text-muted-foreground">المتبقي</div>
+                      <div className="font-bold text-sm text-money-negative tabular-nums">
+                        {remaining != null
+                          ? isUsd
+                            ? `${fmt(remaining.toFixed(2))} $`
+                            : `${fmt(remaining.toFixed(2))} د.ع`
+                          : "—"}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* أشرطة الإجراءات المباشرة (استلام / سداد / مرتجع) */}
+                <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border bg-muted/30">
+                  {canApproveDirectly ? (
+                    <Button
+                      size="sm"
+                      onClick={() => setIsApprovalOpen(true)}
+                      className="bg-primary text-primary-foreground font-semibold"
+                    >
+                      <CheckCircle2 aria-hidden className="size-4" />
+                      {d.status === "SENT" ? "اعتماد واستلام فوري" : "إرسال للاعتماد"}
+                    </Button>
+                  ) : null}
+
+                  {canEdit && d.status === "RECEIVED" && remaining != null && remaining.gt(0) && !costHidden ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setIsPaymentOpen(true)}
+                      className="font-semibold text-primary border-primary/40 hover:bg-primary/5"
+                    >
+                      <HandCoins aria-hidden className="size-4" />
+                      سداد فوري للمورد
+                    </Button>
+                  ) : null}
+
+                  {d.status === "RECEIVED" ? (
+                    <Button asChild size="sm" variant="outline">
+                      <Link href={`/purchase-returns/new?po=${encodeURIComponent(d.poNumber)}`}>
+                        <Undo2 aria-hidden className="size-4" />
+                        مرتجع شراء
                       </Link>
-                    ) : (
-                      d.supplierName ?? "—"
-                    )}
-                  </div>
+                    </Button>
+                  ) : null}
                 </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">التاريخ</div>
-                  <div className="tabular-nums">{fmtDate(d.orderDate)}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">العملة</div>
-                  <div>{d.agreedCurrency ?? "IQD"} {isUsd && d.agreedRate ? `(${fmt(d.agreedRate)})` : ""}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">التسوية</div>
-                  <div>{d.settlementType === "CASH" ? "نقدي" : "آجل"}</div>
-                </div>
-              </CardContent>
-            </Card>
 
-            {/* الأرقام المالية السريعة */}
-            {!costHidden ? (
-              <div className="grid grid-cols-3 gap-2">
-                <div className="rounded-lg border bg-card p-2 text-center">
-                  <div className="text-xs text-muted-foreground">الإجمالي</div>
-                  <div className="font-bold text-sm tabular-nums">
-                    {isUsd ? `${fmt(d.usdTotal)} $` : `${fmt(d.total)} د.ع`}
+                {/* جدول البنود */}
+                <div>
+                  <div className="text-xs font-semibold mb-1.5 flex items-center justify-between">
+                    <span>بنود الأمر ({d.items.length})</span>
+                    {d.notes ? <span className="text-muted-foreground font-normal">ملاحظات: {d.notes}</span> : null}
+                  </div>
+                  <div className="rounded-md border overflow-hidden">
+                    <DataTable<PoItemRow>
+                      embedded
+                      searchable={false}
+                      bounded={false}
+                      pageSize={Infinity}
+                      data={d.items}
+                      columns={poItemColumns(isUsd)}
+                      emptyText="لا بنود مسجلة."
+                    />
                   </div>
                 </div>
-                <div className="rounded-lg border bg-card p-2 text-center">
-                  <div className="text-xs text-muted-foreground">المدفوع</div>
-                  <div className="font-bold text-sm text-money-positive tabular-nums">
-                    {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(d.paidAmount ?? "0")} د.ع`}
+
+                {/* مصاريف الشحن والكمرك إن وُجدت */}
+                {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && !costHidden ? (
+                  <div className="rounded-md border bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
+                    <div className="font-semibold text-[var(--sem-warn)] mb-1">
+                      مصاريف الشحن والكمرك (تُثبَت كمصروف منفصل عند الاستلام)
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>الشحن: {fmtAr(d.shippingCost)} د.ع</div>
+                      <div>الكمرك: {fmtAr(d.customsCost)} د.ع</div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* الإجراءات الموضعية المباشرة في التذييل */}
+                <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {onPrint ? (
+                      <Button size="sm" variant="outline" onClick={() => onPrint(d.id)}>
+                        <Printer aria-hidden className="size-4" />
+                        طباعة
+                      </Button>
+                    ) : null}
+                    {canEdit && openForEditing ? (
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/purchases/${d.id}/edit`}>
+                          <Pencil aria-hidden className="size-4" />
+                          تعديل
+                        </Link>
+                      </Button>
+                    ) : null}
+                    {d.supplierId ? (
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/suppliers-statement?id=${d.supplierId}`}>
+                          <User aria-hidden className="size-4" />
+                          كشف المورد
+                        </Link>
+                      </Button>
+                    ) : null}
+                  </div>
+                  <Button asChild size="sm" variant="secondary">
+                    <Link href={`/purchases/${d.id}`}>
+                      <ExternalLink aria-hidden className="size-4" />
+                      الصفحة المستقلة
+                    </Link>
+                  </Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="governance" className="space-y-4 pt-2">
+                <PurchaseOrderGovernance key={d.id} purchaseOrderId={d.id} />
+              </TabsContent>
+            </Tabs>
+
+            {/* نافذة تأكيد الاعتماد والاستلام الفوري */}
+            <Dialog open={isApprovalOpen} onOpenChange={setIsApprovalOpen}>
+              <DialogContent className="sm:max-w-md" dir="rtl">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 text-base">
+                    <CheckCircle2 aria-hidden className="size-5 text-primary" />
+                    <span>
+                      {d.status === "DRAFT"
+                        ? `إرسال أمر الشراء ${d.poNumber} للاعتماد`
+                        : `اعتماد واستلام أمر الشراء ${d.poNumber}`}
+                    </span>
+                  </DialogTitle>
+                  <DialogDescription className="text-xs text-muted-foreground">
+                    {d.status === "DRAFT"
+                      ? "إرسال هذا الأمر للمراجعة والاعتماد. سيتم إنشاء طلب اعتماد رقابي ولن يتم استلام المخزون أو ترحيل الفاتورة في القيود إلا بعد اعتماده من المفوض."
+                      : "اعتماد هذا الأمر يعني تأكيد استلام البضاعة كاملة في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً."}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-3 py-1">
+                  <div className="space-y-1">
+                    <Label htmlFor="approve-reason" className="text-xs">
+                      {d.status === "DRAFT" ? "سبب الإرسال / ملاحظات" : "بيان الاعتماد / السبب"}
+                    </Label>
+                    <Input
+                      id="approve-reason"
+                      value={approvalReason}
+                      onChange={(e) => setApprovalReason(e.target.value)}
+                      className="text-xs"
+                      placeholder={d.status === "DRAFT" ? "إرسال للمراجعة والاعتماد" : "اعتماد واستلام البضاعة كاملة"}
+                    />
                   </div>
                 </div>
-                <div className="rounded-lg border bg-card p-2 text-center">
-                  <div className="text-xs text-muted-foreground">المتبقي</div>
-                  <div className="font-bold text-sm text-money-negative tabular-nums">
-                    {remaining != null
-                      ? isUsd
-                        ? `${fmt(remaining.toFixed(2))} $`
-                        : `${fmt(remaining.toFixed(2))} د.ع`
-                      : "—"}
-                  </div>
-                </div>
-              </div>
+                <DialogFooter className="gap-2 sm:gap-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsApprovalOpen(false)}
+                    disabled={isApproving}
+                  >
+                    إلغاء
+                  </Button>
+                  <SubmitButton
+                    size="sm"
+                    pending={isApproving}
+                    onClick={handleApproveAndReceive}
+                    disabled={approvalReason.trim().length < 3}
+                  >
+                    {d.status === "DRAFT" ? "تأكيد الإرسال للاعتماد" : "تأكيد الاعتماد والاستلام"}
+                  </SubmitButton>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* نافذة السداد السريع للمورد */}
+            {isPaymentOpen && d.supplierId ? (
+              <QuickSupplierPaymentDialog
+                open={isPaymentOpen}
+                onClose={() => setIsPaymentOpen(false)}
+                purchaseOrderId={d.id}
+                poNumber={d.poNumber}
+                supplierId={d.supplierId}
+                supplierName={d.supplierName ?? ""}
+                branchId={Number(d.branchId)}
+                currency={isUsd ? "USD" : "IQD"}
+                exchangeRate={d.agreedRate}
+                remainingAmount={remaining ? remaining.toFixed(2) : "0"}
+                onSuccess={() => void utils.purchases.get.invalidate({ purchaseOrderId: d.id })}
+              />
             ) : null}
-
-            {/* جدول البنود */}
-            <div>
-              <div className="text-xs font-semibold mb-1.5 flex items-center justify-between">
-                <span>بنود الأمر ({d.items.length})</span>
-                {d.notes ? <span className="text-muted-foreground font-normal">ملاحظات: {d.notes}</span> : null}
-              </div>
-              <div className="rounded-md border overflow-hidden">
-                <DataTable<PoItemRow>
-                  embedded
-                  searchable={false}
-                  bounded={false}
-                  pageSize={Infinity}
-                  data={d.items}
-                  columns={poItemColumns(isUsd)}
-                  emptyText="لا بنود مسجلة."
-                />
-              </div>
-            </div>
-
-            {/* الإجراءات الموضعية المباشرة */}
-            <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                {onPrint ? (
-                  <Button size="sm" variant="outline" onClick={() => onPrint(d.id)}>
-                    <Printer aria-hidden className="size-4" />
-                    طباعة
-                  </Button>
-                ) : null}
-                {canEdit && openForEditing ? (
-                  <Button asChild size="sm" variant="outline">
-                    <Link href={`/purchases/${d.id}/edit`}>
-                      <Pencil aria-hidden className="size-4" />
-                      تعديل
-                    </Link>
-                  </Button>
-                ) : null}
-                {d.supplierId ? (
-                  <Button asChild size="sm" variant="ghost">
-                    <Link href={`/suppliers-statement?id=${d.supplierId}`}>
-                      <User aria-hidden className="size-4" />
-                      كشف المورد
-                    </Link>
-                  </Button>
-                ) : null}
-              </div>
-              <Button asChild size="sm" variant="secondary">
-                <Link href={`/purchases/${d.id}`}>
-                  <ExternalLink aria-hidden className="size-4" />
-                  الصفحة المستقلة
-                </Link>
-              </Button>
-            </div>
           </div>
         ) : null}
       </SheetContent>
