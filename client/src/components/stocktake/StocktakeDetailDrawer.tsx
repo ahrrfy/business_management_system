@@ -303,6 +303,14 @@ export function StocktakeDetailDrawer({
               </Button>
             </Link>
 
+            {session.status === "COUNTING" && (
+              <Link href="/count-portal">
+                <Button variant="outline" size="sm" className="gap-1.5">
+                  بوابة العد الميداني
+                </Button>
+              </Link>
+            )}
+
             {session.status === "REVIEW" && isManagerPlus && (
               <Link href={`/stocktakes/${session.id}/review`}>
                 <Button size="sm" className="gap-1.5">
