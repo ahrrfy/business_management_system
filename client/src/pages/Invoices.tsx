@@ -39,6 +39,7 @@ import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
 import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
+import { QuickSalesPaymentDialog } from "@/components/invoice/QuickSalesPaymentDialog";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -258,6 +259,7 @@ export default function Invoices() {
   const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
   const [drawerInvoiceId, setDrawerInvoiceId] = useState<number | null>(null);
   const [returnDrawerInvoiceId, setReturnDrawerInvoiceId] = useState<number | null>(null);
+  const [payTarget, setPayTarget] = useState<Row | null>(null);
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
@@ -779,7 +781,7 @@ export default function Invoices() {
                   key: "pay",
                   kind: "pay",
                   label: "تسديد دفعة",
-                  href: `/invoices/${r.id}`,
+                  onSelect: () => setPayTarget(r),
                   hidden: settled,
                   gate: {
                     roles: ["cashier", "manager"],
@@ -1262,6 +1264,27 @@ export default function Invoices() {
         onClose={() => setReturnDrawerInvoiceId(null)}
         onSuccess={() => void utils.sales.list.invalidate()}
       />
+      {payTarget ? (
+        <QuickSalesPaymentDialog
+          open={payTarget != null}
+          onClose={() => setPayTarget(null)}
+          invoiceId={payTarget.id}
+          invoiceNumber={payTarget.invoiceNumber}
+          customerName={payTarget.customerName}
+          remainingAmount={round2(
+            D(payTarget.total)
+              .minus(D(payTarget.paidAmount))
+              .minus(D(payTarget.returnedTotal ?? "0")),
+          ).toFixed(2)}
+          totalAmount={payTarget.total}
+          paidAmount={payTarget.paidAmount}
+          branchId={Number(payTarget.branchId)}
+          onSuccess={() => {
+            void utils.sales.list.invalidate();
+            void utils.sales.listSummary.invalidate();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

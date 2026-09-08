@@ -1,0 +1,306 @@
+import { useEffect, useState } from "react";
+import { HandCoins } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { D, fmt, round2 } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { trpc } from "@/lib/trpc";
+import { paymentMethodCompact } from "@shared/terms";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+
+type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
+const METHODS: Method[] = ["CASH", "CARD", "TRANSFER", "WALLET"];
+
+export interface QuickSalesPaymentDialogProps {
+  open: boolean;
+  onClose: () => void;
+  invoiceId: number;
+  invoiceNumber: string;
+  customerName?: string | null;
+  remainingAmount: string;
+  totalAmount?: string;
+  paidAmount?: string;
+  branchId: number;
+  onSuccess?: () => void;
+}
+
+export function QuickSalesPaymentDialog({
+  open,
+  onClose,
+  invoiceId,
+  invoiceNumber,
+  customerName,
+  remainingAmount,
+  totalAmount,
+  paidAmount,
+  branchId,
+  onSuccess,
+}: QuickSalesPaymentDialogProps) {
+  const [amount, setAmount] = useState(remainingAmount);
+  const [method, setMethod] = useState<Method>("CASH");
+  const [reference, setReference] = useState("");
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setAmount(remainingAmount);
+      setMethod("CASH");
+      setReference("");
+      setClientRequestId(crypto.randomUUID());
+      setExternalAttempt(null);
+    }
+  }, [open, remainingAmount]);
+
+  const utils = trpc.useUtils();
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
+  const normalizedPayAmount = round2(D(amount || "0")).toFixed(2);
+  const externalNeeded = method !== "CASH" && D(amount || "0").gt(0);
+  const externalFingerprint = `SALES_COLLECTION|${branchId}|${method}|${normalizedPayAmount}|${reference.trim()}`;
+  const externalConfirmed =
+    !externalNeeded ||
+    (externalAttempt?.confirmed === true &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  const pay = trpc.sales.pay.useMutation({
+    onSuccess: async (r) => {
+      notify.ok("تم تسجيل الدفعة بنجاح", `الحالة الحالية: ${invoiceStatusLabel(r.status)}`);
+      await Promise.all([
+        utils.sales.get.invalidate({ invoiceId }),
+        utils.sales.list.invalidate(),
+        utils.sales.listPage.invalidate(),
+        utils.sales.listSummary.invalidate(),
+      ]);
+      onSuccess?.();
+      onClose();
+    },
+    onError: (e) => {
+      notify.err("تعذّر تسجيل الدفعة", e.message);
+    },
+  });
+
+  async function confirmExternalPayment() {
+    const trimmedRef = reference.trim();
+    if (!trimmedRef) {
+      notify.err("مرجع العملية مطلوب", "أدخل رقم إشعار جهاز الدفع أو الحوالة أولاً.");
+      return;
+    }
+    if (!D(amount || "0").gt(0)) {
+      notify.err("المبلغ مطلوب", "أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+      return;
+    }
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint ? externalAttempt : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const reqId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: Number(branchId),
+          channel: "SALES_COLLECTION",
+          method: method as "CARD" | "TRANSFER" | "WALLET",
+          amount: normalizedPayAmount,
+          reference: trimmedRef,
+          requestId: reqId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+      }
+      await confirmExternal.mutateAsync({
+        branchId: Number(branchId),
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId: reqId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${trimmedRef} وجاهز للاعتماد.`);
+    } catch (err) {
+      notify.err(err instanceof Error ? err.message : "تعذّر تأكيد الدفع الخارجي");
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!isPosPaymentMethodEnabled(method)) {
+      notify.err("طريقة دفع معطلة", posPaymentRejectionMessage(method));
+      return;
+    }
+    const amt = D(amount || "0");
+    if (!amt.gt(0)) {
+      notify.err("مبلغ غير صالح", "يجب أن يكون مبلغ الدفعة أكبر من صفر.");
+      return;
+    }
+    if (amt.gt(D(remainingAmount))) {
+      notify.err("تجاوز الرصيد", "مبلغ الدفعة أكبر من الرصيد المتبقي على الفاتورة.");
+      return;
+    }
+    if (method !== "CASH") {
+      if (!reference.trim()) {
+        notify.err("مرجع مفقود", "مرجع عملية الدفع مطلوب للدفع الإلكتروني والمصرفي.");
+        return;
+      }
+      if (!externalConfirmed) {
+        notify.err("تأكيد غير مكتمل", "يرجى الضغط على زر تأكيد العملية قبل الحفظ.");
+        return;
+      }
+    }
+
+    pay.mutate({
+      invoiceId,
+      amount: normalizedPayAmount,
+      method,
+      reference: reference.trim() || undefined,
+      clientRequestId,
+      externalPaymentAttemptId: externalAttempt?.attemptId ?? null,
+      externalPaymentDeviceId: externalAttempt?.deviceId ?? null,
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md" dir="rtl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <HandCoins aria-hidden className="size-5 text-primary" />
+            <span>تسديد دفعة مبيعات — {invoiceNumber}</span>
+          </DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            تسجيل دفعة قبض سريعة على الفاتورة دون مغادرة الشاشة.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-3 py-1">
+          <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-2.5 text-xs">
+            <div>
+              <span className="text-muted-foreground block">العميل:</span>
+              <span className="font-semibold">{customerName || "عميل نقدي"}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground block">الرصيد المتبقي:</span>
+              <span className="font-bold text-money-negative tabular-nums">
+                {fmt(remainingAmount)} د.ع
+              </span>
+            </div>
+            {totalAmount ? (
+              <div>
+                <span className="text-muted-foreground block">إجمالي الفاتورة:</span>
+                <span className="tabular-nums">{fmt(totalAmount)} د.ع</span>
+              </div>
+            ) : null}
+            {paidAmount ? (
+              <div>
+                <span className="text-muted-foreground block">المدفوع سابقاً:</span>
+                <span className="text-money-positive tabular-nums">{fmt(paidAmount)} د.ع</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="sales-pay-method" className="text-xs">طريقة القبض</Label>
+              <AppSelect
+                value={method}
+                onValueChange={(v) => {
+                  setMethod(v as Method);
+                  setReference("");
+                  setExternalAttempt(null);
+                }}
+              >
+                {METHODS.map((m) => (
+                  <option key={m} value={m}>
+                    {paymentMethodCompact(m)}
+                  </option>
+                ))}
+              </AppSelect>
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="sales-pay-amount" className="text-xs">المبلغ المقبوض</Label>
+              <MoneyInput
+                id="sales-pay-amount"
+                value={amount}
+                onChange={setAmount}
+                placeholder="0.00"
+                ariaLabel="المبلغ المقبوض"
+                className="font-mono text-sm"
+              />
+            </div>
+          </div>
+
+          {method !== "CASH" ? (
+            <div className="rounded-md border bg-card p-2.5">
+              <PaymentReferenceField
+                value={reference}
+                onChange={(val) => {
+                  setReference(val);
+                  setExternalAttempt(null);
+                }}
+                method={method}
+                confirmed={externalConfirmed}
+                confirming={initiateExternal.isPending || confirmExternal.isPending}
+                onConfirm={confirmExternalPayment}
+                inputId="sales-quick-pay-reference"
+                colors={{
+                  border: "var(--border)",
+                  muted: "var(--muted)",
+                  mutedFg: "var(--muted-foreground)",
+                  fg: "var(--foreground)",
+                  amber: "var(--sem-warn)",
+                  success: "var(--sem-pos)",
+                }}
+              />
+            </div>
+          ) : null}
+
+          <DialogFooter className="gap-2 sm:gap-0 pt-2 border-t">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              disabled={pay.isPending}
+            >
+              إلغاء
+            </Button>
+            <SubmitButton
+              pending={pay.isPending}
+              size="sm"
+              disabled={!D(amount || "0").gt(0) || (method !== "CASH" && !externalConfirmed)}
+            >
+              تسجيل وترحيل الدفعة
+            </SubmitButton>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
