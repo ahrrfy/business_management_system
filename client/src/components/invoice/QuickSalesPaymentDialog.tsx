@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { HandCoins } from "lucide-react";
+import { HandCoins, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -50,7 +50,19 @@ export function QuickSalesPaymentDialog({
   branchId,
   onSuccess,
 }: QuickSalesPaymentDialogProps) {
-  const [amount, setAmount] = useState(remainingAmount);
+  const utils = trpc.useUtils();
+  const invoiceQuery = trpc.sales.get.useQuery(
+    { invoiceId: invoiceId ?? 0 },
+    { enabled: open && invoiceId > 0 },
+  );
+  const inv = invoiceQuery.data;
+  const total = inv ? D(inv.total) : D(totalAmount || "0");
+  const paid = inv ? D(inv.paidAmount) : D(paidAmount || "0");
+  const returned = inv ? D(inv.returnedTotal ?? "0") : D(0);
+  const liveRemaining = round2(total.minus(paid).minus(returned)).toFixed(2);
+  const effectiveRemaining = inv ? liveRemaining : remainingAmount;
+
+  const [amount, setAmount] = useState(effectiveRemaining);
   const [method, setMethod] = useState<Method>("CASH");
   const [reference, setReference] = useState("");
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
@@ -64,15 +76,14 @@ export function QuickSalesPaymentDialog({
 
   useEffect(() => {
     if (open) {
-      setAmount(remainingAmount);
+      setAmount(effectiveRemaining);
       setMethod("CASH");
       setReference("");
       setClientRequestId(crypto.randomUUID());
       setExternalAttempt(null);
     }
-  }, [open, remainingAmount]);
+  }, [open, effectiveRemaining]);
 
-  const utils = trpc.useUtils();
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
@@ -105,6 +116,22 @@ export function QuickSalesPaymentDialog({
   const isBusy = pay.isPending || initiateExternal.isPending || confirmExternal.isPending;
 
   async function confirmExternalPayment() {
+    if (invoiceQuery.isLoading || !inv) {
+      notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
+      return;
+    }
+    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
+      notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
+      return;
+    }
+    if (D(liveRemaining).lte(0)) {
+      notify.err("الفاتورة مسددة", "تم سداد كامل رصيد الفاتورة بالفعل.");
+      return;
+    }
+    if (parsedAmount.gt(D(liveRemaining))) {
+      notify.err("تجاوز الرصيد المحدث", `الرصيد المتبقي الفعلي هو ${fmt(liveRemaining)} د.ع.`);
+      return;
+    }
     const trimmedRef = reference.trim();
     if (!trimmedRef) {
       notify.err("مرجع العملية مطلوب", "أدخل رقم إشعار جهاز الدفع أو الحوالة أولاً.");
@@ -168,7 +195,15 @@ export function QuickSalesPaymentDialog({
       notify.err("مبلغ غير صالح", "يجب أن يكون مبلغ الدفعة أكبر من صفر.");
       return;
     }
-    if (amt.gt(D(remainingAmount))) {
+    if (invoiceQuery.isLoading) {
+      notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
+      return;
+    }
+    if (inv && (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED")) {
+      notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
+      return;
+    }
+    if (amt.gt(D(effectiveRemaining))) {
       notify.err("تجاوز الرصيد", "مبلغ الدفعة أكبر من الرصيد المتبقي على الفاتورة.");
       return;
     }
@@ -217,12 +252,13 @@ export function QuickSalesPaymentDialog({
           <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-2.5 text-xs">
             <div>
               <span className="text-muted-foreground block">العميل:</span>
-              <span className="font-semibold">{customerName || "عميل نقدي"}</span>
+              <span className="font-semibold">{inv?.customerName || customerName || "عميل نقدي"}</span>
             </div>
             <div>
               <span className="text-muted-foreground block">الرصيد المتبقي:</span>
-              <span className="font-bold text-money-negative tabular-nums">
-                {fmt(remainingAmount)} د.ع
+              <span className="font-bold text-money-negative tabular-nums flex items-center gap-1">
+                {invoiceQuery.isLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                <span>{fmt(effectiveRemaining)} د.ع</span>
               </span>
             </div>
             {totalAmount ? (
@@ -309,7 +345,13 @@ export function QuickSalesPaymentDialog({
             <SubmitButton
               pending={pay.isPending}
               size="sm"
-              disabled={!parsedAmount.gt(0) || (method !== "CASH" && !externalConfirmed) || isBusy}
+              disabled={
+                !parsedAmount.gt(0) ||
+                (method !== "CASH" && !externalConfirmed) ||
+                isBusy ||
+                invoiceQuery.isLoading ||
+                (inv != null && D(liveRemaining).lte(0))
+              }
             >
               تسجيل وترحيل الدفعة
             </SubmitButton>

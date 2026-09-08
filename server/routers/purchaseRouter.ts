@@ -980,7 +980,13 @@ export const purchaseRouter = router({
           .where(
             and(
               inArray(accountingEntries.purchaseOrderId, cashOrderIds),
-              inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN"]),
+              or(
+                eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                and(
+                  eq(accountingEntries.entryType, "PAYMENT_IN"),
+                  sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                ),
+              ),
             ),
           )
           .groupBy(accountingEntries.purchaseOrderId);
@@ -1184,7 +1190,13 @@ export const purchaseRouter = router({
             .where(
               and(
                 eq(accountingEntries.purchaseOrderId, po.id),
-                inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN"]),
+                or(
+                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                  and(
+                    eq(accountingEntries.entryType, "PAYMENT_IN"),
+                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                  ),
+                ),
               ),
             )
         )[0];
