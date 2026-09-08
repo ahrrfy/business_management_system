@@ -3,7 +3,9 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, shifts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, returnRequests, roles, salesControlRequests, shifts, users, workOrders } from "../../drizzle/schema";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
+import { applyPermissionOverrides, diffFromTemplate, moduleAccessAllowed, resolvePermissions, ROLE_TEMPLATES, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
@@ -11,7 +13,7 @@ import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
-import { resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
+import { openShiftIdTx, resolveBranchCashShiftTx, shiftIdForCashTx } from "./shiftService";
 import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
@@ -289,7 +291,25 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     } | null = null;
     if (refund?.method === "CASH" && money(refund.amount).gt(0)) {
       const branchForRefund = Number(invPreview.branchId);
-      const explicitShiftId = refund.shiftId ?? null;
+      let explicitShiftId = refund.shiftId ?? null;
+      if (explicitShiftId == null && actor.role === "cashier") {
+        const callerOpenShifts = await tx
+          .select({ id: shifts.id })
+          .from(shifts)
+          .where(and(eq(shifts.branchId, branchForRefund), eq(shifts.userId, actor.userId), eq(shifts.status, "OPEN")));
+        if (callerOpenShifts.length === 1) {
+          explicitShiftId = Number(callerOpenShifts[0].id);
+        } else if (callerOpenShifts.length > 1) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "تعدّد أدراج الكاشير المفتوحة",
+              why: `لديك أكثر من وردية مفتوحة في هذا الفرع (${callerOpenShifts.length}) — حدّد درج الوردية المستهدف للاسترداد صراحةً`,
+              doThis: "اختر الوردية التي سيخرج منها النقد فعلياً قبل تأكيد المرتجع",
+            }),
+          });
+        }
+      }
       const openShiftCount = explicitShiftId != null
         ? 1
         : (await tx
@@ -299,6 +319,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           ).length;
       if (explicitShiftId != null || openShiftCount > 0) {
         const resolved = await resolveBranchCashShiftTx(tx, branchForRefund, explicitShiftId);
+        if (actor.role === "cashier" && resolved.userId !== actor.userId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: appErrorMessage({
+              what: "تعذّر صرف الاسترداد النقدي من درج وردية أخرى",
+              why: "كاشير الصرف مقيّد بدرج ورديته المفتوحة ولا يمكنه صرف النقد من درج كاشير آخر",
+              doThis: "اختر درج ورديتك المفتوحة أو اطلب من مدير الفرع اعتماد وصرف الاسترداد",
+            }),
+          });
+        }
         prelockedRefundSource = { shiftId: resolved.shiftId, cashBucket: "DRAWER" };
       } else {
         // بلا ورديةٍ مفتوحة: `shiftIdForCashTx` يقرّر بالدور — خزينةٌ للإداريّ، ورفضٌ للكاشير.
@@ -1449,6 +1479,11 @@ export async function returnSaleAsOwner(
       }),
     });
   }
+  const { ownerReason: _, ...restInput } = input;
+  const coreInput: ReturnSaleInput = {
+    ...restInput,
+    operatorReason: reason,
+  };
   return withTx(async (tx) => {
     const [owner] = await tx
       .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner })
@@ -1470,8 +1505,266 @@ export async function returnSaleAsOwner(
         }),
       });
     }
-    return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
+
+    // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تتعطّل بالطلبات المعلّقة
+    if (coreInput.clientRequestId) {
+      const fingerprint = idempotencyHash(coreInput);
+      const existingRefId = await checkIdempotency(tx, "sale.return", coreInput.clientRequestId, fingerprint);
+      if (existingRefId != null) {
+        return returnSaleInTx(tx, coreInput, actor);
+      }
+    }
+
+    const [pendingControl] = await tx
+      .select({ id: salesControlRequests.id })
+      .from(salesControlRequests)
+      .where(and(eq(salesControlRequests.invoiceId, coreInput.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .for("update")
+      .limit(1);
+    const [pendingLegacy] = await tx
+      .select({ id: returnRequests.id })
+      .from(returnRequests)
+      .where(and(eq(returnRequests.invoiceId, coreInput.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .for("update")
+      .limit(1);
+
+    if (pendingControl || pendingLegacy) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
+        }),
+      });
+    }
+
+    return returnSaleInTx(tx, coreInput, actor);
   });
+}
+
+/**
+ * ⭐ **مسارُ التنفيذ المباشر الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
+ *
+ *  ① يُحقّق من الفاعل وصلاحيته وحالته النشطة في سجلّ المستخدمين داخل المعاملة.
+ *  ② سببٌ إلزاميّ (٣ أحرف فأكثر) يُخزَّن في `notes` القيد الرقابي للتوثيق المالي.
+ *  ③ يُنفّذ الأثر فوراً عبر `returnSaleInTx`: عودة البضاعة، تسوية الدرج/الخزينة، عكس القيود والذمم.
+ */
+export async function returnSaleDirect(
+  input: ReturnSaleInput & { operatorReason: string },
+  actor: Actor & { role?: string; isOwner?: boolean },
+) {
+  const reason = input.operatorReason.trim().replace(/\s+/g, " ");
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المرتجع المباشر",
+        why: `سبب المرتجع إلزاميّ ويقع بين 3 و500 محرف — الوارد ${reason.length} محرفاً؛ وهو ما يقوم مقام التوثيق الرقابي للتنفيذ المباشر`,
+        doThis: "اكتب السبب في سطرٍ واحد يذكر الصنف والعلّة (مثل «عيب مصنعي في الغلاف»)",
+      }),
+    });
+  }
+
+  const coreInput: ReturnSaleInput = {
+    ...input,
+    operatorReason: reason,
+  };
+
+  return retryOnDeadlock(() => withTx(async (tx) => {
+    // 1. استكشاف المعرّف المخصّص دون قفل لتحديد ترتيب القفل المتّسق (roles -> users) ومنع الجمود مع updateRole
+    const [probe] = await tx
+      .select({ customRoleId: users.customRoleId })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .limit(1);
+
+    // 2. قفل جدول الأدوار أولاً (إن وجد دور مخصّص) بحماية FOR SHARE
+    let customRoleRow: { baseRole: string; isActive: boolean; permissions: unknown } | null = null;
+    if (probe?.customRoleId != null) {
+      const [rRow] = await tx
+        .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
+        .from(roles)
+        .where(eq(roles.id, probe.customRoleId))
+        .for("share")
+        .limit(1);
+      if (rRow) {
+        customRoleRow = {
+          baseRole: rRow.baseRole,
+          isActive: Boolean(rRow.isActive),
+          permissions: rRow.permissions,
+        };
+      }
+    }
+
+    // 3. قفل جدول المستخدمين ثانياً بحماية FOR SHARE
+    const [userRow] = await tx
+      .select({
+        id: users.id,
+        isActive: users.isActive,
+        isOwner: users.isOwner,
+        role: users.role,
+        customRoleId: users.customRoleId,
+        permissionsOverride: users.permissionsOverride,
+      })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+
+    if (!userRow || !userRow.isActive) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المرتجع المباشر",
+          why: !userRow
+            ? "المستخدم غير موجود في سجلّ المستخدمين"
+            : "حساب المستخدم معطّل حالياً",
+          doThis: "تأكد من تفعيل الحساب لدى مسؤول النظام",
+        }),
+      });
+    }
+
+    // إن تغيّر customRoleId بين الاستكشاف وقفل المستخدم، نقفل الدور الجديد
+    if (userRow.customRoleId !== probe?.customRoleId) {
+      if (userRow.customRoleId != null) {
+        const [rRow] = await tx
+          .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
+          .from(roles)
+          .where(eq(roles.id, userRow.customRoleId))
+          .for("share")
+          .limit(1);
+        customRoleRow = rRow ? {
+          baseRole: rRow.baseRole,
+          isActive: Boolean(rRow.isActive),
+          permissions: rRow.permissions,
+        } : null;
+      } else {
+        customRoleRow = null;
+      }
+    }
+
+    let effectiveRole = userRow.role;
+    const basePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
+    let effectivePermissions = applyPermissionOverrides(basePermissions, userRow.permissionsOverride as PermissionMap | null);
+
+    if (userRow.customRoleId != null && customRoleRow) {
+      if (customRoleRow.isActive) {
+        effectiveRole = customRoleRow.baseRole as RoleKey;
+        const roleBasePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
+        const rolePermissions = applyPermissionOverrides(roleBasePermissions, customRoleRow.permissions as PermissionMap | null);
+        effectivePermissions = applyPermissionOverrides(rolePermissions, userRow.permissionsOverride as PermissionMap | null);
+      } else {
+        effectiveRole = "user";
+        effectivePermissions = ROLE_TEMPLATES.user;
+      }
+    }
+
+    const isOwner = Boolean(userRow.isOwner);
+    const isAdmin = effectiveRole === "admin";
+    const hasSalesFull = effectivePermissions.sales === "FULL";
+    const isAuthorized =
+      isOwner ||
+      isAdmin ||
+      (["manager", "cashier"].includes(effectiveRole) && hasSalesFull);
+
+    if (!isAuthorized) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المرتجع المباشر",
+          why: `دورك الحالي (${effectiveRole}) أو صلاحياتك الفعّالة لا تملك صلاحية تنفيذ المرتجع المباشر`,
+          doThis: "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
+        }),
+      });
+    }
+
+    // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
+    if (coreInput.clientRequestId) {
+      const fingerprint = idempotencyHash(coreInput);
+      const existingRefId = await checkIdempotency(tx, "sale.return", coreInput.clientRequestId, fingerprint);
+      if (existingRefId != null) {
+        return returnSaleInTx(tx, coreInput, {
+          userId: actor.userId,
+          branchId: actor.branchId,
+          role: effectiveRole,
+        });
+      }
+    }
+
+    if (effectiveRole === "cashier") {
+      const [invRow] = await tx
+        .select({
+          branchId: invoices.branchId,
+          createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
+        })
+        .from(invoices)
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .where(eq(invoices.id, coreInput.invoiceId))
+        .limit(1);
+
+      const targetBranchId = invRow?.branchId ?? actor.branchId;
+      const openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
+      if (!openShiftId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لإتمام المرتجع المباشر",
+            doThis: "افتح وردية جديدة في فرع الفاتورة قبل محاولة إجراء المرتجع",
+          }),
+        });
+      }
+
+      if (
+        !isOwner &&
+        !isAdmin &&
+        invRow &&
+        Number(invRow.createdBy) !== Number(actor.userId) &&
+        Number(invRow.workOrderCreatedBy) !== Number(actor.userId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
+            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+          }),
+        });
+      }
+    }
+
+    const [pendingControl] = await tx
+      .select({ id: salesControlRequests.id })
+      .from(salesControlRequests)
+      .where(and(eq(salesControlRequests.invoiceId, coreInput.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .for("update")
+      .limit(1);
+    const [pendingLegacy] = await tx
+      .select({ id: returnRequests.id })
+      .from(returnRequests)
+      .where(and(eq(returnRequests.invoiceId, coreInput.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .for("update")
+      .limit(1);
+
+    if (pendingControl || pendingLegacy) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
+        }),
+      });
+    }
+
+    return returnSaleInTx(tx, coreInput, {
+      userId: actor.userId,
+      branchId: actor.branchId,
+      role: effectiveRole,
+    });
+  }));
 }
 
 export interface ListSalesReturnsInput {
