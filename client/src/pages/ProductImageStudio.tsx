@@ -1526,10 +1526,8 @@ export default function ProductImageStudio() {
                 <Label htmlFor="studio-campaign-filter">الحملة المعروضة</Label>
                 <AppSelect id="studio-campaign-filter" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={selectedCampaignId == null ? "ALL" : String(selectedCampaignId)} onValueChange={(value) => setSelectedCampaignId(value === "ALL" ? null : Number(value))}>
                   <option value="ALL">كل المهام دون حملة محددة</option>
-                  {(campaigns.data ?? []).map((campaign) => (
-                    <option key={Number(campaign.id)} value={Number(campaign.id)}>
-                      {campaign.name} · {STUDIO_CAMPAIGN_STATUS_AR[campaign.status as StudioCampaignStatus] ?? campaign.status}
-                    </option>
+                  {(campaigns.data && campaigns.data.length > 0 ? campaigns.data.map((c) => ({ id: Number(c.id), name: c.name, status: c.status })) : (myCampaigns.data ?? []).map((c) => ({ id: Number(c.campaignId), name: c.name, status: c.status }))).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name} · {STUDIO_CAMPAIGN_STATUS_AR[c.status as StudioCampaignStatus] ?? c.status}</option>
                   ))}
                 </AppSelect>
               </div>
@@ -2491,9 +2489,7 @@ export default function ProductImageStudio() {
                   {/* معرض صور المنتج القائمة — للمدير فقط. يظهر تحت المهمّة المختارة كي
                       يرى المدير كل صور المنتج (شاملة البدائل)، ويمسّها: يحذف، يعيّن رئيسيّة،
                       يعيد ترتيب. طلب المالك ٢٦/٨: التحكم الكامل بالصور الموجودة. */}
-                  {dashboard.data?.canManage && selected.productId != null && (
-                    <ProductImageGallery productId={Number(selected.productId)} />
-                  )}
+                  {dashboard.data?.canManage && selected.productId != null && <ProductImageGallery productId={Number(selected.productId)} />}
                 </div>
               )}
             </div>

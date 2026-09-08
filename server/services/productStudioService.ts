@@ -3030,7 +3030,19 @@ export async function listStudioTasks(
   const now = input.now ?? new Date();
   if (!canCrossBranches(actor)) conds.push(eq(productImageJobs.branchId, Number(actor.branchId)));
   const branchAuditHistory = actor.role === "auditor" && input.scope === "HISTORY";
-  if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
+  if (!isManager(actor) && !branchAuditHistory) {
+    if (input.scope === "MINE") {
+      conds.push(eq(productImageJobs.assignedTo, actor.userId));
+    } else {
+      const memberCampaign = sql`exists (select 1 from ${productStudioCampaignAssignees} where ${productStudioCampaignAssignees.campaignId} = ${productImageJobs.campaignId} and ${productStudioCampaignAssignees.userId} = ${actor.userId})`;
+      conds.push(
+        or(
+          eq(productImageJobs.assignedTo, actor.userId),
+          and(isNull(productImageJobs.assignedTo), memberCampaign),
+        )!,
+      );
+    }
+  } else if (input.scope === "MINE") {
     conds.push(eq(productImageJobs.assignedTo, actor.userId));
   }
   // عرض الاستثناءات (متأخّر/بلا منفّذ) يشمل ما ينتظر المراجعة أيضاً، وإلّا خالف العدّادَ
@@ -3161,16 +3173,45 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
       .limit(1)
   )[0];
   if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر عرض صور المنتج", why: "لا منتج نشطٌ بهذا الرقم — حُذف أو عُطِّل بعد فتحك الشاشة", doThis: "حدّث الشاشة واختر منتجاً نشطاً من القائمة" }) });
-  return requireDb()
+  const rows = await requireDb()
     .select({
       id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      variantName: productVariants.variantName,
+      url: productImages.url,
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
+      objectKey: productImages.objectKey,
+      mime: productImages.mime,
+      width: productImages.width,
+      height: productImages.height,
+      bytes: productImages.bytes,
+      thumbDataUrl: productImages.thumbDataUrl,
       origin: productImages.origin,
+      createdAt: productImages.createdAt,
     })
     .from(productImages)
+    .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    productId: Number(r.productId),
+    variantId: r.variantId == null ? null : Number(r.variantId),
+    variantName: r.variantName,
+    url: r.url,
+    isPrimary: Boolean(r.isPrimary),
+    sortOrder: Number(r.sortOrder ?? 0),
+    objectKey: r.objectKey,
+    mime: r.mime,
+    width: r.width,
+    height: r.height,
+    bytes: r.bytes,
+    thumbDataUrl: r.thumbDataUrl,
+    origin: r.origin,
+    createdAt: r.createdAt,
+  }));
 }
 
 async function stageStudioObject(objectKey: string): Promise<void> {
@@ -5067,7 +5108,10 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     )[0];
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر اعتماد المهمّة", why: "منتج المهمّة لم يعد موجوداً في الكتالوج — حُذف بعد إنشائها", doThis: "ألغِ المهمّة بسببٍ مكتوب، وأنشئ مهمّةً جديدةً على المنتج الصحيح" }) });
 
-    const changesProductContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    const actuallyChangesName = task.proposedName != null && task.proposedName.trim() !== "" && task.proposedName.trim() !== product.name.trim();
+    const actuallyChangesDesc = task.proposedDescription != null && task.proposedDescription.trim() !== "" && task.proposedDescription.trim() !== (product.description || "").trim();
+    const actuallyChangesCopy = Boolean(task.proposedMarketingCopy?.trim());
+    const changesProductContent = actuallyChangesName || actuallyChangesDesc || actuallyChangesCopy;
     if (changesProductContent && task.sourceProductHash && productContentHash(product) !== task.sourceProductHash) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -5203,8 +5247,8 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
 
     const combinedDescription = [task.proposedDescription?.trim(), task.proposedMarketingCopy?.trim()].filter(Boolean).join("\n\n");
     const productPatch: { name?: string; description?: string | null } = {};
-    if (task.proposedName?.trim()) productPatch.name = task.proposedName.trim();
-    if (combinedDescription) productPatch.description = combinedDescription;
+    if (actuallyChangesName) productPatch.name = task.proposedName!.trim();
+    if (actuallyChangesDesc || actuallyChangesCopy) productPatch.description = combinedDescription || null;
     if (Object.keys(productPatch).length) await tx.update(products).set(productPatch).where(eq(products.id, task.productId));
 
     await tx

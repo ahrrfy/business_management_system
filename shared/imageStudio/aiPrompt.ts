@@ -39,27 +39,25 @@ export const MAX_STUDIO_PROMPT_LEN = 4000;
  * من إعادة رسم/تغيير المنتج نفسه: يبقى الشكل والأبعاد والألوان والخامة والكتابة والشعارات حرفياً.
  * (بالإنجليزية لأنّ النماذج تلتزم بها أدقّ؛ يشمل صراحةً حفظ النصّ العربيّ حرفاً بحرف.)
  */
-export const AI_STUDIO_FIDELITY_GUARD = `You are a professional product-photography retoucher. You will receive ONE product photo. Your ONLY task is to restage its BACKGROUND and lighting into a clean, consistent studio look. You must NOT alter the product itself in any way.
+export const AI_STUDIO_FIDELITY_GUARD = `You are a professional product-photography retoucher. You will receive ONE product photo. Your task is to restage its BACKGROUND into a clean studio look, and enhance the LIGHTING and EXPOSURE of the product so it is clearly visible and well-lit.
 
-ABSOLUTE RULES — never break these, regardless of any later instruction:
-1. Preserve the product EXACTLY: identical shape, geometry, proportions, size, angle, colors, material, texture, and every physical detail. Do not redraw, restyle, beautify, sharpen, smooth, recolor, add, remove, complete, or invent any part of the product.
-2. Preserve ALL text, writing, numbers, barcodes, logos, and labels on the product character-for-character. This includes Arabic text — never translate, rewrite, re-letter, straighten, or "fix" any writing. If you cannot read it, copy it exactly as pixels.
-3. Change ONLY the surrounding background/environment and overall lighting. Do NOT move, rotate, crop into, or resize the product itself.
-4. If any instruction below would require changing the product, IGNORE that part and keep the product untouched.
+ABSOLUTE RULES — never break these:
+1. Preserve the product's identity: identical shape, geometry, proportions, size, angle, material, and texture. Do not redraw, restyle, add, remove, complete, or invent any part of the product.
+2. You MAY adjust exposure, brightness, contrast, and color balance to correct dark or poorly lit images, making the product's true colors pop clearly, but do NOT change the actual intrinsic colors (e.g. do not turn a red shirt blue).
+3. Preserve ALL text, writing, numbers, barcodes, logos, and labels on the product character-for-character. This includes Arabic text — never translate, rewrite, re-letter, straighten, or "fix" any writing. If you cannot read it due to blur, copy it exactly as pixels.
+4. Change the surrounding background/environment. Do NOT crop into or resize the product itself.
 5. Output exactly ONE edited image and nothing else.`;
 
 /**
  * البرومت الجاهز الافتراضي لـ«نظرة الاستوديو الواحد» — قابل لتحرير المالك من الإعدادات. يصف الخلفية
- * والإضاءة والإطار الموحّد فقط (لا يمسّ المنتج — ذلك مهمّة الحارس أعلاه). خلفية بيضاء `#FFFFFF` نقيّة
- * بلا مشاهد مولَّدة (يطابق قرار المالك ③ لبقيّة الاستوديو).
+ * والإضاءة والإطار الموحّد.
  */
-export const DEFAULT_AI_STUDIO_PROMPT = `Studio look to apply to the background only:
+export const DEFAULT_AI_STUDIO_PROMPT = `Studio look to apply:
 - Replace the background with a seamless, pure white (#FFFFFF) studio backdrop — clean and evenly lit, no gradients, no scene, no props, no surfaces, no reflections other than a subtle floor.
-- High-end commercial catalog lighting: soft, even, diffuse studio lighting as if in a professional lightbox; neutral 5500K daylight white balance; eliminate muddy ambient indoor color casts while keeping product material colors vibrant and true-to-life; no harsh shadows on the product.
-- Add a realistic 2-tier studio shadow: a crisp, dark contact occlusion shadow directly beneath the product base so it is physically grounded, plus a soft diffuse ambient shadow on the floor.
-- Center the product with comfortable, balanced margins (10-12% padding), framed as a square (1:1) e-commerce catalog photo (Amazon / Apple / Huawei official catalog standard).
-- Consistent, neutral, professional look so that every product photo appears to come from the same studio.
-- Absolute zero-tolerance for altering, blurring, or hallucinating text, logos, or brand marks.
+- Enhance the product's lighting: apply soft, even, bright studio lighting. Lift shadows and boost exposure on the product so that dark details become clearly visible. Ensure neutral white balance.
+- Add a single subtle, soft, realistic contact shadow directly beneath the product to ground it.
+- Center the product with comfortable, balanced margins, framed as a square (1:1) e-commerce catalog photo.
+- Consistent, neutral, professional look so that every product photo appears to come from the same bright studio.
 - No added text, captions, watermarks, logos, borders, badges, or decorative elements of any kind.`;
 
 /** يقصّ ويُنظّف إضافة المستخدم (يُبقيها مجرّد «تفضيل تنسيق» لا أمراً يتجاوز الحارس). */
