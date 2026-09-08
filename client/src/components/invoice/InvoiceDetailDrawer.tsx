@@ -16,6 +16,7 @@ import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceSt
 import { sourceTypeLabel } from "@/lib/labels";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { QuickSalesPaymentDialog } from "./QuickSalesPaymentDialog";
+import { hasModuleAccess } from "@shared/permissions";
 
 export interface InvoiceDetailDrawerProps {
   invoiceId: number | null;
@@ -44,13 +45,23 @@ export function InvoiceDetailDrawer({
   const returned = inv ? D(inv.returnedTotal ?? "0") : D(0);
   const remaining = total.minus(paid).minus(returned);
 
+  const me = trpc.auth.me.useQuery();
+  const canWriteSales = hasModuleAccess(
+    me.data?.role ?? "",
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
+    "sales",
+    "FULL",
+  );
+
   const canReturn =
+    canWriteSales &&
     inv &&
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&
     inv.status !== "SUPERSEDED";
 
   const canPay =
+    canWriteSales &&
     inv &&
     inv.status !== "CANCELLED" &&
     inv.status !== "RETURNED" &&

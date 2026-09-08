@@ -140,13 +140,7 @@ async function resolveScope(
         and(
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            or(
-              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
-              and(
-                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
-                eq(products.allowBackorder, false),
-              ),
-            ),
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
           ),
           stockableProductCond
         )
@@ -173,13 +167,7 @@ async function resolveScope(
           gte(inventoryMovements.createdAt, since),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            or(
-              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
-              and(
-                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
-                eq(products.allowBackorder, false),
-              ),
-            ),
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
           ),
           stockableProductCond
         )
@@ -212,13 +200,7 @@ async function resolveScope(
           inArray(products.categoryId, catIds),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            or(
-              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
-              and(
-                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
-                eq(products.allowBackorder, false),
-              ),
-            ),
+            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
           ),
           stockableProductCond
         )
