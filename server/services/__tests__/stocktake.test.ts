@@ -1343,6 +1343,52 @@ describe("تدقيق تفصيل الوحدات وختم توقيت الالتق�
       /غير معرّفة أو معطّلة لهذا المنتج/,
     );
   });
+
+  it("⭐ قبول عدّ صنف بمخزون وهمي لا يملك أي وحدات نشطة بتفصيل افتراضي يطابق الكمية", async () => {
+    // تعطيل كل وحدات الصنف 1 (ليصبح صنفاً بمخزون وهمي بلا وحدات نشطة)
+    await db()
+      .update(s.productUnits)
+      .set({ isActive: false })
+      .where(eq(s.productUnits.variantId, 1));
+
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // إرسال تفصيل بالوحدة الافتراضية "قطعة" يطابق الكمية 5
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 5,
+      unitBreakdown: JSON.stringify({ قطعة: 5 }),
+      clientRequestId: randomUUID(),
+    });
+    expect(res.ok).toBe(true);
+
+    // تفصيل غير مطابق للكمية الإجمالية ⇒ يُرفض
+    await expectTrpc(
+      submitCount(identity, {
+        variantId: 1,
+        qty: 5,
+        unitBreakdown: JSON.stringify({ قطعة: 4 }),
+        clientRequestId: randomUUID(),
+      }),
+      "BAD_REQUEST",
+      /عدم تطابق في كمية الجرد/,
+    );
+  });
 });
 
 describe("حواجز الاعتماد", () => {

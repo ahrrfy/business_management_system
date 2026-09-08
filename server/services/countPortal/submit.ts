@@ -408,42 +408,58 @@ export async function submitCount(
           ([k, v]) => !k.startsWith("__") && typeof v === "number" && v > 0,
         );
         if (userEntries.length > 0) {
-          let expectedBaseQty = new Decimal(0);
           const activeUnits = units.filter((u) => u.isActive !== false);
-          for (const [uName, count] of userEntries) {
-            const matches = activeUnits.filter((u) => u.unitName === uName);
-            if (matches.length === 0) {
+          // إذا كان الصنف غير نشط ولا يملك أي وحدات نشطة (مخزون وهمي/ghost stock يراد تسويته)،
+          // تقبل البوابة تفصيل الوحدة الافتراضية طالما تطابق الكمية الإجمالية (Codex finding).
+          if (activeUnits.length === 0) {
+            const sumCounts = userEntries.reduce((acc, [, count]) => acc + count, 0);
+            if (sumCounts !== input.qty) {
               throw new TRPCError({
                 code: "BAD_REQUEST",
                 message: appErrorMessage({
-                  what: "تعذّر تسجيل تفصيل الوحدات",
-                  why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة أو معطّلة لهذا المنتج`,
-                  doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${sumCounts})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
                 }),
               });
             }
-            if (matches.length > 1) {
+          } else {
+            let expectedBaseQty = new Decimal(0);
+            for (const [uName, count] of userEntries) {
+              const matches = activeUnits.filter((u) => u.unitName === uName);
+              if (matches.length === 0) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذّر تسجيل تفصيل الوحدات",
+                    why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة أو معطّلة لهذا المنتج`,
+                    doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
+                  }),
+                });
+              }
+              if (matches.length > 1) {
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message: appErrorMessage({
+                    what: "تعارض في تعريف الوحدات",
+                    why: `توجد أكثر من وحدة نشطة بالاسم نفسه «${uName}» لهذا المنتج`,
+                    doThis: "صحّح أسماء الوحدات في بطاقة المنتج أولاً قبل تسجيل الجرد",
+                  }),
+                });
+              }
+              const unitObj = matches[0];
+              expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
+            }
+            if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
               throw new TRPCError({
-                code: "CONFLICT",
+                code: "BAD_REQUEST",
                 message: appErrorMessage({
-                  what: "تعارض في تعريف الوحدات",
-                  why: `توجد أكثر من وحدة نشطة بالاسم نفسه «${uName}» لهذا المنتج`,
-                  doThis: "صحّح أسماء الوحدات في بطاقة المنتج أولاً قبل تسجيل الجرد",
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${expectedBaseQty.toNumber()})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
                 }),
               });
             }
-            const unitObj = matches[0];
-            expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
-          }
-          if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: appErrorMessage({
-                what: "عدم تطابق في كمية الجرد",
-                why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${expectedBaseQty.toNumber()})`,
-                doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
-              }),
-            });
           }
         }
       }
