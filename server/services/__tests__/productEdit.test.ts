@@ -298,6 +298,78 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(renamedUnit?.isActive).toBe(true);
   });
 
+  it("⭐ إعادة تسمية وحدة مع تطبيع الباركود (أرقام عربية ومسافات) ⇒ مطابقة معيارية ناجحة وتحديث مكاني", async () => {
+    // الوحدة 2 اسمها «درزن» وباركودها في القاعدة BC-DOZEN-1
+    // إدخال باركود بأرقام مشرقية «BC-DOZEN-١ »
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة-معدلة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: renamedTemplate,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1", "دزينة-معدلة": "BC-DOZEN-١ " },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const renamedUnit = units.find((u) => u.unitName === "دزينة-معدلة");
+    expect(renamedUnit).toBeDefined();
+    expect(renamedUnit?.id).toBe(2); // تم التعرف على الوحدة وتحديثها مكانياً رغم اختلاف تمثيل الأرقام
+    expect(renamedUnit?.barcode).toBe("BC-DOZEN-1"); // تم التخزين بالباركود المعياري
+  });
+
+  it("⭐ حل ملكية الباركود قبل مطابقة الاسم: إعادة تسمية وحدة لاسم وحدة محذوفة مع الاحتفاظ بباركودها ⇒ بلا تعارض", async () => {
+    // لدينا في البذور: id=1 (قطعة، BC-PIECE-1)، id=2 (درزن، BC-DOZEN-1)
+    // السيناريو: حذف «قطعة»، وإعادة تسمية «درزن» ليصبح اسمها «قطعة» مع الاحتفاظ بباركودها «BC-DOZEN-1»
+    // وحدة الأساس تصبح «قطعة» (التي كانت درزن) بمعامل 1
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+    // ملاحظة: قاعدة استقرار وحدة الأساس تمنع تغيير الأساس في مسار المعرف إن كان مختلفاً،
+    // لكن في مسار القالب إن تم الاحتفاظ بنفس اسم وحدة الأساس
+    // نفحص أن ملكية الباركود تحدد الصف id=2 وتفرغ باركود id=1 القديم المحذوف
+    await db().update(s.productUnits).set({ barcode: "BC-OLD-BASE" }).where(eq(s.productUnits.id, 1));
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: [
+          { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+          { unitName: "باكيت", conversionFactor: "10", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "9000.00" }] },
+        ],
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            // الوحدة «باكيت» أخذت باركود الدرزن BC-DOZEN-1 القديم، بينما لم يعد هناك درزن في القالب
+            unitBarcodes: { قطعة: "BC-NEW-BASE", باكيت: "BC-DOZEN-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const packetUnit = units.find((u) => u.unitName === "باكيت");
+    expect(packetUnit).toBeDefined();
+    expect(packetUnit?.id).toBe(2); // أخذت الصف رقم 2 مباشرة بسبب ملكية الباركود
+    expect(packetUnit?.barcode).toBe("BC-DOZEN-1");
+  });
+
   it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {
     await expect(
       updateProduct(

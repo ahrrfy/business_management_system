@@ -14,7 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
-import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -198,17 +198,44 @@ async function upsertVariantUnits(
   for (const t of template) {
     const name = t.unitName.trim();
     const barcode = canonicalizeBarcodeInput(unitBarcodes[name] ?? "") || null;
-    // مطابقة الوحدة القائمة الذكية:
-    // ١. بالاسم أولاً إن لم تكن محجوزة مسبقاً
-    // ٢. بالباركود إن كان محدداً (سيناريو إعادة تسمية وحدة قائمة مع الاحتفاظ بباركودها)
+    // مطابقة الوحدة القائمة الذكية (حل ملكية الباركود أولاً مع التطبيع المعياري):
+    // ١. بالباركود أولاً إن كان محدداً (حامل الهوية الثابتة للوحدة عند إعادة تسميتها)
+    //    نطابق بالتكافؤ المعياري (barcodesEquivalent) ونرفض الالتباس إن تطابقت وحدتان.
+    // ٢. بالاسم إن لم تُطابق بالباركود
     // ٣. بوحدة الأساس إن كانت هذه وحدة أساس ولم تُطابق بعد
-    let match = existing.find((u) => !keep.has(Number(u.id)) && u.unitName === name);
-    if (!match && barcode) {
-      match = existing.find((u) => !keep.has(Number(u.id)) && u.barcode === barcode);
+    let match: (typeof existing)[number] | undefined;
+    if (barcode) {
+      const barcodeMatches = existing.filter(
+        (u) => !keep.has(Number(u.id)) && u.barcode && barcodesEquivalent(u.barcode, barcode)
+      );
+      if (barcodeMatches.length > 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "توجد أكثر من وحدة قائمة بنفس هوية الباركود المُدخلة لهذا المتغيّر — يرجى تصحيح الباركودات لمنع التضارب.",
+        });
+      }
+      if (barcodeMatches.length === 1) {
+        match = barcodeMatches[0];
+      }
+    }
+    if (!match) {
+      match = existing.find((u) => !keep.has(Number(u.id)) && u.unitName === name);
     }
     if (!match && t.isBaseUnit) {
       match = existing.find((u) => !keep.has(Number(u.id)) && u.isBaseUnit);
     }
+
+    // تفريغ أي باركود متصادم محجوز في وحدة قديمة غير محتفظ بها لمنع خطأ ER_DUP_ENTRY قبل التحديث أو الإدراج
+    if (barcode) {
+      const clashingOld = existing.find(
+        (u) => (!match || Number(u.id) !== Number(match.id)) && !keep.has(Number(u.id)) && u.barcode && barcodesEquivalent(u.barcode, barcode)
+      );
+      if (clashingOld) {
+        await tx.update(productUnits).set({ barcode: null }).where(eq(productUnits.id, Number(clashingOld.id)));
+        clashingOld.barcode = null;
+      }
+    }
+
     let unitId: number;
     // أسعارُ الوحدة القائمة **قبل** المسح — لسجلّ تغيّر السعر (Codex INV-05: هذا المسار لم يكن يكتبه).
     let previousByTier: Map<string, string> | null = null;
@@ -232,13 +259,6 @@ async function upsertVariantUnits(
       previousByTier = new Map(previous.map((row) => [row.priceTier, row.price] as const));
       await tx.delete(productPrices).where(eq(productPrices.productUnitId, unitId));
     } else {
-      // إن كان الباركود محجوزاً في وحدة قديمة غير محتفظ بها ضمن هذا المتغيّر، نفرّغ باركودها القديم أولاً لنقله
-      if (barcode) {
-        const clashingOld = existing.find((u) => !keep.has(Number(u.id)) && u.barcode === barcode);
-        if (clashingOld) {
-          await tx.update(productUnits).set({ barcode: null }).where(eq(productUnits.id, Number(clashingOld.id)));
-        }
-      }
       const res = await tx.insert(productUnits).values({
         variantId,
         unitName: name,
@@ -264,17 +284,18 @@ async function upsertVariantUnits(
     if (previousByTier) await logUnitPriceChanges(tx, { productUnitId: unitId, previousByTier, next: nextPrices, actor });
   }
   if (priceRows.length) await tx.insert(productPrices).values(priceRows);
-  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف).
+  // وحدات لم تعد في القالب ⇒ تعطيل وتفريغ الباركود (حفظ التاريخ، لا حذف).
   // **قبل التعطيل**: إن كانت الوحدة القديمة تحمل باركوداً يطابق أحد الوحدات المُنشأة حديثاً
   // (سيناريو إعادة تسمية: "قطعة"→"حبة" بنفس الباركود)، ننقل بدائلها إلى الوحدة الجديدة كي
   // لا تعلق البدائل على وحدة معطَّلة (Codex P2-3).
   const drop = existing.filter((u) => !keep.has(Number(u.id)));
   for (const oldUnit of drop) {
-    if (!oldUnit.barcode) continue;
-    const successor = inserted.find((i) => i.barcode === oldUnit.barcode);
+    const oldBarcode = oldUnit.barcode;
+    if (!oldBarcode) continue;
+    const successor = inserted.find((i) => i.barcode && barcodesEquivalent(i.barcode, oldBarcode));
     if (successor) await migrateAliases(tx, Number(oldUnit.id), successor.unitId);
   }
-  if (drop.length) await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
+  if (drop.length) await tx.update(productUnits).set({ isActive: false, barcode: null }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
 }
 
 /**
