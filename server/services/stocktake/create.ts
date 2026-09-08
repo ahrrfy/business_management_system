@@ -1,7 +1,7 @@
 // إنشاء جلسة الجرد: حلّ النطاق + اللقطة الذرّية للرصيد والتكلفة + التكليفات (PIN crypto) + التوزيع.
 import { TRPCError } from "@trpc/server";
 import { randomBytes, randomInt } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNotNull, like } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, like, or, sql } from "drizzle-orm";
 import { mysqlCodeFrom } from "../../../shared/errorMap.ar";
 import {
   branches,
@@ -127,11 +127,24 @@ async function resolveScope(
       : and(eq(products.isService, false), eq(products.isBundle, false))!;
 
   if (input.scopeType === "FULL") {
+    // يشمل الأصناف النشطة، بالإضافة إلى أي أصناف معطلة لها رصيد فعلي في هذا الفرع لتمكين جردها وتصفيتها
     const rows = await tx
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId))
+      )
+      .where(
+        and(
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+          ),
+          stockableProductCond
+        )
+      );
     const ids = rows.map((r) => Number(r.id));
     return { variantIds: ids, label: `جرد شامل للفرع (${ids.length} صنفاً)`, detail: {} };
   }
@@ -144,11 +157,18 @@ async function resolveScope(
       .from(inventoryMovements)
       .innerJoin(productVariants, eq(inventoryMovements.variantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId))
+      )
       .where(
         and(
           eq(inventoryMovements.branchId, input.branchId),
           gte(inventoryMovements.createdAt, since),
-          eq(productVariants.isActive, true),
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+          ),
           stockableProductCond
         )
       );
@@ -171,7 +191,20 @@ async function resolveScope(
       .select({ id: productVariants.id })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(inArray(products.categoryId, catIds), eq(productVariants.isActive, true), eq(products.isActive, true), stockableProductCond));
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId))
+      )
+      .where(
+        and(
+          inArray(products.categoryId, catIds),
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            sql`COALESCE(${branchStock.quantity}, 0) > 0`
+          ),
+          stockableProductCond
+        )
+      );
     const ids = rows.map((r) => Number(r.id));
     const names = catRows.map((c) => c.name).join("، ");
     return { variantIds: ids, label: `فئة: ${names} (${ids.length} صنفاً)`, detail: { categoryIds: catIds } };

@@ -18,6 +18,7 @@ import {
   assertBaseUnitStableAndRevalueCost,
   assertBundleEditShape,
   assertHasVariants,
+  assertNoActiveStocktakeFactorChange,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -224,6 +225,12 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
         let productUnitId: number;
         if (u.id) {
           productUnitId = u.id;
+          const existingUnit = existing.find((e) => Number(e.id) === Number(u.id));
+          if (existingUnit && !u.isBaseUnit) {
+            await assertNoActiveStocktakeFactorChange(tx, v.id, [
+              { unitName: u.unitName, oldFactor: existingUnit.conversionFactor, newFactor: u.conversionFactor },
+            ]);
+          }
           const previousPrices = await tx
             .select({ priceTier: productPrices.priceTier, price: productPrices.price })
             .from(productPrices)

@@ -212,6 +212,7 @@ export const countPortalRouter = router({
         // مسار الباركود المجهول: باركودٌ مُسِح ولم يُحلّ داخل الجلسة (يُلتقط للمشرف، لا يُعدّ).
         unknownBarcode: z.string().trim().min(1).max(64).optional(),
         clientRequestId: z.string().uuid(),
+        clientCapturedAt: z.string().max(64).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -259,6 +260,7 @@ export const countPortalRouter = router({
         entryMethod: input.entryMethod,
         scannedBarcode: input.scannedBarcode ?? null,
         clientRequestId: input.clientRequestId,
+        clientCapturedAt: input.clientCapturedAt ?? null,
       });
       // لا نكرّر سطر التدقيق عند إعادة مزامنة نفس العدّة (idempotent replay).
       if (!res.idempotent) {

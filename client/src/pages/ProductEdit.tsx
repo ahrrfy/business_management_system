@@ -183,6 +183,14 @@ export default function ProductEdit() {
   const myBranch = me.data?.branchId ?? 1;
   const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
 
+  const hasStockForSharedCost = useMemo(() => {
+    return variants.some((v) => {
+      if (v.priceOverride) return false;
+      return Object.values(v.stockByBranch ?? {}).some((q) => Number(q) !== 0);
+    });
+  }, [variants]);
+  const isSharedCostLocked = hasStockForSharedCost && !consignment.isConsignment;
+
   // حارس فقد البيانات: أوّل تغيير حقيقي بعد اكتمال التعبئة من الخادم يُعلَّم النموذج «متّسخاً» —
   // يتجاهل عمداً التغييرات التي تُحدِثها التعبئة نفسها (skipNextDirtyCheck يسقط أوّل تشغيلة).
   const [touched, setTouched] = useState(false);
@@ -830,6 +838,7 @@ export default function ProductEdit() {
             onScan={onScan}
             onColorCommit={commitColorRename}
             stockEditable={false}
+            isConsignment={consignment.isConsignment}
             priceHistory
             emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
           />

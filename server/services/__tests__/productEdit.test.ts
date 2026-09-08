@@ -23,6 +23,9 @@ const TABLES = [
   "onlineOrders",
   "storeSettings",
   "branchStock",
+  "stocktakeItems",
+  "stocktakeAssignments",
+  "stocktakeSessions",
   "productPrices",
   "productUnits",
   "productImageJobs",
@@ -1046,5 +1049,98 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
     );
     const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, 1));
     expect(rows).toHaveLength(1); // نجح الحفظ (لولا التطبيع لرُفِض بـ«معامل التحويل… عدد صحيح موجب»)
+  });
+
+  it("⭐ تعديل معامل تحويل وحدة فرعية لصنف في جلسة جرد نشطة ⇒ يُرفض بحارس حماية المعاملات", async () => {
+    // إنشاء جلسة جرد نشطة على الصنف 1
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-1",
+      name: "جلسة اختبار 1",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 1",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // محاولة تغيير معامل الدرزن من 12 إلى 24
+    const modifiedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "24", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: modifiedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ تعديل السعر أو الاسم فقط لصنف في جلسة جرد نشطة دون لمس معامل التحويل ⇒ ينجح", async () => {
+    // إنشاء جلسة جرد نشطة على الصنف 1
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-2",
+      name: "جلسة اختبار 2",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 2",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // تعديل السعر فقط والاسم مع الإبقاء على نفس المعامل (12)
+    const sameFactorTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1200.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "13000.00" }] },
+    ];
+
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة - معدل الاسم",
+        unitTemplate: sameFactorTemplate,
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
   });
 });

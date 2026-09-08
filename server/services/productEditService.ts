@@ -205,25 +205,31 @@ async function upsertVariantUnits(
     // ٢. بالاسم إن لم تُطابق بالباركود
     // ٣. بوحدة الأساس إن كانت هذه وحدة أساس ولم تُطابق بعد
     let match: (typeof existing)[number] | undefined;
-    if (barcode) {
-      const barcodeMatches = existing.filter(
-        (u) => !keep.has(Number(u.id)) && u.barcode && barcodesEquivalent(u.barcode, barcode)
-      );
-      if (barcodeMatches.length > 1) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "توجد أكثر من وحدة قائمة بنفس هوية الباركود المُدخلة لهذا المتغيّر — يرجى تصحيح الباركودات لمنع التضارب.",
-        });
-      }
-      if (barcodeMatches.length === 1) {
-        match = barcodeMatches[0];
-      }
-    }
-    if (!match) {
-      match = existing.find((u) => !keep.has(Number(u.id)) && u.unitName === name);
-    }
-    if (!match && t.isBaseUnit) {
+    if (t.isBaseUnit) {
+      // حارس مطابقة وحدة الأساس (Codex P1): وحدة الأساس لمتغيّرٍ قائم لا يجوز استبدال صفّها
+      // أو مبادلتها مع وحدة فرعية بسبب تشابه باركود — صف الأساس القائم هو الممثل الحصري للأساس.
       match = existing.find((u) => !keep.has(Number(u.id)) && u.isBaseUnit);
+    } else {
+      // للوحدات الفرعية: نطابق فقط مع صفوف غير أساسية لمنع خطف صف الأساس
+      if (barcode) {
+        const barcodeMatches = existing.filter(
+          (u) => !keep.has(Number(u.id)) && !u.isBaseUnit && u.barcode && barcodesEquivalent(u.barcode, barcode)
+        );
+        if (barcodeMatches.length > 1) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "توجد أكثر من وحدة قائمة بنفس هوية الباركود المُدخلة لهذا المتغيّر — يرجى تصحيح الباركودات لمنع التضارب.",
+          });
+        }
+        if (barcodeMatches.length === 1) {
+          match = barcodeMatches[0];
+        }
+      }
+      if (!match) {
+        // تفضيل الوحدة النشطة أولاً لمنع التقاط وحدة قديمة معطلة بنفس الاسم (Codex P2)
+        match = existing.find((u) => !keep.has(Number(u.id)) && !u.isBaseUnit && u.unitName === name && u.isActive)
+          ?? existing.find((u) => !keep.has(Number(u.id)) && !u.isBaseUnit && u.unitName === name);
+      }
     }
 
     // تفريغ أي باركود متصادم محجوز في وحدة قديمة غير محتفظ بها لمنع خطأ ER_DUP_ENTRY قبل التحديث أو الإدراج

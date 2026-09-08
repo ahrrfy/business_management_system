@@ -23,8 +23,8 @@
  * ⛔ لا يقرأ `ctx` — `Actor` صريح (§٥).
  */
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { priceChangeLog, products } from "../../../drizzle/schema";
+import { and, eq, inArray } from "drizzle-orm";
+import { priceChangeLog, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../../shared/priceSanity";
 import type { Tx } from "../../db";
@@ -168,6 +168,53 @@ export async function assertBaseUnitStableAndRevalueCost(
 ): Promise<void> {
   await assertBaseUnitStable(tx, variantId, intendedBase);
   await postCostRevaluation(tx, variantId, oldCost, newCost, actor, reason);
+}
+
+/**
+ * حارس حماية معاملات التحويل أثناء الجرد النشط:
+ * يمنع تعديل معامل التحويل لأي وحدة قائمة لمتغيّر مشمول في جلسة جرد حالتها COUNTING أو REVIEW.
+ * تعديل المعامل أثناء الجرد يؤدي إلى تآكل أو تضاعف كميات المستودع الفعلية بالكراتين عند التسوية الدفترية.
+ */
+export async function assertNoActiveStocktakeFactorChange(
+  tx: Tx,
+  variantId: number,
+  unitChanges: Array<{ unitName: string; oldFactor?: string | null; newFactor: string }>,
+): Promise<void> {
+  const factorChanged = unitChanges.some((u) => {
+    if (u.oldFactor == null) return false;
+    const oldNum = Number(u.oldFactor);
+    const newNum = Number(u.newFactor);
+    if (Number.isFinite(oldNum) && Number.isFinite(newNum)) {
+      return Math.abs(oldNum - newNum) > 1e-6;
+    }
+    return String(u.oldFactor).trim() !== String(u.newFactor).trim();
+  });
+  if (!factorChanged) return;
+
+  const active = await tx
+    .select({ code: stocktakeSessions.code, status: stocktakeSessions.status })
+    .from(stocktakeSessions)
+    .innerJoin(stocktakeItems, eq(stocktakeSessions.id, stocktakeItems.sessionId))
+    .where(
+      and(
+        eq(stocktakeItems.variantId, variantId),
+        inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"]),
+      ),
+    )
+    .limit(1);
+
+  if (active.length > 0) {
+    const s = active[0];
+    const phase = s.status === "COUNTING" ? "مرحلة العدّ" : "مرحلة المراجعة";
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تعديل معامل التحويل للوحدة",
+        why: `هذا الصنف مدرج في جلسة جرد نشطة (${s.code}) في ${phase}، وتعديل المعامل أثناء الجرد يؤدي إلى تآكل أو تضارب أرصدة المستودع الفعلية عند التسوية الدفترية`,
+        doThis: "أكمل اعتماد جلسة الجرد أو ألغِها أولاً قبل تغيير معاملات التحويل في الكتالوج",
+      }),
+    });
+  }
 }
 
 /* ─────────────── ⑥ سجلّ السعر ─────────────── */

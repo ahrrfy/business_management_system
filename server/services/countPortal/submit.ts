@@ -80,6 +80,8 @@ export type SubmitCountInput = {
   scannedBarcode?: string | null;
   /** مفتاح idempotency لمزامنة طابور الأوفلاين (uuid). */
   clientRequestId: string;
+  /** وقت الالتقاط الفعلي على جهاز العامل (لطابور الأوفلاين) لحماية مبيعات الكاشير اللاحقة. */
+  clientCapturedAt?: string | Date | null;
 };
 
 export type SubmitCountResult = {
@@ -358,6 +360,38 @@ export async function submitCount(
         : null;
 
       const breakdown = parseUnitBreakdown(input.unitBreakdown);
+      if (breakdown) {
+        const userEntries = Object.entries(breakdown).filter(
+          ([k, v]) => !k.startsWith("__") && typeof v === "number" && v > 0,
+        );
+        if (userEntries.length > 0) {
+          let expectedBaseQty = new Decimal(0);
+          for (const [uName, count] of userEntries) {
+            const unitObj = units.find((u) => u.unitName === uName);
+            if (!unitObj) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذّر تسجيل تفصيل الوحدات",
+                  why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة لهذا المنتج`,
+                  doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
+                }),
+              });
+            }
+            expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
+          }
+          if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "عدم تطابق في كمية الجرد",
+                why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${expectedBaseQty.toNumber()})`,
+                doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
+              }),
+            });
+          }
+        }
+      }
       const candidates = [
         ...units.map((unit) => ({
           unitName: unit.unitName,
@@ -447,6 +481,16 @@ export async function submitCount(
       const effectiveRow = latestRecount ?? first;
 
       const now = new Date();
+      let countedAtDate = now;
+      if (input.clientCapturedAt) {
+        const cap = new Date(input.clientCapturedAt);
+        const capMs = cap.getTime();
+        const nowMs = now.getTime();
+        const sessionCreatedMs = new Date(session.createdAt).getTime();
+        if (!isNaN(capMs) && capMs >= sessionCreatedMs - 60_000 && capMs <= nowMs + 300_000) {
+          countedAtDate = cap;
+        }
+      }
 
       let kind: "FIRST" | "RECOUNT" | "VERIFY";
       let verifyMatch: boolean | null = null;
@@ -465,7 +509,7 @@ export async function submitCount(
           scannedBarcode: storedScannedBarcode,
           countedByName: identity.countedByName,
           countedByUserId: identity.countedByUserId,
-          countedAt: now,
+          countedAt: countedAtDate,
           clientRequestId: input.clientRequestId,
         });
         await tx
@@ -512,7 +556,7 @@ export async function submitCount(
               unitBreakdown: guardedUnitBreakdown,
               entryMethod: storedEntryMethod,
               scannedBarcode: storedScannedBarcode,
-              countedAt: now,
+              countedAt: countedAtDate,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
 
@@ -546,7 +590,7 @@ export async function submitCount(
             scannedBarcode: storedScannedBarcode,
             countedByName: identity.countedByName,
             countedByUserId: identity.countedByUserId,
-            countedAt: now,
+            countedAt: countedAtDate,
             clientRequestId: input.clientRequestId,
           });
         } else {
@@ -572,7 +616,7 @@ export async function submitCount(
                 unitBreakdown: guardedUnitBreakdown,
                 entryMethod: storedEntryMethod,
                 scannedBarcode: storedScannedBarcode,
-                countedAt: now,
+                countedAt: countedAtDate,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
                 resolvedBy: null,
@@ -592,7 +636,7 @@ export async function submitCount(
               scannedBarcode: storedScannedBarcode,
               countedByName: identity.countedByName,
               countedByUserId: identity.countedByUserId,
-              countedAt: now,
+              countedAt: countedAtDate,
               isConflict: !match,
               clientRequestId: input.clientRequestId,
             });

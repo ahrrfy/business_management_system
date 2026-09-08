@@ -62,6 +62,7 @@ export function VariantsTable({
   onScan,
   onColorCommit,
   stockEditable = true,
+  isConsignment = false,
   localAliases = false,
   priceHistory = false,
   emptyHint = "لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).",
@@ -83,6 +84,8 @@ export function VariantsTable({
   onColorCommit?: (oldColor: string, newColor: string) => void;
   /** في التعديل: المخزون قراءة فقط (يُدار عبر شاشات الجرد/الحركات). */
   stockEditable?: boolean;
+  /** سلع الأمانة: نسبة المودع قابلة للتعديل حتى مع وجود رصيد (لا تخضع لقفل إعادة التقييم المخزني). */
+  isConsignment?: boolean;
   /**
    * عند true: يعرض زرّ «بدائل» (باركودات بديلة) لكل وحدة في صفّ التوسيع، بوضع محلّي يكتب في
    * `variant.unitBarcodeAliases` — تُدرَج ذرّياً مع المنتج عند الحفظ (شاشة الإضافة فقط؛ التعديل
@@ -159,6 +162,7 @@ export function VariantsTable({
               onScan={(unitId) => onScan(v.id, unitId)}
               onColorCommit={onColorCommit}
               stockEditable={stockEditable}
+              isConsignment={isConsignment}
               localAliases={localAliases}
               priceHistory={priceHistory}
             />
@@ -184,6 +188,7 @@ function VariantRow({
   onScan,
   onColorCommit,
   stockEditable,
+  isConsignment,
   localAliases,
   priceHistory,
 }: {
@@ -201,6 +206,7 @@ function VariantRow({
   onScan: (unitId: number) => void;
   onColorCommit?: (oldColor: string, newColor: string) => void;
   stockEditable: boolean;
+  isConsignment: boolean;
   localAliases: boolean;
   priceHistory: boolean;
 }) {
@@ -496,23 +502,26 @@ function VariantRow({
                   <Switch checked={v.priceOverride} onCheckedChange={(c) => patch({ priceOverride: c })} />
                   استثناء بسعر خاص لهذا اللون
                 </label>
-                {v.priceOverride ? (
-                  <div className="flex gap-2">
-                    <Field label="تكلفة" hint={!stockEditable && Object.values(v.stockByBranch ?? {}).some((q) => Number(q) > 0) ? "مقفل لوجود رصيد" : undefined}>
-                      <MoneyInput
-                        value={v.costPrice}
-                        onChange={(val) => patch({ costPrice: val })}
-                        disabled={!stockEditable && Object.values(v.stockByBranch ?? {}).some((q) => Number(q) > 0)}
-                        className="h-8 text-xs w-24"
-                        placeholder="—"
-                        ariaLabel="تكلفة المتغيّر (سعر خاص)"
-                      />
-                    </Field>
-                    <Field label="بيع (المفرد)">
-                      <MoneyInput value={v.retail} onChange={(val) => patch({ retail: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="سعر بيع المتغيّر (سعر خاص)" />
-                    </Field>
-                  </div>
-                ) : (
+                {v.priceOverride ? (() => {
+                  const isCostLocked = !stockEditable && !isConsignment && Object.values(v.stockByBranch ?? {}).some((q) => Number(q) !== 0);
+                  return (
+                    <div className="flex gap-2">
+                      <Field label="تكلفة" hint={isCostLocked ? "مقفل لوجود رصيد" : undefined}>
+                        <MoneyInput
+                          value={v.costPrice}
+                          onChange={(val) => patch({ costPrice: val })}
+                          disabled={isCostLocked}
+                          className="h-8 text-xs w-24"
+                          placeholder="—"
+                          ariaLabel="تكلفة المتغيّر (سعر خاص)"
+                        />
+                      </Field>
+                      <Field label="بيع (المفرد)">
+                        <MoneyInput value={v.retail} onChange={(val) => patch({ retail: val })} className="h-8 text-xs w-24" placeholder="—" ariaLabel="سعر بيع المتغيّر (سعر خاص)" />
+                      </Field>
+                    </div>
+                  );
+                })() : (
                   <p className="text-xs text-muted-foreground">يتبع التسعير المشترك في قالب الوحدات.</p>
                 )}
               </div>

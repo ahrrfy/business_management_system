@@ -148,7 +148,7 @@ export default function SimpleProductEditForm({
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
   const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
-  const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) > 0), [currentStock]);
+  const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) !== 0), [currentStock]);
   const isCostLocked = hasStock && !consignment.isConsignment;
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
@@ -638,16 +638,18 @@ export default function SimpleProductEditForm({
                 مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
               </p>
             )}
-            <SimpleEditCostCoach
-              costPrice={costPrice}
-              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
-              categoryId={categoryId === "" ? null : Number(categoryId)}
-              brand={brand}
-              productType={productType}
-              productId={productId}
-              variantId={variantId.current}
-              onUseLastPurchase={(cost) => setCostPrice(cost)}
-            />
+            {!isCostLocked && (
+              <SimpleEditCostCoach
+                costPrice={costPrice}
+                baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
+                categoryId={categoryId === "" ? null : Number(categoryId)}
+                brand={brand}
+                productType={productType}
+                productId={productId}
+                variantId={variantId.current}
+                onUseLastPurchase={(cost) => setCostPrice(cost)}
+              />
+            )}
           </Field>
           <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
             <NumberInput value={minStock} onChange={setMinStock} className="text-center" ariaLabel="الحد الأدنى" />
