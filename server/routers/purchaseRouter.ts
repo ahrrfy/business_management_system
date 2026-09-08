@@ -949,6 +949,8 @@ export const purchaseRouter = router({
               approvedRevisionId: purchaseOrders.approvedRevisionId,
               createdBy: purchaseOrders.createdBy,
               createdByName: users.name,
+              lastEditedBy: purchaseOrders.lastEditedBy,
+              submittedBy: purchaseOrders.submittedBy,
               supplierName: suppliers.name,
             })
             .from(purchaseOrders)
@@ -1170,13 +1172,35 @@ export const purchaseRouter = router({
           : activeApprovals[0]?.status === "STALE"
             ? "STALE"
             : "NONE";
+
+      let linkedCashPaidAmount: string = "0.00";
+      if (po.settlementType === "CASH") {
+        const paidRow = (
+          await db
+            .select({
+              paid: sql<string>`COALESCE(SUM(${accountingEntries.amount}),0)`,
+            })
+            .from(accountingEntries)
+            .where(
+              and(
+                eq(accountingEntries.purchaseOrderId, po.id),
+                eq(accountingEntries.entryType, "PAYMENT_OUT"),
+              ),
+            )
+        )[0];
+        linkedCashPaidAmount = toDbMoney(money(paidRow?.paid ?? 0));
+      }
+
       const totalDec = Number(po.total ?? 0);
-      const paidDec = Number(po.paidAmount ?? 0);
+      const effectivePaidDec = Math.max(
+        Number(po.paidAmount ?? 0),
+        Number(linkedCashPaidAmount ?? 0),
+      );
       const nextAction = derivePurchaseOrderNextActionFromRow({
         purchaseOrderId: po.id,
         status: po.status,
         currentRevisionId: po.currentRevisionId,
-        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(paidDec) && totalDec - paidDec > 0,
+        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(effectivePaidDec) && totalDec - effectivePaidDec > 0,
         approvalRequest,
         requireRequisition: controlSetting?.requireRequisition,
         expectedDeliveryDate: po.expectedDeliveryDate,
@@ -1204,6 +1228,7 @@ export const purchaseRouter = router({
           agreedRate: null,
           invoiceDiscount: null,
           usdInvoiceDiscount: null,
+          linkedCashPaidAmount: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -1222,6 +1247,6 @@ export const purchaseRouter = router({
         );
         return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, items, nextAction, nextActionReason };
+      return { ...po, linkedCashPaidAmount, items, nextAction, nextActionReason };
     }),
 });

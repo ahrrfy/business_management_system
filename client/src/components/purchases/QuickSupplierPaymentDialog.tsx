@@ -14,9 +14,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { paymentMethodCompact } from "@shared/terms";
@@ -78,6 +78,9 @@ export function QuickSupplierPaymentDialog({
     useState<PaymentEvidence>("CASH_ACKNOWLEDGEMENT");
   const [evidenceReference, setEvidenceReference] = useState("");
   const [reason, setReason] = useState("");
+  const [requestKey, setRequestKey] = useState(
+    () => `pay-po-${purchaseOrderId}-${crypto.randomUUID()}`,
+  );
 
   // استعلام فواتير المورد المرحلة للبحث عن الفاتورة المرتبطة بهذا الأمر
   const paymentSourcesQuery = trpc.supplierPayments.paymentSources.useQuery(
@@ -87,16 +90,18 @@ export function QuickSupplierPaymentDialog({
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
-    // مطابقة حتمية بمعرّف أمر الشراء — منع تخصيص السداد لفاتورة أخرى بالخطأ
+    // مطابقة حتمية وحصرية بمعرّف أمر الشراء — رفض الفواتير المجمّعة لأكثر من أمر شراء
     return rows.find(
       (r) =>
         Array.isArray((r as { purchaseOrderIds?: number[] }).purchaseOrderIds) &&
-        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.includes(purchaseOrderId),
+        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.length === 1 &&
+        (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.[0] === purchaseOrderId,
     );
   }, [paymentSourcesQuery.data?.rows, purchaseOrderId]);
 
   useEffect(() => {
     if (open) {
+      setRequestKey(`pay-po-${purchaseOrderId}-${crypto.randomUUID()}`);
       const maxPayable = matchedInvoice
         ? currency === "USD"
           ? matchedInvoice.remainingCurrencyAmount || remainingAmount
@@ -109,7 +114,7 @@ export function QuickSupplierPaymentDialog({
       setMethod("CASH");
       setEvidenceType("CASH_ACKNOWLEDGEMENT");
     }
-  }, [open, matchedInvoice, poNumber, remainingAmount, currency]);
+  }, [open, matchedInvoice, poNumber, remainingAmount, currency, purchaseOrderId]);
 
   const requestPaymentMut = trpc.supplierPayments.requestPayment.useMutation({
     onSuccess: async () => {
@@ -127,12 +132,12 @@ export function QuickSupplierPaymentDialog({
     },
   });
 
-  const parsedAmount = D(amount || 0);
+  const parsedAmount = moneyInput(amount);
   const isAmountValid =
     parsedAmount.gt(0) &&
     (matchedInvoice
       ? parsedAmount.lte(
-          D(
+          moneyInput(
             currency === "USD"
               ? matchedInvoice.remainingCurrencyAmount
               : matchedInvoice.remainingAmount,
@@ -161,12 +166,12 @@ export function QuickSupplierPaymentDialog({
       : exchangeRate
         ? String(exchangeRate)
         : null;
-    const finalAmount = parsedAmount.toFixed(2);
+    const finalAmount = round2(parsedAmount).toFixed(2);
 
     requestPaymentMut.mutate({
       supplierId,
       branchId,
-      requestKey: `pay-po-${purchaseOrderId}-${crypto.randomUUID()}`,
+      requestKey,
       currency,
       exchangeRate: rate,
       amount: currency === "USD" && rate ? round2(parsedAmount.times(rate)).toFixed(2) : finalAmount,
@@ -204,7 +209,14 @@ export function QuickSupplierPaymentDialog({
           <LoadingState message="جارٍ فحص فاتورة المورد المرحلة…" />
         ) : null}
 
-        {!paymentSourcesQuery.isLoading && !matchedInvoice ? (
+        {paymentSourcesQuery.error ? (
+          <ErrorState
+            message={`تعذّر تحميل فواتير المورد: ${paymentSourcesQuery.error.message}`}
+            onRetry={() => void paymentSourcesQuery.refetch()}
+          />
+        ) : null}
+
+        {!paymentSourcesQuery.isLoading && !paymentSourcesQuery.error && !matchedInvoice ? (
           <div className="rounded-md border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)] p-3 text-xs text-[var(--sem-warn)]">
             لم يتم العثور على فاتورة مورد مرحّلة لهذا الأمر بعد. تأكد من اعتماد
             واستلام أمر الشراء بالكامل أولاً لتسجيل سداد مالي عليه.
