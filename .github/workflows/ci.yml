@@ -359,6 +359,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
       - name: تأكيد نجاح الاختبارات والجودة والبناء
         env:
           HEAVY: ${{ needs.scope.outputs.heavy }}
