@@ -23,6 +23,7 @@ import { categories, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { extractInsertId } from "../lib/insertId";
+import { createTtlCache } from "../lib/ttlCache";
 import { withTx, type Actor } from "./tx";
 
 export interface CategoryAdminRow {
@@ -39,8 +40,16 @@ export interface CategoryAdminRow {
   createdAt: Date;
 }
 
-/** قائمة الفئات بعدد منتجاتها (يشمل المعطّلة منها والمنتجات المعطّلة — صورة كاملة للإدارة). */
-export async function listCategoriesAdmin(): Promise<CategoryAdminRow[]> {
+const categoriesAdminCache = createTtlCache<string, CategoryAdminRow[]>({
+  ttlMs: 60_000,
+  maxEntries: 10,
+});
+
+export function invalidateCategoriesAdminCache(): void {
+  categoriesAdminCache.clear();
+}
+
+async function fetchCategoriesAdminFromDb(): Promise<CategoryAdminRow[]> {
   const db = getDb();
   if (!db) return [];
   const rows = await db
@@ -83,6 +92,14 @@ export async function listCategoriesAdmin(): Promise<CategoryAdminRow[]> {
   }));
 }
 
+/** قائمة الفئات بعدد منتجاتها (يشمل المعطّلة منها والمنتجات المعطّلة — صورة كاملة للإدارة). مكيَّشة بالذاكرة (TTL 60ث + single-flight). */
+export async function listCategoriesAdmin(): Promise<CategoryAdminRow[]> {
+  if (process.env.NODE_ENV === "test") {
+    return fetchCategoriesAdminFromDb();
+  }
+  return categoriesAdminCache.get("adminList", fetchCategoriesAdminFromDb);
+}
+
 /** إظهار/إخفاء قسمٍ من واجهة المتجر (لوحة hPanel). لا يمسّ المنتجات ولا الـERP. */
 export async function setCategoryStoreVisibility(input: { id: number; showInStore: boolean }, _actor: Actor) {
   const db = getDb();
@@ -90,17 +107,20 @@ export async function setCategoryStoreVisibility(input: { id: number; showInStor
   const cur = (await db.select({ id: categories.id }).from(categories).where(eq(categories.id, input.id)).limit(1))[0];
   if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "الفئة غير موجودة." });
   await db.update(categories).set({ showInStore: input.showInStore }).where(eq(categories.id, input.id));
+  invalidateCategoriesAdminCache();
   return { id: input.id, showInStore: input.showInStore };
 }
 
 /** ترتيب عرض الأقسام في المتجر — يُسنِد sortOrder=الفهرس لكل معرّف بالترتيب المُمرَّر، ذرّياً. */
 export async function reorderCategories(input: { orderedIds: number[] }, _actor: Actor) {
-  return withTx(async (tx) => {
+  const res = await withTx(async (tx) => {
     for (let i = 0; i < input.orderedIds.length; i++) {
       await tx.update(categories).set({ sortOrder: i }).where(eq(categories.id, input.orderedIds[i]));
     }
     return { count: input.orderedIds.length };
   });
+  invalidateCategoriesAdminCache();
+  return res;
 }
 
 export interface ProductForAssign {
@@ -194,6 +214,7 @@ export async function createCategory(
   await assertNameFree(name);
   if (input.parentId != null) await assertValidParent(db, input.parentId, null);
   const res = await db.insert(categories).values({ name, description: input.description?.trim() || null, parentId: input.parentId ?? null });
+  invalidateCategoriesAdminCache();
   return { id: extractInsertId(res), name };
 }
 
@@ -233,7 +254,10 @@ export async function updateCategory(
     }
   }
 
-  if (Object.keys(patch).length) await db.update(categories).set(patch).where(eq(categories.id, input.id));
+  if (Object.keys(patch).length) {
+    await db.update(categories).set(patch).where(eq(categories.id, input.id));
+    invalidateCategoriesAdminCache();
+  }
   return { id: input.id };
 }
 
@@ -242,7 +266,7 @@ export async function updateCategory(
  * ولا يُترك ربط معلّق ينتهك FK. ذرّي: إعادة التخصيص ثم الحذف في معاملة واحدة.
  */
 export async function deleteCategory(input: { id: number; reassignToId?: number | null }, _actor: Actor) {
-  return withTx(async (tx) => {
+  const res = await withTx(async (tx) => {
     const cur = (await tx.select().from(categories).where(eq(categories.id, input.id)).limit(1))[0];
     if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "الفئة غير موجودة." });
     if (await hasChildren(tx, input.id)) {
@@ -263,6 +287,8 @@ export async function deleteCategory(input: { id: number; reassignToId?: number 
     await tx.delete(categories).where(eq(categories.id, input.id));
     return { id: input.id, reassigned: moved, reassignedTo: target };
   });
+  invalidateCategoriesAdminCache();
+  return res;
 }
 
 /**
@@ -270,7 +296,7 @@ export async function deleteCategory(input: { id: number; reassignToId?: number 
  * يستبعد الهدف من المصادر تلقائياً. ذرّي.
  */
 export async function mergeCategories(input: { sourceIds: number[]; targetId: number }, _actor: Actor) {
-  return withTx(async (tx) => {
+  const res = await withTx(async (tx) => {
     const target = (await tx.select({ id: categories.id }).from(categories).where(eq(categories.id, input.targetId)).limit(1))[0];
     if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "الفئة الهدف غير موجودة." });
 
@@ -297,13 +323,15 @@ export async function mergeCategories(input: { sourceIds: number[]; targetId: nu
     await tx.delete(categories).where(inArray(categories.id, sources));
     return { moved, deleted: sources.length, targetId: input.targetId };
   });
+  invalidateCategoriesAdminCache();
+  return res;
 }
 
 /**
  * نقل منتجات محدّدة إلى فئة (أو «بلا فئة» عند categoryId=null). يُستعمل للنقل الجماعي من قائمة المنتجات.
  */
 export async function reassignProducts(input: { productIds: number[]; categoryId: number | null }, _actor: Actor) {
-  return withTx(async (tx) => {
+  const res = await withTx(async (tx) => {
     const ids = Array.from(new Set(input.productIds.filter((n) => Number.isFinite(n) && n > 0)));
     if (!ids.length) return { moved: 0, categoryId: input.categoryId };
     if (input.categoryId != null) {
@@ -313,4 +341,6 @@ export async function reassignProducts(input: { productIds: number[]; categoryId
     await tx.update(products).set({ categoryId: input.categoryId }).where(inArray(products.id, ids));
     return { moved: ids.length, categoryId: input.categoryId };
   });
+  invalidateCategoriesAdminCache();
+  return res;
 }

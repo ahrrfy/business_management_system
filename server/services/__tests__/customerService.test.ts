@@ -120,7 +120,7 @@ describe("customerService.createCustomer", () => {
     const c = (await db().select().from(s.customers).where(eq(s.customers.id, r.customerId)).limit(1))[0];
     expect(c.customerType).toBe("فرد");
     expect(c.defaultPriceTier).toBe("RETAIL");
-    expect(c.creditLimit).toBe("0.00");
+    expect(c.creditLimit).toBeNull();
     expect(c.phone).toBeNull();
   });
 
@@ -158,10 +158,10 @@ describe("customerService.createCustomer", () => {
     expect(c?.creditLimit).toBeNull();
   });
 
-  it("creditLimit غير مُمرَّر ⇒ الافتراض التحفّظي '0' (حظر آجل = نقدي فقط)", async () => {
-    const { customerId } = await createCustomer({ name: "نقدي فقط" }, actor);
+  it("creditLimit غير مُمرَّر ⇒ الافتراض 'null' (بلا حدّ = يقبل الفواتير بدون ائتمان)", async () => {
+    const { customerId } = await createCustomer({ name: "افتراضي بلا حد" }, actor);
     const c = await getCustomer(customerId);
-    expect(c?.creditLimit).toBe("0.00");
+    expect(c?.creditLimit).toBeNull();
   });
 
   it("creditLimit='0' صريح ⇒ يبقى '0' (حظر آجل)", async () => {
@@ -188,12 +188,8 @@ describe("resolveReceptionCustomerByPhone — هوية عميل الاستقبا
     const created = await resolveReceptionCustomerByPhone({ phone: "07701234567", name: "أحمد كريم" }, actor as any);
     expect(created.status).toBe("RESOLVED");
     expect(created.created).toBe(true);
-    // ⭐ تصحيحُ توقّعٍ كان يُثبّت كذبةً (١٩/٨): العميل يُنشأ هنا بـ`creditLimit: "0"` — نقديٌّ
-    // فقط بقرار المالك الافتراضيّ — وكان `deferredEligible` يُعلَن `true` **ثابتاً**، فتَعِد
-    // شاشةُ الاستقبال بالآجل ويرفضه الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلّة والزبونُ
-    // واقفٌ أمامه. الأهليّة تُشتقّ الآن من الحدّ نفسه فيتطابق الوعد والتنفيذ.
-    expect(created.creditLimit).toBe("0.00");
-    expect(created.deferredEligible).toBe(false);
+    expect(created.creditLimit).toBeNull();
+    expect(created.deferredEligible).toBe(true);
 
     const existing = await resolveReceptionCustomerByPhone({ phone: "+9647701234567" }, actor as any);
     expect(existing.customerId).toBe(created.customerId);

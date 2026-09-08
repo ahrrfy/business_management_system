@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Truck, UserPlus } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { AnimatedDeliveryButton } from "@/components/delivery/AnimatedDeliveryButton";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -201,13 +203,37 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
             هذه الجهة بلا حساب بوابة؛ سيُسجَّل الإسناد إدارياً لكنها لن ترى الطلب في «توصيلاتي» حتى تربط حساباً بها.
           </p>
         )}
+        <div className="mb-3 flex justify-end">
+          <WhatsAppStageActionsMenu
+            data={{
+              orderNumber: order.orderNumber,
+              title: order.title,
+              customerName: recipientName || order.customerName,
+              customerPhone: recipientPhone || order.deliveryPhone || order.customerPhone,
+              deliveryAddress: order.deliveryAddress,
+              courierName: selectedParty?.name,
+              codAmount: cod,
+              deliveryFee: feeNum,
+              feeCollection: feeCollection,
+            }}
+            size="sm"
+            label="معاينة رسائل واتساب للطلب"
+          />
+        </div>
         <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
           <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
         </p>
         <div className="flex gap-2.5">
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button variant="destructive" className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
+          <AnimatedDeliveryButton
+            variant="destructive"
+            className="flex-1"
+            onClick={submit}
+            disabled={pending || !partyId}
+            isDispatching={pending}
+            label="تأكيد التسليم للمندوب"
+          />
         </div>
       </div>
     </div>

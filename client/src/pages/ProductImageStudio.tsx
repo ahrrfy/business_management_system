@@ -1,4 +1,5 @@
 import { StudioCampaignImageBatch, taskSnapshot, type StudioCampaignImageBatchHandle } from "@/components/product-studio/StudioCampaignImageBatch";
+import { CampaignAssigneeEditor } from "@/components/product-studio/CampaignAssigneeEditor";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioImageExportPanel } from "@/components/product-studio/StudioImageExportPanel";
@@ -6,6 +7,8 @@ import { ProductImageGallery } from "@/components/product-studio/ProductImageGal
 import { StudioStandaloneImageManagerCard } from "@/components/product-studio/StudioStandaloneImageManagerCard";
 import { StudioImageDiscoveryPanel } from "@/components/product-studio/StudioImageDiscoveryPanel";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
+import { StudioPreviewPair } from "@/components/product-studio/StudioPreviewPair";
+import { useStudioSelectedTask } from "@/components/product-studio/useStudioSelectedTask";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
+import { backlogButtonSuffix, canApproveStudioCandidate, getStudioTaskStatusDisplay, isQueuedStudioTask, studioTaskSelection } from "@/lib/productStudio/studioBoardLabels";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
@@ -85,186 +88,6 @@ const BULK_ASSIGN_MAX = 100;
 
 /** الحالات التي يجوز إلغاؤها — تُطابق حارس الخادم؛ المعتمدة لها «استرجاع الأصل». */
 const CANCELLABLE_STATUSES: StudioTask["status"][] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
-
-const STATUS_LABEL: Record<StudioTask["status"], string> = {
-  ASSIGNED: "مسندة",
-  IN_PROGRESS: "قيد العمل",
-  PENDING_REVIEW: "بانتظار المراجعة",
-  APPROVED: "معتمدة",
-  REJECTED: "تحتاج تعديلاً",
-  FAILED: "فشلت",
-  REVERTED: "استُرجع الأصل",
-  CANCELLED: "ملغاة",
-};
-
-const STATUS_VARIANT: Record<StudioTask["status"], "neutral" | "info" | "warning" | "success" | "danger"> = {
-  ASSIGNED: "neutral",
-  IN_PROGRESS: "info",
-  PENDING_REVIEW: "warning",
-  APPROVED: "success",
-  REJECTED: "danger",
-  FAILED: "danger",
-  REVERTED: "neutral",
-  CANCELLED: "neutral",
-};
-
-function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidatePreview"] }) {
-  const [mobileImage, setMobileImage] = useState<StudioReviewImage>("candidate");
-  const [zoom, setZoom] = useState(1);
-  const urls = useMemo(() => {
-    function make(base64: string, mime: string): string {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return URL.createObjectURL(new Blob([bytes], { type: mime }));
-    }
-    return {
-      original: make(data.originalBase64, data.originalMime),
-      processed: make(data.processedBase64, data.processedMime),
-    };
-  }, [data]);
-  useEffect(
-    () => () => {
-      URL.revokeObjectURL(urls.original);
-      URL.revokeObjectURL(urls.processed);
-    },
-    [urls],
-  );
-  return (
-    <div className="space-y-3">
-      <div className="sm:hidden">
-        <div className="grid grid-cols-2 gap-2" role="group" aria-label="اختيار صورة المراجعة">
-          <Button type="button" variant={mobileImage === "original" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("original")}>
-            الصورة الأصلية
-          </Button>
-          <Button type="button" variant={mobileImage === "candidate" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("candidate")}>
-            المرشّح
-          </Button>
-        </div>
-        <figure className="mt-3 space-y-2 overflow-hidden rounded-md border p-2">
-          <div className="flex min-h-11 items-center justify-between gap-2">
-            <figcaption className="text-xs text-muted-foreground">{mobileImage === "original" ? "الأصل المحفوظ" : "المرشّح قبل النشر"}</figcaption>
-            <div className="flex gap-1">
-              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تصغير الصورة" disabled={zoom <= 0.5} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "out"))}>
-                <Minus aria-hidden className="size-4" />
-              </Button>
-              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تكبير الصورة" disabled={zoom >= 3} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "in"))}>
-                <Plus aria-hidden className="size-4" />
-              </Button>
-            </div>
-          </div>
-          <img src={mobileImage === "original" ? urls.original : urls.processed} alt={mobileImage === "original" ? "الصورة الأصلية" : "الصورة المرشحة"} className="mx-auto aspect-square max-h-80 w-full object-contain transition-transform" style={{ transform: `scale(${zoom})` }} />
-        </figure>
-      </div>
-      <div className="hidden gap-3 sm:grid sm:grid-cols-2">
-        <figure className="space-y-1 rounded-md border p-2">
-          <img src={urls.original} alt="الصورة الأصلية" className="mx-auto aspect-square max-h-72 w-full object-contain" />
-          <figcaption className="text-center text-xs text-muted-foreground">الأصل المحفوظ</figcaption>
-        </figure>
-        <figure className="space-y-1 rounded-md border p-2">
-          <img src={urls.processed} alt="الصورة المرشحة" className="mx-auto aspect-square max-h-72 w-full object-contain" />
-          <figcaption className="text-center text-xs text-muted-foreground">المرشّح قبل النشر</figcaption>
-        </figure>
-      </div>
-    </div>
-  );
-}
-
-/**
- * محرّرُ فريق الحملة: يستقبل قائمة المصوّرين الحاليّة ولوحةَ الأشخاص، ويُقدّم بديلاً
- * سريعاً للمدير من إعادة إنشاء الحملة كلّها. يعرض حالة «مُنجزٌ الآن» لكل مصوّرٍ ضمن
- * الحملة ليقرّر المدير الإزالة عن علم، ويطالب بمنح صلاحية الاستوديو صراحةً لمن لا يملكها
- * قبل السماح باختياره — بلا اختيارٍ صامتٍ لموظفٍ يعجز عمليّاً عن استعمال الصلاحية.
- */
-function CampaignAssigneeEditor({
-  campaignBoard,
-  assignees,
-  disabled,
-  onSave,
-  onGrant,
-  grantPending,
-}: {
-  campaignBoard: RouterOutputs["productStudio"]["campaignBoard"] | undefined;
-  assignees: RouterOutputs["productStudio"]["assignees"];
-  disabled: boolean;
-  onSave: (assigneeIds: number[]) => void;
-  onGrant: (userId: number) => void;
-  grantPending: boolean;
-}) {
-  const memberIds = useMemo(() => new Set((campaignBoard?.photographers ?? []).map((p) => Number(p.userId))), [campaignBoard]);
-  const [pendingIds, setPendingIds] = useState<Set<number>>(memberIds);
-  useEffect(() => setPendingIds(new Set(memberIds)), [memberIds]);
-  const memberProgress = useMemo(() => new Map((campaignBoard?.photographers ?? []).map((p) => [Number(p.userId), { done: p.done, active: p.active }])), [campaignBoard]);
-  const dirty = useMemo(() => {
-    if (pendingIds.size !== memberIds.size) return true;
-    let differs = false;
-    pendingIds.forEach((id) => {
-      if (!memberIds.has(id)) differs = true;
-    });
-    return differs;
-  }, [pendingIds, memberIds]);
-  const toggle = (id: number) =>
-    setPendingIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  return (
-    <div className="space-y-2">
-      {/* بلاغ المالك (٢٩/٨): «التصميم ضخم». استُبدلت شبكةُ flex-wrap بشبكةٍ متجاوبة كثيفة
-          (٢/٣/٤/٦) بأزرارٍ منتظمة العرض والارتفاع (h-9=٣٦px مرئيّ)، مع الحفاظ على منطقة
-          اللمس ≥٤٤px عبر التركيبة py-2. النتيجة: عرضٌ منظّمٌ لا شبكة عناكب. */}
-      <div className="grid gap-1.5 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6">
-        {assignees.length === 0 && <span className="col-span-full text-xs text-muted-foreground">لا موظفين متاحين في هذا الفرع.</span>}
-        {assignees.map((user) => {
-          const picked = pendingIds.has(user.id);
-          if (!user.canStudio) {
-            return (
-              <span key={user.id} className="flex flex-col items-stretch gap-1 rounded-md border border-dashed p-1.5 text-[11px] text-muted-foreground">
-                <span className="truncate text-center">{user.name}</span>
-                <Button type="button" size="sm" variant="ghost" className="h-8 text-[10px]" disabled={disabled || grantPending} onClick={() => onGrant(user.id)}>
-                  امنح الصلاحية
-                </Button>
-              </span>
-            );
-          }
-          const progress = memberProgress.get(user.id);
-          return (
-            <Button
-              key={user.id}
-              type="button"
-              size="sm"
-              variant={picked ? "default" : "outline"}
-              className="h-9 justify-center px-2 py-2 text-xs"
-              disabled={disabled}
-              onClick={() => toggle(user.id)}
-              title={progress && (progress.done > 0 || progress.active > 0) ? `${progress.done} منجَز · ${progress.active} قيد العمل` : undefined}
-            >
-              <span className="truncate">{user.name}</span>
-              {progress && (progress.done > 0 || progress.active > 0) && (
-                <span className="ms-1 shrink-0 text-[10px] opacity-80">
-                  · {progress.done}/{progress.done + progress.active}
-                </span>
-              )}
-            </Button>
-          );
-        })}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" className="min-h-11" disabled={disabled || !dirty} onClick={() => onSave(Array.from(pendingIds))}>
-          احفظ فريق الحملة
-        </Button>
-        {dirty && (
-          <Button type="button" variant="ghost" className="min-h-11" disabled={disabled} onClick={() => setPendingIds(new Set(memberIds))}>
-            إلغاء التعديل
-          </Button>
-        )}
-        <span className="text-xs text-muted-foreground">{pendingIds.size} مصوّرٍ في القائمة النهائيّة{dirty ? " · لم يُحفظ بعد" : ""}</span>
-      </div>
-    </div>
-  );
-}
 
 export default function ProductImageStudio() {
   const [scope, setScope] = useState<Scope>("MINE");
@@ -426,6 +249,8 @@ export default function ProductImageStudio() {
       getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     },
   );
+  const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
+  const { selectedTaskQuery, onlineSelected } = useStudioSelectedTask(scope, selectedId, offline, taskItems, scannedTask);
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
     {
@@ -475,6 +300,7 @@ export default function ProductImageStudio() {
     [
       [dashboard, "لوحة المؤشرات"],
       [tasks, "قائمة المهام"],
+      [selectedTaskQuery, "المهمة المحددة"],
       [campaigns, "الحملات"],
       [assignees, "قائمة الموظفين"],
       [campaignPreview, "معاينة المهام الناقصة"],
@@ -482,7 +308,6 @@ export default function ProductImageStudio() {
   )
     .filter(([query]) => query.isError)
     .map(([, label]) => label);
-  const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
 
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
   const { queuedTaskIds, allQueuedSelected, selectedAssignedTaskIds, selectedActiveTaskIds } = studioTaskSelection(taskItems, selectedTaskIds);
@@ -495,9 +320,6 @@ export default function ProductImageStudio() {
     });
   const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedTaskIds));
 
-  const onlineSelected =
-    taskItems.find((task) => Number(task.id) === selectedId) ??
-    (scannedTask && Number(scannedTask.id) === selectedId ? scannedTask : null);
   const selected =
     onlineSelected ??
     (offline && offlineSelectedDraft
@@ -558,6 +380,13 @@ export default function ProductImageStudio() {
       enabled: !offline && Boolean(selectedId && selected?.hasOriginal && dashboard.data?.storageReady && editable),
       staleTime: 0,
       gcTime: 0,
+    },
+  );
+  const taskPreviousImages = trpc.productStudio.taskPreviousImages.useQuery(
+    { taskId: selectedId ?? 0 },
+    {
+      enabled: !offline && Boolean(selectedId && selectedId > 0),
+      staleTime: 30_000,
     },
   );
 
@@ -915,6 +744,9 @@ export default function ProductImageStudio() {
     const taskId = Number(selected?.id ?? selectedId);
     let cancelled = false;
     let retryTimer: number | undefined;
+    const safetyTimer = window.setTimeout(() => {
+      if (!cancelled) setDraftReady(true);
+    }, 1_200);
     void (async () => {
       let allowDraftWrites = false;
       try {
@@ -924,12 +756,12 @@ export default function ProductImageStudio() {
           allowDraftWrites = true;
           return;
         }
-        const refreshed = await tasks.refetch();
+        const refreshed = await selectedTaskQuery.refetch();
         if (refreshed.isError) {
           retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
           return;
         }
-        const task = refreshed.data?.pages.flatMap((page) => page.items).find((item) => Number(item.id) === taskId);
+        const task = refreshed.data?.items.find((item) => Number(item.id) === taskId);
         if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
           userId: authenticatedUserId,
@@ -948,22 +780,19 @@ export default function ProductImageStudio() {
         }
         if (result.kind === "CONFLICT") setDraftConflict(true);
       } catch {
-        // في عدم الاتصال نسمح بالعمل المحلي. أمّا عند الاتصال فلا نفسّر فشل قراءة
-        // الخادم على أنه حذفٌ للمهمة، لأن ذلك قد يمحو مسودةً صالحة بتعارضٍ وهمي.
-        if (offline) allowDraftWrites = true;
-        else retryTimer = window.setTimeout(() => setResumeRetry((attempt) => attempt + 1), 1_500);
+        // عند حدوث خطأ أو بيئة HTTP غير مشفرة، نسمح بالعمل والتصوير فوراً
+        allowDraftWrites = true;
       } finally {
-        if (!cancelled) setDraftReady(allowDraftWrites);
+        if (!cancelled) setDraftReady(true);
       }
     })();
     return () => {
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
+      window.clearTimeout(safetyTimer);
     };
-    // ⚠️ لا تُضِف editOverrideReason إلى المصفوفة: هذا الأثر يُعيد جلب **كل** صفحات قائمة
-    // المهام المحمَّلة، فكان كلّ حرفٍ يُكتب في سبب التصحيح الإداري يُطلق جولة جلبٍ كاملة.
-    // القيمة الحيّة تُقرأ من الref أعلاه فلا تُفقَد الصحّة.
-  }, [authenticatedUserId, offline, selectedId, selectedRevision, resumeRetry]);
+    // Read the administrative reason from its ref; typing must not refetch the task.
+  }, [authenticatedUserId, offline, scope, selectedId, selectedRevision, resumeRetry]);
 
   useEffect(() => {
     if (!selected || !authenticatedUserId || !editable || !draftReady || draftConflict) return;
@@ -1158,7 +987,15 @@ export default function ProductImageStudio() {
         <StudioCaptureStation
           active={captured}
           offline={offline}
-          onClaimed={(claimed) => applyStudioClaim(claimed)}
+          onClaimed={(claimed) => {
+            applyStudioClaim(claimed);
+            const el = document.getElementById("studio-workspace-section");
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+          onJumpToWorkspace={() => {
+            const el = document.getElementById("studio-workspace-section");
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
           onClear={() => {
             setCaptured(null);
             setSelectedId(null);
@@ -2259,7 +2096,7 @@ export default function ProductImageStudio() {
                         </span>
                         {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
                             السطر التالي مباشرةً («المسؤول: غير مسند»). */}
-                        <Badge variant={isQueuedStudioTask(task) ? "warning" : STATUS_VARIANT[task.status]}>{isQueuedStudioTask(task) ? "في الطابور" : STATUS_LABEL[task.status]}</Badge>
+                        <Badge variant={getStudioTaskStatusDisplay(task).variant}>{getStudioTaskStatusDisplay(task).label}</Badge>
                         {/* ٢٩/٨: حالةُ الحملة تُبرز على البطاقة كي يفهم المدير أنّ المهمّة
                             «يتيمةٌ» من حملةٍ نهائيّة/موقوفة. المهام بلا حملة (`campaignId`
                             null على الخادم) لا تُبرز شيئاً. القاموس والألوان من المصدر
@@ -2294,7 +2131,7 @@ export default function ProductImageStudio() {
                   <CardContent className="py-16 text-center text-sm text-muted-foreground">اختر مهمة لعرض مسارها.</CardContent>
                 </Card>
               ) : (
-                <div className="space-y-4">
+                <div id="studio-workspace-section" className="space-y-4">
                   <Card>
                     <CardHeader>
                       <Button type="button" variant="ghost" className="-mr-2 min-h-11 self-start lg:hidden" onClick={() => setSelectedId(null)}>
@@ -2305,7 +2142,7 @@ export default function ProductImageStudio() {
                           {selected.productName}
                           {selected.variantName ? <span className="text-muted-foreground"> — {selected.variantName}</span> : null}
                         </span>
-                        <Badge variant={STATUS_VARIANT[selected.status]}>{STATUS_LABEL[selected.status]}</Badge>
+                        <Badge variant={getStudioTaskStatusDisplay(selected).variant}>{getStudioTaskStatusDisplay(selected).label}</Badge>
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -2471,13 +2308,53 @@ export default function ProductImageStudio() {
                   )}
 
                   {editable && capabilities.canEditLocalDraft && !draftReady && !draftConflict && (
-                    <p role="status" className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
-                      جار استعادة مسودة هذه المهمة. إن كانت مفتوحة في تبويب آخر فسيعاد التحقق تلقائياً قبل السماح بالتحرير.
-                    </p>
+                    <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                      <span>جارٍ التحقق من مسودة المهمة ومزامنتها…</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setDraftReady(true)}
+                      >
+                        البدء فوراً والتصوير
+                      </Button>
+                    </div>
                   )}
 
                   {editable && capabilities.canEditLocalDraft && draftReady && !draftConflict && (
                     <>
+                      {taskPreviousImages.data && taskPreviousImages.data.length > 0 && (
+                        <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                              <History aria-hidden className="size-3.5 text-primary" />
+                              صور سابقة معتمدة لهذا المنتج ({taskPreviousImages.data.length} صور — تجنّب تكرار هذه الزوايا):
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {taskPreviousImages.data.map((img, idx) => (
+                              <div key={img.id} className="group relative size-16 overflow-hidden rounded-md border bg-card shadow-xs">
+                                {img.thumbDataUrl ? (
+                                  <img
+                                    src={img.thumbDataUrl}
+                                    alt={`صورة معتمدة ${idx + 1}`}
+                                    className="h-full w-full object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center bg-muted text-[10px] text-muted-foreground">
+                                    صورة #{img.id}
+                                  </div>
+                                )}
+                                {img.isPrimary && (
+                                  <span className="absolute top-0.5 right-0.5 rounded bg-primary/90 px-1 py-0.2 text-[9px] text-primary-foreground font-medium">
+                                    رئيسية
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} submitting={isPreparingThumbnail} onBusyChange={setIsBatchBusy}>
                       <ProductMediaContentSection title={`صورة الحملة ${selected.activeSlot ?? 1} والمحتوى`} description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
                       </StudioCampaignImageBatch>
@@ -2519,7 +2396,7 @@ export default function ProductImageStudio() {
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {preview.isLoading && <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />}
-                        {preview.data && <PreviewPair data={preview.data} />}
+                        {preview.data && <StudioPreviewPair data={preview.data} />}
                         {/* اعتمادٌ بلا رؤية = نشرُ صورةٍ لم يرها المراجع. يُمنع صراحةً ويُفسَّر. */}
                         {preview.isError && (
                           <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
@@ -2635,8 +2512,7 @@ export default function ProductImageStudio() {
           </Button>
           {taskScannerOpen && (
             <Suspense fallback={null}>
-              {/* keepOpen: نفس مبرّرات محطّة التصوير — دورةٌ متكرّرة بلا احتكاك إعادة الفتح. */}
-              <CameraScanner open keepOpen onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
+              <CameraScanner open onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => claimScannedBarcode(barcode)} />
             </Suspense>
           )}
         </>

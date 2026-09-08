@@ -14,6 +14,7 @@ import { purchaseRequisitionControlTrigger } from "@shared/approvalTriggers";
 import { extractInsertId } from "../../lib/insertId";
 import type { DB, Tx } from "../../db";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   checkIdempotency,
   idempotencyHash,
@@ -562,7 +563,7 @@ export async function submitPurchaseRequisition(
   },
   actor: Actor,
 ) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [requisition] = await tx
       .select()
       .from(purchaseRequisitions)
@@ -687,6 +688,12 @@ export async function submitPurchaseRequisition(
       idempotent: false as const,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.requisition.control",
+    id: result.requestId,
+    reason: input.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function requestPurchaseRequisitionCancellation(
@@ -698,13 +705,19 @@ export async function requestPurchaseRequisitionCancellation(
   },
   actor: Actor,
 ) {
-  return withTx((tx) =>
+  const result = await withTx((tx) =>
     createRequisitionControlRequestTx(
       tx,
       { ...input, kind: "CANCEL", payload: { cancel: true } },
       actor,
     ),
   );
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.requisition.control",
+    id: result.requestId,
+    reason: input.reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function decidePurchaseRequisitionControl(

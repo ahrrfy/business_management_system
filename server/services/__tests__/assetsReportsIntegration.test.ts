@@ -101,12 +101,12 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
     expect(periodStmt!.summary.openingBalance).toBe("600000.00");
   });
 
-  it("الأصل المثبت يظهر بالقائمة/الميزانية ويُهلك قبل تسوية التزامه النقدي", async () => {
+  it("أصل المالك يُثبت ويُسوّى تلقائياً ثم يبقى ظاهراً وقابلاً للإهلاك", async () => {
     const pendingAsset = await createAsset(
       { name: "آلة معلّقة", category: "printing", purchaseDate: "2024-01-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 },
       ACTOR,
     );
-    expect(pendingAsset).toMatchObject({ paymentPending: true, isActive: true });
+    expect(pendingAsset).toMatchObject({ paymentPending: false, isActive: true });
     expect(pendingAsset!.id).toBeGreaterThan(0);
     expect(pendingAsset!.code).toMatch(/^AST-/);
     expect(await listAssets(undefined, { branchId: null })).toHaveLength(1);

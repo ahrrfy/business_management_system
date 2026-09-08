@@ -33,6 +33,7 @@ import { money, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { recoverNeedsReview } from "./finalizeService";
 import { approveWriteoff } from "./writeoffService";
+import { resolveApprovalActor } from "../approval/ownerGate";
 
 export type ReviewDecision = "CANCEL_NO_ISSUE" | "FINALIZE_SALE" | "WRITEOFF_LOSS";
 export type ReviewItemOutcome = "ISSUED" | "NOT_ISSUED";
@@ -311,6 +312,13 @@ export async function requestResolution(
     reason,
     issued: items.filter((item) => item.outcome === "ISSUED").length,
   });
+  const resolvedActor = await resolveApprovalActor(tx, actor);
+  if (resolvedActor.isOwner) {
+    await approveResolution(tx, { intentId: input.intentId }, {
+      ...resolvedActor,
+      role: "admin",
+    });
+  }
   return { resolutionId };
 }
 

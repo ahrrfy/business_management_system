@@ -15,7 +15,7 @@ import { money, round2, toDbMoney } from "../money";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import type { Tx } from "../../db";
 import { withTx, type Actor } from "../tx";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import {
   assertPurchaseBranch,
   pendingPurchaseSupplierPaymentsTx,
@@ -799,6 +799,7 @@ async function receivePurchaseInTx(
           evidenceReference: shippingEvidenceReference,
           dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
         });
+        await finalizeOwnerSystemVoucherTx(tx, request.receiptId, actor);
       }
     }
 

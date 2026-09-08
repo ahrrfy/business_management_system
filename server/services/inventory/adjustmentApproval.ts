@@ -5,6 +5,7 @@
 // معلَّقاً في `stockAdjustmentRequests` **بلا تغيير مخزون**، ويعتمده مديرٌ آخر (SOD-04: المُعتمِد ≠ المُنشئ
 // إلا admin) فيُطبَّق `setStock` + قيد ADJUST (نفس منطق المسار المباشر السابق). الرفض بلا أثر.
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { stockAdjustmentApprovalTrigger } from "@shared/approvalTriggers";
 import { appErrorMessage } from "@shared/errors";
 import { TRPCError } from "@trpc/server";
@@ -136,7 +137,10 @@ function assertRequesterBranch(branchId: number, actor: Actor): void {
 }
 
 /** يُنشئ طلب تسوية مخزونٍ معلَّقاً — **بلا تغيير مخزون** حتى الاعتماد. */
-export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number; idempotentReplay?: true }> {
+export async function requestStockAdjustment(
+  input: RequestAdjustmentInput,
+  actor: Actor,
+): Promise<{ requestId: number; status: "PENDING_APPROVAL" | "APPROVED"; idempotentReplay?: true }> {
   // حارس خدمة لا يعتمد على الراوتر: لا يجوز للمستدعي تزوير actor.branchId=target.
   assertRequesterBranch(input.branchId, actor);
   // P2-#3: التحقّق من السبب/المرفق قبل أيّ عملٍ في القاعدة (لا صفٌّ نصف صالحٍ يُتَراجَع عنه).
@@ -178,7 +182,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
         attachmentUrl,
       })
     : null;
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -192,7 +196,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
     if (clientRequestId) {
       const existing = await checkIdempotency(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, payloadHash);
       if (existing != null) {
-        return { requestId: existing, idempotentReplay: true as const };
+        return { requestId: existing, status: "PENDING_APPROVAL" as const, idempotentReplay: true as const };
       }
     }
     const v = (
@@ -273,8 +277,15 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       // وسباقُ طلبَين بنفس المفتاح يتلقّى ER_DUP_ENTRY على القيد الفريد فيراه المستدعي.
       await recordIdempotencyKey(tx, ADJUSTMENT_REQUEST_OPERATION, clientRequestId, requestId, payloadHash);
     }
-    return { requestId };
+    return { requestId, status: "PENDING_APPROVAL" as const };
   });
+  if (result.idempotentReplay) return result;
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "inventory.adjustment.approve",
+    id: result.requestId,
+    reason: input.notes ?? input.reason ?? null,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 /** يفرض SOD-04 (المُعتمِد ≠ المُنشئ إلا admin) + عزل الفرع (غير admin يعتمد فرعه فقط). */

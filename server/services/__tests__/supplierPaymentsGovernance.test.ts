@@ -300,19 +300,7 @@ describe("حوكمة سداد المورد — فصل المهام على قاع
 
   it("يعتمد المالكُ طلب سدادٍ أنشأه هو بنفسه فتتحرك الخزينة فعلاً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
     const requested = await requestSupplierPayment(paymentInput(), owner);
-    expect(requested.status).toBe("PENDING");
-
-    const decided = await decideSupplierPayment(
-      {
-        requestId: requested.requestId,
-        decisionKey: randomUUID(),
-        action: "APPROVE",
-        reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦",
-      },
-      owner,
-      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
-    );
-    expect(decided.status).toBe("APPROVED");
+    expect(requested.status).toBe("APPROVED");
 
     const receiptsRows = await db().select().from(schema.receipts);
     expect(receiptsRows).toHaveLength(1);
@@ -472,19 +460,7 @@ describe("حوكمة استرداد سداد المورد — فصل المها�
       },
       owner,
     );
-    expect(refundRequested.status).toBe("PENDING");
-
-    const decided = await decideSupplierPaymentRefund(
-      {
-        requestId: refundRequested.requestId,
-        decisionKey: randomUUID(),
-        action: "APPROVE",
-        reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦",
-      },
-      owner,
-      SUPPLIER_PAYMENT_TREASURY_DECISION_CAPABILITY,
-    );
-    expect(decided.status).toBe("APPROVED");
+    expect(refundRequested.status).toBe("APPROVED");
 
     const [supplier] = await db()
       .select()

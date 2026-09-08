@@ -79,15 +79,17 @@ export type POSTab = {
   externalPayment: ExternalPaymentDraft | null;
   /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
   dueDate: string;
-  /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥). سلطة الكاشير مقصورة على هذا السقف؛ ما فوقه
-   *  بوّابة مدير خادمياً (`invoiceDiscountExceedsThreshold`). فارغ ⇒ لا خصم. */
+  /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥) أو كمبلغ ديناري. */
   invoiceDiscountPct: string;
+  invoiceDiscountType?: "percent" | "amount";
+  invoiceDiscountValue?: string;
   /** وضع «توصيل» (م١ PR-B): مسوّدة الطرد لهذا التبويب؛ null/غائب = بيعٌ عاديّ. يُحفظ مع المسوّدة. */
   delivery?: DeliveryDraft | null;
 };
 
 export type Receipt = {
   invoiceNumber: string;
+  num?: string;
   invoiceId: number;
   date: string;
   /** تاريخ/وقت/كاشير للإيصال المطبوع المُعلَّم (date يبقى للعرض على الشاشة) */
@@ -211,12 +213,115 @@ export const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", externalPayment: null, dueDate: "",
   invoiceDiscountPct: "",
+  invoiceDiscountType: "percent",
+  invoiceDiscountValue: "",
   delivery: null,
 });
 
 /** السقف الأعلى لخصم رأس الفاتورة اليدويّ عند الكاشير (قرار المالك). فوقه يستلزم اعتماد مدير
  *  خادمياً؛ الشاشة تُقصّه هنا لتجنّب رفضٍ متأخّر أمام العميل. */
 export const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
+
+export type InvoiceDiscountType = "percent" | "amount";
+
+export interface InvoiceDiscountResult {
+  discountType: InvoiceDiscountType;
+  discountValue: string;
+  discountAmountD: ReturnType<typeof D>;
+  discountAmount: number;
+  discountPctD: ReturnType<typeof D>;
+  discountPct: number;
+  maxDiscountAmountD: ReturnType<typeof D>;
+  maxDiscountAmount: number;
+}
+
+/** حساب خصم الفاتورة بمرونة: نسبة مئوية (٠–١٥٪) أو مبلغ ثابت بالدينار مقصوصاً بالسقف المالي. */
+export function computeInvoiceDiscount({
+  subtotalD,
+  effectiveHeaderCapPctD,
+  invoiceDiscountAllowed,
+  type = "percent",
+  value = "",
+}: {
+  subtotalD: ReturnType<typeof D>;
+  effectiveHeaderCapPctD: ReturnType<typeof D>;
+  invoiceDiscountAllowed: boolean;
+  type?: InvoiceDiscountType;
+  value?: string;
+}): InvoiceDiscountResult {
+  const maxDiscountAmountD = (subtotalD.gt(0) && effectiveHeaderCapPctD.gt(0))
+    ? round2(subtotalD.times(effectiveHeaderCapPctD).div(100))
+    : D(0);
+
+  if (!invoiceDiscountAllowed || !value || value.trim() === "" || subtotalD.lte(0)) {
+    return {
+      discountType: type,
+      discountValue: value,
+      discountAmountD: D(0),
+      discountAmount: 0,
+      discountPctD: D(0),
+      discountPct: 0,
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+
+  const norm = value.replace(/[،,]/g, ".");
+  const rawNum = Number(norm);
+  if (!Number.isFinite(rawNum) || rawNum <= 0) {
+    return {
+      discountType: type,
+      discountValue: value,
+      discountAmountD: D(0),
+      discountAmount: 0,
+      discountPctD: D(0),
+      discountPct: 0,
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+
+  if (type === "percent") {
+    const rawPctD = D(norm);
+    const clampedPctD = rawPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      : rawPctD;
+    const effectivePctD = clampedPctD.gt(effectiveHeaderCapPctD)
+      ? effectiveHeaderCapPctD
+      : clampedPctD;
+    const discountAmountD = round2(subtotalD.times(effectivePctD).div(100));
+    return {
+      discountType: "percent",
+      discountValue: value,
+      discountAmountD,
+      discountAmount: discountAmountD.toNumber(),
+      discountPctD: effectivePctD,
+      discountPct: effectivePctD.toNumber(),
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  } else {
+    const rawAmtD = D(norm);
+    const clampedAmtD = rawAmtD.gt(subtotalD) ? subtotalD : rawAmtD;
+    const effectiveAmtD = clampedAmtD.gt(maxDiscountAmountD)
+      ? maxDiscountAmountD
+      : clampedAmtD;
+    const discountAmountD = round2(effectiveAmtD);
+    const discountPctD = subtotalD.gt(0)
+      ? round2(discountAmountD.times(100).div(subtotalD))
+      : D(0);
+    return {
+      discountType: "amount",
+      discountValue: value,
+      discountAmountD,
+      discountAmount: discountAmountD.toNumber(),
+      discountPctD,
+      discountPct: discountPctD.toNumber(),
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+}
 
 export type ShiftData = RouterOutputs["shifts"]["current"];
 

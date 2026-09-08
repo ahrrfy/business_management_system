@@ -43,7 +43,7 @@ beforeEach(async () => {
 });
 
 describe("voucher router — عقد PAYMENT/OUT", () => {
-  it("كل مبلغ ومنشئ مخوّل يرجع PENDING، ومالك مختلف ينفذ TREASURY مرة واحدة", async () => {
+  it("طلب الموظف يبقى PENDING، وطلب المالك النشط يعتمد وينفذ TREASURY فوراً", async () => {
     const maker = appRouter.createCaller(context(await user(1)));
     const ownerMaker = appRouter.createCaller(context(await user(2)));
     const approver = appRouter.createCaller(context(await user(3)));
@@ -60,18 +60,18 @@ describe("voucher router — عقد PAYMENT/OUT", () => {
     });
 
     expect(small.approvalStatus).toBe("PENDING_APPROVAL");
-    expect(largeByOwner.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(largeByOwner.approvalStatus).toBe("APPROVED");
     const pendingRows = await db().select().from(s.receipts).where(eq(s.receipts.approvalStatus, "PENDING_APPROVAL"));
-    expect(pendingRows).toHaveLength(2);
+    expect(pendingRows).toHaveLength(1);
     expect(pendingRows.every((row) => row.cashBucket == null && row.shiftId == null)).toBe(true);
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
-    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0]!.currentBalance).toBe("5000000.00");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0]!.currentBalance).toBe("3000000.00");
 
     const first = await approver.vouchers.approve({ receiptId: small.receiptId });
     const second = await approver.vouchers.approve({ receiptId: largeByOwner.receiptId });
     const replay = await approver.vouchers.approve({ receiptId: largeByOwner.receiptId });
     expect(first.replayed).toBe(false);
-    expect(second.replayed).toBe(false);
+    expect(second.replayed).toBe(true);
     expect(replay.replayed).toBe(true);
 
     const approved = await db().select().from(s.receipts).where(and(

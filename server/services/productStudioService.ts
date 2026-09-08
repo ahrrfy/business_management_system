@@ -8,7 +8,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { addUnitBarcodeAlias, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
 import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
@@ -726,7 +726,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   };
 }
 
-/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
+/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣» مع صور المنتج المعتمدة السابقة. */
 async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null, variantId: number | null = null) {
   const [approved] = await tx
     .select({ count: sql<number>`count(*)` })
@@ -741,7 +741,37 @@ async function studioImageProgress(tx: StudioTx, productId: number, campaignId: 
     const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
     requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
   }
-  return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+
+  const previousImages = await tx
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return {
+    approvedImages: Number(approved?.count ?? 0),
+    requiredImages,
+    previousImages: previousImages.map((img) => ({
+      id: Number(img.id),
+      isPrimary: Boolean(img.isPrimary),
+      sortOrder: Number(img.sortOrder ?? 0),
+      thumbDataUrl: img.thumbDataUrl ?? null,
+      contentHash: img.contentHash ?? null,
+      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+    })),
+  };
 }
 
 /** عددُ الصور التي تسبق المهمة الجديدة في ترتيب حملتها/بديلها. */
@@ -983,7 +1013,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? null
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -994,7 +1024,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? undefined
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1025,8 +1055,78 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (Number(active.assignedTo) === actor.userId) {
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
+    if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» صُوِّر بالفعل وبانتظار الاعتماد`,
+          why: "التقط زميلٌ صورةً لهذا المنتج وأرسلها للاعتماد، ولا حاجة لإعادة تصويره",
+          doThis: "انتقل إلى المنتج التالي في الطابور",
+        }),
+      });
+    }
+    // إن كانت المهمّة مسندة لزميل (assignedTo != null)
     if (active.assignedTo != null) {
-      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» بيد زميلٍ آخر الآن`, why: "المهمّة مُسنَدة إلى مصوّرٍ غيرك، ولا تُفتح المهمّة الواحدة لاثنين", doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير نقل المهمّة إليك بإعادة الإسناد" }) });
+      // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه
+      // بشرط استيفاء عضوية الحملة والفرع:
+      const isSelfClaimed = active.assignedBy != null && Number(active.assignedBy) === Number(active.assignedTo);
+      const CLAIM_STALE_MS = 15 * 60 * 1_000;
+      const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
+        !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
+      );
+      if (isStaleClaim) {
+        if (!canCrossBranches(actor) && (actor.branchId == null || Number(active.branchId) !== Number(actor.branchId))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "مهمّة هذا المنتج أُنشئت في فرعٍ غير فرعك، والسحب لا يعبر الفروع", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقل هذه المهمّة إلى فرعك" }) });
+        }
+        if (active.campaignId != null) {
+          const member = (
+            await tx
+              .select({ id: productStudioCampaignAssignees.id })
+              .from(productStudioCampaignAssignees)
+              .where(and(eq(productStudioCampaignAssignees.campaignId, Number(active.campaignId)), eq(productStudioCampaignAssignees.userId, actor.userId)))
+              .limit(1)
+          )[0];
+          if (!member && !isManager(actor)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر سحب هذه المهمّة", why: "لستَ ضمن مصوّري الحملة التي تتبعها، والسحب محصورٌ بمصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
+          }
+        }
+        const upgradeVariant = variantId != null && active.variantId == null;
+        await tx
+          .update(productImageJobs)
+          .set({
+            assignedTo: actor.userId,
+            assignedBy: actor.userId,
+            assignedAt: new Date(),
+            ...(upgradeVariant ? { variantId } : {}),
+            revision: sql`${productImageJobs.revision} + 1`,
+          })
+          .where(eq(productImageJobs.id, active.id));
+        await tx.insert(auditLogs).values(
+          auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
+            productId,
+            variantId,
+            previousAssigneeId: Number(active.assignedTo),
+            barcode: barcode.slice(0, 64),
+            campaignId: active.campaignId == null ? null : Number(active.campaignId),
+          }),
+        );
+        return {
+          taskId: Number(active.id),
+          productName: displayName,
+          claimed: true as const,
+          revision: Number(active.revision) + 1,
+          ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
+        };
+      }
+
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» قيد العمل لدى زميلٍ آخر الآن`,
+          why: "المهمّة مفتوحة لدى مصوّرٍ غيرك حالياً، ولا تُفتح المهمّة الواحدة لاثنين معاً",
+          doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير إعادة إسنادها إن كان الزميل قد غادر",
+        }),
+      });
     }
     // فحصُ الفرع وحده هنا: `assertTaskAccess` تفشل مغلقةً على صفٍّ **بلا منفّذ**
     // (`Number(null) === 0` لا يساوي معرّف أحد) — وهو بالضبط ما يعنيه السحب.
@@ -2846,6 +2946,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
 type StudioTaskScope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTaskCursor = {
   scope: StudioTaskScope;
+  taskId: number | null;
   statuses: StudioStatus[];
   priorities: StudioPriority[];
   overdue: boolean | null;
@@ -2865,6 +2966,7 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
+    if ((parsed.taskId ?? null) !== expected.taskId) throw new Error("invalid cursor");
     if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || parsed.search !== expected.search || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
@@ -2883,6 +2985,7 @@ export async function listStudioTasks(
   actor: ProductStudioActor,
   input: {
     scope: StudioTaskScope;
+    taskId?: number;
     limit?: number;
     cursor?: string | null;
     statuses?: StudioStatus[];
@@ -2913,6 +3016,7 @@ export async function listStudioTasks(
   const campaignId = input.campaignId ?? null;
   const cursorScope = {
     scope: input.scope,
+    taskId: input.taskId ?? null,
     statuses,
     priorities,
     overdue: input.overdue ?? null,
@@ -2942,6 +3046,8 @@ export async function listStudioTasks(
     conds.push(eq(productImageJobs.assignedTo, assigneeId));
   }
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
+  // فتح المهمة الممسوحة لا يعتمد على موضعها في صفحات القائمة؛ يبقى عزل الفرع والمالك أعلاه سارياً.
+  if (input.taskId != null) conds.push(eq(productImageJobs.id, input.taskId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
   // إخفاءُ مهام الحملات النهائيّة (٢٩/٨): يُنفَّذ في WHERE عبر subquery correlated كي لا
@@ -4869,6 +4975,52 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
   };
 }
 
+/** يعيد الصور المعتمدة السابقة للمنتج للمصور المصرّح له؛ تظهر في محطة التصوير لمنع تكرار الزوايا. */
+export async function getStudioTaskPreviousImages(actor: ProductStudioActor, taskId: number) {
+  const task = (
+    await requireDb()
+      .select({
+        productId: productImageJobs.productId,
+        variantId: productImageJobs.variantId,
+        assignedTo: productImageJobs.assignedTo,
+        branchId: productImageJobs.branchId,
+      })
+      .from(productImageJobs)
+      .where(eq(productImageJobs.id, taskId))
+      .limit(1)
+  )[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task);
+  if (task.productId == null) return [];
+
+  const images = await requireDb()
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, task.productId),
+      task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return images.map((img) => ({
+    id: Number(img.id),
+    isPrimary: Boolean(img.isPrimary),
+    sortOrder: Number(img.sortOrder ?? 0),
+    thumbDataUrl: img.thumbDataUrl ?? null,
+    contentHash: img.contentHash ?? null,
+    createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+  }));
+}
+
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withStudioTx(async (tx) => {
@@ -5521,3 +5673,121 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     return expectedRevision === undefined ? { imageId: Number(image.id) } : { imageId: Number(image.id), revision: nextRevision(task) };
   });
 }
+
+/**
+ * جلب متغيّرات ووحدات المنتج المتاحة للاستوديو برخصة قراءة الاستوديو
+ * دون كشف الأسعار أو التكاليف أو البيانات الإدارية الحساسة.
+ */
+export async function getStudioProductUnits(actor: ProductStudioActor, productId: number) {
+  const db = requireDb();
+
+  const product = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false)))
+      .limit(1)
+  )[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للاستوديو",
+        why: "المنتج غير موجود أو معطّل أو من نوع خدمة لا تتطلب تصويراً",
+        doThis: "اختر منتجاً نشطاً من قائمة منتجات الاستوديو",
+      }),
+    });
+  }
+
+  const variants = await db
+    .select({
+      id: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(and(eq(productVariants.productId, productId), eq(productVariants.isActive, true)));
+
+  const variantIds = variants.map((v) => Number(v.id));
+  const units = variantIds.length > 0
+    ? await db
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+        })
+        .from(productUnits)
+        .where(and(inArray(productUnits.variantId, variantIds), eq(productUnits.isActive, true)))
+    : [];
+
+  return {
+    variants: variants.map((v) => ({
+      id: Number(v.id),
+      variantName: v.variantName,
+      color: v.color,
+      size: v.size,
+      sku: v.sku,
+      isActive: v.isActive,
+      unitBarcodes: Object.fromEntries(
+        units
+          .filter((u) => Number(u.variantId) === Number(v.id) && u.barcode)
+          .map((u) => [u.unitName, u.barcode!]),
+      ),
+    })),
+    unitTemplate: Array.from(new Set(units.map((u) => u.unitName))).map((unitName) => ({ unitName })),
+  };
+}
+
+/**
+ * ربط باركود غير معروف بوحدة منتج نشطة من واجهة الاستوديو
+ * مع التحقق من أن الوحدة والمتغيّر والمنتج نشطون وغير خدميين.
+ */
+export async function linkStudioBarcode(
+  actor: ProductStudioActor,
+  input: { productUnitId: number; barcode: string; note?: string | null },
+) {
+  const db = requireDb();
+  const unit = (
+    await db
+      .select({
+        id: productUnits.id,
+      })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
+        and(
+          eq(productUnits.id, input.productUnitId),
+          eq(productUnits.isActive, true),
+          eq(productVariants.isActive, true),
+          eq(products.isActive, true),
+          eq(products.isService, false),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  if (!unit) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر ربط الباركود",
+        why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
+        doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
+      }),
+    });
+  }
+
+  return addUnitBarcodeAlias(
+    input.productUnitId,
+    input.barcode,
+    input.note ?? "رُبط من استوديو المنتجات",
+    actor.userId,
+  );
+}
+

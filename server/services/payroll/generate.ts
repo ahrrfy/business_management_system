@@ -11,12 +11,15 @@ import {
   commissionRuns,
   employees,
   employeeTerminations,
+  hrAttendancePunches,
   hrAttendanceSettings,
   leaveRequests,
   payrollItems,
   payrollRuns,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { logger } from "../../logger";
+import { processPendingFolds } from "../hrDevices";
 import { suggestDeductionsTx } from "../advances";
 import { computeAttendancePay, DEFAULT_WORK_SCHEDULE, type AttendancePayResult, type WorkSchedule } from "../hr/attendancePay";
 import { money, round2, toDbMoney } from "../money";
@@ -28,9 +31,18 @@ import { assertPeriod, computeNet, countDaysWithin, expandSpans, recomputeRunTot
 import { getRun } from "./queries";
 import { encodeTerminationWageCoverage } from "./terminationCoverage";
 import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
+import { resolveApprovalActor } from "../approval/ownerGate";
+import { approveRun } from "./lifecycle";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
+
+  // طيّ كافة البصمات المعلقة قبل توليد المسيّر:
+  // يضمن دمج جميع البصمات الحديثة في سجل الحضور حتى لحظة التوليد لمنع تصفير الساعات أو تضارب الاحتساب.
+  await processPendingFolds().catch((err) => {
+    logger.warn({ err }, "payroll: تعذّر استكمال طيّ البصمات المعلقة قبل التوليد");
+  });
+
   return withTx(async (tx) => {
     // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
     const [exists] = await tx
@@ -591,11 +603,30 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
     }
-    return { runId, attendanceFlagged };
-  }).then(async ({ runId, attendanceFlagged }) => {
+
+    // حصر البصمات غير المربوطة بموظف في شهر المسيّر (إن وجدت) للتنبيه الرقابي الشفاف
+    const [unmappedRow] = await tx
+      .select({ count: sql<string>`COUNT(*)` })
+      .from(hrAttendancePunches)
+      .where(
+        and(
+          isNull(hrAttendancePunches.employeeId),
+          sql`${hrAttendancePunches.punchAt} LIKE ${`${p}%`}`,
+        ),
+      );
+    const unmappedPunchesCount = Number(unmappedRow?.count ?? 0);
+
+    return { runId, attendanceFlagged, unmappedPunchesCount };
+  }).then(async ({ runId, attendanceFlagged, unmappedPunchesCount }) => {
+    const resolvedActor = await withTx((tx) => resolveApprovalActor(tx, actor));
+    // أيام الحضور المفتوحة تعني أن الساعات الناقصة لم تُحتسب بعد؛ تبقى التشغيلة مسودة
+    // ليصححها المالك، ثم يعتمدها، ولا تتحول تلقائيا إلى راتب ناقص.
+    if (resolvedActor.isOwner && attendanceFlagged.length === 0) {
+      await approveRun(runId, { ...actor, isOwner: true, role: "admin" });
+    }
     const run = await getRun(runId);
     // يُرافق النتيجةَ لا الرأسَ المخزَّن: حالةٌ لحظة التوليد تُعرَض ثم تزول بالتصحيح، ولا
     // معنى لتخزينها فتشيخ. الشاشة تعرضها فور التوليد، وملاحظةُ البند أثرُها الدائم.
-    return { ...run, attendanceFlagged };
+    return { ...run, attendanceFlagged, unmappedPunchesCount };
   });
 }

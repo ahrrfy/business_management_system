@@ -141,6 +141,23 @@ export function voucherPostingPlan(args: {
           args.amount,
         );
   }
+  if (args.partyType === "DELIVERY_PARTY") {
+    return args.entryType === "PAYMENT_IN"
+      ? postingPlan(
+          "PAYMENT_IN_DELIVERY_PARTY",
+          "PAYMENT_IN",
+          assetRole,
+          "DELIVERY_FLOAT",
+          args.amount,
+        )
+      : postingPlan(
+          "PAYMENT_OUT_COURIER",
+          "PAYMENT_OUT",
+          "COURIER_PAYABLE",
+          assetRole,
+          args.amount,
+        );
+  }
 
   if (args.partyType === "OTHER" && args.categoryPostingRole) {
     if (args.categoryReversalOfDirection) {

@@ -138,7 +138,7 @@ describe("0193 accrual-obligation lifecycle schema", () => {
     );
   });
 
-  it("keeps monetary history append-only and correction approval maker/checker", () => {
+  it("keeps monetary history append-only and permits active-owner self-approval", () => {
     expect(columnNames(accrualObligationEvents)).toEqual(
       new Set([
         "id",
@@ -222,9 +222,11 @@ describe("0193 accrual-obligation lifecycle schema", () => {
       expect.arrayContaining([
         "chk_accrual_correction_evidence",
         "chk_accrual_correction_status",
-        "chk_accrual_correction_maker_checker",
         "chk_accrual_correction_refund_shape",
       ]),
+    );
+    expect(checkNames(accrualCorrectionRequests)).not.toContain(
+      "chk_accrual_correction_maker_checker",
     );
     expect(migration).toMatch(
       /INDEX `idx_accrual_correction_refund_receipt` \(`refundRequestReceiptId`\)/,

@@ -21,7 +21,7 @@ const maker = {
   userId: 1,
   branchId: 1,
   role: "admin" as const,
-  isOwner: true,
+  isOwner: false,
 };
 const checker = {
   userId: 2,
@@ -73,7 +73,7 @@ async function seed() {
       role: "admin",
       loginMethod: "local",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
       isActive: true,
     },
     {
@@ -232,8 +232,8 @@ describe("governed direct USD purchase settlement", () => {
     expect(state.supplier.currentBalance).toBe("290000.00");
     expect(state.supplier.currentBalanceUsd).toBe("200.00");
 
-    // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — الصانع مالكٌ فيعتمد سنده بنفسه.
-    const firstApproval = await approveVoucher(request.receiptId, maker);
+    // المنشئ غير مالك؛ يعتمد المالك الطلب المعلّق عبر المسار المعتاد.
+    const firstApproval = await approveVoucher(request.receiptId, checker);
     expect(firstApproval.replayed).toBe(false);
     state = await purchaseState();
     expect(state.po.paidAmount).toBe("145000.00");

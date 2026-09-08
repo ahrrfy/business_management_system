@@ -7,7 +7,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
 import { createAppNotification } from "../appNotificationService";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, getStudioTaskPreviousImages, getStudioProductUnits, linkStudioBarcode, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 import { reserveStudioImageTasks, bulkReassignStudioTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
@@ -928,6 +928,41 @@ describe("product studio governed workflow", () => {
         dueAt: new Date("2026-08-20T10:00:00.000Z"),
       }),
     ).resolves.toEqual({ ok: true, revision: 2 });
+  });
+
+  it("opens a scanned owned task outside the first fifty without widening task access", async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => 100 + index);
+    await db().insert(s.products).values(ids.map((id) => ({ id, name: `منتج المسح ${id}` })));
+    await db().insert(s.productVariants).values({ id: 100, productId: 100, sku: "SCAN-OLD-SKU", variantName: "الأزرق", costPrice: "0" });
+    await db().insert(s.productUnits).values({ id: 100, variantId: 100, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "SCAN-OLD-100" });
+    await db().insert(s.productImageJobs).values(ids.map((id) => ({
+      id,
+      productId: id,
+      variantId: id === 100 ? 100 : null,
+      branchId: 1,
+      mode: "FLATTEN" as const,
+      status: "ASSIGNED" as const,
+      assignedTo: worker.userId,
+      assignedBy: manager.userId,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+      updatedAt: new Date(Date.UTC(2026, 7, 1, 0, 0, id - 100)),
+    })));
+
+    const firstPage = await listStudioTasks(worker, { scope: "MINE", limit: 50 });
+    expect(firstPage.items).toHaveLength(50);
+    expect(firstPage.items.some((task) => Number(task.id) === 100)).toBe(false);
+    const claimed = await claimStudioProductByBarcode(worker, "SCAN-OLD-100");
+    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 1 });
+    const exact = await listStudioTasks(worker, { scope: "MINE", taskId: claimed.taskId, limit: 1 });
+    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 1 }]);
+    expect(exact.nextCursor).toBeNull();
+    expect((await listStudioTasks(otherWorker, { scope: "MINE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(managerTwo, { scope: "QUEUE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(worker, { scope: "REVIEW", taskId: 100 })).items).toEqual([]);
+    await expect(listStudioTasks(worker, { scope: "MINE", taskId: 100, cursor: firstPage.nextCursor })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("paginates task filters and reports exception-focused SLA metrics", async () => {
@@ -3200,4 +3235,93 @@ describe("product studio governed workflow", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("getStudioTaskPreviousImages يعيد صور المنتج المعتمدة السابقة بترتيب الأسبقية والأمر للمصوّر المخوّل", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    // إدخال صورتين معتمدتين للمنتج 1: واحدة رئيسية وواحدة ثانوية
+    await db().insert(s.productImages).values([
+      {
+        id: 901,
+        productId: 1,
+        url: "https://example.com/img901.png",
+        isPrimary: 0,
+        sortOrder: 2,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-secondary",
+      },
+      {
+        id: 902,
+        productId: 1,
+        url: "https://example.com/img902.png",
+        isPrimary: 1,
+        sortOrder: 1,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1_ALT,
+        storageKey: "p1-primary",
+      },
+      {
+        id: 903,
+        productId: 1,
+        url: "https://example.com/img903.png",
+        isPrimary: 0,
+        sortOrder: 3,
+        reviewStatus: "PENDING_REVIEW", // غير معتمدة، لا يجب أن تظهر
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-pending",
+      },
+    ]);
+
+    const prev = await getStudioTaskPreviousImages(worker, task.taskId);
+    expect(prev).toHaveLength(2);
+    expect(prev[0]).toMatchObject({ id: 902, isPrimary: true, sortOrder: 1 });
+    expect(prev[1]).toMatchObject({ id: 901, isPrimary: false, sortOrder: 2 });
+
+    // مصوّر لا يملك المهمة ولا الفرع يُرفض
+    const stranger: ProductStudioActor = { userId: 99, branchId: 2, role: "print_operator" };
+    await expect(getStudioTaskPreviousImages(stranger, task.taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("getStudioProductUnits يعيد فقط المتغيّرات والوحدات النشطة ويرفض المنتجات المعطلة أو الخدمية", async () => {
+    const worker: ProductStudioActor = { userId: 1, branchId: 1, role: "print_operator" };
+    // منتج عادي بنشاط
+    await db().insert(s.products).values([
+      { id: 950, name: "منتج استوديو للاختبار", isActive: true, isService: false },
+      { id: 951, name: "خدمة معطلة", isActive: false, isService: true },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 950, productId: 950, sku: "SKU-950", variantName: "لون أحمر", isActive: true, costPrice: "1" },
+      { id: 951, productId: 950, sku: "SKU-951", variantName: "لون قديم", isActive: false, costPrice: "1" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 950, variantId: 950, unitName: "حبة", barcode: "1110002223334", isActive: true, conversionFactor: "1", isBaseUnit: true },
+      { id: 951, variantId: 950, unitName: "كرتون معطل", barcode: "1110002223335", isActive: false, conversionFactor: "1", isBaseUnit: false },
+      { id: 952, variantId: 951, unitName: "وحدة متغيّر معطل", barcode: "1110002223336", isActive: true, conversionFactor: "1", isBaseUnit: false },
+    ]);
+
+    const res = await getStudioProductUnits(worker, 950);
+    expect(res.variants).toHaveLength(1);
+    expect(res.variants[0]).toMatchObject({ id: 950, variantName: "لون أحمر" });
+    expect(res.variants[0].unitBarcodes).toEqual({ "حبة": "1110002223334" });
+    expect(res.unitTemplate).toEqual([{ unitName: "حبة" }]);
+
+    // منتج غير نشط أو خدمة يرفض بـ NOT_FOUND
+    await expect(getStudioProductUnits(worker, 951)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(getStudioProductUnits(worker, 99999)).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // linkStudioBarcode يربط باركوداً جديداً بالوحدة النشطة
+    const linkRes = await linkStudioBarcode(worker, {
+      productUnitId: 950,
+      barcode: "7778889990001",
+      note: "ربط اختبار",
+    });
+    expect(linkRes).toBeDefined();
+
+    // يرفض الربط بوحدة معطلة
+    await expect(linkStudioBarcode(worker, {
+      productUnitId: 951,
+      barcode: "7778889990002",
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
 });
+

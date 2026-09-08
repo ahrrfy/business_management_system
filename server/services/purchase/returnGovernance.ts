@@ -33,6 +33,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { extractAffectedRows, extractInsertId } from "../../lib/insertId";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import {
@@ -427,7 +428,7 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
   const payloadHash = sha256(canonical);
   const evidenceHash = sha256(stableCanonical({ type: input.evidenceType, reference: evidenceReference }));
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseReturnRequests).where(eq(purchaseReturnRequests.requestKey, requestKey)).limit(1))[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
@@ -653,6 +654,34 @@ export async function requestPurchaseReturn(input: RequestPurchaseReturnInput, a
       reason: item.reason,
     })));
     return { requestId, status: "PENDING" as const, idempotent: false as const };
+  });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.return.decide",
+    id: result.requestId,
+    reason,
+  });
+  if (!approved) return result;
+  return withTx(async (tx) => {
+    const [posted] = await tx
+      .select({ id: purchaseReturns.id })
+      .from(purchaseReturns)
+      .where(eq(purchaseReturns.requestId, result.requestId))
+      .limit(1);
+    if (!posted) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إكمال مرتجع الشراء بعد اعتماد المالك",
+          why: "الطلب مسجل معتمدا لكن مستند المرتجع الناتج غير موجود",
+          doThis: "حدّث قائمة المرتجعات، وإن بقي الطلب بلا مستند أبلغ الدعم بمعرف الطلب",
+        }),
+      });
+    }
+    return {
+      ...result,
+      status: "APPROVED" as const,
+      purchaseReturnId: Number(posted.id),
+    };
   });
 }
 
@@ -967,7 +996,7 @@ export async function requestPurchaseReturnReversal(input: RequestPurchaseReturn
   }).sort((a, b) => a.purchaseReturnItemId - b.purchaseReturnItemId);
   const canonical = stableCanonical({ purchaseReturnId: input.purchaseReturnId, expectedReturnVersion: input.expectedReturnVersion, evidenceType: input.evidenceType, evidenceReference, reason, lines });
   const payloadHash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = (await tx.select().from(purchaseReturnReversalRequests).where(eq(purchaseReturnReversalRequests.requestKey, requestKey)).limit(1))[0];
     if (replay) {
       assertPurchaseBranch(replay, actor);
@@ -1035,6 +1064,34 @@ export async function requestPurchaseReturnReversal(input: RequestPurchaseReturn
     const requestId = extractInsertId(inserted);
     await tx.insert(purchaseReturnReversalRequestItems).values(lines.map((line) => ({ requestId, purchaseReturnItemId: line.purchaseReturnItemId, baseQuantity: line.baseQuantity, reason: line.reason })));
     return { requestId, status: "PENDING" as const, idempotent: false as const };
+  });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.return.reversal",
+    id: result.requestId,
+    reason,
+  });
+  if (!approved) return result;
+  return withTx(async (tx) => {
+    const [posted] = await tx
+      .select({ id: purchaseReturnReversals.id })
+      .from(purchaseReturnReversals)
+      .where(eq(purchaseReturnReversals.requestId, result.requestId))
+      .limit(1);
+    if (!posted) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذر إكمال عكس مرتجع الشراء بعد اعتماد المالك",
+          why: "طلب العكس مسجل معتمدا لكن مستند العكس الناتج غير موجود",
+          doThis: "حدّث قائمة عكوس المرتجعات، وإن بقي الطلب بلا مستند أبلغ الدعم بمعرف الطلب",
+        }),
+      });
+    }
+    return {
+      ...result,
+      status: "APPROVED" as const,
+      reversalId: Number(posted.id),
+    };
   });
 }
 

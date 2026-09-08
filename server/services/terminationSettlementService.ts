@@ -1331,56 +1331,15 @@ export async function reverseTerminationPayment(
         paymentReversalReason: reason,
       })
       .where(eq(employeeTerminations.id, terminationId));
-    const repayment = assertTerminationPaymentMethod(
-      termination.settlementPaymentMethod,
-      termination.settlementPaymentReference,
-    );
-    const priorRequests = await tx
-      .select({ id: receipts.id })
-      .from(receipts)
-      .where(like(receipts.referenceNumber, `TERM-SETTLEMENT-${terminationId}-%`))
-      .orderBy(asc(receipts.id))
-      .for("update");
-    const requestAttempt = priorRequests.length + 1;
-    const replacement = await createSystemPaymentRequestTx(
-      tx,
-      {
-        branchId: Number(obligation.branchIdSnapshot),
-        amount: toDbMoney(amount),
-        paymentMethod: repayment.method,
-        partyType: "OTHER",
-        counterpartyName: employee
-          ? fullEmployeeName(employee)
-          : `موظف #${termination.employeeId}`,
-        description: `إعادة إصدار صرف تسوية نهاية خدمة #${terminationId}`,
-        referenceNumber: `TERM-SETTLEMENT-${terminationId}-REPAY-${event.eventId}-A${requestAttempt}`,
-        cardLastFour:
-          repayment.method === "CARD" ? repayment.referenceNumber : null,
-        voucherDate: baghdadToday(),
-        clientRequestId: `termination-settlement-repay-${terminationId}-${event.eventId}`,
-      },
-      { ...actor, branchId: Number(obligation.branchIdSnapshot) },
-      {
-        kind: "TERMINATION_SETTLEMENT",
-        terminationId,
-        employeeId: Number(termination.employeeId),
-        expectedAmount: toDbMoney(amount),
-        attempt: requestAttempt,
-        originReturnEventId: event.eventId,
-        paymentEvidenceReference: repayment.referenceNumber,
-        settlementSnapshotHash: termination.settlementSnapshotHash!,
-        obligationId: Number(obligation.id),
-      },
-    );
     return {
       terminationId,
       receiptId,
       eventId: event.eventId,
       replayed: false,
-      replacementVoucher: {
-        receiptId: replacement.receiptId,
-        voucherNumber: replacement.voucherNumber,
-      },
+      // إعادة المبلغ تفتح الالتزام فقط. إعادة الصرف قرار مستقل عبر
+      // reissueTerminationPayment؛ وإلا كان اعتماد المالك التلقائي يعيد دفع
+      // المبلغ داخل عملية الإرجاع نفسها ويمنع مسار تصحيح الاستحقاق.
+      replacementVoucher: null,
     };
   });
 }
@@ -1388,8 +1347,8 @@ export async function reverseTerminationPayment(
 /**
  * Re-issues only the payment request for an already recognized, still-open
  * termination obligation. Recognition is never repeated. This is the governed
- * escape hatch after a voucher rejection and remains maker/checker at voucher
- * approval.
+ * escape hatch after a returned or rejected payment. An active owner request is
+ * approved immediately by the global owner policy.
  */
 export async function reissueTerminationPayment(
   terminationId: number,

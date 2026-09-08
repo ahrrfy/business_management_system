@@ -44,13 +44,14 @@ describe("mobile studio workflow", () => {
     const page = readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8");
     const uploader = readFileSync(new URL("../../components/form/ImageUploader.tsx", import.meta.url), "utf8");
     const picker = readFileSync(new URL("../../components/product-studio/StudioProductPicker.tsx", import.meta.url), "utf8");
+    const preview = readFileSync(new URL("../../components/product-studio/StudioPreviewPair.tsx", import.meta.url), "utf8");
 
     expect(page).toContain("عودة إلى المهام");
     expect(page).toContain("fixed bottom-24");
     expect(page.match(/sticky bottom-24[^\n]*mt-16/g)).toHaveLength(2);
     expect(page).toContain("الصورة الأصلية");
     expect(page).toContain("المرشّح");
-    expect(page).toContain("تكبير الصورة");
+    expect(preview).toContain("تكبير الصورة");
     expect(page).toContain("STUDIO_REJECTION_PRESETS");
     expect(page).toContain("bulkAssign.mutate");
     expect(page).toContain("إسناد ${bulkProductIds.length} مهام");

@@ -62,7 +62,7 @@ export const customerRouter = router({
 
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
   list: customersReadProcedure.query(async ({ ctx }) => {
-    const { rows } = await listCustomers({ includeInactive: false, limit: 500 });
+    const { rows } = await listCustomers({ includeInactive: false, limit: 500, skipTotal: true });
     return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
   }),
 

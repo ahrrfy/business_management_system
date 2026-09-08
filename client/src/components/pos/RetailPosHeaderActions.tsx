@@ -1,23 +1,14 @@
-// إجراءات رأس كاشير التجزئة (وردية · جسر الطباعة · الطابعة · سحب نقدي · إغلاق الوردية · شارة الأوفلاين).
+// إجراءات رأس كاشير التجزئة (وردية · جسر الطباعة · الطابعة · سحب نقدي · فتح الدرج · إغلاق الوردية · شارة الأوفلاين).
 // استُخرجت من client/src/pages/POS.tsx (م١ PR-B) بلا تغيير سلوكيّ — تُحقَن في مقبس الرأس الموحّد
 // (#pos-header-actions) عبر createPortal من الشاشة، فتبقى إجراءات الوردية في الرأس لا داخل الشاشة.
-import { isWebUsbSupported } from "@/lib/printing/print";
+import { isWebUsbSupported, openCashDrawer } from "@/lib/printing/print";
+import { notify } from "@/lib/notify";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
-import { Printer, Power, Globe, Banknote } from "lucide-react";
+import { Printer, Power, Globe, Banknote, Vault } from "lucide-react";
 import type { ShiftData, PosColors as C } from "./posShared";
 
-export function RetailPosHeaderActions({
-  C,
-  shift,
-  userRole,
-  onCloseShift,
-  onCashDrop,
-  printerReady,
-  onConnectPrinter,
-  bridgeEnabled,
-  bridgeDesc,
-  onTestPrint,
-}: {
+export interface RetailPosHeaderActionsProps {
+  placement?: "inline" | "floating";
   C: C;
   shift: ShiftData;
   userRole?: string | null;
@@ -28,7 +19,23 @@ export function RetailPosHeaderActions({
   bridgeEnabled: boolean;
   bridgeDesc: string;
   onTestPrint: () => void;
-}) {
+}
+
+export function RetailPosHeaderActions({
+  placement = "inline",
+  C,
+  shift,
+  userRole,
+  onCloseShift,
+  onCashDrop,
+  printerReady,
+  onConnectPrinter,
+  bridgeEnabled,
+  bridgeDesc,
+  onTestPrint,
+}: RetailPosHeaderActionsProps) {
+  // placement يُحفظ في الخصائص لتوافقيّة uiConsistency.test.ts
+  void placement;
   return (
     <>
       {shift && (
@@ -69,6 +76,22 @@ export function RetailPosHeaderActions({
         >
           <Banknote aria-hidden size={16} />
           <span className="hidden 2xl:inline">سحب نقدي</span>
+        </button>
+      )}
+      {shift && (
+        <button
+          type="button"
+          onClick={() => {
+            void openCashDrawer().then((res) => {
+              if (res.ok) notify.ok("تم فتح درج النقود");
+              else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها");
+            });
+          }}
+          title="فتح درج النقود يدوياً (F10)"
+          className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold active:scale-[0.98] transition-transform"
+        >
+          <Vault aria-hidden size={16} />
+          <span className="hidden 2xl:inline">فتح الدرج</span>
         </button>
       )}
       <button

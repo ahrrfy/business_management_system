@@ -286,8 +286,7 @@ export default function Promotions() {
       ].filter(Boolean).join(" ");
       const suffix = sideEffects ? ` — ${sideEffects}` : "";
       if (data?.settlementVoucher) {
-        // تسوية المستحقات صارت سند صرفٍ مُعلَّق يعتمده مديرٌ آخر (فصل مهام #٦) — أبلِغ المستخدم بوجهة الفعل.
-        notify.ok(`اكتمل إنهاء الخدمة${suffix}. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
+        notify.ok(`اكتمل إنهاء الخدمة${suffix}. أُنشئ سند التسوية واعتمد تلقائياً (${data.settlementVoucher.voucherNumber}).`);
       } else {
         notify.ok(`اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف${suffix}`);
       }
@@ -297,9 +296,9 @@ export default function Promotions() {
   });
   const reversePayment = trpc.promotions.reverseTerminationPayment.useMutation({
     onSuccess: async (data) => {
-      notify.ok(data.replacementVoucher
-        ? `سُجّلت إعادة المبلغ وأعيد فتح الالتزام. أُنشئ طلب صرف بديل (${data.replacementVoucher.voucherNumber}) لاعتماد مالك آخر.`
-        : "إعادة مبلغ التسوية مسجّلة مسبقاً.");
+      notify.ok(data.replayed
+        ? "إعادة مبلغ التسوية مسجّلة مسبقاً."
+        : "سُجّلت إعادة المبلغ وأعيد فتح الالتزام. يمكنك إعادة إصدار الصرف أو عكس الاستحقاق.");
       setReverseTarget(null); setReverseReason("");
       await utils.promotions.listTerminations.invalidate();
     },
@@ -317,7 +316,7 @@ export default function Promotions() {
     onSuccess: async (data) => {
       notify.ok(data.replayed
         ? `طلب الصرف ما زال معلقاً (${data.voucherNumber}).`
-        : `أُعيد إصدار طلب صرف مستقل (${data.voucherNumber}) لاعتماد مالك آخر.`);
+        : `أُعيد إصدار سند الصرف واعتمده المالك تلقائياً (${data.voucherNumber}).`);
       setReverseTarget(null); setReverseReason("");
       await utils.promotions.listTerminations.invalidate();
     },
@@ -1013,7 +1012,7 @@ export default function Promotions() {
                 <div className="text-sm font-medium">تفكيك التسوية اليدوي المعتمد</div>
                 <div className="mt-1 text-xs leading-5 text-muted-foreground">
                   لا يحسب النظام نسبة أو استحقاقاً قانونياً تلقائياً. تُدخل الموارد البشرية القيم
-                  التي حُسبت وراجعتها الجهة المختصة، ثم يعتمدها مستخدم آخر عند الإكمال.
+                  التي حُسبت وراجعتها الجهة المختصة، ويعتمدها المالك تلقائياً عند الإكمال.
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1157,7 +1156,7 @@ export default function Promotions() {
               {reverseTarget?.mode === "payment"
                 ? `ستُسجّل إعادة المبلغ من «${reverseTarget.employeeName}» بإيصال قبض وقيد مستقل، ويُعاد فتح الالتزام قبل السماح بعكس الاستحقاق.`
                 : reverseTarget?.mode === "reissue"
-                  ? `سيُنشأ طلب صرف جديد للالتزام المفتوح الخاص بـ«${reverseTarget.employeeName}». لا يُعاد إثبات الاستحقاق، ويجب أن يعتمده مالك آخر.`
+                  ? `سيُنشأ سند صرف جديد للالتزام المفتوح الخاص بـ«${reverseTarget.employeeName}». لا يُعاد إثبات الاستحقاق، وسيعتمده المالك تلقائياً.`
                   : `سيُعكس قيد الاستحقاق الخاص بـ«${reverseTarget?.employeeName ?? "الموظف"}» بقيد مستقل مع إبقاء سجل إنهاء الخدمة؛ لا يُعاد تفعيل حساب الموظف تلقائياً.`}
             </div>
             {reverseTarget?.mode === "payment" && (

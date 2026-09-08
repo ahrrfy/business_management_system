@@ -129,7 +129,25 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     expect(parts.some((p: any) => p.text === "P")).toBe(true);
     expect(parts.some((p: any) => p.inline_data?.data === "QUJD")).toBe(true);
     expect(body.generationConfig.responseModalities).toEqual(["IMAGE"]);
-    expect(body.generationConfig.responseFormat.image).toEqual({ aspectRatio: "1:1", imageSize: "1K" });
+    expect(body.generationConfig.responseFormat.image).toEqual({ aspectRatio: "ASPECT_RATIO_ONE_BY_ONE", imageSize: "IMAGE_SIZE_ONE_K" });
+  });
+
+  it.each([null, "QUJD"])("uses canonical REST image enums accepted by the provider schema (input=%s)", async (imageBase64) => {
+    // Public v1 discovery schema: ImageResponseFormat uses enum names, not the
+    // SDK shorthand values accepted by legacy ImageConfig.
+    // https://generativelanguage.googleapis.com/$discovery/rest?version=v1
+    const fakeFetch = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const config = JSON.parse(String(init?.body)).generationConfig;
+      const image = config.responseFormat?.image;
+      if (image?.aspectRatio !== "ASPECT_RATIO_ONE_BY_ONE" || image?.imageSize !== "IMAGE_SIZE_ONE_K") {
+        return new Response(JSON.stringify({ error: { status: "INVALID_ARGUMENT", message: "Invalid enum value at generation_config.response_format.image" } }), { status: 400 });
+      }
+      expect(config).not.toHaveProperty("imageConfig");
+      return imageResponse();
+    });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64 }, { fetchImpl: fakeFetch }))
+      .resolves.toMatchObject({ imageBase64: "QUJD" });
+    expect(fakeFetch).toHaveBeenCalledTimes(1);
   });
 
   it("GENERATE: بلا صورة ⇒ لا inline_data في الطلب", async () => {

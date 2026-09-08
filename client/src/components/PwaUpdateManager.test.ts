@@ -76,6 +76,15 @@ describe("PWA update delivery policy", () => {
     expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/" })).toBe("PROMPT");
     expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/store" })).toBe("AUTO_APPLY");
   });
+
+  it("auto-applies silently for unattended kiosk and price-checker surfaces", () => {
+    const waiting = { hostname: "srv1548487.hstgr.cloud", hasWaitingWorker: true };
+
+    expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/kiosk" })).toBe("AUTO_APPLY");
+    expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/kiosk/sub" })).toBe("AUTO_APPLY");
+    expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/price-checker" })).toBe("AUTO_APPLY");
+    expect(decidePwaUpdateDelivery({ ...waiting, pathname: "/price-checker/preview" })).toBe("AUTO_APPLY");
+  });
 });
 
 describe("PWA offline claim", () => {

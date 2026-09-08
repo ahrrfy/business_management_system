@@ -61,6 +61,8 @@ const base = (over: Record<string, unknown> = {}) => ({
   lastDay: LAST_DAY,
   settlementEvidenceNote: "مراجعة الموارد البشرية رقم ١٢٣",
   zeroAmountsAttested: true as const,
+  paymentMethod: "TRANSFER" as const,
+  paymentReference: "TERM-WAGE-RECONCILE",
   ...over,
 });
 

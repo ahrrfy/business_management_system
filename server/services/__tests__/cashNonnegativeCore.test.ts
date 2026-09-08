@@ -68,7 +68,7 @@ async function seedBase() {
       role: "admin",
       loginMethod: "local",
       branchId: 1,
-      isOwner: true,
+      isOwner: false,
     },
     {
       id: 2,
@@ -167,15 +167,15 @@ describe("cash-nonnegative-core — قفل المصدر والتراجع", () =>
       voucherType: "PAYMENT", branchId: 1, amount: "80.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "الصرف المتزامن الأول",
       clientRequestId: "treasury-race-1",
-    }, manager);
+    }, admin);
     const second = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "80.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "الصرف المتزامن الثاني",
       clientRequestId: "treasury-race-2",
-    }, manager);
+    }, admin);
     const results = await Promise.allSettled([
-      approveVoucher(first.receiptId, admin),
-      approveVoucher(second.receiptId, admin),
+      approveVoucher(first.receiptId, manager),
+      approveVoucher(second.receiptId, manager),
     ]);
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -263,8 +263,8 @@ describe("cash-nonnegative-core — قفل المصدر والتراجع", () =>
       voucherType: "PAYMENT", branchId: 1, amount: "1.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "لا تمويل من استلام معلّق",
       clientRequestId: "pending-in-does-not-fund",
-    }, manager);
-    await expect(approveVoucher(pending.receiptId, admin)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    }, admin);
+    await expect(approveVoucher(pending.receiptId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, pending.receiptId));
     expect(stored.approvalStatus).toBe("PENDING_APPROVAL");
 
@@ -272,7 +272,7 @@ describe("cash-nonnegative-core — قفل المصدر والتراجع", () =>
       branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "1.00",
       paymentMethod: "CASH", status: "REVERSED", approvalStatus: "APPROVED", createdBy: 1,
     });
-    await approveVoucher(pending.receiptId, admin);
+    await approveVoucher(pending.receiptId, manager);
     await db().transaction(async (tx) => {
       expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("0.00");
     });
@@ -328,8 +328,8 @@ describe("cash-nonnegative-core — ترتيب الأقفال وعزل الفر�
       voucherType: "PAYMENT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "صرف لاختبار إلغاء OUT المتزامن",
       clientRequestId: "cancel-out-lock-order",
-    }, manager);
-    await approveVoucher(pending.receiptId, admin);
+    }, admin);
+    await approveVoucher(pending.receiptId, manager);
 
     let sourceLocked!: () => void;
     let releaseSource!: () => void;
@@ -437,7 +437,7 @@ describe("cash-nonnegative-core — اعتماد السند", () => {
       voucherType: "PAYMENT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "اعتماد مقابل FK المستخدم",
       clientRequestId: "approval-user-share-lock-order",
-    }, manager);
+    }, admin);
 
     let sourceLocked!: () => void;
     const sourceIsLocked = new Promise<void>((resolve) => { sourceLocked = resolve; });
@@ -454,11 +454,11 @@ describe("cash-nonnegative-core — اعتماد السند", () => {
       await tx.insert(s.receipts).values({
         branchId: 1, cashBucket: "TREASURY", direction: "OUT", amount: "50.00",
         paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
-        referenceNumber: "APPROVAL-USER-FK-OUT", createdBy: admin.userId,
+        referenceNumber: "APPROVAL-USER-FK-OUT", createdBy: manager.userId,
       });
     });
     await sourceIsLocked;
-    const approval = approveVoucher(pending.receiptId, admin);
+    const approval = approveVoucher(pending.receiptId, manager);
     const results = await Promise.allSettled([directOut, approval]);
 
     expect(results.every((result) => result.status === "fulfilled")).toBe(true);
@@ -485,13 +485,13 @@ describe("cash-nonnegative-core — اعتماد السند", () => {
         description: "دفعة متزامنة",
         clientRequestId: "voucher-approval-race",
       },
-      manager,
+      admin,
     );
     expect(pending.approvalStatus).toBe("PENDING_APPROVAL");
 
     const results = await Promise.allSettled([
-      approveVoucher(pending.receiptId, admin),
-      approveVoucher(pending.receiptId, admin),
+      approveVoucher(pending.receiptId, manager),
+      approveVoucher(pending.receiptId, manager),
     ]);
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(0);

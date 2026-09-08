@@ -309,6 +309,47 @@ describe("تعديل أمر الشراء قبل الاستلام", () => {
     expect(String(after.agreedRate)).toBe("1500.0000");
   });
 
+  // Codex (P1، ٦/٩/٢٦): الإنشاء يرفض USD+CASH معاً (order.ts:421) لكنّ التعديل كان يقبل
+  // تبديل مسوّدةٍ CASH/IQD إلى USD بلا إعادة فحصٍ — فيعتمد لاحقاً ويُنشئ فاتورة مورّدٍ دولارية،
+  // ثمّ تفشل تسويتها النقدية (حصراً بالدينار) فيتراجع الاعتماد كلّياً بلا مخرج غير إعادة الإنشاء.
+  it("يرفض تعديل أمرٍ نقديّ إلى الدولار — نفس حارس الإنشاء (USD+CASH محظوران معاً)", async () => {
+    const po = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        settlementType: "CASH",
+        taxRatePercent: "0",
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "6.00" },
+        ],
+      },
+      actor,
+    );
+
+    await expect(
+      updatePurchaseOrder(
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          expectedVersion: po.version,
+          revisionReason: "محاولة تبديل عملة أمرٍ نقديّ إلى الدولار",
+          supplierId: 1,
+          taxRatePercent: "0",
+          agreedCurrency: "USD",
+          agreedRate: "1500.0000",
+          items: [
+            { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" },
+          ],
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // تراجعٌ كامل: الأمر يبقى نقدياً بالدينار كما كان، بلا أثرٍ جزئيّ للتعديل المرفوض.
+    const after = await orderRow(po.purchaseOrderId);
+    expect(after.agreedCurrency).toBe("IQD");
+    expect(after.total).toBe("60.00");
+  });
+
   it("يُصفّر الشحن/الكمرك حين يُحذفان من التعديل", async () => {
     const po = await createPurchaseOrder(
       {

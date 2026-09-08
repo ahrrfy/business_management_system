@@ -118,6 +118,7 @@ export interface SupplierStatementPO {
   total: string;
   paidAmount: string;
   status: string;
+  settlementType?: "CASH" | "CREDIT";
   createdBy: number | null;
   createdByName: string | null;
 }
@@ -266,6 +267,7 @@ export async function getSupplierStatement(
       // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
       paidAmount: purchaseOrders.paidAmount,
       status: purchaseOrders.status,
+      settlementType: purchaseOrders.settlementType,
       createdBy: purchaseOrders.createdBy,
       createdByName: sql<string | null>`COALESCE(${poActor.name}, ${poActor.username})`,
     })
