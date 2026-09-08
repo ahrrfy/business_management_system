@@ -512,7 +512,17 @@ function VariantRow({
                         <Switch
                           checked={v.priceOverride}
                           disabled={isSwitchDisabled}
-                          onCheckedChange={(c) => patch({ priceOverride: c })}
+                          onCheckedChange={(c) => {
+                            if (c) {
+                              patch({
+                                priceOverride: true,
+                                costPrice: v.costPrice.trim() ? v.costPrice : (costPrice || ""),
+                                retail: v.retail.trim() ? v.retail : (units.find((u) => u.isBase)?.retail || ""),
+                              });
+                            } else {
+                              patch({ priceOverride: false });
+                            }
+                          }}
                         />
                         استثناء بسعر خاص لهذا اللون
                         {isSwitchDisabled && (

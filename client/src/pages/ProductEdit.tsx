@@ -185,7 +185,9 @@ export default function ProductEdit() {
 
   const hasStockForSharedCost = useMemo(() => {
     return variants.some((v) => {
-      if (v.priceOverride) return false;
+      // إذا كان للمتغيّر سعر خاص لكن بحقل تكلفة فارغ، فـbuildPayload يتراجع للتكلفة المشتركة؛
+      // لذا يبقى مشمولاً بقفل التكلفة المشتركة طالما له رصيد مخزني (Codex finding).
+      if (v.priceOverride && v.costPrice.trim()) return false;
       return Object.values(v.stockByBranch ?? {}).some((q) => Number(q) !== 0);
     });
   }, [variants]);
