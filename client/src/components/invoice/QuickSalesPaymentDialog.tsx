@@ -14,7 +14,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, moneyInput, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { paymentMethodCompact } from "@shared/terms";
@@ -76,8 +76,9 @@ export function QuickSalesPaymentDialog({
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
-  const normalizedPayAmount = round2(D(amount || "0")).toFixed(2);
-  const externalNeeded = method !== "CASH" && D(amount || "0").gt(0);
+  const parsedAmount = moneyInput(amount);
+  const normalizedPayAmount = round2(parsedAmount).toFixed(2);
+  const externalNeeded = method !== "CASH" && parsedAmount.gt(0);
   const externalFingerprint = `SALES_COLLECTION|${branchId}|${method}|${normalizedPayAmount}|${reference.trim()}`;
   const externalConfirmed =
     !externalNeeded ||
@@ -101,13 +102,15 @@ export function QuickSalesPaymentDialog({
     },
   });
 
+  const isBusy = pay.isPending || initiateExternal.isPending || confirmExternal.isPending;
+
   async function confirmExternalPayment() {
     const trimmedRef = reference.trim();
     if (!trimmedRef) {
       notify.err("مرجع العملية مطلوب", "أدخل رقم إشعار جهاز الدفع أو الحوالة أولاً.");
       return;
     }
-    if (!D(amount || "0").gt(0)) {
+    if (!parsedAmount.gt(0)) {
       notify.err("المبلغ مطلوب", "أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
       return;
     }
@@ -154,7 +157,13 @@ export function QuickSalesPaymentDialog({
       notify.err("طريقة دفع معطلة", posPaymentRejectionMessage(method));
       return;
     }
-    const amt = D(amount || "0");
+    let amt: ReturnType<typeof D>;
+    try {
+      amt = D(amount.trim());
+    } catch {
+      notify.err("مبلغ غير صالح", "أدخل مبلغاً عددياً صالحاً.");
+      return;
+    }
     if (!amt.gt(0)) {
       notify.err("مبلغ غير صالح", "يجب أن يكون مبلغ الدفعة أكبر من صفر.");
       return;
@@ -186,8 +195,14 @@ export function QuickSalesPaymentDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md" dir="rtl">
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !isBusy) onClose(); }}>
+      <DialogContent
+        className="max-w-md"
+        dir="rtl"
+        showCloseButton={!isBusy}
+        onEscapeKeyDown={(e) => { if (isBusy) e.preventDefault(); }}
+        onPointerDownOutside={(e) => { if (isBusy) e.preventDefault(); }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <HandCoins aria-hidden className="size-5 text-primary" />
@@ -287,14 +302,14 @@ export function QuickSalesPaymentDialog({
               variant="outline"
               size="sm"
               onClick={onClose}
-              disabled={pay.isPending}
+              disabled={isBusy}
             >
               إلغاء
             </Button>
             <SubmitButton
               pending={pay.isPending}
               size="sm"
-              disabled={!D(amount || "0").gt(0) || (method !== "CASH" && !externalConfirmed)}
+              disabled={!parsedAmount.gt(0) || (method !== "CASH" && !externalConfirmed) || isBusy}
             >
               تسجيل وترحيل الدفعة
             </SubmitButton>

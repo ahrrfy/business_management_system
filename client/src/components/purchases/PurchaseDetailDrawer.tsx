@@ -226,16 +226,18 @@ export function PurchaseDetailDrawer({
     !D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0).gt(0);
 
   const currentUserId = me.data?.id;
+  const isOwner = me.data?.isOwner === true;
   const violatesSod =
-    currentUserId == null ||
-    (activeControlRequest != null &&
-      [
-        activeControlRequest.requestedBy,
-        activeControlRequest.creatorId,
-        activeControlRequest.lastEditedBy,
-        d?.lastEditedBy,
-        d?.submittedBy,
-      ].some((id) => id != null && Number(id) === Number(currentUserId)));
+    !isOwner &&
+    (currentUserId == null ||
+      (activeControlRequest != null &&
+        [
+          activeControlRequest.requestedBy,
+          activeControlRequest.creatorId,
+          activeControlRequest.lastEditedBy,
+          d?.lastEditedBy,
+          d?.submittedBy,
+        ].some((id) => id != null && Number(id) === Number(currentUserId))));
 
   const canApproveDirectly =
     canEdit &&

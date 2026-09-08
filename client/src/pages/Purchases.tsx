@@ -829,17 +829,19 @@ export default function Purchases() {
                   const isSettled = rem.lte(0);
                   const activeControl = pendingOrderControlMap.get(Number(p.id));
                   const currentUserId = me.data?.id;
+                  const isOwner = me.data?.isOwner === true;
                   const violatesSod =
-                    currentUserId == null ||
-                    (activeControl != null &&
-                      [
-                        activeControl.requestedBy,
-                        activeControl.creatorId,
-                        activeControl.lastEditedBy,
-                        p.createdBy,
-                        (p as { lastEditedBy?: number | null }).lastEditedBy,
-                        (p as { submittedBy?: number | null }).submittedBy,
-                      ].some((id) => id != null && Number(id) === Number(currentUserId)));
+                    !isOwner &&
+                    (currentUserId == null ||
+                      (activeControl != null &&
+                        [
+                          activeControl.requestedBy,
+                          activeControl.creatorId,
+                          activeControl.lastEditedBy,
+                          p.createdBy,
+                          (p as { lastEditedBy?: number | null }).lastEditedBy,
+                          (p as { submittedBy?: number | null }).submittedBy,
+                        ].some((id) => id != null && Number(id) === Number(currentUserId))));
                   const canDirectApprove =
                     p.status === "SENT" &&
                     activeControl != null &&

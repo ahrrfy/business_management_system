@@ -974,13 +974,13 @@ export const purchaseRouter = router({
         const paidRows = await db
           .select({
             purchaseOrderId: accountingEntries.purchaseOrderId,
-            paid: sql<string>`COALESCE(SUM(${accountingEntries.amount}),0)`,
+            paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
           })
           .from(accountingEntries)
           .where(
             and(
               inArray(accountingEntries.purchaseOrderId, cashOrderIds),
-              eq(accountingEntries.entryType, "PAYMENT_OUT"),
+              inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN"]),
             ),
           )
           .groupBy(accountingEntries.purchaseOrderId);
@@ -1178,13 +1178,13 @@ export const purchaseRouter = router({
         const paidRow = (
           await db
             .select({
-              paid: sql<string>`COALESCE(SUM(${accountingEntries.amount}),0)`,
+              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
             })
             .from(accountingEntries)
             .where(
               and(
                 eq(accountingEntries.purchaseOrderId, po.id),
-                eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN"]),
               ),
             )
         )[0];
