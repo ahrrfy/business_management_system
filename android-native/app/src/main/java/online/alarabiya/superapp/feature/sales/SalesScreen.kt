@@ -580,7 +580,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
         }
         item {
             SalesCard(Modifier.fillMaxWidth()) {
-                val availableShifts = invoice.refundShifts.ifEmpty { state.openShifts }
+                val availableShifts = invoice.refundShifts
                 val returnShifts = capabilities.filterReturnShifts(availableShifts)
                 val isCashier = capabilities.role == "cashier"
                 val cashierHasShift = returnShifts.isNotEmpty()
@@ -629,7 +629,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                             items(returnShifts, key = { it.id }) { shift ->
                                 FilterChip(
                                     selected = state.returnShiftId == shift.id,
-                                    onClick = { actions.returnShift(shift.id) },
+                                    onClick = { actions.returnShift(if (state.returnShiftId == shift.id) null else shift.id) },
                                     label = { Text(shift.userName ?: "وردية ${shift.id}") },
                                     enabled = !state.locked,
                                 )

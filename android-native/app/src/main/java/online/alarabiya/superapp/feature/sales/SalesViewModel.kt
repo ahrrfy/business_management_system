@@ -92,12 +92,11 @@ class SalesViewModel(
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
     fun returnShift(value: Long?) {
         if (state.locked) return
-        val availableShifts = state.returnInvoice?.refundShifts?.ifEmpty { state.openShifts } ?: state.openShifts
+        val availableShifts = state.returnInvoice?.refundShifts ?: emptyList()
         val returnShifts = capabilities.filterReturnShifts(availableShifts)
         if (capabilities.role == "cashier") {
             if (value == null || returnShifts.none { it.id == value }) return
         } else {
-            if (value == null && returnShifts.isNotEmpty()) return
             if (value != null && returnShifts.none { it.id == value }) return
         }
         state = state.copy(returnShiftId = value, error = null)
@@ -198,7 +197,7 @@ class SalesViewModel(
         if (!capabilities.canCreateReturn) return
         launch(SalesBusy.RETURN_LOAD) {
             val invoice = source.returnableInvoice(invoiceId)
-            val availableShifts = invoice.refundShifts.ifEmpty { state.openShifts }
+            val availableShifts = invoice.refundShifts
             val validShifts = capabilities.filterReturnShifts(availableShifts)
             val defaultShiftId = if (capabilities.role == "cashier") {
                 validShifts.firstOrNull { it.userId == capabilities.userId }?.id

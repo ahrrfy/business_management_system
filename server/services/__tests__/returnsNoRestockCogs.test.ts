@@ -132,14 +132,14 @@ describe("returnSale — COGS تُعكَس فقط حين تعود البضاعة
 });
 
 describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
-  function ctxWith(role: string, branchId: number | null): TrpcContext {
+  function ctxWith(role: string, branchId: number | null, userId = 1): TrpcContext {
     return {
       req: { headers: {} } as unknown as TrpcContext["req"],
       res: {} as unknown as TrpcContext["res"],
-      user: { id: 1, role, branchId, name: "t", email: "t@t", isActive: true } as unknown as TrpcContext["user"],
+      user: { id: userId, role, branchId, name: "t", email: "t@t", isActive: true } as unknown as TrpcContext["user"],
     };
   }
-  const caller = (role: string, branchId: number | null) => appRouter.createCaller(ctxWith(role, branchId));
+  const caller = (role: string, branchId: number | null, userId = 1) => appRouter.createCaller(ctxWith(role, branchId, userId));
 
   it("مدير فرعٍ آخر ⇒ FORBIDDEN؛ مدير الفرع وadmin ⇒ يقرآن", async () => {
     const { invoiceId } = await sellFive(); // فاتورة في الفرع ١
@@ -148,6 +148,15 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
     expect(asAdmin?.id).toBe(invoiceId);
     const asOwnMgr = await caller("manager", 1).returns.getInvoice({ invoiceId });
     expect(asOwnMgr?.id).toBe(invoiceId);
+  });
+
+  it("عزل ملكية الكاشير: كاشير زميل في نفس الفرع ⇒ FORBIDDEN؛ كاشير منشئ الفاتورة ⇒ يقرأ", async () => {
+    const { invoiceId } = await sellFive(); // فاتورة أنشأها المستخدم 1 في الفرع 1
+    // كاشير زميل (userId: 2 في الفرع 1)
+    await expect(caller("cashier", 1, 2).returns.getInvoice({ invoiceId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // كاشير صاحب الفاتورة (userId: 1 في الفرع 1)
+    const asOwnCashier = await caller("cashier", 1, 1).returns.getInvoice({ invoiceId });
+    expect(asOwnCashier?.id).toBe(invoiceId);
   });
 
   it("list: مدير بلا فرع مُسنَد ⇒ FORBIDDEN (لا تسريب مرتجعات كل الفروع)", async () => {

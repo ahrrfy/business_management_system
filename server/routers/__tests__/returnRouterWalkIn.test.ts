@@ -20,16 +20,20 @@ const mocks = vi.hoisted(() => {
     logAudit: vi.fn(async () => undefined),
     setHasPending: (val: boolean) => { hasPending = val; },
     withTx: vi.fn(async (fn: (tx: unknown) => unknown) => {
+      const queryResult = (fields?: Record<string, unknown>) => ({
+        limit: async () => {
+          if (fields && "sourceType" in fields) {
+            return [{ sourceType: "POS", branchId: 1, createdBy: 1, workOrderCreatedBy: null }];
+          }
+          return hasPending ? [{ id: 999 }] : [];
+        },
+      });
       return fn({
         select: (fields?: Record<string, unknown>) => ({
           from: () => ({
-            where: () => ({
-              limit: async () => {
-                if (fields && "sourceType" in fields) {
-                  return [{ sourceType: "POS" }];
-                }
-                return hasPending ? [{ id: 999 }] : [];
-              },
+            where: () => queryResult(fields),
+            leftJoin: () => ({
+              where: () => queryResult(fields),
             }),
           }),
         }),
@@ -238,4 +242,28 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     );
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
+
+  it("يرفض تنفيذ الكاشير المباشر لفاتورة أنشأها زميل بـ FORBIDDEN", async () => {
+    // كاشير بمعرّف 99 يحاول إرجاع فاتورة أنشأها المستخدم 1
+    const coworkerCaller = returnRouter.createCaller({
+      req: { headers: {} } as TrpcContext["req"],
+      res: { cookie() {}, clearCookie() {} } as unknown as TrpcContext["res"],
+      user: {
+        id: 99, role: "cashier", branchId: 1, name: "كاشير زميل",
+        email: "coworker@test.local", isActive: true, isOwner: false,
+      } as TrpcContext["user"],
+    });
+
+    await expect(
+      coworkerCaller.create({
+        ...base,
+        refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+        restock: true,
+        reason: "محاولة إرجاع فاتورة زميل",
+        directExecution: true,
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.returnSaleDirect).not.toHaveBeenCalled();
+  });
 });
+

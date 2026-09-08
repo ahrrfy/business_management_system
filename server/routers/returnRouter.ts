@@ -3,7 +3,8 @@ import { appErrorMessage } from "@shared/errors";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
-import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, returnRequests, salesControlRequests, users } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, returnRequests, salesControlRequests, users, workOrders } from "../../drizzle/schema";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -44,6 +45,17 @@ const walkInResolution = z.object({
 });
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+
+/**
+ * نطاق ملكية الكاشير (نظير `scopedOwnerId` في `branchScopedProcedure` و`sales.get`).
+ * المدير والمسؤول والمالك = null (يرون ويعكسون كل فواتير الفرع).
+ * الكاشير = معرفه الشخصي (لا يرى ولا يعكس إلا فواتيره وفواتير أوامر الشغل التي استقبلها).
+ */
+function getScopedOwnerId(user?: { id?: number | string; role?: string; isOwner?: boolean } | null): number | null {
+  if (!user) return null;
+  if (canCrossBranches(user) || user.role === "manager") return null;
+  return Number(user.id);
+}
 
 // المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
@@ -99,18 +111,64 @@ export const returnRouter = router({
       }
       const reason = (rawReason ?? "").trim();
 
+      const [invRow] = await withTx(async (tx) => tx
+        .select({
+          sourceType: invoices.sourceType,
+          branchId: invoices.branchId,
+          createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
+        })
+        .from(invoices)
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .where(eq(invoices.id, invoiceId))
+        .limit(1), { gate: "NONE" });
+
+      if (!invRow) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة #${invoiceId} غير موجودة`,
+            doThis: "تحقّق من رقم الفاتورة ثم أعد المحاولة",
+          }),
+        });
+      }
+      if (ctx.user.role !== "admin" && Number(invRow.branchId) !== actorBranchId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+            doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
+          }),
+        });
+      }
+
+      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يرجع فاتورة زميله في الفرع نفسه،
+      // لكنه يرجع فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
+      const scopedOwnerId = getScopedOwnerId(ctx.user);
+      if (
+        scopedOwnerId != null
+        && Number(invRow.createdBy) !== scopedOwnerId
+        && Number(invRow.workOrderCreatedBy) !== scopedOwnerId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
+            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+          }),
+        });
+      }
+
       if (shouldExecuteDirect) {
         /**
          * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
          *
          * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
          */
-        const [invRow] = await withTx(async (tx) => tx
-          .select({ sourceType: invoices.sourceType })
-          .from(invoices)
-          .where(eq(invoices.id, invoiceId))
-          .limit(1), { gate: "NONE" });
-        if (invRow?.sourceType === "WORKORDER") {
+        if (invRow.sourceType === "WORKORDER") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
@@ -500,6 +558,7 @@ export const returnRouter = router({
           branchId: invoices.branchId,
           /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
           createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
           customerId: invoices.customerId,
           customerName: customers.name,
           subtotal: invoices.subtotal,
@@ -512,6 +571,7 @@ export const returnRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];
@@ -519,7 +579,32 @@ export const returnRouter = router({
     // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
     // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
     if (ctx.user.role !== "admin" && Number(inv.branchId) !== Number(ctx.user.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر قراءة تفاصيل الفاتورة",
+          why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+          doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
+        }),
+      });
+    }
+
+    // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
+    // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
+    const scopedOwnerId = getScopedOwnerId(ctx.user);
+    if (
+      scopedOwnerId != null
+      && Number(inv.createdBy) !== scopedOwnerId
+      && Number(inv.workOrderCreatedBy) !== scopedOwnerId
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
+          why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
+          doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
+        }),
+      });
     }
 
     const rows = await db
