@@ -1572,6 +1572,32 @@ export async function returnSaleDirect(
   };
 
   return retryOnDeadlock(() => withTx(async (tx) => {
+    // 1. استكشاف المعرّف المخصّص دون قفل لتحديد ترتيب القفل المتّسق (roles -> users) ومنع الجمود مع updateRole
+    const [probe] = await tx
+      .select({ customRoleId: users.customRoleId })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .limit(1);
+
+    // 2. قفل جدول الأدوار أولاً (إن وجد دور مخصّص) بحماية FOR SHARE
+    let customRoleRow: { baseRole: string; isActive: boolean; permissions: unknown } | null = null;
+    if (probe?.customRoleId != null) {
+      const [rRow] = await tx
+        .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
+        .from(roles)
+        .where(eq(roles.id, probe.customRoleId))
+        .for("share")
+        .limit(1);
+      if (rRow) {
+        customRoleRow = {
+          baseRole: rRow.baseRole,
+          isActive: Boolean(rRow.isActive),
+          permissions: rRow.permissions,
+        };
+      }
+    }
+
+    // 3. قفل جدول المستخدمين ثانياً بحماية FOR SHARE
     const [userRow] = await tx
       .select({
         id: users.id,
@@ -1583,6 +1609,7 @@ export async function returnSaleDirect(
       })
       .from(users)
       .where(eq(users.id, actor.userId))
+      .for("share")
       .limit(1);
 
     if (!userRow || !userRow.isActive) {
@@ -1598,21 +1625,34 @@ export async function returnSaleDirect(
       });
     }
 
+    // إن تغيّر customRoleId بين الاستكشاف وقفل المستخدم، نقفل الدور الجديد
+    if (userRow.customRoleId !== probe?.customRoleId) {
+      if (userRow.customRoleId != null) {
+        const [rRow] = await tx
+          .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
+          .from(roles)
+          .where(eq(roles.id, userRow.customRoleId))
+          .for("share")
+          .limit(1);
+        customRoleRow = rRow ? {
+          baseRole: rRow.baseRole,
+          isActive: Boolean(rRow.isActive),
+          permissions: rRow.permissions,
+        } : null;
+      } else {
+        customRoleRow = null;
+      }
+    }
+
     let effectiveRole = userRow.role;
     const basePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
     let effectivePermissions = applyPermissionOverrides(basePermissions, userRow.permissionsOverride as PermissionMap | null);
 
-    if (userRow.customRoleId != null) {
-      const [customRole] = await tx
-        .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
-        .from(roles)
-        .where(eq(roles.id, userRow.customRoleId))
-        .limit(1);
-
-      if (customRole && customRole.isActive) {
-        effectiveRole = customRole.baseRole as RoleKey;
+    if (userRow.customRoleId != null && customRoleRow) {
+      if (customRoleRow.isActive) {
+        effectiveRole = customRoleRow.baseRole as RoleKey;
         const roleBasePermissions = ROLE_TEMPLATES[effectiveRole as RoleKey] ?? ROLE_TEMPLATES.user;
-        const rolePermissions = applyPermissionOverrides(roleBasePermissions, customRole.permissions as PermissionMap | null);
+        const rolePermissions = applyPermissionOverrides(roleBasePermissions, customRoleRow.permissions as PermissionMap | null);
         effectivePermissions = applyPermissionOverrides(rolePermissions, userRow.permissionsOverride as PermissionMap | null);
       } else {
         effectiveRole = "user";
@@ -1652,7 +1692,7 @@ export async function returnSaleDirect(
       }
     }
 
-    if (effectiveRole === "cashier" && !isOwner && !isAdmin) {
+    if (effectiveRole === "cashier") {
       const [invRow] = await tx
         .select({
           branchId: invoices.branchId,
@@ -1664,7 +1704,22 @@ export async function returnSaleDirect(
         .where(eq(invoices.id, coreInput.invoiceId))
         .limit(1);
 
+      const targetBranchId = invRow?.branchId ?? actor.branchId;
+      const openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
+      if (!openShiftId) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لإتمام المرتجع المباشر",
+            doThis: "افتح وردية جديدة في فرع الفاتورة قبل محاولة إجراء المرتجع",
+          }),
+        });
+      }
+
       if (
+        !isOwner &&
+        !isAdmin &&
         invRow &&
         Number(invRow.createdBy) !== Number(actor.userId) &&
         Number(invRow.workOrderCreatedBy) !== Number(actor.userId)
@@ -1675,19 +1730,6 @@ export async function returnSaleDirect(
             what: "تعذّر تنفيذ المرتجع المباشر",
             why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
             doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
-          }),
-        });
-      }
-
-      const targetBranchId = invRow?.branchId ?? actor.branchId;
-      const openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
-      if (!openShiftId) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: appErrorMessage({
-            what: "تعذّر تنفيذ المرتجع المباشر",
-            why: "يشترط وجود وردية مفتوحة للكاشير في نفس فرع الفاتورة لتنفيذ المرتجع",
-            doThis: "افتح وردية جديدة في فرع الفاتورة قبل محاولة إجراء المرتجع",
           }),
         });
       }

@@ -419,7 +419,7 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     });
 
     const shift = await openShiftFor(5, 1);
-    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 5, branchId: 1 });
 
     const res = await returnSaleDirect(
       {
@@ -584,9 +584,10 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
   });
 
   it("كاشير بلا وردية مفتوحة في فرع الفاتورة ⇒ يُرفض التنفيذ المباشر بـ PRECONDITION_FAILED", async () => {
-    // كاشير 2 لا يملك وردية مفتوحة
-    const mgrShift = await openShiftFor(1, 1);
-    const { invoiceId, itemId } = await sellOneCash(mgrShift, { userId: 1, branchId: 1, role: "manager" });
+    // كاشير 2 أنشأ فاتورة على ورديته ثم أُغلقت الوردية
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift, cashier);
+    await db().update(s.shifts).set({ status: "CLOSED" }).where(eq(s.shifts.id, cashierShift));
 
     await expect(
       returnSaleDirect(
