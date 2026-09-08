@@ -370,6 +370,37 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(packetUnit?.barcode).toBe("BC-DOZEN-1");
   });
 
+  it("⭐ صيانة باركود الوحدة المعطلة عند إزالتها من القالب دون نقل باركودها ⇒ لا يُمسح الباركود بل يبقى محجوزاً", async () => {
+    // لدينا: id=1 (قطعة، BC-PIECE-1)، id=2 (درزن، BC-DOZEN-1)
+    // السيناريو: إزالة «درزن» تماماً من القالب مع عدم تخصيص باركودها لأي وحدة جديدة
+    const templateWithoutDozen = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: templateWithoutDozen,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const disabledDozen = units.find((u) => u.id === 2);
+    expect(disabledDozen).toBeDefined();
+    expect(disabledDozen?.isActive).toBe(false); // تم تعطيلها
+    expect(disabledDozen?.barcode).toBe("BC-DOZEN-1"); // باركودها محفوظ ولم يُفرغ (Codex P1)
+  });
+
   it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {
     await expect(
       updateProduct(

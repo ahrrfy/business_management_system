@@ -24,6 +24,7 @@ import {
   assertBaseUnitStableAndRevalueCost,
   assertBundleEditShape,
   assertHasVariants,
+  assertNoActiveStocktakeFactorChange,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -241,6 +242,11 @@ async function upsertVariantUnits(
     let previousByTier: Map<string, string> | null = null;
     if (match) {
       unitId = Number(match.id);
+      if (!t.isBaseUnit) {
+        await assertNoActiveStocktakeFactorChange(tx, variantId, [
+          { unitName: name, oldFactor: match.conversionFactor, newFactor: t.conversionFactor },
+        ]);
+      }
       await tx
         .update(productUnits)
         .set({
@@ -284,18 +290,27 @@ async function upsertVariantUnits(
     if (previousByTier) await logUnitPriceChanges(tx, { productUnitId: unitId, previousByTier, next: nextPrices, actor });
   }
   if (priceRows.length) await tx.insert(productPrices).values(priceRows);
-  // وحدات لم تعد في القالب ⇒ تعطيل وتفريغ الباركود (حفظ التاريخ، لا حذف).
-  // **قبل التعطيل**: إن كانت الوحدة القديمة تحمل باركوداً يطابق أحد الوحدات المُنشأة حديثاً
-  // (سيناريو إعادة تسمية: "قطعة"→"حبة" بنفس الباركود)، ننقل بدائلها إلى الوحدة الجديدة كي
-  // لا تعلق البدائل على وحدة معطَّلة (Codex P2-3).
+  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف).
+  // **صيانة هوية الباركود للوحدات المعطلة (Codex P1)**: لا نفرّغ الباركود للوحدة المعطلة
+  // إلا إذا نُقل الباركود صراحةً لوحدة جديدة بديلة (خليفة successor)، وذلك لضمان بقاء
+  // الباركود محجوزاً للمنتج الأصلي ومنع استيلائه من منتج آخر أو بيع مواد خاطئة عند مسح عبوات قديمة.
   const drop = existing.filter((u) => !keep.has(Number(u.id)));
+  const transferredOldUnitIds = new Set<number>();
   for (const oldUnit of drop) {
     const oldBarcode = oldUnit.barcode;
     if (!oldBarcode) continue;
     const successor = inserted.find((i) => i.barcode && barcodesEquivalent(i.barcode, oldBarcode));
-    if (successor) await migrateAliases(tx, Number(oldUnit.id), successor.unitId);
+    if (successor) {
+      await migrateAliases(tx, Number(oldUnit.id), successor.unitId);
+      transferredOldUnitIds.add(Number(oldUnit.id));
+    }
   }
-  if (drop.length) await tx.update(productUnits).set({ isActive: false, barcode: null }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
+  if (transferredOldUnitIds.size > 0) {
+    await tx.update(productUnits).set({ barcode: null }).where(inArray(productUnits.id, Array.from(transferredOldUnitIds)));
+  }
+  if (drop.length) {
+    await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
+  }
 }
 
 /**
