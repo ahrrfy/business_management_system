@@ -25,6 +25,7 @@ import {
   assertBundleEditShape,
   assertHasVariants,
   assertNoActiveStocktakeFactorChange,
+  assertNoActiveStocktakeUnitFreeze,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -173,6 +174,8 @@ async function upsertVariantUnits(
   actor: Actor,
 ) {
   const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, variantId));
+  // تجميد هيكل وهوية الوحدات أثناء الجرد النشط (Codex P2)
+  await assertNoActiveStocktakeUnitFreeze(tx, variantId, existing, template);
   const keep = new Set<number>();
   // فحص التفرّد للباركودات الأساسيّة على مستوى (الأساسيّ + البديل) قبل أيّ كتابة — نمنع
   // كتابة باركود أساسيّ يطابق بديلاً لسلعة أخرى (Codex P1). نتجاهل وحدات المتغيّر الحاليّة

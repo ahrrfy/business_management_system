@@ -56,7 +56,7 @@ type EditUnit = { id: number; name: string; factor: string; isBase: boolean; sel
  * السلعة البسيطة لها متغيّرٌ واحد ⇒ زرّ آخر شراء ذو معنى مباشر (يملأ الحقل بنقرة).
  */
 function SimpleEditCostCoach({
-  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase,
+  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase, disabled,
 }: {
   costPrice: string;
   baseRetail: string;
@@ -66,6 +66,7 @@ function SimpleEditCostCoach({
   productId: number;
   variantId: number | null;
   onUseLastPurchase: (cost: string) => void;
+  disabled?: boolean;
 }) {
   const statsQ = trpc.catalog.categoryStats.useQuery(
     { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
@@ -73,7 +74,7 @@ function SimpleEditCostCoach({
   );
   const lastPurchaseQ = trpc.catalog.lastPurchaseCost.useQuery(
     { variantId: variantId ?? 0 },
-    { enabled: variantId != null && variantId > 0, staleTime: 60 * 1000 }
+    { enabled: variantId != null && variantId > 0 && !disabled, staleTime: 60 * 1000 }
   );
   const daysAgo = lastPurchaseQ.data?.receivedAt
     ? Math.floor((Date.now() - new Date(lastPurchaseQ.data.receivedAt).getTime()) / (1000 * 60 * 60 * 24))
@@ -90,7 +91,7 @@ function SimpleEditCostCoach({
           n: statsQ.data.n ?? 0,
         } : undefined}
       />
-      {lastPurchaseQ.data && (
+      {!disabled && lastPurchaseQ.data && (
         <button
           type="button"
           onClick={() => onUseLastPurchase(lastPurchaseQ.data!.unitCost)}
@@ -648,6 +649,7 @@ export default function SimpleProductEditForm({
                 productId={productId}
                 variantId={variantId.current}
                 onUseLastPurchase={(cost) => setCostPrice(cost)}
+                disabled={isCostLocked}
               />
             )}
           </Field>

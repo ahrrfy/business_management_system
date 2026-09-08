@@ -171,6 +171,77 @@ export async function assertBaseUnitStableAndRevalueCost(
 }
 
 /**
+ * حارس تجميد هيكل وهوية الوحدات أثناء الجرد النشط (Codex P2):
+ * يمنع تعديل أي وحدة (تغيير اسم، تعديل معامل تحويل، إضافة وحدة، حذف/تعطيل وحدة)
+ * لأي متغيّر مشمول في جلسة جرد حالتها COUNTING أو REVIEW.
+ * تغيير أسماء الوحدات أو حذفها أو تعديل معاملاتها أثناء الجرد يؤدي إلى:
+ * 1) رفض عدّات العاملين الأوفلاينية أو المفتوحة بـ BAD_REQUEST وحذفها من الطابور
+ * 2) تآكل أو تضاعف كميات المستودع الفعلية بالكراتين عند التسوية الدفترية.
+ */
+export async function assertNoActiveStocktakeUnitFreeze(
+  tx: Tx,
+  variantId: number,
+  existingUnits: ReadonlyArray<{
+    unitName: string;
+    conversionFactor: string | number;
+    isBaseUnit?: boolean | number | null;
+    isActive?: boolean | number | null;
+  }>,
+  incomingUnits: ReadonlyArray<{
+    unitName: string;
+    conversionFactor: string | number;
+    isBaseUnit?: boolean | number | null;
+  }>,
+): Promise<void> {
+  const activeExisting = existingUnits.filter((u) => u.isActive !== false && u.isActive !== 0);
+  if (activeExisting.length === 0) return;
+
+  // فحص هل تغير هيكل الوحدات (إضافة، حذف، تغيير اسم، تغيير معامل، أو تغيير صفة الأساس)
+  const structureChanged =
+    activeExisting.length !== incomingUnits.length ||
+    activeExisting.some((eu) => {
+      const iu = incomingUnits.find((u) => String(u.unitName).trim() === String(eu.unitName).trim());
+      if (!iu) return true; // تغير الاسم أو حُذفت الوحدة
+      const euFactor = Number(eu.conversionFactor);
+      const iuFactor = Number(iu.conversionFactor);
+      const factorDiffers =
+        Number.isFinite(euFactor) && Number.isFinite(iuFactor)
+          ? Math.abs(euFactor - iuFactor) > 1e-6
+          : String(iu.conversionFactor).trim() !== String(eu.conversionFactor).trim();
+      if (factorDiffers) return true; // تغير المعامل
+      if (Boolean(iu.isBaseUnit) !== Boolean(eu.isBaseUnit)) return true; // تغير الأساس
+      return false;
+    });
+
+  if (!structureChanged) return;
+
+  const active = await tx
+    .select({ code: stocktakeSessions.code, status: stocktakeSessions.status })
+    .from(stocktakeSessions)
+    .innerJoin(stocktakeItems, eq(stocktakeSessions.id, stocktakeItems.sessionId))
+    .where(
+      and(
+        eq(stocktakeItems.variantId, variantId),
+        inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"]),
+      ),
+    )
+    .limit(1);
+
+  if (active.length > 0) {
+    const s = active[0];
+    const phase = s.status === "COUNTING" ? "مرحلة العدّ" : "مرحلة المراجعة";
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر تعديل هيكل أو وحدات الصنف أثناء الجرد النشط",
+        why: `هذا الصنف مدرج في جلسة جرد نشطة (${s.code}) في ${phase}، وتعديل أسماء الوحدات أو معاملاتها أو حذفها أثناء الجرد يؤدي إلى رفض عدّات العاملين الميدانية وتضارب التسوية الدفترية`,
+        doThis: "أكمل اعتماد جلسة الجرد أو ألغِها أولاً قبل تعديل وحدات القياس في الكتالوج",
+      }),
+    });
+  }
+}
+
+/**
  * حارس حماية معاملات التحويل أثناء الجرد النشط:
  * يمنع تعديل معامل التحويل لأي وحدة قائمة لمتغيّر مشمول في جلسة جرد حالتها COUNTING أو REVIEW.
  * تعديل المعامل أثناء الجرد يؤدي إلى تآكل أو تضاعف كميات المستودع الفعلية بالكراتين عند التسوية الدفترية.

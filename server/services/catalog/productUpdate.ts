@@ -19,6 +19,7 @@ import {
   assertBundleEditShape,
   assertHasVariants,
   assertNoActiveStocktakeFactorChange,
+  assertNoActiveStocktakeUnitFreeze,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -219,6 +220,8 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
 
       // Existing units for this variant.
       const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, v.id));
+      // تجميد هيكل وهوية الوحدات أثناء الجرد النشط (Codex P2)
+      await assertNoActiveStocktakeUnitFreeze(tx, v.id, existing, v.units);
       const keepIds = new Set<number>();
 
       for (const u of v.units) {

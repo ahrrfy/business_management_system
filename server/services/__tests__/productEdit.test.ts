@@ -1230,4 +1230,95 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
     );
     expect(res).toBeTruthy();
   });
+
+  it("⭐ إعادة تسمية أي وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل (Codex P2)", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-RENAME",
+      name: "جلسة اختبار إعادة تسمية",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 3",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // إعادة تسمية وحدة الدرزن إلى «دزينة» بنفس المعامل (12)
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: renamedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", دزينة: "BC-DOZEN-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ حذف أو إضافة وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل (Codex P2)", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-DROP",
+      name: "جلسة اختبار حذف وحدة",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 4",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // محاولة حذف وحدة الدرزن والإبقاء على القطعة فقط
+    const droppedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: droppedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
 });

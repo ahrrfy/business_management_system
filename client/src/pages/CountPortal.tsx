@@ -244,13 +244,10 @@ export default function CountPortal() {
       for (const it of pending) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            variantId: it.variantId,
-            qty: it.qty,
-            unitBreakdown: it.unitBreakdown,
-            entryMethod: it.entryMethod,
+            sessionCode: code, variantId: it.variantId, qty: it.qty,
+            unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt,
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -277,9 +274,8 @@ export default function CountPortal() {
       for (const u of pendingUnknown) {
         try {
           await utils.client.count.submit.mutate({
-            sessionCode: code,
-            unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId,
+            sessionCode: code, unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt,
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
