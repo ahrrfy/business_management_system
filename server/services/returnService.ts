@@ -3,7 +3,8 @@ import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, returnRequests, roles, salesControlRequests, shifts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, inventoryMovements, invoiceItems, invoices, productVariants, products, receipts, returnRequests, roles, salesControlRequests, shifts, users, workOrders } from "../../drizzle/schema";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { applyPermissionOverrides, diffFromTemplate, moduleAccessAllowed, resolvePermissions, ROLE_TEMPLATES, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
@@ -1570,7 +1571,7 @@ export async function returnSaleDirect(
     operatorReason: reason,
   };
 
-  return withTx(async (tx) => {
+  return retryOnDeadlock(() => withTx(async (tx) => {
     const [userRow] = await tx
       .select({
         id: users.id,
@@ -1582,7 +1583,6 @@ export async function returnSaleDirect(
       })
       .from(users)
       .where(eq(users.id, actor.userId))
-      .for("share")
       .limit(1);
 
     if (!userRow || !userRow.isActive) {
@@ -1607,7 +1607,6 @@ export async function returnSaleDirect(
         .select({ baseRole: roles.baseRole, isActive: roles.isActive, permissions: roles.permissions })
         .from(roles)
         .where(eq(roles.id, userRow.customRoleId))
-        .for("share")
         .limit(1);
 
       if (customRole && customRole.isActive) {
@@ -1653,14 +1652,34 @@ export async function returnSaleDirect(
       }
     }
 
-    if (effectiveRole === "cashier") {
-      const [invBranch] = await tx
-        .select({ branchId: invoices.branchId })
+    if (effectiveRole === "cashier" && !isOwner && !isAdmin) {
+      const [invRow] = await tx
+        .select({
+          branchId: invoices.branchId,
+          createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
+        })
         .from(invoices)
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
         .where(eq(invoices.id, coreInput.invoiceId))
         .limit(1);
 
-      const targetBranchId = invBranch?.branchId ?? actor.branchId;
+      if (
+        invRow &&
+        Number(invRow.createdBy) !== Number(actor.userId) &&
+        Number(invRow.workOrderCreatedBy) !== Number(actor.userId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تنفيذ المرتجع المباشر",
+            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
+            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+          }),
+        });
+      }
+
+      const targetBranchId = invRow?.branchId ?? actor.branchId;
       const openShiftId = await openShiftIdTx(tx, actor.userId, targetBranchId);
       if (!openShiftId) {
         throw new TRPCError({
@@ -1703,7 +1722,7 @@ export async function returnSaleDirect(
       branchId: actor.branchId,
       role: effectiveRole,
     });
-  });
+  }));
 }
 
 export interface ListSalesReturnsInput {

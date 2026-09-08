@@ -660,9 +660,9 @@ export default function Invoices() {
         enableSorting: false,
         cell: (c) => {
           const r = c.row.original;
-          // مسوّاة = لا دفعات بعدها؛ غير قابلة للإرجاع = ملغاة/مرتجعة بالكامل.
+          // مسوّاة = لا دفعات بعدها؛ غير قابلة للإرجاع = ملغاة/مرتجعة بالكامل أو أمر شغل (يُعكس من شاشة أمر الشغل).
           const settled = r.status === "PAID" || r.status === "CANCELLED" || r.status === "RETURNED" || r.status === "SUPERSEDED";
-          const returnable = r.status !== "CANCELLED" && r.status !== "RETURNED" && r.status !== "SUPERSEDED";
+          const returnable = r.status !== "CANCELLED" && r.status !== "RETURNED" && r.status !== "SUPERSEDED" && r.sourceType !== "WORKORDER";
           return (
             <RowActions
               mode="auto"

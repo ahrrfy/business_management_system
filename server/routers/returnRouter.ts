@@ -181,12 +181,12 @@ export const returnRouter = router({
               ownerReason: reason,
               clientRequestId: clientRequestId ?? randomUUID(),
             }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role })
-          : await returnSaleDirect({
+          : await retryOnDeadlock(() => returnSaleDirect({
               ...payload,
               invoiceId,
               operatorReason: reason,
               clientRequestId: clientRequestId ?? randomUUID(),
-            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: ctx.user.isOwner });
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: ctx.user.isOwner }));
 
         const executionMode: ReturnExecutionMode = ctx.user.isOwner === true
           ? "OWNER_IMMEDIATE"

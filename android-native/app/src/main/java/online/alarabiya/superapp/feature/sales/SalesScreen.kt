@@ -629,7 +629,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                             items(returnShifts, key = { it.id }) { shift ->
                                 FilterChip(
                                     selected = state.returnShiftId == shift.id,
-                                    onClick = { actions.returnShift(if (state.returnShiftId == shift.id) null else shift.id) },
+                                    onClick = { actions.returnShift(shift.id) },
                                     label = { Text(shift.userName ?: "وردية ${shift.id}") },
                                     enabled = !state.locked,
                                 )

@@ -97,6 +97,7 @@ class SalesViewModel(
         if (capabilities.role == "cashier") {
             if (value == null || returnShifts.none { it.id == value }) return
         } else {
+            if (value == null && returnShifts.isNotEmpty()) return
             if (value != null && returnShifts.none { it.id == value }) return
         }
         state = state.copy(returnShiftId = value, error = null)
