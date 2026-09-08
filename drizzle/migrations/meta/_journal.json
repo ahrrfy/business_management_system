@@ -2178,6 +2178,13 @@
 			"when": 1788052409000,
 			"tag": "0336_owner_global_selfapproval_constraints",
 			"breakpoints": true
+		},
+		{
+			"idx": 337,
+			"version": "5",
+			"when": 1788052410000,
+			"tag": "0337_add_job_applicant_profile_fields",
+			"breakpoints": true
 		}
 	]
 }

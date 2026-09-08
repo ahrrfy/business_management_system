@@ -7,16 +7,32 @@
  * ========================================================================== */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { APPLICANT_SOURCES, APPLICANT_STAGE_KEYS, EMPLOYMENT_TYPE_KEYS } from "@shared/hr";
+import {
+  APPLICANT_SOURCES,
+  APPLICANT_STAGE_KEYS,
+  EMPLOYMENT_TYPE_KEYS,
+} from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/recruitmentService";
-import { protectedProcedure, publicProcedure, requireModule, router } from "../trpc";
-import { companyBranchScope, resolveTargetBranch } from "../services/companyBranchScope";
+import {
+  protectedProcedure,
+  publicProcedure,
+  requireModule,
+  router,
+} from "../trpc";
+import {
+  companyBranchScope,
+  resolveTargetBranch,
+} from "../services/companyBranchScope";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
 
-const SOURCE_KEYS = APPLICANT_SOURCES.map((s) => s.key) as [string, ...string[]];
+const SOURCE_KEYS = APPLICANT_SOURCES.map((s) => s.key) as [
+  string,
+  ...string[],
+];
+const IRAQI_MOBILE_RE = /^\+9647\d{9}$/;
 
 const applicantCv = z
   .object({
@@ -31,8 +47,45 @@ const applicantCv = z
   .strict()
   .optional();
 
-/** صورة الوظيفة كـ data URL مضغوط — حدّ ~٢ مليون محرف يتّسع لناتج الضغط (≤٧٠٠KB) ويردّ الإساءة. */
-const vacancyImage = z.string().trim().max(2_200_000).optional();
+const BASE64_DATA_IMAGE_RE =
+  /^data:image\/(?:avif|jpeg|png|webp);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * صورة الوظيفة ليست رابطاً حراً: نقبل بيانات صورة نقطية فقط، بلا SVG أو عنوان خارجي أو MIME
+ * قابل للتنفيذ. يظل ImageUploader مسؤولاً عن الضغط في المتصفح، وهذا الحارس الخادمي يمنع
+ * تجاوز الواجهة بطلب tRPC مباشر.
+ */
+const vacancyImage = z
+  .string()
+  .trim()
+  .max(950_000)
+  .refine(
+    (value) => BASE64_DATA_IMAGE_RE.test(value),
+    "صورة الوظيفة يجب أن تكون PNG أو JPEG أو WebP أو AVIF صالحة",
+  )
+  .optional();
+
+/** رابط أعمال اختياري: لا نقبل مخططات قابلة للتنفيذ مثل javascript: أو data:. */
+const portfolioUrl = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z
+    .string()
+    .trim()
+    .max(500)
+    .url("رابط الأعمال النموذجية غير صالح")
+    .refine(
+      (value) => {
+        try {
+          const protocol = new URL(value).protocol;
+          return protocol === "https:" || protocol === "http:";
+        } catch {
+          return false;
+        }
+      },
+      "رابط الأعمال النموذجية يجب أن يبدأ بـ https:// أو http://",
+    )
+    .optional(),
+);
 
 /** حقول الوظيفة الشاغرة المشتركة (إنشاء/تعديل). */
 const vacancyFields = {
@@ -64,9 +117,26 @@ const applicantFields = {
   ),
   experience: z.string().trim().max(120).optional(),
   education: z.string().trim().max(200).optional(),
+  residentialAddress: z.string().trim().max(300).optional(),
+  portfolioUrl,
   // حدّ أقصى للملاحظات: يمنع تسرّب خطأ «Data too long» (عمود TEXT) وإساءة الحجم عبر الإجراء العام.
   notes: z.string().trim().max(2000).optional(),
   cv: applicantCv,
+};
+
+// التقديم العام لا ينتمي إلى فرع، ويلزم به هاتف عراقي صالح للتواصل مع المتقدّم.
+const {
+  branchId: _branchId,
+  phone: _phone,
+  email: _email,
+  ...publicApplicantFieldsWithoutPhone
+} = applicantFields;
+const publicApplicantFields = {
+  ...publicApplicantFieldsWithoutPhone,
+  phone: z
+    .string()
+    .trim()
+    .regex(IRAQI_MOBILE_RE, "أدخل رقم هاتف عراقي بصيغة +9647XXXXXXXXX"),
 };
 
 export const recruitmentRouter = router({
@@ -85,13 +155,21 @@ export const recruitmentRouter = router({
         })
         .optional(),
     )
-    .query(({ input, ctx }) => svc.listApplicants(input, companyBranchScope(ctx.user))),
+    .query(({ input, ctx }) =>
+      svc.listApplicants(input, companyBranchScope(ctx.user)),
+    ),
 
-  get: hrRead.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
-    const a = await svc.getApplicant(input.id, companyBranchScope(ctx.user));
-    if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "المتقدّم غير موجود" });
-    return a;
-  }),
+  get: hrRead
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const a = await svc.getApplicant(input.id, companyBranchScope(ctx.user));
+      if (!a)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "المتقدّم غير موجود",
+        });
+      return a;
+    }),
 
   /** إدخال متقدّم من الموظف (استمارة ورقية/أرشيف، أو يدوياً برابط خارجي). */
   create: hrWrite
@@ -105,21 +183,37 @@ export const recruitmentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.createApplicant(input as svc.ApplicantInput, companyBranchScope(ctx.user));
+      const a = await svc.createApplicant(
+        input as svc.ApplicantInput,
+        companyBranchScope(ctx.user),
+      );
       await logAudit(ctx, {
         action: "recruitment.create",
         entityType: "jobApplicant",
         entityId: a?.id,
-        newValue: { name: a?.name, source: input.source, jobTitle: input.jobTitle ?? null },
+        newValue: {
+          name: a?.name,
+          source: input.source,
+          jobTitle: input.jobTitle ?? null,
+        },
       });
       return a;
     }),
 
   /** نقل المتقدّم إلى مرحلة جديدة في المسار. */
   updateStage: hrWrite
-    .input(z.object({ id: z.number().int().positive(), stage: z.enum(APPLICANT_STAGE_KEYS) }))
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        stage: z.enum(APPLICANT_STAGE_KEYS),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.updateStage(input.id, input.stage, companyBranchScope(ctx.user));
+      const a = await svc.updateStage(
+        input.id,
+        input.stage,
+        companyBranchScope(ctx.user),
+      );
       await logAudit(ctx, {
         action: "recruitment.updateStage",
         entityType: "jobApplicant",
@@ -131,10 +225,24 @@ export const recruitmentRouter = router({
 
   /** ضبط التقييم المبدئي (٠–٥). */
   setRating: hrWrite
-    .input(z.object({ id: z.number().int().positive(), rating: z.number().int().min(0).max(5) }))
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        rating: z.number().int().min(0).max(5),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.setRating(input.id, input.rating, companyBranchScope(ctx.user));
-      await logAudit(ctx, { action: "recruitment.setRating", entityType: "applicant", entityId: input.id, newValue: { rating: input.rating } });
+      const res = await svc.setRating(
+        input.id,
+        input.rating,
+        companyBranchScope(ctx.user),
+      );
+      await logAudit(ctx, {
+        action: "recruitment.setRating",
+        entityType: "applicant",
+        entityId: input.id,
+        newValue: { rating: input.rating },
+      });
       return res;
     }),
 
@@ -144,9 +252,13 @@ export const recruitmentRouter = router({
    * إن مرّر vacancyId صالحاً، يُربَط المتقدّم بالوظيفة ويؤخذ العنوان من سجلّها (الخدمة).
    */
   submit: publicProcedure
-    .input(z.object(applicantFields))
+    .input(z.object(publicApplicantFields).strict())
     .mutation(({ input }) =>
-      svc.createApplicant({ ...input, source: "external", stage: "new" } as svc.ApplicantInput),
+      svc.createApplicant({
+        ...input,
+        source: "external",
+        stage: "new",
+      } as svc.ApplicantInput),
     ),
 
   /* ===================== الوظائف الشاغرة ===================== */
@@ -157,30 +269,47 @@ export const recruitmentRouter = router({
   /** إدارة HR: كل الوظائف (منشورة وغير منشورة) + خيار تقييد على المنشورة. */
   vacancyList: hrRead
     .input(z.object({ onlyPublished: z.boolean().optional() }).optional())
-    .query(({ input, ctx }) => svc.listVacancies(input?.onlyPublished, companyBranchScope(ctx.user))),
+    .query(({ input, ctx }) =>
+      svc.listVacancies(input?.onlyPublished, companyBranchScope(ctx.user)),
+    ),
 
   vacancyGet: hrRead
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const v = await svc.getVacancy(input.id, companyBranchScope(ctx.user));
-      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
+      if (!v)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "الوظيفة غير موجودة",
+        });
       return v;
     }),
 
   /** عدّاد المتقدّمين لكل وظيفة (للوحة الإدارة). */
-  vacancyCounts: hrRead.query(({ ctx }) => svc.vacancyApplicantCounts(companyBranchScope(ctx.user))),
+  vacancyCounts: hrRead.query(({ ctx }) =>
+    svc.vacancyApplicantCounts(companyBranchScope(ctx.user)),
+  ),
 
   vacancyCreate: hrWrite
     .input(z.object(vacancyFields))
     .mutation(async ({ input, ctx }) => {
       const scope = companyBranchScope(ctx.user);
-      const branchId = resolveTargetBranch(scope, input.branchId, { required: false });
-      const v = await svc.createVacancy({ ...input, branchId } as svc.VacancyInput, scope);
+      const branchId = resolveTargetBranch(scope, input.branchId, {
+        required: false,
+      });
+      const v = await svc.createVacancy(
+        { ...input, branchId } as svc.VacancyInput,
+        scope,
+      );
       await logAudit(ctx, {
         action: "recruitment.vacancyCreate",
         entityType: "jobVacancy",
         entityId: v?.id,
-        newValue: { title: v?.title, department: v?.department, isPublished: v?.isPublished },
+        newValue: {
+          title: v?.title,
+          department: v?.department,
+          isPublished: v?.isPublished,
+        },
       });
       return v;
     }),
@@ -191,9 +320,19 @@ export const recruitmentRouter = router({
       const { id, ...rest } = input;
       const scope = companyBranchScope(ctx.user);
       const existing = await svc.getVacancy(id, scope);
-      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "الوظيفة غير موجودة" });
-      const branchId = resolveTargetBranch(scope, rest.branchId, { required: false });
-      const v = await svc.updateVacancy(id, { ...rest, branchId } as svc.VacancyInput, scope);
+      if (!existing)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "الوظيفة غير موجودة",
+        });
+      const branchId = resolveTargetBranch(scope, rest.branchId, {
+        required: false,
+      });
+      const v = await svc.updateVacancy(
+        id,
+        { ...rest, branchId } as svc.VacancyInput,
+        scope,
+      );
       await logAudit(ctx, {
         action: "recruitment.vacancyUpdate",
         entityType: "jobVacancy",
@@ -204,9 +343,15 @@ export const recruitmentRouter = router({
     }),
 
   vacancyPublish: hrWrite
-    .input(z.object({ id: z.number().int().positive(), isPublished: z.boolean() }))
+    .input(
+      z.object({ id: z.number().int().positive(), isPublished: z.boolean() }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const v = await svc.setVacancyPublished(input.id, input.isPublished, companyBranchScope(ctx.user));
+      const v = await svc.setVacancyPublished(
+        input.id,
+        input.isPublished,
+        companyBranchScope(ctx.user),
+      );
       await logAudit(ctx, {
         action: "recruitment.vacancyPublish",
         entityType: "jobVacancy",
