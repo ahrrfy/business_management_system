@@ -42,6 +42,7 @@ import {
   Loader2,
   Receipt as ReceiptIcon,
   RefreshCcw,
+  Send,
   Vault,
   Wallet,
   X,
@@ -742,29 +743,19 @@ export default function Treasury() {
       {/* ═══ شريط أزرار سريعة ═══ */}
       <div className="flex flex-wrap gap-2">
         <Link href="/vouchers/receipt/new">
-          <Button size="sm" variant="default" className="gap-1.5">
-            <ArrowDownLeft className="h-4 w-4" />
-            سند قبض
-          </Button>
+          <Button size="sm" variant="default" className="gap-1.5"><ArrowDownLeft className="h-4 w-4" />سند قبض</Button>
         </Link>
         <Link href="/vouchers/payment/new">
-          <Button size="sm" variant="outline" className="gap-1.5">
-            <ArrowUpRight className="h-4 w-4" />
-            سند صرف
-          </Button>
+          <Button size="sm" variant="outline" className="gap-1.5"><ArrowUpRight className="h-4 w-4" />سند صرف</Button>
         </Link>
         <Link href="/expenses/new">
-          <Button size="sm" variant="outline" className="gap-1.5">
-            <ReceiptIcon className="h-4 w-4" />
-            مصروف يومي
-          </Button>
+          <Button size="sm" variant="outline" className="gap-1.5"><ReceiptIcon className="h-4 w-4" />مصروف يومي</Button>
+        </Link>
+        <Link href="/treasury?tab=transfers">
+          <Button size="sm" variant="outline" className="gap-1.5"><Send className="h-4 w-4" />تحويل بين الخزائن</Button>
         </Link>
         <Link href="/shifts">
-          <Button size="sm" variant="ghost" className="gap-1.5">
-            <Layers className="h-4 w-4" />
-            الورديات
-            <ArrowRight className="h-3 w-3" />
-          </Button>
+          <Button size="sm" variant="ghost" className="gap-1.5"><Layers className="h-4 w-4" />الورديات<ArrowRight className="h-3 w-3" /></Button>
         </Link>
         {(isAdmin || isManager) && (
           <Button
