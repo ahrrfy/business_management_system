@@ -431,6 +431,21 @@ describe("recruitment branch isolation", () => {
 
   it("does not expose or accept vacancies without real public details", async () => {
     const admin = await caller(1);
+    // A legacy record may have been flagged as published before detailed public
+    // vacancy content became mandatory. HR must see that it is not actually
+    // visible on /apply instead of receiving a misleading "published" state.
+    await db()
+      .update(schema.jobVacancies)
+      .set({ isPublished: true })
+      .where(eq(schema.jobVacancies.id, 53));
+    const legacy = (await admin.recruitment.vacancyList()).find(
+      (vacancy) => vacancy.id === 53,
+    );
+    expect(legacy).toMatchObject({
+      isPublished: true,
+      publicPublicationStatus: "details_required",
+    });
+
     const incomplete = await admin.recruitment.vacancyCreate({
       title: "Incomplete public role",
       description: "Too short",

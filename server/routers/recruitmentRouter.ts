@@ -50,6 +50,13 @@ const applicantCv = z
 const BASE64_DATA_IMAGE_RE =
   /^data:image\/(?:avif|jpeg|png|webp);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
+// ImageUploader targets a 700 KiB binary image.  Base64 expands that to
+// 955,736 characters; the longest permitted data-URL prefix adds 23 more.
+// Keep this boundary aligned so a browser-approved upload cannot be rejected
+// by the API solely because it is encoded for transport.
+const MAX_VACANCY_IMAGE_DATA_URL_CHARS =
+  Math.ceil((700 * 1024) / 3) * 4 + "data:image/jpeg;base64,".length;
+
 /**
  * صورة الوظيفة ليست رابطاً حراً: نقبل بيانات صورة نقطية فقط، بلا SVG أو عنوان خارجي أو MIME
  * قابل للتنفيذ. يظل ImageUploader مسؤولاً عن الضغط في المتصفح، وهذا الحارس الخادمي يمنع
@@ -58,7 +65,7 @@ const BASE64_DATA_IMAGE_RE =
 const vacancyImage = z
   .string()
   .trim()
-  .max(950_000)
+  .max(MAX_VACANCY_IMAGE_DATA_URL_CHARS)
   .refine(
     (value) => BASE64_DATA_IMAGE_RE.test(value),
     "صورة الوظيفة يجب أن تكون PNG أو JPEG أو WebP أو AVIF صالحة",

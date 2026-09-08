@@ -683,6 +683,7 @@ type Vacancy = {
   openings: number;
   imageUrl: string | null;
   isPublished: boolean;
+  publicPublicationStatus: "published" | "details_required" | "hidden";
   sortOrder: number;
 };
 
@@ -695,7 +696,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
 
   const [editing, setEditing] = useState<Vacancy | "new" | null>(null);
 
-  const publishedCount = rows.filter((v) => v.isPublished).length;
+  const publishedCount = rows.filter((v) => v.publicPublicationStatus === "published").length;
 
   const publish = trpc.recruitment.vacancyPublish.useMutation({
     onSuccess: () => {
@@ -776,6 +777,8 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
         {rows.map((v) => {
           const ac = vacancyAccent(v.department);
           const applicants = countMap[String(v.id)] ?? 0;
+          const requiresDetails = v.publicPublicationStatus === "details_required";
+          const publiclyPublished = v.publicPublicationStatus === "published";
           return (
             <Card key={v.id} className="overflow-hidden">
               <div className="relative h-24 flex items-end">
@@ -792,8 +795,8 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                 <div className="relative z-10 p-3 w-full flex items-center justify-between">
                   {v.department && <Badge className="bg-black/40 text-white border-white/30">{v.department}</Badge>}
-                  <Badge variant={v.isPublished ? "default" : "secondary"} className={v.isPublished ? "badge-status-active border-transparent" : ""}>
-                    {v.isPublished ? "منشورة" : "مخفية"}
+                  <Badge variant={publiclyPublished ? "default" : "secondary"} className={publiclyPublished ? "badge-status-active border-transparent" : ""}>
+                    {publiclyPublished ? "منشورة" : requiresDetails ? "تحتاج تفاصيل" : "مخفية"}
                   </Badge>
                 </div>
               </div>
@@ -812,9 +815,9 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-1 border-t">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer pt-2">
-                    <Switch checked={v.isPublished} disabled={publish.isPending} onCheckedChange={(c) => publish.mutate({ id: v.id, isPublished: c })} />
-                    نشر في المعرض
+                  <label className={`flex items-center gap-2 text-xs text-muted-foreground pt-2 ${requiresDetails ? "cursor-not-allowed" : "cursor-pointer"}`}>
+                    <Switch checked={publiclyPublished} disabled={publish.isPending || requiresDetails} onCheckedChange={(c) => publish.mutate({ id: v.id, isPublished: c })} />
+                    {requiresDetails ? "أكمل التفاصيل للنشر" : "نشر في المعرض"}
                   </label>
                   <div className="flex items-center gap-1 pt-2">
                     <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditing(v)}>

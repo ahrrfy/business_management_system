@@ -284,6 +284,10 @@ export interface VacancyInput {
 
 const MIN_PUBLIC_VACANCY_DESCRIPTION_CHARS = 30;
 const MIN_PUBLIC_VACANCY_REQUIREMENTS_CHARS = 10;
+export type PublicVacancyPublicationStatus =
+  | "published"
+  | "details_required"
+  | "hidden";
 
 function hasPublicVacancyDetails(
   vacancy: Pick<VacancyInput, "description" | "requirements">,
@@ -294,6 +298,13 @@ function hasPublicVacancyDetails(
     (vacancy.requirements?.trim().length ?? 0) >=
       MIN_PUBLIC_VACANCY_REQUIREMENTS_CHARS
   );
+}
+
+function publicVacancyPublicationStatus(
+  vacancy: Pick<VacancyInput, "description" | "requirements" | "isPublished">,
+): PublicVacancyPublicationStatus {
+  if (!vacancy.isPublished) return "hidden";
+  return hasPublicVacancyDetails(vacancy) ? "published" : "details_required";
 }
 
 /** Public vacancy cards must explain the actual work and requirements before accepting applicant data. */
@@ -337,7 +348,7 @@ export async function listVacancies(
   const branch = vacancyScopeCondition(scope);
   if (branch) conds.push(branch);
   const where = conds.length ? and(...conds) : undefined;
-  return db
+  const vacancies = await db
     .select()
     .from(jobVacancies)
     .where(where)
@@ -346,6 +357,12 @@ export async function listVacancies(
       desc(jobVacancies.createdAt),
       desc(jobVacancies.id),
     );
+  // Older records can predate the detailed-public-vacancy rule. Do not let a
+  // stored `isPublished` flag conceal that they are absent from /apply.
+  return vacancies.map((vacancy) => ({
+    ...vacancy,
+    publicPublicationStatus: publicVacancyPublicationStatus(vacancy),
+  }));
 }
 
 export async function getVacancy(
