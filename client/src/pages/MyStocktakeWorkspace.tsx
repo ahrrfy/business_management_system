@@ -419,6 +419,7 @@ export default function MyStocktakeWorkspace() {
     const item = selected;
     const mode = selectedMode;
     const clientRequestId = newClientRequestId();
+    const capturedAt = new Date().toISOString();
     const entry = selectedEntry;
     const payload = {
       sessionCode: code,
@@ -428,6 +429,7 @@ export default function MyStocktakeWorkspace() {
       entryMethod: entry.method,
       scannedBarcode: entry.scannedBarcode ?? undefined,
       clientRequestId,
+      clientCapturedAt: capturedAt,
     };
     const onAccepted = async (res: SubmitResult) => {
       // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
@@ -486,7 +488,7 @@ export default function MyStocktakeWorkspace() {
           unitBreakdown,
           entryMethod: entry.method,
           scannedBarcode: entry.scannedBarcode,
-          queuedAt: new Date().toISOString(),
+          queuedAt: capturedAt,
         });
         setQueueCount(queueSize(code));
         setSelected(null);

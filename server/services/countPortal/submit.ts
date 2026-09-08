@@ -360,6 +360,43 @@ export async function submitCount(
         : null;
 
       const breakdown = parseUnitBreakdown(input.unitBreakdown);
+      const candidates = [
+        ...units.map((unit) => ({
+          unitName: unit.unitName,
+          factor: unit.factor,
+          code: unit.barcode,
+        })),
+        ...aliases.map((unit) => ({
+          unitName: unit.unitName,
+          factor: unit.factor,
+          code: unit.barcode,
+        })),
+        { unitName: null, factor: "1", code: item.sku },
+      ];
+      const scannerLike = candidates.some((candidate) => {
+        const prefix = scannerPrefix(candidate.code);
+        if (prefix == null) return false;
+        if (candidate.unitName && breakdown?.[candidate.unitName] === prefix)
+          return true;
+        const baseQty = new Decimal(prefix).times(String(candidate.factor));
+        return (
+          baseQty.isInteger() &&
+          baseQty.abs().lte(Number.MAX_SAFE_INTEGER) &&
+          baseQty.toNumber() === input.qty
+        );
+      });
+      let scannerOverrideByUserId: number | null = null;
+      if (scannerLike && input.scannerGuardOverride === true) {
+        scannerOverrideByUserId = await getSupervisorUserId();
+      }
+      if (scannerLike && scannerOverrideByUserId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية المشروعة يلزم تأكيد مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
+        });
+      }
+
       if (breakdown) {
         const userEntries = Object.entries(breakdown).filter(
           ([k, v]) => !k.startsWith("__") && typeof v === "number" && v > 0,
@@ -403,42 +440,6 @@ export async function submitCount(
             });
           }
         }
-      }
-      const candidates = [
-        ...units.map((unit) => ({
-          unitName: unit.unitName,
-          factor: unit.factor,
-          code: unit.barcode,
-        })),
-        ...aliases.map((unit) => ({
-          unitName: unit.unitName,
-          factor: unit.factor,
-          code: unit.barcode,
-        })),
-        { unitName: null, factor: "1", code: item.sku },
-      ];
-      const scannerLike = candidates.some((candidate) => {
-        const prefix = scannerPrefix(candidate.code);
-        if (prefix == null) return false;
-        if (candidate.unitName && breakdown?.[candidate.unitName] === prefix)
-          return true;
-        const baseQty = new Decimal(prefix).times(String(candidate.factor));
-        return (
-          baseQty.isInteger() &&
-          baseQty.abs().lte(Number.MAX_SAFE_INTEGER) &&
-          baseQty.toNumber() === input.qty
-        );
-      });
-      let scannerOverrideByUserId: number | null = null;
-      if (scannerLike && input.scannerGuardOverride === true) {
-        scannerOverrideByUserId = await getSupervisorUserId();
-      }
-      if (scannerLike && scannerOverrideByUserId == null) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية المشروعة يلزم تأكيد مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
-        });
       }
       const candidateDigest = createHash("sha256")
         .update(
@@ -500,7 +501,8 @@ export async function submitCount(
         const nowMs = now.getTime();
         const sessionCreatedMs = new Date(session.createdAt).getTime();
         if (!isNaN(capMs) && capMs >= sessionCreatedMs - 60_000 && capMs <= nowMs + 300_000) {
-          countedAtDate = capMs > nowMs ? now : cap;
+          const clampedMs = Math.max(sessionCreatedMs, Math.min(nowMs, capMs));
+          countedAtDate = new Date(clampedMs);
         }
       }
 

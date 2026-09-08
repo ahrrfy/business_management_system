@@ -533,6 +533,7 @@ export default function CountPortal() {
   const saveCount = useCallback(
     (item: CountItem, mode: CountMode, qty: number, unitBreakdown: string | undefined) => {
       const clientRequestId = newClientRequestId();
+      const capturedAt = new Date().toISOString();
       // نسبُ العدّة كما فُتحت البطاقة — الخادم يعيد حلّ الباركود ويطابقه في المسح الإلزامي.
       const entryMethod = openEntry.method;
       const scannedBarcode = openEntry.scannedBarcode;
@@ -545,6 +546,7 @@ export default function CountPortal() {
           entryMethod,
           scannedBarcode: scannedBarcode ?? undefined,
           clientRequestId,
+          clientCapturedAt: capturedAt,
         },
         {
           onSuccess: (res) => {
@@ -577,7 +579,7 @@ export default function CountPortal() {
                 unitBreakdown,
                 entryMethod,
                 scannedBarcode,
-                queuedAt: new Date().toISOString(),
+                queuedAt: capturedAt,
               });
               setQueueCount(queueSize(code));
               setOpenVariantId(null);

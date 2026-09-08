@@ -88,7 +88,13 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
           and(
             or(
               and(eq(products.isActive, true), eq(productVariants.isActive, true)),
-              sql`COALESCE(${branchStock.quantity}, 0) != 0`
+              or(
+                sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+                and(
+                  sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                  eq(products.allowBackorder, false),
+                ),
+              ),
             ),
             eq(products.isService, false),
             eq(products.isBundle, false),

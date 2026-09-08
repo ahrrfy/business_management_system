@@ -561,7 +561,13 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
         and(
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
           ),
           scopeCond,
         ),
@@ -586,7 +592,13 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
           gte(inventoryMovements.createdAt, since),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
           ),
           scopeCond,
         ),
@@ -620,7 +632,13 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
           inArray(products.categoryId, catIds),
           or(
             and(eq(productVariants.isActive, true), eq(products.isActive, true)),
-            sql`COALESCE(${branchStock.quantity}, 0) != 0`,
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
           ),
           scopeCond,
         ),

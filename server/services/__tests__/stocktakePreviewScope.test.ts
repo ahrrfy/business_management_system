@@ -392,4 +392,15 @@ describe("previewScope — حارس مطابقة (regression)", () => {
     // الأصناف النشطة الأساسية (10, 11, 12, 20, 30, 60 = 6) + الصنفين المعطلين برصيد (40, 70) = 8
     expect(preview.variantCount).toBe(8);
   });
+
+  it("FULL NORMAL: يستبعد رصيد العجز السالب للأصناف التي تباع بالطلب (allowBackorder)", async () => {
+    // الصنف 40 (منتج 4 معطل) له رصيد سالب -5 ولكن المنتج يسمح بالطلب (allowBackorder: true)
+    await db().update(s.products).set({ allowBackorder: true }).where(eq(s.products.id, 4));
+    await db().insert(s.branchStock).values([
+      { branchId: 1, variantId: 40, quantity: -5 },
+    ]);
+    const preview = await previewScope({ branchId: 1, sessionType: "NORMAL", scopeType: "FULL" });
+    // الأصناف النشطة الأساسية 6 فقط، وعجز الصنف 40 مستبعد حماية لالتزامات الزبائن
+    expect(preview.variantCount).toBe(6);
+  });
 });
