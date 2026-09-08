@@ -497,6 +497,35 @@ describe("returnSaleDirect — حلّ الدور المخصّص ديناميكي
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("مشرف النظام (role: 'admin') ينفّذ المرتجع المباشر حتى لو حُدِّد له استثناء فردي للمبيعات (تجاوز أصيل)", async () => {
+    await db().insert(s.users).values({
+      id: 8,
+      openId: "user8",
+      name: "مشرف مسلوب المبيعات نظرياً",
+      role: "admin",
+      permissionsOverride: { sales: "NONE" },
+      loginMethod: "local",
+      branchId: 1,
+    });
+
+    const shift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });
+
+    const result = await returnSaleDirect(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: itemId, baseQuantity: 1 }],
+        resolution: walkInCashResolution(shift),
+        operatorReason: "تنفيذ مشرف نظام بتجاوز أصيل",
+      },
+      { userId: 8, branchId: 1 },
+    );
+
+    expect(result).toBeDefined();
+    expect(result.invoiceId).toBe(invoiceId);
+    expect(result.returnedTotal).toBe("10.00");
+  });
+
   it("وجود طلب تحكّم معلّق (salesControlRequests: PENDING) ⇒ يُرفض التنفيذ بـ CONFLICT ذرياً", async () => {
     const shift = await openShiftFor(2, 1);
     const { invoiceId, itemId } = await sellOneCash(shift, { userId: 1, branchId: 1, role: "manager" });

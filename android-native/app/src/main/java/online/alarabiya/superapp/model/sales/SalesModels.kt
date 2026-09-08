@@ -229,6 +229,7 @@ data class ReturnSubmission(
     val restock: Boolean,
     val clientRequestId: String,
     val reason: String = "مرتجع مبيعات عبر التطبيق",
+    val refundReference: String? = null,
 )
 
 /**
@@ -289,12 +290,21 @@ object SalesValidation {
             val line = invoice.items.firstOrNull { it.invoiceItemId == itemId } ?: return "بند المرتجع لا يتبع الفاتورة"
             if (qty > line.remaining) return "كمية المرتجع تتجاوز المتبقي القابل للإرجاع"
         }
+        if (submission.reason.trim().length !in 3..500) {
+            return "سبب المرتجع مطلوب (٣ أحرف على الأقل)"
+        }
         if (submission.refundAmount.isNotBlank()) {
             if (!money.matches(submission.refundAmount)) return "مبلغ الاسترداد غير صالح"
-            if (submission.refundAmount.toDoubleOrNull()?.let { it < 0 } != false) return "مبلغ الاسترداد غير صالح"
-            if (submission.refundAmount.toDoubleOrNull()?.let { it > 0 } == true &&
-                submission.refundMethod == PaymentMethod.CASH && submission.refundShiftId == null
-            ) return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
+            val refundVal = submission.refundAmount.toDoubleOrNull()
+            if (refundVal == null || refundVal < 0) return "مبلغ الاسترداد غير صالح"
+            if (refundVal > 0) {
+                if (submission.refundMethod == PaymentMethod.CASH && submission.refundShiftId == null) {
+                    return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
+                }
+                if (submission.refundMethod != PaymentMethod.CASH && submission.refundReference.isNullOrBlank()) {
+                    return "مرجع البطاقة أو التحويل مطلوب"
+                }
+            }
         }
         if (submission.clientRequestId.length !in 8..80) return "مفتاح أمان المرتجع غير صالح"
         return null

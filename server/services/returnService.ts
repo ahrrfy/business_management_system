@@ -1602,10 +1602,12 @@ export async function returnSaleDirect(
     }
 
     const isOwner = Boolean(userRow.isOwner);
+    const isAdmin = effectiveRole === "admin";
     const hasSalesFull = effectivePermissions.sales === "FULL";
     const isAuthorized =
       isOwner ||
-      (["admin", "manager", "cashier"].includes(effectiveRole) && hasSalesFull);
+      isAdmin ||
+      (["manager", "cashier"].includes(effectiveRole) && hasSalesFull);
 
     if (!isAuthorized) {
       throw new TRPCError({

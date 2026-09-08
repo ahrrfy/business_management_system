@@ -92,6 +92,8 @@ class SalesViewModel(
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
     fun returnShift(value: Long?) { if (!state.locked) state = state.copy(returnShiftId = value, error = null) }
     fun returnRestock(value: Boolean) { if (!state.locked) state = state.copy(returnRestock = value, error = null) }
+    fun returnReason(value: String) { if (!state.locked) state = state.copy(returnReason = value.take(500), error = null) }
+    fun returnRefundReference(value: String) { if (!state.locked) state = state.copy(returnRefundReference = value.take(100), error = null) }
 
     fun searchCatalog() {
         if (state.locked) return
@@ -189,7 +191,9 @@ class SalesViewModel(
                 returnInvoice = source.returnableInvoice(invoiceId),
                 returnQuantities = emptyMap(),
                 returnRefundAmount = "",
+                returnRefundReference = "",
                 returnShiftId = null,
+                returnReason = "",
             )
         }
     }
@@ -212,6 +216,8 @@ class SalesViewModel(
             refundShiftId = state.returnShiftId,
             restock = state.returnRestock,
             clientRequestId = state.returnRequestId,
+            reason = state.returnReason,
+            refundReference = state.returnRefundReference.trim().takeIf(String::isNotEmpty),
         )
         SalesValidation.salesReturn(submission, invoice)?.let { return fail(it) }
         val started = state.start(SalesBusy.RETURN_SUBMIT) ?: return

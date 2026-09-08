@@ -150,6 +150,7 @@ internal object SalesWire {
         if (amount.isNotEmpty() && amount.toDoubleOrNull()?.let { it > 0 } == true) {
             val refund = JSONObject().put("amount", amount).put("method", submission.refundMethod.name)
             submission.refundShiftId?.let { refund.put("shiftId", it) }
+            submission.refundReference?.trim()?.takeIf(String::isNotEmpty)?.let { refund.put("reference", it) }
             input.put("refund", refund)
         }
         return input

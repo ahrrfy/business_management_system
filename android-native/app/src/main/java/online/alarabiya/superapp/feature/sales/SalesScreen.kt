@@ -119,6 +119,8 @@ fun SalesRoute(viewModel: SalesViewModel, capabilities: SalesCapabilities, modif
             returnMethod = viewModel::returnMethod,
             returnShift = viewModel::returnShift,
             returnRestock = viewModel::returnRestock,
+            returnReason = viewModel::returnReason,
+            returnRefundReference = viewModel::returnRefundReference,
             submitReturn = viewModel::submitReturn,
             retry = viewModel::initialize,
         ),
@@ -152,6 +154,8 @@ data class SalesActions(
     val returnMethod: (PaymentMethod) -> Unit,
     val returnShift: (Long?) -> Unit,
     val returnRestock: (Boolean) -> Unit,
+    val returnReason: (String) -> Unit,
+    val returnRefundReference: (String) -> Unit,
     val submitReturn: () -> Unit,
     val retry: () -> Unit,
 )
@@ -577,6 +581,15 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
         item {
             SalesCard(Modifier.fillMaxWidth()) {
                 Text("الاسترداد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    state.returnReason,
+                    actions.returnReason,
+                    Modifier.fillMaxWidth(),
+                    label = { Text("سبب المرتجع *") },
+                    placeholder = { Text("سبب طلب أو تنفيذ المرتجع...") },
+                    enabled = !state.locked,
+                    singleLine = true,
+                )
                 OutlinedTextField(state.returnRefundAmount, actions.returnRefundAmount, Modifier.fillMaxWidth(), label = { Text("مبلغ الاسترداد") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), enabled = !state.locked)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PaymentMethod.entries.forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
@@ -596,6 +609,17 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
                             )
                         }
                     }
+                }
+                if (state.returnMethod != PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
+                    OutlinedTextField(
+                        state.returnRefundReference,
+                        actions.returnRefundReference,
+                        Modifier.fillMaxWidth(),
+                        label = { Text("مرجع البطاقة أو التحويل *") },
+                        placeholder = { Text("رقم العملية أو الإيصال...") },
+                        enabled = !state.locked,
+                        singleLine = true,
+                    )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.returnRestock, actions.returnRestock, enabled = !state.locked); Text("إعادة الكمية للمخزون") }
                 Text("تُراجع القيمة النهائية مع الفاتورة والكميات.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
