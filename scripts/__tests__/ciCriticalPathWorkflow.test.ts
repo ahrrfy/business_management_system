@@ -81,7 +81,7 @@ describe("CI critical-path policy", () => {
     expect(gate).toContain("needs.test-shards.result");
     expect(gate).toContain("needs.quality-build.result");
     expect(gate).toContain("node scripts/ci-policy.mjs gate");
-    expect(gate).not.toContain("actions/checkout");
+    expect(gate).toContain("actions/checkout");
     expect(gate).not.toContain("pnpm install");
     expect(gate).not.toContain("pnpm build");
   });
