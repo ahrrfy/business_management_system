@@ -275,6 +275,12 @@ async function upsertVariantUnits(
           isActive: true,
         })
         .where(eq(productUnits.id, unitId));
+      match.unitName = name;
+      match.conversionFactor = t.isBaseUnit ? "1" : t.conversionFactor;
+      match.barcode = barcode;
+      match.isBaseUnit = t.isBaseUnit;
+      match.isStoreSaleUnit = t.isStoreSaleUnit ?? t.isBaseUnit;
+      match.isActive = true;
       const previous = await tx
         .select({ priceTier: productPrices.priceTier, price: productPrices.price })
         .from(productPrices)
@@ -292,6 +298,16 @@ async function upsertVariantUnits(
       });
       unitId = extractInsertId(res);
       inserted.push({ unitId, barcode });
+      existing.push({
+        id: unitId,
+        variantId,
+        unitName: name,
+        conversionFactor: t.isBaseUnit ? "1" : t.conversionFactor,
+        barcode,
+        isBaseUnit: t.isBaseUnit,
+        isStoreSaleUnit: t.isStoreSaleUnit ?? t.isBaseUnit,
+        isActive: true,
+      } as (typeof existing)[number]);
     }
     keep.add(unitId);
     const nextPrices: Array<{ priceTier: PriceTier; price: string }> = [];

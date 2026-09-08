@@ -24,6 +24,20 @@ import {
 
 const POLL_MS = 5_000;
 
+let lastServerClockOffsetMs: number | null = null;
+
+export function recordServerTime(serverTimeIso?: string | null): void {
+  if (!serverTimeIso) return;
+  const sMs = Date.parse(serverTimeIso);
+  if (!isNaN(sMs)) {
+    lastServerClockOffsetMs = sMs - Date.now();
+  }
+}
+
+export function getServerClockOffsetMs(): number | null {
+  return lastServerClockOffsetMs;
+}
+
 /**
  * شبكة أمان: تجاهل الوسمين كلّ دقيقتين واطلب كل شيء من جديد (بما فيه الكتالوج).
  * الوسم لا يغطّي تحرير الكتالوج نفسه (إعادة تسمية منتج/تبديل باركود أثناء الجرد) — نادر
@@ -99,6 +113,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
   const seededAt = q.dataUpdatedAt;
   useEffect(() => {
     const d = q.data;
+    if (d?.serverTime) recordServerTime(d.serverTime);
     if (!d?.changed || !d.dynamic) return;
     if (absorb(d.v, d.cv, d.catalog, d.dynamic)) setTick((n) => n + 1);
   }, [seededAt, q.data, absorb]);
@@ -118,6 +133,7 @@ export function usePulsedCountState(code: string, enabled: boolean, identityEpoc
         knownCatalogVersion: stale ? undefined : (catalogVersion.current ?? undefined),
       });
       if (gen !== generation.current) return;
+      if (res.serverTime) recordServerTime(res.serverTime);
       setProbeError(null);
       setProbeOkAt(Date.now());
 

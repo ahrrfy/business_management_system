@@ -1221,6 +1221,54 @@ describe("تدقيق تفصيل الوحدات وختم توقيت الالتق�
     expect(countedAtMs).toBeLessThanOrEqual(Date.now() + 1000);
   });
 
+  it("⭐ تصحيح وقت الالتقاط عبر انحراف مقاس خادمياً (Server-Established Clock Offset) وحد الوصول المحافظ", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // وقت وصول محدد إلى الراوتر (بعد إنشاء الجلسة بـ 10 ثوانٍ ليكون الالتقاط قبل الوصول بـ 5 ثوانٍ بعد إنشاء الجلسة)
+    const requestReceivedAt = new Date(new Date(session.createdAt).getTime() + 10_000);
+    // العميل ساعته متقدمة بـ 15 دقيقة
+    const clientOffset = -15 * 60 * 1000; // clientTime + offset = serverTime
+    const clientCaptured = new Date(requestReceivedAt.getTime() + 15 * 60 * 1000 - 5000); // قبل 5 ثوانٍ من الوصول على ساعة الخادم
+    const clientSent = new Date(requestReceivedAt.getTime() + 15 * 60 * 1000); // عند الإرسال
+
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: clientCaptured.toISOString(),
+      clientSentAt: clientSent.toISOString(),
+      clientClockOffsetMs: clientOffset,
+      requestReceivedAt: requestReceivedAt.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    // يجب أن يطابق تماماً requestReceivedAt - 5000ms بدقة
+    expect(Math.abs(countedAtMs - (requestReceivedAt.getTime() - 5000))).toBeLessThan(1000);
+  });
+
   it("⭐ تقييد وقت الالتقاط المستقبلي (انحراف ساعة العميل) بـ now لمنع استثناء الحركات اللاحقة", async () => {
     const r = await mkSession({ variantIds: [1] });
     const [session] = await db()

@@ -84,6 +84,10 @@ export type SubmitCountInput = {
   clientCapturedAt?: string | Date | null;
   /** وقت إرسال الطلب من جهاز العميل لحساب فارق التوقيت ومعالجة انحراف ساعة العميل بدقة. */
   clientSentAt?: string | Date | null;
+  /** وقت وصول الطلب إلى راوتر الخادم لحساب حد الوصول المحافظ والتخلص من تأخير انتظار أقفال المعاملة. */
+  requestReceivedAt?: string | Date | null;
+  /** انحراف ساعة العميل عن الخادم المحسوب مسبقاً (client - server) بالمللي ثانية إن توفر. */
+  clientClockOffsetMs?: number | null;
 };
 
 export type SubmitCountResult = {
@@ -495,28 +499,42 @@ export async function submitCount(
       // العدّ الفعّال = آخر RECOUNT إن وُجد وإلا FIRST (نفس قاعدة rawCount في المراجعة).
       const effectiveRow = latestRecount ?? first;
 
-      const now = new Date();
-      let countedAtDate = now;
+      const arrivalMs = input.requestReceivedAt ? new Date(input.requestReceivedAt).getTime() : Date.now();
+      const sessionCreatedMs = new Date(session.createdAt).getTime();
+      let countedAtDate = new Date(arrivalMs);
+
       if (input.clientCapturedAt) {
         const cap = new Date(input.clientCapturedAt);
         const capMs = cap.getTime();
-        const nowMs = now.getTime();
-        const sessionCreatedMs = new Date(session.createdAt).getTime();
         if (!isNaN(capMs)) {
           let derivedMs: number;
-          if (input.clientSentAt) {
+          if (input.clientClockOffsetMs != null && !isNaN(Number(input.clientClockOffsetMs))) {
+            const offsetCapMs = capMs + Number(input.clientClockOffsetMs);
+            if (input.clientSentAt) {
+              const sentMs = new Date(input.clientSentAt).getTime();
+              if (!isNaN(sentMs)) {
+                const delayMs = Math.max(0, sentMs - capMs);
+                const arrivalBoundMs = arrivalMs - delayMs;
+                derivedMs = Math.min(offsetCapMs, arrivalBoundMs);
+              } else {
+                derivedMs = Math.min(offsetCapMs, arrivalMs);
+              }
+            } else {
+              derivedMs = Math.min(offsetCapMs, arrivalMs);
+            }
+          } else if (input.clientSentAt) {
             const sent = new Date(input.clientSentAt);
             const sentMs = sent.getTime();
             if (!isNaN(sentMs)) {
               const delayMs = Math.max(0, sentMs - capMs);
-              derivedMs = nowMs - delayMs;
+              derivedMs = arrivalMs - delayMs;
             } else {
               derivedMs = capMs;
             }
           } else {
-            derivedMs = Math.max(nowMs - 60_000, capMs);
+            derivedMs = Math.max(arrivalMs - 60_000, capMs);
           }
-          const clampedMs = Math.max(sessionCreatedMs, Math.min(nowMs, derivedMs));
+          const clampedMs = Math.max(sessionCreatedMs, Math.min(arrivalMs, derivedMs));
           countedAtDate = new Date(clampedMs);
         }
       }
@@ -701,7 +719,7 @@ export async function submitCount(
       // (٥) آخر نشاط للتكليف — يغذّي شاشة المتابعة الحية.
       await tx
         .update(stocktakeAssignments)
-        .set({ lastActivityAt: now })
+        .set({ lastActivityAt: new Date() })
         .where(eq(stocktakeAssignments.id, asg.id));
 
       return { ok: true as const, kind, verifyMatch, idempotent: false };

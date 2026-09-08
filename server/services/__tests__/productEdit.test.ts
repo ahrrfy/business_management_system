@@ -1367,4 +1367,37 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
       ),
     ).rejects.toThrow(/جلسة جرد نشطة/);
   });
+
+  it("⭐ تبادل باركودات بين وحدة الأساس ووحدة فرعية ⇒ كلا الباركودين يُحفظان دون فقدان أي منهما أو تحويله إلى NULL", async () => {
+    // منتج 10: متغيّر 10 بوحدة أساس (قطعة) ووحدة فرعية (درزن)
+    await db().insert(s.products).values({ id: 10, name: "قلم حبر جاف", productType: "قرطاسية" });
+    await db().insert(s.productVariants).values({ id: 10, productId: 10, sku: "PEN-10", costPrice: "100" });
+    await db().insert(s.productUnits).values([
+      { id: 101, variantId: 10, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-PEN-PIECE" },
+      { id: 102, variantId: 10, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-PEN-DOZEN" },
+    ]);
+
+    // تبادل الباركودات: قطعة تأخذ BC-PEN-DOZEN ودرزن تأخذ BC-PEN-PIECE
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "200.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "2200.00" }] },
+    ];
+
+    await updateProductWithVariants(
+      {
+        productId: 10,
+        name: "قلم حبر جاف",
+        unitTemplate: template,
+        variants: [{ id: 10, sku: "PEN-10", costPrice: "100", unitBarcodes: { قطعة: "BC-PEN-DOZEN", درزن: "BC-PEN-PIECE" } }],
+      },
+      actor,
+    );
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 10));
+    const pieceUnit = units.find((u) => u.unitName === "قطعة");
+    const dozenUnit = units.find((u) => u.unitName === "درزن");
+
+    expect(pieceUnit?.barcode).toBe("BC-PEN-DOZEN");
+    expect(dozenUnit?.barcode).toBe("BC-PEN-PIECE");
+  });
 });
