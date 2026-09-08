@@ -140,20 +140,20 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
     }), expect.anything());
   });
 
-  it("⭐ التنفيذ المباشر للإدارة والكاشير (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
-    const caller = returnRouter.createCaller(context({ role: "cashier" }));
+  it("⭐ التنفيذ المباشر للإدارة (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
+    const caller = returnRouter.createCaller(context({ role: "manager" }));
     const res = await caller.create({
       ...base,
       refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
       restock: true,
-      reason: "تنفيذ الكاشير المباشر",
+      reason: "تنفيذ المدير المباشر",
       directExecution: true,
     });
 
     expect(mocks.requestSalesControl).not.toHaveBeenCalled();
     expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
-      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ الكاشير المباشر" }),
-      expect.objectContaining({ userId: 1, role: "cashier" }),
+      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ المدير المباشر" }),
+      expect.objectContaining({ userId: 1, role: "manager" }),
     );
     expect(res).toMatchObject({ mode: "EXECUTED" });
   });
