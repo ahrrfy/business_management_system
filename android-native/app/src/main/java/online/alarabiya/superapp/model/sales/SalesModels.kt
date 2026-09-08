@@ -285,7 +285,11 @@ object SalesValidation {
         return null
     }
 
-    fun salesReturn(submission: ReturnSubmission, invoice: ReturnableInvoice): String? {
+    fun salesReturn(
+        submission: ReturnSubmission,
+        invoice: ReturnableInvoice,
+        capabilities: SalesCapabilities? = null,
+    ): String? {
         if (submission.invoiceId != invoice.id) return "الفاتورة المختارة لا تطابق طلب المرتجع"
         val selected = submission.quantities.filterValues { it > 0 }
         if (selected.isEmpty()) return "حدد كمية مرتجعة لصنف واحد على الأقل"
@@ -304,7 +308,7 @@ object SalesValidation {
                 if (submission.refundMethod !in listOf(PaymentMethod.CASH, PaymentMethod.CARD)) {
                     return "طريقة الرد المباشر المتاحة هي النقد أو البطاقة فقط"
                 }
-                if (submission.refundMethod == PaymentMethod.CASH && submission.refundShiftId == null) {
+                if (submission.refundMethod == PaymentMethod.CASH && capabilities?.role == "cashier" && submission.refundShiftId == null) {
                     return "اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي"
                 }
                 if (submission.refundMethod == PaymentMethod.CARD && submission.refundReference.isNullOrBlank()) {

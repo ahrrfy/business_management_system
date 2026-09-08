@@ -222,7 +222,8 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
    *    الاسترداد بقناة RETURN لمراجعة المدير، فيصير العجزُ موثَّقاً بمستندٍ لا ضياعاً صامتاً.
    */
   async function captureOfflineReturn(): Promise<boolean> {
-    if (!inv || !executesImmediately || method !== "CASH" || !refundD.gt(0)) return false;
+    const isOwner = me.data?.isOwner === true;
+    if (!inv || !isOwner || method !== "CASH" || !refundD.gt(0)) return false;
     if (!(await isOfflineSaleEnabled())) {
       notify.errBig(
         "العمل دون اتصال مُعطَّل على هذا الجهاز",

@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
 import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, returnRequests, salesControlRequests, users } from "../../drizzle/schema";
 import { money } from "../services/money";
@@ -96,7 +97,7 @@ export const returnRouter = router({
           message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
         });
       }
-      const reason = (rawReason || "مرتجع مبيعات").trim();
+      const reason = (rawReason ?? "").trim();
 
       if (shouldExecuteDirect) {
         /**
@@ -648,6 +649,14 @@ export const returnRouter = router({
       ))
       .limit(1);
 
+    const canReviewRole = ctx.user.role === "admin" || moduleAccessAllowed(
+      ctx.user.role as RoleKey,
+      (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
+
     return {
       /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
       refundPool: caps.pool.toFixed(2),
@@ -655,8 +664,8 @@ export const returnRouter = router({
       refundShifts,
       /**
        * طلبٌ معلّقٌ على هذه الفاتورة — الشاشة تُظهره وتمنع إرسالاً ثانياً. `canReviewIt`
-       * تُشتقّ خادمياً بنفس حارس `assertReviewerSeparation` كي لا تدعو الشاشةُ مستخدماً إلى
-       * زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
+       * تُشتقّ خادمياً بسلطة الدور (salesManagerProcedure) وحارس `assertReviewerSeparation`
+       * كي لا تدعو الشاشةُ مستخدماً إلى زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
        */
       pendingRequest: governedPending
         ? {
@@ -669,7 +678,8 @@ export const returnRouter = router({
             createdAt: governedPending.createdAt,
             isMine: Number(governedPending.requestedBy) === Number(ctx.user.id),
             canReviewIt:
-              Number(governedPending.requestedBy) !== Number(ctx.user.id)
+              canReviewRole
+              && Number(governedPending.requestedBy) !== Number(ctx.user.id)
               && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
           }
         : legacyPending
@@ -683,7 +693,8 @@ export const returnRouter = router({
               createdAt: legacyPending.createdAt,
               isMine: Number(legacyPending.createdBy) === Number(ctx.user.id),
               canReviewIt:
-                Number(legacyPending.createdBy) !== Number(ctx.user.id)
+                canReviewRole
+                && Number(legacyPending.createdBy) !== Number(ctx.user.id)
                 && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
             }
           : null,

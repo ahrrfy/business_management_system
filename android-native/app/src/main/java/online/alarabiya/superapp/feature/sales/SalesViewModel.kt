@@ -92,7 +92,11 @@ class SalesViewModel(
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
     fun returnShift(value: Long?) {
         if (state.locked) return
-        if (value != null && capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) return
+        if (capabilities.role == "cashier") {
+            if (value == null || capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) return
+        } else if (value != null && capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) {
+            return
+        }
         state = state.copy(returnShiftId = value, error = null)
     }
     fun returnRestock(value: Boolean) { if (!state.locked) state = state.copy(returnRestock = value, error = null) }
@@ -230,7 +234,7 @@ class SalesViewModel(
             reason = state.returnReason,
             refundReference = state.returnRefundReference.trim().takeIf(String::isNotEmpty),
         )
-        SalesValidation.salesReturn(submission, invoice)?.let { return fail(it) }
+        SalesValidation.salesReturn(submission, invoice, capabilities)?.let { return fail(it) }
         val started = state.start(SalesBusy.RETURN_SUBMIT) ?: return
         state = started
         viewModelScope.launch {

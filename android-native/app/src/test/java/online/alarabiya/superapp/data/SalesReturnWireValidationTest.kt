@@ -191,4 +191,65 @@ class SalesReturnWireValidationTest {
         val filtered = managerCaps.filterReturnShifts(shifts)
         assertEquals(2, filtered.size)
     }
+
+    @Test
+    fun `salesReturn requires shift for cashier cash refunds`() {
+        val cashierCaps = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 42L,
+            role = "cashier",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        val submission = ReturnSubmission(
+            invoiceId = 100L,
+            quantities = mapOf(10L to 1),
+            refundAmount = "10.00",
+            refundMethod = PaymentMethod.CASH,
+            refundShiftId = null,
+            restock = true,
+            clientRequestId = "req-test-12345",
+            reason = "عيب مصنعي في الصنف",
+        )
+
+        val err = SalesValidation.salesReturn(submission, sampleInvoice, cashierCaps)
+        assertEquals("اختر وردية الدرج الذي سيخرج منه الاسترداد النقدي", err)
+
+        val withShift = submission.copy(refundShiftId = 99L)
+        assertNull(SalesValidation.salesReturn(withShift, sampleInvoice, cashierCaps))
+    }
+
+    @Test
+    fun `salesReturn allows null shift for manager cash refunds via treasury`() {
+        val managerCaps = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 42L,
+            role = "manager",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        val submission = ReturnSubmission(
+            invoiceId = 100L,
+            quantities = mapOf(10L to 1),
+            refundAmount = "10.00",
+            refundMethod = PaymentMethod.CASH,
+            refundShiftId = null,
+            restock = true,
+            clientRequestId = "req-test-12345",
+            reason = "عيب مصنعي في الصنف",
+        )
+
+        val err = SalesValidation.salesReturn(submission, sampleInvoice, managerCaps)
+        assertNull(err)
+    }
 }

@@ -595,11 +595,12 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                     listOf(PaymentMethod.CASH, PaymentMethod.CARD).forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
-                    Text("درج الاسترداد", fontWeight = FontWeight.SemiBold)
                     val returnShifts = capabilities.filterReturnShifts(state.openShifts)
-                    if (returnShifts.isEmpty()) {
+                    val isCashier = capabilities.role == "cashier"
+                    Text("مصدر الاسترداد النقدي", fontWeight = FontWeight.SemiBold)
+                    if (isCashier && returnShifts.isEmpty()) {
                         Text(
-                            if (capabilities.role == "cashier") "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع" else "لا توجد وردية مفتوحة في هذا الفرع",
+                            "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع — الرد النقدي للكاشير يتطلب وردية مفتوحة",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -608,10 +609,20 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            if (!isCashier) {
+                                item {
+                                    FilterChip(
+                                        selected = state.returnShiftId == null,
+                                        onClick = { actions.returnShift(null) },
+                                        label = { Text("خزينة الفرع (مباشر)") },
+                                        enabled = !state.locked,
+                                    )
+                                }
+                            }
                             items(returnShifts, key = { it.id }) { shift ->
                                 FilterChip(
-                                    state.returnShiftId == shift.id,
-                                    { actions.returnShift(shift.id) },
+                                    selected = state.returnShiftId == shift.id,
+                                    onClick = { actions.returnShift(shift.id) },
                                     label = { Text(shift.userName ?: "وردية ${shift.id}") },
                                     enabled = !state.locked,
                                 )
