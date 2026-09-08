@@ -63,9 +63,9 @@ export interface ReturnComposerProps {
 export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك ينفّذ مرتجعه فوراً (قرار المالك ١/٩/٢٦) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
+  /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
   const me = trpc.auth.me.useQuery();
-  const executesImmediately = me.data?.isOwner === true;
+  const executesImmediately = me.data?.isOwner === true || ["admin", "manager", "cashier"].includes(me.data?.role ?? "");
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
@@ -415,7 +415,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
             ? `تنفيذ مرتجع الفاتورة ${inv.invoiceNumber} الآن`
             : `إرسال طلب مرتجع للفاتورة ${inv.invoiceNumber}`,
         description: (approvingRequestId || executesImmediately)
-          ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}.${executesImmediately && !approvingRequestId ? " تنفيذٌ فوريّ بصفتك المالك، موثَّقٌ بسببه في سجلّ التدقيق." : ""} متابعة؟`
+          ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}.${executesImmediately && !approvingRequestId ? (me.data?.isOwner ? " تنفيذٌ فوريّ بصفتك المالك، موثَّقٌ بسببه في سجلّ التدقيق." : " تنفيذٌ فوريّ ذريّ، موثَّقٌ بسببه في سجلّ التدقيق.") : ""} متابعة؟`
           : `ترسل طلباً بإرجاع ${scope} — وعند الاعتماد ${moneySentence}، ${stockSentence}.\n\nتنبيه: لا تسلّم الزبون نقوداً ولا تستلم البضاعة على هذا الطلب: لا يتغيّر المخزون ولا المال حتى يعتمده مراجعٌ مستقل (غيرك وغير منشئ الفاتورة).`,
         confirmText: approvingRequestId ? "اعتماد وتنفيذ" : executesImmediately ? "تنفيذ المرتجع" : "إرسال الطلب للاعتماد",
       }))
@@ -439,6 +439,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       ...(!isWalkIn ? { restock } : {}),
       reason: reason.trim(),
       clientRequestId,
+      directExecution: executesImmediately,
     });
   }
 

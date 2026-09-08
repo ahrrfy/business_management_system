@@ -5,13 +5,13 @@ import { accountingEntries, customers, invoiceItems, invoices, productUnits, pro
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSaleAsOwner, returnSaleInTx } from "../services/returnService";
+import { returnSaleAsOwner, returnSaleDirect, returnSaleInTx } from "../services/returnService";
 import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
 import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { router, salesCashierProcedure, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import {
   createReturnRequest,
   listReturnRequests,
@@ -43,9 +43,9 @@ const walkInResolution = z.object({
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
-// المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
+// المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
-  create: salesManagerProcedure
+  create: salesCashierProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -65,6 +65,8 @@ export const returnRouter = router({
         reason: z.string().trim().min(3).max(500).optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
+        /** تنفيذ مباشر ذري (إلغاء التعليق البيروقراطي للمالك والإدارة والكاشير). */
+        directExecution: z.boolean().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -77,27 +79,20 @@ export const returnRouter = router({
       const reason = explicitReason ?? input.resolution?.reason ?? "";
 
       /**
-       * ⭐ **مسارُ المالك الفوريّ** (قرار المالك ١/٩/٢٦).
+       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
        *
-       * الحوكمةُ تفترض مراجعاً مستقلاً؛ وفي مكتبةٍ يديرها صاحبُها لا وجود له، فكان كلّ مرتجعٍ
-       * يعلق ويُسلَّم النقدُ والبضاعةُ خارج النظام. المالكُ ينفّذ مرتجعَه مباشرةً — والخدمة
-       * تُعيد قراءة `isOwner`/`isActive` **داخل معاملتها** فلا تكفي رايةُ الجلسة، والأثرُ يمرّ
-       * بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
+       * المالكُ ينفّذ مرتجعه مباشرةً، ومسؤولو النظام والمدراء والكاشير ينفّذون مباشرةً عبر
+       * `returnSaleDirect` عند اختيار التنفيذ المباشر (أو افتراضياً عبر واجهة ReturnComposer).
+       * الأثرُ يمرّ بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
        *
-       * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كان الراوتر يُرجع شكلاً واحداً فاختلط «طلبٌ
-       * أُرسل» بـ«مرتجعٌ نُفِّذ» على المستهلكين — وهو جذرُ عرضِ تطبيق أندرويد «تم تسجيل
-       * المرتجع بقيمة 0». كلّ مستهلكٍ يتفرّع على `mode` صراحةً بعد اليوم.
+       * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      if (ctx.user.isOwner === true) {
+      const shouldExecuteDirect = ctx.user.isOwner === true || input.directExecution === true;
+      if (shouldExecuteDirect) {
         /**
          * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
          *
-         * `requestSalesControl` يرفضها صراحةً، لكنّ فرعَ المالك يسبقه فيصل إلى `returnSaleInTx`
-         * مباشرةً — فيعكس الإيرادَ والذمّة ويَسِم الفاتورة RETURNED بينما `workOrders.status`
-         * يبقى DELIVERED وWIP/COGS بلا عكسٍ وعربونُ الأمانة مقفلاً، ثمّ يُقفَل
-         * `reverseDelivery` على مستندٍ صار ميتاً. المخرجُ الوحيد لأمرٍ مُسلَّم هو عكسُ التسليم.
-         * الحارسُ هنا في الراوتر لا في النواة: النواةُ تخدم مسارَي التوصيل الشرعيَّين
-         * (`failCourierDelivery` و`reverseDispatchedInvoice`) على فواتير WORKORDER.
+         * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
          */
         const [invRow] = await withTx(async (tx) => tx
           .select({ sourceType: invoices.sourceType })
@@ -116,18 +111,30 @@ export const returnRouter = router({
             message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
           });
         }
-        const executed = await returnSaleAsOwner({
-          ...payload,
-          invoiceId,
-          ownerReason: reason,
-          clientRequestId: clientRequestId ?? randomUUID(),
-        }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+        const executed = ctx.user.isOwner === true
+          ? await returnSaleAsOwner({
+              ...payload,
+              invoiceId,
+              ownerReason: reason,
+              clientRequestId: clientRequestId ?? randomUUID(),
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role })
+          : await returnSaleDirect({
+              ...payload,
+              invoiceId,
+              operatorReason: reason,
+              clientRequestId: clientRequestId ?? randomUUID(),
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: ctx.user.isOwner });
+
+        const executionMode: ReturnExecutionMode = ctx.user.isOwner === true
+          ? "OWNER_IMMEDIATE"
+          : "DIRECT_EXECUTION";
+
         await logAudit(ctx, {
           action: RETURN_EXECUTED_AUDIT_ACTION,
           entityType: "invoice",
           entityId: invoiceId,
           newValue: {
-            mode: "OWNER_IMMEDIATE" satisfies ReturnExecutionMode,
+            mode: executionMode satisfies ReturnExecutionMode,
             reason,
             lines: input.lines.length,
             returnedTotal: String(executed.returnedTotal ?? "0"),

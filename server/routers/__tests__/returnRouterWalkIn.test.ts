@@ -4,6 +4,7 @@ import type { TrpcContext } from "../../context";
 const mocks = vi.hoisted(() => ({
   returnSaleInTx: vi.fn(),
   returnSaleAsOwner: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true })),
+  returnSaleDirect: vi.fn(async () => ({ returnedTotal: "1250.00", fullyReturned: true })),
   requestSalesControl: vi.fn(async () => ({ id: 101, status: "PENDING", payloadHash: "abc", replayed: false })),
   logAudit: vi.fn(async () => undefined),
   withTx: vi.fn(async (fn: (tx: unknown) => unknown) => fn({
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../services/returnService", () => ({
   returnSaleInTx: mocks.returnSaleInTx,
   returnSaleAsOwner: mocks.returnSaleAsOwner,
+  returnSaleDirect: mocks.returnSaleDirect,
 }));
 vi.mock("../../services/tx", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../services/tx")>()),
@@ -136,5 +138,23 @@ describe("returns.create — طلب صفري الأثر للزبون العاب�
         restock: false,
       }),
     }), expect.anything());
+  });
+
+  it("⭐ التنفيذ المباشر للإدارة والكاشير (directExecution: true) ينفّذ فوراً بلا طلب تحكّم", async () => {
+    const caller = returnRouter.createCaller(context({ role: "cashier" }));
+    const res = await caller.create({
+      ...base,
+      refund: { amount: "1250.00", method: "CASH", shiftId: 9 },
+      restock: true,
+      reason: "تنفيذ الكاشير المباشر",
+      directExecution: true,
+    });
+
+    expect(mocks.requestSalesControl).not.toHaveBeenCalled();
+    expect(mocks.returnSaleDirect).toHaveBeenCalledWith(
+      expect.objectContaining({ invoiceId: 77, operatorReason: "تنفيذ الكاشير المباشر" }),
+      expect.objectContaining({ userId: 1, role: "cashier" }),
+    );
+    expect(res).toMatchObject({ mode: "EXECUTED" });
   });
 });

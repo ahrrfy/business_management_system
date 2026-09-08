@@ -1474,6 +1474,73 @@ export async function returnSaleAsOwner(
   });
 }
 
+/**
+ * ⭐ **مسارُ التنفيذ المباشر الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
+ *
+ *  ① يُحقّق من الفاعل وصلاحيته وحالته النشطة في سجلّ المستخدمين داخل المعاملة.
+ *  ② سببٌ إلزاميّ (٣ أحرف فأكثر) يُخزَّن في `notes` القيد الرقابي للتوثيق المالي.
+ *  ③ يُنفّذ الأثر فوراً عبر `returnSaleInTx`: عودة البضاعة، تسوية الدرج/الخزينة، عكس القيود والذمم.
+ */
+export async function returnSaleDirect(
+  input: ReturnSaleInput & { operatorReason: string },
+  actor: Actor & { role?: string; isOwner?: boolean },
+) {
+  const reason = input.operatorReason.trim().replace(/\s+/g, " ");
+  if (reason.length < 3 || reason.length > 500) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ المرتجع المباشر",
+        why: `سبب المرتجع إلزاميّ ويقع بين 3 و500 محرف — الوارد ${reason.length} محرفاً؛ وهو ما يقوم مقام التوثيق الرقابي للتنفيذ المباشر`,
+        doThis: "اكتب السبب في سطرٍ واحد يذكر الصنف والعلّة (مثل «عيب مصنعي في الغلاف»)",
+      }),
+    });
+  }
+
+  return withTx(async (tx) => {
+    const [userRow] = await tx
+      .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner, role: users.role })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+
+    if (!userRow || !userRow.isActive) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المرتجع المباشر",
+          why: !userRow
+            ? "المستخدم غير موجود في سجلّ المستخدمين"
+            : "حساب المستخدم معطّل حالياً",
+          doThis: "تأكد من تفعيل الحساب لدى مسؤول النظام",
+        }),
+      });
+    }
+
+    const effectiveRole = userRow.role;
+    const isOwner = Boolean(userRow.isOwner);
+    const isAuthorized = isOwner || ["admin", "manager", "cashier"].includes(effectiveRole);
+
+    if (!isAuthorized) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر تنفيذ المرتجع المباشر",
+          why: `دورك الحالي (${effectiveRole}) لا يملك صلاحية تنفيذ المرتجع المباشر`,
+          doThis: "يجب أن تكون مالكاً، مديراً، مسؤول نظام، أو كاشيراً لتنفيذ المرتجع",
+        }),
+      });
+    }
+
+    return returnSaleInTx(tx, { ...input, operatorReason: reason }, {
+      userId: actor.userId,
+      branchId: actor.branchId,
+      role: effectiveRole,
+    });
+  });
+}
+
 export interface ListSalesReturnsInput {
   customerId?: number;
   branchId?: number;
