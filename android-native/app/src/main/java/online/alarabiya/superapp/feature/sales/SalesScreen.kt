@@ -200,7 +200,7 @@ fun SalesScreen(state: SalesUiState, capabilities: SalesCapabilities, actions: S
             } else when (state.section) {
                 SalesSection.CHECKOUT -> CheckoutWorkspace(state, guardedActions)
                 SalesSection.HISTORY -> HistoryWorkspace(state, capabilities, guardedActions)
-                SalesSection.RETURNS -> ReturnsWorkspace(state, guardedActions)
+                SalesSection.RETURNS -> ReturnsWorkspace(state, capabilities, guardedActions)
             }
         }
     }
@@ -535,7 +535,7 @@ private fun DetailPane(detail: SaleDetail?, canReturn: Boolean, actions: SalesAc
 }
 
 @Composable
-private fun ReturnsWorkspace(state: SalesUiState, actions: SalesActions) {
+private fun ReturnsWorkspace(state: SalesUiState, capabilities: SalesCapabilities, actions: SalesActions) {
     val invoice = state.returnInvoice
     if (invoice == null) {
         LazyColumn(
@@ -552,12 +552,12 @@ private fun ReturnsWorkspace(state: SalesUiState, actions: SalesActions) {
         return
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-        ReturnEditor(invoice, state, actions, Modifier.widthIn(max = 920.dp).fillMaxWidth())
+        ReturnEditor(invoice, state, capabilities, actions, Modifier.widthIn(max = 920.dp).fillMaxWidth())
     }
 }
 
 @Composable
-private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, actions: SalesActions, modifier: Modifier = Modifier) {
+private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabilities: SalesCapabilities, actions: SalesActions, modifier: Modifier = Modifier) {
     LazyColumn(modifier.fillMaxHeight(), contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             SalesCard(Modifier.fillMaxWidth()) {
@@ -596,17 +596,26 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
                     Text("درج الاسترداد", fontWeight = FontWeight.SemiBold)
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(state.openShifts, key = { it.id }) { shift ->
-                            FilterChip(
-                                state.returnShiftId == shift.id,
-                                { actions.returnShift(shift.id) },
-                                label = { Text(shift.userName ?: "وردية ${shift.id}") },
-                                enabled = !state.locked,
-                            )
+                    val returnShifts = capabilities.filterReturnShifts(state.openShifts)
+                    if (returnShifts.isEmpty()) {
+                        Text(
+                            if (capabilities.role == "cashier") "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع" else "لا توجد وردية مفتوحة في هذا الفرع",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(returnShifts, key = { it.id }) { shift ->
+                                FilterChip(
+                                    state.returnShiftId == shift.id,
+                                    { actions.returnShift(shift.id) },
+                                    label = { Text(shift.userName ?: "وردية ${shift.id}") },
+                                    enabled = !state.locked,
+                                )
+                            }
                         }
                     }
                 }
@@ -615,7 +624,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, action
                         state.returnRefundReference,
                         actions.returnRefundReference,
                         Modifier.fillMaxWidth(),
-                        label = { Text("مرجع البطاقة أو التحويل *") },
+                        label = { Text("مرجع البطاقة *") },
                         placeholder = { Text("رقم العملية أو الإيصال...") },
                         enabled = !state.locked,
                         singleLine = true,

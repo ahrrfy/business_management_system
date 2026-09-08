@@ -35,6 +35,9 @@ data class SalesCapabilities(
     val canCreateReturn: Boolean get() = sales.canWrite && (role == "admin" || role == "manager" || role == "cashier")
     /** المرتجعُ يُنفَّذ فوراً للمالك ومسؤولي النظام والمدراء والكاشير (محرك المرتجعات الفوري الذري). */
     val returnExecutesImmediately: Boolean get() = isOwner || role == "admin" || role == "manager" || role == "cashier"
+    /** الكاشير مقيّد بوردية نفسه حصراً في مرتجع البيع (returnSaleInTx)؛ أمّا المدير والمشرف فيتاح لهما أدراج الفرع كلّها. */
+    fun filterReturnShifts(shifts: List<RetailShift>): List<RetailShift> =
+        if (role == "cashier") shifts.filter { it.userId == userId } else shifts
 
     companion object {
         fun fromBootstrap(bootstrap: AppBootstrap): SalesCapabilities {

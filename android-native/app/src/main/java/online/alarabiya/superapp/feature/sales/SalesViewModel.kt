@@ -90,7 +90,11 @@ class SalesViewModel(
     fun paymentMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(paymentMethod = value, error = null) }
     fun returnRefundAmount(value: String) { if (!state.locked) state = state.copy(returnRefundAmount = value.take(20), error = null) }
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
-    fun returnShift(value: Long?) { if (!state.locked) state = state.copy(returnShiftId = value, error = null) }
+    fun returnShift(value: Long?) {
+        if (state.locked) return
+        if (value != null && capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) return
+        state = state.copy(returnShiftId = value, error = null)
+    }
     fun returnRestock(value: Boolean) { if (!state.locked) state = state.copy(returnRestock = value, error = null) }
     fun returnReason(value: String) { if (!state.locked) state = state.copy(returnReason = value.take(500), error = null) }
     fun returnRefundReference(value: String) { if (!state.locked) state = state.copy(returnRefundReference = value.take(100), error = null) }
@@ -186,13 +190,20 @@ class SalesViewModel(
     fun beginReturn(invoiceId: Long) {
         if (!capabilities.canCreateReturn) return
         launch(SalesBusy.RETURN_LOAD) {
+            val validShifts = capabilities.filterReturnShifts(state.openShifts)
+            val defaultShiftId = if (capabilities.role == "cashier") {
+                validShifts.firstOrNull { it.userId == capabilities.userId }?.id
+            } else {
+                validShifts.firstOrNull { it.userId == capabilities.userId }?.id
+                    ?: validShifts.singleOrNull()?.id
+            }
             state = state.copy(
                 section = SalesSection.RETURNS,
                 returnInvoice = source.returnableInvoice(invoiceId),
                 returnQuantities = emptyMap(),
                 returnRefundAmount = "",
                 returnRefundReference = "",
-                returnShiftId = null,
+                returnShiftId = defaultShiftId,
                 returnReason = "",
             )
         }

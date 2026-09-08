@@ -75,6 +75,8 @@ export interface UseRefundDrawerArgs {
   preflight: RefundPreflight | null;
   /** وصفُ الدرج في رسالة «لا يوجد» — مثلاً «وردية استقبال». */
   emptyLabel: string;
+  /** نوع المستند المصدر — لضبط قيود الورديات المخصوصة بالسياق (كتقييد كاشير مرتجع البيع بوردية نفسه دون إرجاع الأمانات) */
+  sourceDocType?: RefundRailContext["sourceDocType"];
 }
 
 export interface RefundDrawerState {
@@ -92,7 +94,7 @@ export interface RefundDrawerState {
 
 /** حالةُ درج الاسترداد + الافتراضُ التلقائيّ (درجُ المنفِّذ إن كان مفتوحاً، وإلّا الوحيدُ المفتوح). */
 export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
-  const { preflight, emptyLabel } = args;
+  const { preflight, emptyLabel, sourceDocType } = args;
   const [refundShiftId, setRefundShiftId] = useState<number | null>(null);
 
   const needed = preflight?.needsCashDrawer === true;
@@ -101,20 +103,22 @@ export function useRefundDrawer(args: UseRefundDrawerArgs): RefundDrawerState {
   const userId = me.data?.id;
   const userRole = me.data?.role;
   const isCashier = userRole === "cashier";
-  // كاشير الصرف مقيّد بوردية نفسه — لا يظهر له ولا يُختار له درج زميل
+  // كاشير الصرف في مرتجع البيع مقيّد بوردية نفسه (returnSaleInTx) — لا يظهر له ولا يُختار له درج زميل.
+  // أمّا إرجاع الأمانات (CONSIGNMENT_RETURN) وباقي الحوارات فالخادم يقبل أيّ وردية مفتوحة بالفرع.
+  const restrictToOwnDrawer = isCashier && sourceDocType === "SALE_RETURN";
   const drawers = useMemo(() => {
-    if (!isCashier || !userId) return rawDrawers;
+    if (!restrictToOwnDrawer || !userId) return rawDrawers;
     return rawDrawers.filter((d) => d.userId === userId);
-  }, [isCashier, userId, rawDrawers]);
+  }, [restrictToOwnDrawer, userId, rawDrawers]);
 
   // الافتراضُ يُعاد تقييمه كلّما تغيّرت القائمة (تحميلٌ أوّل، أو إغلاقُ درجٍ أثناء الفتح).
   useEffect(() => {
     if (!needed || refundShiftId != null || drawers.length === 0) return;
-    const preset = pickDefaultRefundDrawer(drawers, userId, userRole);
+    const preset = pickDefaultRefundDrawer(drawers, userId, userRole, restrictToOwnDrawer);
     if (preset != null) setRefundShiftId(preset);
-  }, [needed, refundShiftId, drawers, userId, userRole]);
+  }, [needed, refundShiftId, drawers, userId, userRole, restrictToOwnDrawer]);
 
-  const effectiveEmptyLabel = isCashier && drawers.length === 0 && rawDrawers.length > 0
+  const effectiveEmptyLabel = restrictToOwnDrawer && drawers.length === 0 && rawDrawers.length > 0
     ? "لا تملك وردية نقدية مفتوحة باسمك في هذا الفرع — افتح ورديتك الخاصة أو اطلب من المدير تنفيذ المرتجع"
     : emptyLabel;
 
@@ -307,6 +311,7 @@ export function RefundRailPickerView({
   const drawer = useRefundDrawer({
     preflight,
     emptyLabel: context.sourceDocType === "CONSIGNMENT_RETURN" || context.sourceDocType === "SALE_RETURN" ? "وردية مفتوحة" : "وردية استقبال",
+    sourceDocType: context.sourceDocType,
   });
 
   // Codex #960: يُعاد ضبطُ الاختيار عند تبدّل المستند — المنتقي مصمَّمٌ للاستمرار بلا remount.

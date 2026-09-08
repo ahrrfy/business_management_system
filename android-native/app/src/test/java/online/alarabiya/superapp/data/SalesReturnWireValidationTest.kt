@@ -1,9 +1,12 @@
 package online.alarabiya.superapp.data
 
 import online.alarabiya.superapp.model.sales.PaymentMethod
+import online.alarabiya.superapp.model.sales.RetailShift
 import online.alarabiya.superapp.model.sales.ReturnSubmission
 import online.alarabiya.superapp.model.sales.ReturnableInvoice
 import online.alarabiya.superapp.model.sales.ReturnableLine
+import online.alarabiya.superapp.model.sales.SalesAccess
+import online.alarabiya.superapp.model.sales.SalesCapabilities
 import online.alarabiya.superapp.model.sales.SalesValidation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -140,5 +143,52 @@ class SalesReturnWireValidationTest {
         assertEquals("CASH", refund.getString("method"))
         assertEquals(7L, refund.getLong("shiftId"))
         assertFalse(refund.has("reference"))
+    }
+
+    @Test
+    fun `SalesCapabilities filterReturnShifts filters to own shift for cashiers`() {
+        val cashierCaps = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 42L,
+            role = "cashier",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        val shifts = listOf(
+            RetailShift(id = 101L, branchId = 1L, userId = 99L, userName = "زميل", status = "OPEN", openedAt = null),
+            RetailShift(id = 102L, branchId = 1L, userId = 42L, userName = "كاشير", status = "OPEN", openedAt = null),
+        )
+
+        val filtered = cashierCaps.filterReturnShifts(shifts)
+        assertEquals(1, filtered.size)
+        assertEquals(102L, filtered.single().id)
+    }
+
+    @Test
+    fun `SalesCapabilities filterReturnShifts preserves all branch shifts for managers and admins`() {
+        val managerCaps = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 42L,
+            role = "manager",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        val shifts = listOf(
+            RetailShift(id = 101L, branchId = 1L, userId = 99L, userName = "زميل", status = "OPEN", openedAt = null),
+            RetailShift(id = 102L, branchId = 1L, userId = 42L, userName = "مدير", status = "OPEN", openedAt = null),
+        )
+
+        val filtered = managerCaps.filterReturnShifts(shifts)
+        assertEquals(2, filtered.size)
     }
 }

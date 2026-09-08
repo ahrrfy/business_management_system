@@ -27,8 +27,12 @@ describe("pickDefaultRefundDrawer — درجُ المنفّذ ثمّ الوحي�
     expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42)).toBe(5);
   });
 
-  it("درجٌ وحيد لزميل مع دور كاشير ⇒ null: الكاشير مقيّد بوردية نفسه ولا يرث درج غيره", () => {
-    expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42, "cashier")).toBeNull();
+  it("درجٌ وحيد لزميل مع دور كاشير وتقييد بوردية النفس (مرتجع بيع) ⇒ null: الكاشير مقيّد بوردية نفسه ولا يرث درج غيره", () => {
+    expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42, "cashier", true)).toBeNull();
+  });
+
+  it("درجٌ وحيد لزميل مع دور كاشير بدون تقييد (تسوية أمانات مثلاً) ⇒ 5: يُقبل درج الفرع الوحيد", () => {
+    expect(pickDefaultRefundDrawer([drawer({ shiftId: 5, userId: 99 })], 42, "cashier", false)).toBe(5);
   });
 
   it("تعدّدٌ بلا درجٍ للمنفّذ ⇒ null: لا نسبةَ نقدٍ لدرجٍ لم يخرج منه", () => {
