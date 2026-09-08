@@ -85,6 +85,7 @@ export default function SupplierPaymentsGovernance() {
         exchangeRate: row.agreedRate,
         remainingAmount: row.remainingAmount,
         remainingCurrencyAmount: row.remainingCurrencyAmount,
+        purchaseOrderIds: row.purchaseOrderIds,
       })),
     [paymentSourcesQuery.data, supplierNames],
   );

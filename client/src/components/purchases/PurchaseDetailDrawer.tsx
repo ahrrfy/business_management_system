@@ -391,7 +391,7 @@ export function PurchaseDetailDrawer({
                 {(D(d.shippingCost ?? 0).gt(0) || D(d.customsCost ?? 0).gt(0)) && !costHidden ? (
                   <div className="rounded-md border bg-[var(--sem-warn-bg)]/60 p-3 text-xs">
                     <div className="font-semibold text-[var(--sem-warn)] mb-1">
-                      مصاريف الشحن والكمرك المُرسمَلة على المخزون
+                      مصاريف الشحن والكمرك (تُثبَت كمصروف منفصل عند الاستلام)
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>الشحن: {fmtAr(d.shippingCost)} د.ع</div>
@@ -446,23 +446,29 @@ export function PurchaseDetailDrawer({
                 <DialogHeader>
                   <DialogTitle className="flex items-center gap-2 text-base">
                     <CheckCircle2 aria-hidden className="size-5 text-primary" />
-                    <span>اعتماد واستلام أمر الشراء {d.poNumber}</span>
+                    <span>
+                      {d.status === "DRAFT"
+                        ? `إرسال أمر الشراء ${d.poNumber} للاعتماد`
+                        : `اعتماد واستلام أمر الشراء ${d.poNumber}`}
+                    </span>
                   </DialogTitle>
                   <DialogDescription className="text-xs text-muted-foreground">
-                    اعتماد هذا الأمر يعني تأكيد استلام البضاعة كاملة في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً.
+                    {d.status === "DRAFT"
+                      ? "إرسال هذا الأمر للمراجعة والاعتماد. سيتم إنشاء طلب اعتماد رقابي ولن يتم استلام المخزون أو ترحيل الفاتورة في القيود إلا بعد اعتماده من المفوض."
+                      : "اعتماد هذا الأمر يعني تأكيد استلام البضاعة كاملة في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً."}
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-3 py-1">
                   <div className="space-y-1">
                     <Label htmlFor="approve-reason" className="text-xs">
-                      بيان الاعتماد / السبب
+                      {d.status === "DRAFT" ? "سبب الإرسال / ملاحظات" : "بيان الاعتماد / السبب"}
                     </Label>
                     <Input
                       id="approve-reason"
                       value={approvalReason}
                       onChange={(e) => setApprovalReason(e.target.value)}
                       className="text-xs"
-                      placeholder="اعتماد واستلام البضاعة كاملة"
+                      placeholder={d.status === "DRAFT" ? "إرسال للمراجعة والاعتماد" : "اعتماد واستلام البضاعة كاملة"}
                     />
                   </div>
                 </div>
@@ -481,7 +487,7 @@ export function PurchaseDetailDrawer({
                     onClick={handleApproveAndReceive}
                     disabled={approvalReason.trim().length < 3}
                   >
-                    تأكيد الاعتماد والاستلام
+                    {d.status === "DRAFT" ? "تأكيد الإرسال للاعتماد" : "تأكيد الاعتماد والاستلام"}
                   </SubmitButton>
                 </DialogFooter>
               </DialogContent>

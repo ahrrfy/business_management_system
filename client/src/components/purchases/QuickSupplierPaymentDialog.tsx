@@ -87,20 +87,16 @@ export function QuickSupplierPaymentDialog({
 
   const matchedInvoice = useMemo(() => {
     const rows = paymentSourcesQuery.data?.rows ?? [];
-    // مطابقة رقم الفاتورة أو رقم أمر الشراء
-    const exact = rows.find(
-      (r) =>
-        r.invoiceNumber === poNumber ||
-        r.externalInvoiceNumber === poNumber,
-    );
-    if (exact) return exact;
-    // إن لم تطابق حرفياً، نأخذ الفاتورة التي تحمل نفس العملة للمورد وبها رصيد متبقٍ
+    // مطابقة حتمية برقم أمر الشراء أو معرّفه الرقمي — منع تخصيص السداد لفاتورة أخرى بالخطأ
     return rows.find(
       (r) =>
-        r.currency === currency &&
-        D(r.remainingAmount || 0).gt(0),
+        (Array.isArray((r as { purchaseOrderIds?: number[] }).purchaseOrderIds) &&
+          (r as { purchaseOrderIds?: number[] }).purchaseOrderIds?.includes(purchaseOrderId)) ||
+        r.invoiceNumber === poNumber ||
+        r.externalInvoiceNumber === poNumber ||
+        (r.externalInvoiceNumber && r.externalInvoiceNumber.startsWith(`AUTO-${poNumber}-`)),
     );
-  }, [paymentSourcesQuery.data?.rows, poNumber, currency]);
+  }, [paymentSourcesQuery.data?.rows, purchaseOrderId, poNumber]);
 
   useEffect(() => {
     if (open) {
@@ -196,10 +192,10 @@ export function QuickSupplierPaymentDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <HandCoins aria-hidden className="size-5 text-primary" />
-            <span>سداد فوري للمورد — {supplierName}</span>
+            <span>طلب سداد للمورد — {supplierName}</span>
           </DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
-            تسجيل دفعة سداد مرتبطة بأمر الشراء {poNumber}.
+            تقديم طلب سداد مرتبط بأمر الشراء {poNumber} للاعتماد والصرف.
           </DialogDescription>
         </DialogHeader>
 
@@ -331,7 +327,7 @@ export function QuickSupplierPaymentDialog({
                 pending={requestPaymentMut.isPending}
                 disabled={!canSubmit}
               >
-                تسجيل السداد
+                إرسال طلب السداد
               </SubmitButton>
             </DialogFooter>
           </form>
