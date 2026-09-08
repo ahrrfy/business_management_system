@@ -415,35 +415,6 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       });
     }
     await assertLockedInvoiceControlSnapshotTx(tx, inv, input.controlExpectedSnapshot);
-
-    /**
-     * ⛔ **حظر التنفيذ المباشر مع وجود معاملة رقابية معلّقة** (Codex P2).
-     *
-     * يُفحص ويُقفل ذرياً مع الفاتورة داخل الترانزاكشن لمنع أيّ تسابق بين إنشاء الطلب وتنفيذ المرتجع.
-     */
-    const [pendingControl] = await tx
-      .select({ id: salesControlRequests.id })
-      .from(salesControlRequests)
-      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
-      .for("update")
-      .limit(1);
-    const [pendingLegacy] = await tx
-      .select({ id: returnRequests.id })
-      .from(returnRequests)
-      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
-      .for("update")
-      .limit(1);
-
-    if (pendingControl || pendingLegacy) {
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: appErrorMessage({
-          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
-          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
-          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
-        }),
-      });
-    }
     // المرتجع يغيّر الفاتورة وبنودها والمخزون والذمم تاريخياً. قيدٌ بتاريخ اليوم لا
     // يبرر إعادة كتابة حقيقة فاتورة داخل شهر مقفل؛ التصحيح السابق يجب أن يمر بمسار
     // prior-period adjustment مستقل بدلاً من تعديل المستند الأصلي.
@@ -1528,6 +1499,30 @@ export async function returnSaleAsOwner(
         }),
       });
     }
+    const [pendingControl] = await tx
+      .select({ id: salesControlRequests.id })
+      .from(salesControlRequests)
+      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .for("update")
+      .limit(1);
+    const [pendingLegacy] = await tx
+      .select({ id: returnRequests.id })
+      .from(returnRequests)
+      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .for("update")
+      .limit(1);
+
+    if (pendingControl || pendingLegacy) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
+        }),
+      });
+    }
+
     return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
   });
 }
@@ -1619,6 +1614,30 @@ export async function returnSaleDirect(
           what: "تعذّر تنفيذ المرتجع المباشر",
           why: `دورك الحالي (${effectiveRole}) أو صلاحياتك الفعّالة لا تملك صلاحية تنفيذ المرتجع المباشر`,
           doThis: "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
+        }),
+      });
+    }
+
+    const [pendingControl] = await tx
+      .select({ id: salesControlRequests.id })
+      .from(salesControlRequests)
+      .where(and(eq(salesControlRequests.invoiceId, input.invoiceId), eq(salesControlRequests.status, "PENDING")))
+      .for("update")
+      .limit(1);
+    const [pendingLegacy] = await tx
+      .select({ id: returnRequests.id })
+      .from(returnRequests)
+      .where(and(eq(returnRequests.invoiceId, input.invoiceId), eq(returnRequests.status, "PENDING_APPROVAL")))
+      .for("update")
+      .limit(1);
+
+    if (pendingControl || pendingLegacy) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "توجد معاملة رقابية معلّقة على هذه الفاتورة",
+          why: "لا يمكن تنفيذ مرتجع مباشر لفاتورة تخضع لطلب معلّق ينتظر الاعتماد أو المراجعة",
+          doThis: "احسم الطلب المعلّق أولاً بالاعتماد أو الرفض أو السحب قبل محاولة التنفيذ المباشر",
         }),
       });
     }
