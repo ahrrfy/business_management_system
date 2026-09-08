@@ -25,7 +25,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { categories, productImages, productVariants, products } from "../../drizzle/schema";
+import { categories, productImages, productUnits, productUnitBarcodes, productVariants, products } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import type { ProductStudioActor } from "./productStudioService";
 
@@ -195,8 +195,17 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   if (input.isBundle === true) conditions.push(eq(products.isBundle, true));
   if (input.isBundle === false) conditions.push(eq(products.isBundle, false));
   if (input.search && input.search.trim()) {
-    const like = `%${input.search.trim()}%`;
-    conditions.push(sql`(${products.name} like ${like} or ${products.searchNorm} like ${like})`);
+    const rawSearch = input.search.trim();
+    const like = `%${rawSearch}%`;
+    conditions.push(
+      sql`(${products.name} like ${like} or ${products.searchNorm} like ${like} or exists (
+        select 1 from ${productVariants} pv
+        left join ${productUnits} pu on pu.variant_id = pv.id
+        left join ${productUnitBarcodes} pub on pub.unit_id = pu.id
+        where pv.product_id = ${products.id}
+        and (pv.sku = ${rawSearch} or pu.barcode = ${rawSearch} or pub.barcode = ${rawSearch})
+      ))`,
+    );
   }
 
   // حسبَ الحالة: نجرِّبُ إخفاء HEALTHY افتراضياً — لا فائدةَ من إظهار السليم في «كشف الفجوات».
