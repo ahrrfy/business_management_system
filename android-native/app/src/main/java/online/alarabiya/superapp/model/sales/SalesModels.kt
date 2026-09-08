@@ -221,6 +221,7 @@ data class ReturnableInvoice(
     val status: String,
     val paymentMethod: String?,
     val items: List<ReturnableLine>,
+    val refundShifts: List<RetailShift> = emptyList(),
 )
 
 data class ReturnSubmission(
@@ -299,6 +300,16 @@ object SalesValidation {
         }
         if (submission.reason.trim().length !in 3..500) {
             return "سبب المرتجع مطلوب (٣ أحرف على الأقل)"
+        }
+        if (capabilities?.role == "cashier") {
+            val hasShift = if (invoice.refundShifts.isNotEmpty()) {
+                invoice.refundShifts.any { it.userId == capabilities.userId }
+            } else {
+                submission.refundShiftId != null
+            }
+            if (!hasShift) {
+                return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع"
+            }
         }
         if (submission.refundAmount.isNotBlank()) {
             if (!money.matches(submission.refundAmount)) return "مبلغ الاسترداد غير صالح"

@@ -580,7 +580,20 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
         }
         item {
             SalesCard(Modifier.fillMaxWidth()) {
+                val availableShifts = invoice.refundShifts.ifEmpty { state.openShifts }
+                val returnShifts = capabilities.filterReturnShifts(availableShifts)
+                val isCashier = capabilities.role == "cashier"
+                val cashierHasShift = returnShifts.isNotEmpty()
+                val canSubmit = !state.locked && (!isCashier || cashierHasShift)
+
                 Text("الاسترداد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (isCashier && !cashierHasShift) {
+                    Text(
+                        "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 OutlinedTextField(
                     state.returnReason,
                     actions.returnReason,
@@ -595,8 +608,6 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                     listOf(PaymentMethod.CASH, PaymentMethod.CARD).forEach { method -> FilterChip(state.returnMethod == method, { actions.returnMethod(method) }, label = { Text(method.label) }, enabled = !state.locked) }
                 }
                 if (state.returnMethod == PaymentMethod.CASH && state.returnRefundAmount.toDoubleOrNull()?.let { it > 0 } == true) {
-                    val returnShifts = capabilities.filterReturnShifts(state.openShifts)
-                    val isCashier = capabilities.role == "cashier"
                     Text("مصدر الاسترداد النقدي", fontWeight = FontWeight.SemiBold)
                     if (isCashier && returnShifts.isEmpty()) {
                         Text(
@@ -643,7 +654,7 @@ private fun ReturnEditor(invoice: ReturnableInvoice, state: SalesUiState, capabi
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(state.returnRestock, actions.returnRestock, enabled = !state.locked); Text("إعادة الكمية للمخزون") }
                 Text("تُراجع القيمة النهائية مع الفاتورة والكميات.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                Button(actions.submitReturn, Modifier.fillMaxWidth().height(52.dp), enabled = !state.locked) { Text("تسجيل المرتجع") }
+                Button(actions.submitReturn, Modifier.fillMaxWidth().height(52.dp), enabled = canSubmit) { Text("تسجيل المرتجع") }
             }
         }
     }

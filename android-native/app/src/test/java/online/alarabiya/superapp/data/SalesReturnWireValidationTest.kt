@@ -39,6 +39,16 @@ class SalesReturnWireValidationTest {
                 total = "50.00",
             ),
         ),
+        refundShifts = listOf(
+            RetailShift(
+                id = 99L,
+                branchId = 1L,
+                userId = 42L,
+                userName = "كاشير",
+                status = "OPEN",
+                openedAt = null,
+            ),
+        ),
     )
 
     @Test
@@ -251,5 +261,88 @@ class SalesReturnWireValidationTest {
 
         val err = SalesValidation.salesReturn(submission, sampleInvoice, managerCaps)
         assertNull(err)
+    }
+
+    @Test
+    fun `salesReturn blocks off-shift cashier across card, zero refund, and cash`() {
+        val offShiftCashier = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 999L,
+            role = "cashier",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        // 1. CARD return by off-shift cashier
+        val cardSubmission = ReturnSubmission(
+            invoiceId = 100L,
+            quantities = mapOf(10L to 1),
+            refundAmount = "10.00",
+            refundMethod = PaymentMethod.CARD,
+            refundShiftId = null,
+            restock = true,
+            clientRequestId = "req-test-offshift-card",
+            reason = "عيب مصنعي في الصنف",
+            refundReference = "REF-CARD-1",
+        )
+        assertEquals(
+            "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع",
+            SalesValidation.salesReturn(cardSubmission, sampleInvoice, offShiftCashier),
+        )
+
+        // 2. Zero-refund / no-refund return by off-shift cashier
+        val zeroRefundSubmission = cardSubmission.copy(
+            refundAmount = "0.00",
+            clientRequestId = "req-test-offshift-zero",
+        )
+        assertEquals(
+            "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع",
+            SalesValidation.salesReturn(zeroRefundSubmission, sampleInvoice, offShiftCashier),
+        )
+
+        // 3. Invoice with no open shifts at all blocks cashier
+        val invoiceNoShifts = sampleInvoice.copy(refundShifts = emptyList())
+        assertEquals(
+            "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع",
+            SalesValidation.salesReturn(cardSubmission, invoiceNoShifts, offShiftCashier),
+        )
+    }
+
+    @Test
+    fun `salesReturn allows on-shift cashier for card and zero refund`() {
+        val onShiftCashier = SalesCapabilities(
+            sales = SalesAccess.FULL,
+            products = SalesAccess.READ,
+            customers = SalesAccess.READ,
+            treasury = SalesAccess.READ,
+            userId = 42L,
+            role = "cashier",
+            branchId = 1L,
+            allBranches = false,
+            isOwner = false,
+        )
+
+        val cardSubmission = ReturnSubmission(
+            invoiceId = 100L,
+            quantities = mapOf(10L to 1),
+            refundAmount = "10.00",
+            refundMethod = PaymentMethod.CARD,
+            refundShiftId = null,
+            restock = true,
+            clientRequestId = "req-test-onshift-card",
+            reason = "عيب مصنعي في الصنف",
+            refundReference = "REF-CARD-2",
+        )
+        assertNull(SalesValidation.salesReturn(cardSubmission, sampleInvoice, onShiftCashier))
+
+        val zeroRefundSubmission = cardSubmission.copy(
+            refundAmount = "0.00",
+            clientRequestId = "req-test-onshift-zero",
+        )
+        assertNull(SalesValidation.salesReturn(zeroRefundSubmission, sampleInvoice, onShiftCashier))
     }
 }

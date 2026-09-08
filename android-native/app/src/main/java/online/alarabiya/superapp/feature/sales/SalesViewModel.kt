@@ -92,9 +92,11 @@ class SalesViewModel(
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
     fun returnShift(value: Long?) {
         if (state.locked) return
+        val availableShifts = state.returnInvoice?.refundShifts?.ifEmpty { state.openShifts } ?: state.openShifts
+        val returnShifts = capabilities.filterReturnShifts(availableShifts)
         if (capabilities.role == "cashier") {
-            if (value == null || capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) return
-        } else if (value != null && capabilities.filterReturnShifts(state.openShifts).none { it.id == value }) {
+            if (value == null || returnShifts.none { it.id == value }) return
+        } else if (value != null && returnShifts.none { it.id == value }) {
             return
         }
         state = state.copy(returnShiftId = value, error = null)
@@ -194,7 +196,9 @@ class SalesViewModel(
     fun beginReturn(invoiceId: Long) {
         if (!capabilities.canCreateReturn) return
         launch(SalesBusy.RETURN_LOAD) {
-            val validShifts = capabilities.filterReturnShifts(state.openShifts)
+            val invoice = source.returnableInvoice(invoiceId)
+            val availableShifts = invoice.refundShifts.ifEmpty { state.openShifts }
+            val validShifts = capabilities.filterReturnShifts(availableShifts)
             val defaultShiftId = if (capabilities.role == "cashier") {
                 validShifts.firstOrNull { it.userId == capabilities.userId }?.id
             } else {
@@ -203,7 +207,7 @@ class SalesViewModel(
             }
             state = state.copy(
                 section = SalesSection.RETURNS,
-                returnInvoice = source.returnableInvoice(invoiceId),
+                returnInvoice = invoice,
                 returnQuantities = emptyMap(),
                 returnRefundAmount = "",
                 returnRefundReference = "",

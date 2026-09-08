@@ -1499,6 +1499,16 @@ export async function returnSaleAsOwner(
         }),
       });
     }
+
+    // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تتعطّل بالطلبات المعلّقة
+    if (input.clientRequestId) {
+      const fingerprint = idempotencyHash(input);
+      const existingRefId = await checkIdempotency(tx, "sale.return", input.clientRequestId, fingerprint);
+      if (existingRefId != null) {
+        return returnSaleInTx(tx, { ...input, operatorReason: reason }, actor);
+      }
+    }
+
     const [pendingControl] = await tx
       .select({ id: salesControlRequests.id })
       .from(salesControlRequests)
@@ -1618,6 +1628,19 @@ export async function returnSaleDirect(
           doThis: "يجب أن تكون مالكاً، أو تملك صلاحية المبيعات الكاملة (sales: FULL) لتنفيذ المرتجع",
         }),
       });
+    }
+
+    // Idempotency: إعادة تشغيل مرتجع مُلتزم سابقاً لا تشترط بقاء الوردية مفتوحة
+    if (input.clientRequestId) {
+      const fingerprint = idempotencyHash(input);
+      const existingRefId = await checkIdempotency(tx, "sale.return", input.clientRequestId, fingerprint);
+      if (existingRefId != null) {
+        return returnSaleInTx(tx, { ...input, operatorReason: reason }, {
+          userId: actor.userId,
+          branchId: actor.branchId,
+          role: effectiveRole,
+        });
+      }
     }
 
     if (effectiveRole === "cashier") {
