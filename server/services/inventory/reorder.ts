@@ -20,6 +20,7 @@ import {
   suppliers,
   variantBranchThresholds,
 } from "../../../drizzle/schema";
+import { DEAD_INVOICE_STATUSES } from "../../../shared/invoiceStatus";
 import { getDb } from "../../db";
 import { createPurchaseOrder } from "../purchaseService";
 import { withTx, type Actor } from "../tx";
@@ -37,6 +38,8 @@ export function effectiveMinStockSql() {
   return sql<number>`COALESCE(${variantBranchThresholds.minStock}, ${productVariants.minStock}, 0)`;
 }
 
+export type ReorderUrgency = "CRITICAL" | "WARNING" | "NORMAL";
+
 export interface ReorderAlertRow {
   variantId: number;
   productId: number;
@@ -53,8 +56,16 @@ export interface ReorderAlertRow {
   reorderPoint: number;
   /** override فرعيّ مفعَّل على هذا الصفّ (شارةُ «مخصّص لهذا الفرع» في الشاشة). */
   overrideActive: boolean;
-  /** الكمية المقترحة للطلب = reorderPoint×2 − الرصيد الحالي، لا تقلّ عن 1. */
+  /** الكمية المقترحة للطلب (محسوبة استباقياً استناداً لمعدل سرعة البيع وفترة التوريد أو سقف حد الطلب). */
   suggestedQty: number;
+  /** معدل سرعة البيع اليومي (مبيعات/يوم خلال آخر 30 يوماً). */
+  dailyVelocity: number;
+  /** إجمالي المبيعات بالوحدة الأساس خلال آخر 30 يوماً لهذا الفرع. */
+  sales30d: number;
+  /** الأيام المقدرة حتى نفاد المخزون (null إن لم يكن هناك مبيعات وسرعة البيع صفر). */
+  daysRemaining: number | null;
+  /** تصنيف درجة الإلحاح: CRITICAL (نفاد وشيك < 3 أيام أو رصيد صفر/سالب) · WARNING (نفاد خلال 4-7 أيام) · NORMAL (مستقر تحت الحد) */
+  urgency: ReorderUrgency;
 }
 
 export interface ListReorderAlertsInput {
@@ -62,6 +73,8 @@ export interface ListReorderAlertsInput {
   branchId?: number | null;
   limit?: number;
   offset?: number;
+  /** فترة التوريد المقدرة بالأيام (الافتراضي 14 يوماً). */
+  leadTimeDays?: number;
 }
 
 export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Promise<ReorderAlertRow[]> {
@@ -123,9 +136,69 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
     .limit(limit)
     .offset(offset);
 
+  if (!rows.length) return [];
+
+  const variantIds = Array.from(new Set(rows.map((r) => Number(r.variantId))));
+  const salesMap = new Map<string, number>();
+  if (variantIds.length > 0) {
+    const branchCond = input.branchId != null ? sql`AND i.branchId = ${input.branchId}` : sql``;
+    const deadStatusesList = sql.join(
+      DEAD_INVOICE_STATUSES.map((s) => sql`${s}`),
+      sql`, `,
+    );
+    const salesRes = await db.execute(sql`
+      SELECT 
+        ii.variantId,
+        i.branchId,
+        COALESCE(SUM(GREATEST(CAST(ii.baseQuantity AS DECIMAL(15,2)) - COALESCE(CAST(ii.returnedBaseQuantity AS DECIMAL(15,2)), 0), 0)), 0) AS soldQty
+      FROM invoiceItems ii
+      INNER JOIN invoices i ON i.id = ii.invoiceId
+      WHERE i.invoiceStatus NOT IN (${deadStatusesList})
+        AND i.invoiceDate >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+        AND ii.variantId IN (${sql.join(variantIds.map((id) => sql`${id}`), sql`, `)})
+        ${branchCond}
+      GROUP BY ii.variantId, i.branchId
+    `);
+    const sRows = (salesRes as any)?.[0] ?? salesRes;
+    if (Array.isArray(sRows)) {
+      for (const sr of sRows) {
+        salesMap.set(`${sr.variantId}:${sr.branchId}`, Number(sr.soldQty ?? 0));
+      }
+    }
+  }
+
+  const effectiveLeadTime = Math.max(1, Math.min(input.leadTimeDays ?? 14, 180));
+
   return rows.map((r) => {
     const reorderPoint = Number(r.reorderPoint ?? 0);
+    const minStock = Number(r.minStock ?? 0);
     const quantity = Number(r.quantity);
+    const key = `${r.variantId}:${r.branchId}`;
+    const sales30d = salesMap.get(key) ?? 0;
+    const dailyVelocity = Number((sales30d / 30).toFixed(2));
+
+    let daysRemaining: number | null = null;
+    if (quantity <= 0) {
+      daysRemaining = 0;
+    } else if (dailyVelocity > 0) {
+      daysRemaining = Math.max(0, Math.floor(quantity / dailyVelocity));
+    }
+
+    let urgency: ReorderUrgency = "NORMAL";
+    if (quantity <= 0 || (daysRemaining !== null && daysRemaining <= 3)) {
+      urgency = "CRITICAL";
+    } else if (daysRemaining !== null && daysRemaining <= 7) {
+      urgency = "WARNING";
+    }
+
+    let smartTarget = reorderPoint * 2;
+    if (dailyVelocity > 0) {
+      const safetyBuffer = minStock > 0 ? minStock : Math.ceil(dailyVelocity * 3);
+      const velocityTarget = Math.ceil(dailyVelocity * effectiveLeadTime + safetyBuffer);
+      smartTarget = Math.max(smartTarget, velocityTarget);
+    }
+    const suggestedQty = Math.max(1, smartTarget - quantity);
+
     return {
       variantId: Number(r.variantId),
       productId: Number(r.productId),
@@ -137,11 +210,14 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
       branchId: Number(r.branchId),
       branchName: r.branchName,
       quantity,
-      minStock: Number(r.minStock ?? 0),
+      minStock,
       reorderPoint,
       overrideActive: Number(r.overrideActive) === 1,
-      // الكميات أعداد صحيحة عادية (لا أموال) ⇒ حساب int مباشر مشروع (§٥).
-      suggestedQty: Math.max(1, reorderPoint * 2 - quantity),
+      suggestedQty,
+      dailyVelocity,
+      sales30d,
+      daysRemaining,
+      urgency,
     };
   });
 }
