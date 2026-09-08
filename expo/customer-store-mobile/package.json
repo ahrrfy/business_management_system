@@ -71,7 +71,7 @@
     "qrcode": "^1.5.4",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {
