@@ -404,6 +404,93 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(disabledDozen?.barcode).toBe("BC-DOZEN-1"); // باركودها محفوظ ولم يُفرغ (Codex P1)
   });
 
+  it("⭐ محاذاة مطابقة الأساس مع حارس الهوية: تبديل الباركودات بين الأساس والفرعي لا يقلب معرّفات الصفوف", async () => {
+    // لدينا id=1 (قطعة، أساس، BC-PIECE-1) و id=2 (درزن، فرعي، BC-DOZEN-1)
+    // السيناريو: المستخدم بدل الباركودات: قطعة تأخذ BC-DOZEN-1 والدرزن يأخذ BC-PIECE-1 مع بقاء الأسماء
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: template,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-DOZEN-1", درزن: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const piece = units.find((u) => u.unitName === "قطعة");
+    const dozen = units.find((u) => u.unitName === "درزن");
+
+    // يجب أن يحافظ صف الأساس على معرّفه 1 وصف الدرزن على معرّفه 2 (لا تنقلب معاني المعرّفات الجنائية)
+    expect(piece?.id).toBe(1);
+    expect(piece?.isBaseUnit).toBe(true);
+    expect(piece?.barcode).toBe("BC-DOZEN-1");
+
+    expect(dozen?.id).toBe(2);
+    expect(dozen?.isBaseUnit).toBe(false);
+    expect(dozen?.barcode).toBe("BC-PIECE-1");
+  });
+
+  it("⭐ تفضيل الوحدة النشطة عند مطابقة الاسم لوجود صف معطل سابق بنفس الاسم", async () => {
+    // إدخال صف معطل سابق بنفس الاسم «علبة»
+    await db().insert(s.productUnits).values({
+      variantId: 1,
+      unitName: "علبة",
+      conversionFactor: "6",
+      isBaseUnit: false,
+      isActive: false,
+      barcode: "OLD-BOX-BC",
+    });
+    // وإدخال صف نشط حالي باسم «علبة»
+    const [activeBox] = await db().insert(s.productUnits).values({
+      variantId: 1,
+      unitName: "علبة",
+      conversionFactor: "6",
+      isBaseUnit: false,
+      isActive: true,
+      barcode: null,
+    });
+    const activeBoxId = Number(activeBox.insertId);
+
+    // تحديث بدون باركود للعلبة — المطابقة بالاسم يجب أن تختار الصف النشط لا المعطل
+    const templateWithBox = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "علبة", conversionFactor: "6", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "5000.00" }] },
+    ];
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: templateWithBox,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const matchedBox = units.find((u) => u.unitName === "علبة" && u.isActive);
+    expect(matchedBox?.id).toBe(activeBoxId);
+  });
+
   it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {
     await expect(
       updateProduct(

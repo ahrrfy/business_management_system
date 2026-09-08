@@ -617,7 +617,7 @@ export default function Products() {
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
                   const isBase = row.original.isBaseUnit || factor === 1;
-                  const unitQty = isBase ? row.original.stockBase : Math.floor(row.original.stockBase / factor);
+                  const unitQty = isBase ? row.original.stockBase : Math.trunc(row.original.stockBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
                       <span className="font-medium tabular-nums">{unitQty} {row.original.unitName}</span>
@@ -635,7 +635,21 @@ export default function Products() {
                 header: "المحجوز والمخصص",
                 accessorFn: (r) => r.reservedBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => row.original.reservedBase,
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const resQty = isBase ? row.original.reservedBase : Math.trunc(row.original.reservedBase / factor) || 0;
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">{resQty} {row.original.unitName}</span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.reservedBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "availableBase",
@@ -645,7 +659,7 @@ export default function Products() {
                 cell: ({ row }) => {
                   const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
                   const isBase = row.original.isBaseUnit || factor === 1;
-                  const availQty = isBase ? row.original.availableBase : Math.floor(row.original.availableBase / factor);
+                  const availQty = isBase ? row.original.availableBase : Math.trunc(row.original.availableBase / factor) || 0;
                   return (
                     <div className="flex flex-col items-end">
                       <span className="font-medium tabular-nums">
