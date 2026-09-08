@@ -213,6 +213,7 @@ export const countPortalRouter = router({
         unknownBarcode: z.string().trim().min(1).max(64).optional(),
         clientRequestId: z.string().uuid(),
         clientCapturedAt: z.string().max(64).optional(),
+        clientSentAt: z.string().max(64).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -261,6 +262,7 @@ export const countPortalRouter = router({
         scannedBarcode: input.scannedBarcode ?? null,
         clientRequestId: input.clientRequestId,
         clientCapturedAt: input.clientCapturedAt ?? null,
+        clientSentAt: input.clientSentAt ?? null,
       });
       // لا نكرّر سطر التدقيق عند إعادة مزامنة نفس العدّة (idempotent replay).
       if (!res.idempotent) {

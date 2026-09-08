@@ -160,7 +160,7 @@ export default function MyStocktakeWorkspace() {
             sessionCode: code, variantId: it.variantId, qty: it.qty,
             unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt, clientSentAt: new Date().toISOString(),
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -188,7 +188,7 @@ export default function MyStocktakeWorkspace() {
         try {
           await utils.client.count.submit.mutate({
             sessionCode: code, unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt, clientSentAt: new Date().toISOString(),
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
@@ -422,14 +422,9 @@ export default function MyStocktakeWorkspace() {
     const capturedAt = new Date().toISOString();
     const entry = selectedEntry;
     const payload = {
-      sessionCode: code,
-      variantId: item.variantId,
-      qty,
-      unitBreakdown,
-      entryMethod: entry.method,
-      scannedBarcode: entry.scannedBarcode ?? undefined,
-      clientRequestId,
-      clientCapturedAt: capturedAt,
+      sessionCode: code, variantId: item.variantId, qty, unitBreakdown,
+      entryMethod: entry.method, scannedBarcode: entry.scannedBarcode ?? undefined,
+      clientRequestId, clientCapturedAt: capturedAt, clientSentAt: new Date().toISOString(),
     };
     const onAccepted = async (res: SubmitResult) => {
       // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.

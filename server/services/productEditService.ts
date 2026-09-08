@@ -175,7 +175,15 @@ async function upsertVariantUnits(
 ) {
   const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, variantId));
   // تجميد هيكل وهوية الوحدات أثناء الجرد النشط (Codex P2)
-  await assertNoActiveStocktakeUnitFreeze(tx, variantId, existing, template);
+  await assertNoActiveStocktakeUnitFreeze(
+    tx,
+    variantId,
+    existing,
+    template.map((t) => ({
+      ...t,
+      barcode: (unitBarcodes[t.unitName.trim()] ?? "").trim() || null,
+    })),
+  );
   const keep = new Set<number>();
   // فحص التفرّد للباركودات الأساسيّة على مستوى (الأساسيّ + البديل) قبل أيّ كتابة — نمنع
   // كتابة باركود أساسيّ يطابق بديلاً لسلعة أخرى (Codex P1). نتجاهل وحدات المتغيّر الحاليّة

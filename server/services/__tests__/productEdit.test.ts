@@ -1321,4 +1321,50 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
       ),
     ).rejects.toThrow(/جلسة جرد نشطة/);
   });
+
+  it("⭐ تعديل باركود أي وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-BARCODE",
+      name: "جلسة اختبار تعديل باركود وحدة",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 5",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // نفس الوحدات والمعاملات والأساس ولكن مع تغيير باركود وحدة الدرزن
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: template,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-NEW-BARCODE" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
 });

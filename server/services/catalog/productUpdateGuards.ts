@@ -186,17 +186,19 @@ export async function assertNoActiveStocktakeUnitFreeze(
     conversionFactor: string | number;
     isBaseUnit?: boolean | number | null;
     isActive?: boolean | number | null;
+    barcode?: string | null;
   }>,
   incomingUnits: ReadonlyArray<{
     unitName: string;
     conversionFactor: string | number;
     isBaseUnit?: boolean | number | null;
+    barcode?: string | null;
   }>,
 ): Promise<void> {
   const activeExisting = existingUnits.filter((u) => u.isActive !== false && u.isActive !== 0);
   if (activeExisting.length === 0) return;
 
-  // فحص هل تغير هيكل الوحدات (إضافة، حذف، تغيير اسم، تغيير معامل، أو تغيير صفة الأساس)
+  // فحص هل تغير هيكل الوحدات (إضافة، حذف، تغيير اسم، تغيير معامل، تغيير باركود، أو تغيير صفة الأساس)
   const structureChanged =
     activeExisting.length !== incomingUnits.length ||
     activeExisting.some((eu) => {
@@ -210,6 +212,9 @@ export async function assertNoActiveStocktakeUnitFreeze(
           : String(iu.conversionFactor).trim() !== String(eu.conversionFactor).trim();
       if (factorDiffers) return true; // تغير المعامل
       if (Boolean(iu.isBaseUnit) !== Boolean(eu.isBaseUnit)) return true; // تغير الأساس
+      const euBarcode = (eu.barcode ?? "").trim();
+      const iuBarcode = (iu.barcode ?? "").trim();
+      if (euBarcode !== iuBarcode) return true; // تغير الباركود
       return false;
     });
 
@@ -234,7 +239,7 @@ export async function assertNoActiveStocktakeUnitFreeze(
       code: "PRECONDITION_FAILED",
       message: appErrorMessage({
         what: "تعذّر تعديل هيكل أو وحدات الصنف أثناء الجرد النشط",
-        why: `هذا الصنف مدرج في جلسة جرد نشطة (${s.code}) في ${phase}، وتعديل أسماء الوحدات أو معاملاتها أو حذفها أثناء الجرد يؤدي إلى رفض عدّات العاملين الميدانية وتضارب التسوية الدفترية`,
+        why: `هذا الصنف مدرج في جلسة جرد نشطة (${s.code}) في ${phase}، وتعديل أسماء الوحدات أو معاملاتها أو باركوداتها أو حذفها أثناء الجرد يؤدي إلى رفض عدّات العاملين الميدانية وتضارب التسوية الدفترية`,
         doThis: "أكمل اعتماد جلسة الجرد أو ألغِها أولاً قبل تعديل وحدات القياس في الكتالوج",
       }),
     });

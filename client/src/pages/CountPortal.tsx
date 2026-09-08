@@ -247,7 +247,7 @@ export default function CountPortal() {
             sessionCode: code, variantId: it.variantId, qty: it.qty,
             unitBreakdown: it.unitBreakdown, entryMethod: it.entryMethod,
             scannedBarcode: it.scannedBarcode ?? undefined,
-            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt,
+            clientRequestId: it.clientRequestId, clientCapturedAt: it.queuedAt, clientSentAt: new Date().toISOString(),
           });
           removeQueued(code, it.clientRequestId);
           synced++;
@@ -275,7 +275,7 @@ export default function CountPortal() {
         try {
           await utils.client.count.submit.mutate({
             sessionCode: code, unknownBarcode: u.barcode,
-            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt,
+            clientRequestId: u.clientRequestId, clientCapturedAt: u.queuedAt, clientSentAt: new Date().toISOString(),
           });
           removeUnknown(code, u.clientRequestId);
         } catch (e) {
@@ -539,14 +539,9 @@ export default function CountPortal() {
       const scannedBarcode = openEntry.scannedBarcode;
       submitMut.mutate(
         {
-          sessionCode: code,
-          variantId: item.variantId,
-          qty,
-          unitBreakdown,
-          entryMethod,
-          scannedBarcode: scannedBarcode ?? undefined,
-          clientRequestId,
-          clientCapturedAt: capturedAt,
+          sessionCode: code, variantId: item.variantId, qty,
+          unitBreakdown, entryMethod, scannedBarcode: scannedBarcode ?? undefined,
+          clientRequestId, clientCapturedAt: capturedAt, clientSentAt: new Date().toISOString(),
         },
         {
           onSuccess: (res) => {

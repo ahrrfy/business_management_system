@@ -1154,12 +1154,13 @@ describe("تدقيق تفصيل الوحدات وختم توقيت الالتق�
       mode: "PIN",
     };
 
-    const clientTime = new Date(Date.now() - 5000); // قبل 5 ثواني
+    const clientTime = new Date();
     const res = await submitCount(identity, {
       variantId: 1,
       qty: 14,
       unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
       clientCapturedAt: clientTime.toISOString(),
+      clientSentAt: clientTime.toISOString(),
       clientRequestId: randomUUID(),
     });
 
@@ -1173,6 +1174,51 @@ describe("تدقيق تفصيل الوحدات وختم توقيت الالتق�
     expect(counts[0].qty).toBe(14);
     // توقيت countedAt يطابق وقت الالتقاط الفعلي (ضمن فرق ثانيتين للدقة)
     expect(Math.abs(new Date(counts[0].countedAt).getTime() - clientTime.getTime())).toBeLessThan(2000);
+  });
+
+  it("⭐ تصحيح انحراف ساعة جهاز العميل (Clock Skew) بنمط الفارق الزمني النسبي", async () => {
+    const r = await mkSession({ variantIds: [1] });
+    const [session] = await db()
+      .select()
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, r.sessionId));
+    const [assignment] = await db()
+      .select()
+      .from(s.stocktakeAssignments)
+      .where(eq(s.stocktakeAssignments.id, r.assignments[0].assignmentId));
+    const identity: PortalIdentity = {
+      session,
+      assignment,
+      countedByName: assignment.name,
+      countedByUserId: null,
+      mode: "PIN",
+    };
+
+    // نفترض أن جهاز العميل ساعته متأخرة أو مختلفة تماماً، لكن الفارق بين الالتقاط والإرسال هو ثانية واحدة
+    const clientCaptured = new Date("2021-06-01T10:00:00.000Z");
+    const clientSent = new Date("2021-06-01T10:00:01.000Z"); // delayMs = 1000ms
+    const serverBefore = Date.now();
+
+    const res = await submitCount(identity, {
+      variantId: 1,
+      qty: 14,
+      unitBreakdown: JSON.stringify({ قطعة: 2, درزن: 1 }),
+      clientCapturedAt: clientCaptured.toISOString(),
+      clientSentAt: clientSent.toISOString(),
+      clientRequestId: randomUUID(),
+    });
+
+    expect(res.ok).toBe(true);
+
+    const counts = await db()
+      .select()
+      .from(s.stocktakeCounts)
+      .where(eq(s.stocktakeCounts.sessionId, r.sessionId));
+    expect(counts).toHaveLength(1);
+    const countedAtMs = new Date(counts[0].countedAt).getTime();
+    // يجب ألا يُسجل التاريخ بعام 2021، بل محسوباً كـ nowMs - 1000ms
+    expect(countedAtMs).toBeGreaterThan(serverBefore - 5000);
+    expect(countedAtMs).toBeLessThanOrEqual(Date.now() + 1000);
   });
 
   it("⭐ تقييد وقت الالتقاط المستقبلي (انحراف ساعة العميل) بـ now لمنع استثناء الحركات اللاحقة", async () => {

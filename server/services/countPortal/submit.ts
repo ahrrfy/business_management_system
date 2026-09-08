@@ -82,6 +82,8 @@ export type SubmitCountInput = {
   clientRequestId: string;
   /** وقت الالتقاط الفعلي على جهاز العامل (لطابور الأوفلاين) لحماية مبيعات الكاشير اللاحقة. */
   clientCapturedAt?: string | Date | null;
+  /** وقت إرسال الطلب من جهاز العميل لحساب فارق التوقيت ومعالجة انحراف ساعة العميل بدقة. */
+  clientSentAt?: string | Date | null;
 };
 
 export type SubmitCountResult = {
@@ -500,8 +502,21 @@ export async function submitCount(
         const capMs = cap.getTime();
         const nowMs = now.getTime();
         const sessionCreatedMs = new Date(session.createdAt).getTime();
-        if (!isNaN(capMs) && capMs >= sessionCreatedMs - 60_000 && capMs <= nowMs + 300_000) {
-          const clampedMs = Math.max(sessionCreatedMs, Math.min(nowMs, capMs));
+        if (!isNaN(capMs)) {
+          let derivedMs: number;
+          if (input.clientSentAt) {
+            const sent = new Date(input.clientSentAt);
+            const sentMs = sent.getTime();
+            if (!isNaN(sentMs)) {
+              const delayMs = Math.max(0, sentMs - capMs);
+              derivedMs = nowMs - delayMs;
+            } else {
+              derivedMs = capMs;
+            }
+          } else {
+            derivedMs = Math.max(nowMs - 60_000, capMs);
+          }
+          const clampedMs = Math.max(sessionCreatedMs, Math.min(nowMs, derivedMs));
           countedAtDate = new Date(clampedMs);
         }
       }
