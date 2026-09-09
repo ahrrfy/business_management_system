@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
@@ -11,6 +11,8 @@ import {
   purchaseOrderControlRequests,
   purchaseOrderItems,
   purchaseOrders,
+  supplierPayments,
+  supplierPaymentRefunds,
   suppliers,
   users,
 } from "../../drizzle/schema";
@@ -949,6 +951,8 @@ export const purchaseRouter = router({
               approvedRevisionId: purchaseOrders.approvedRevisionId,
               createdBy: purchaseOrders.createdBy,
               createdByName: users.name,
+              lastEditedBy: purchaseOrders.lastEditedBy,
+              submittedBy: purchaseOrders.submittedBy,
               supplierName: suppliers.name,
             })
             .from(purchaseOrders)
@@ -969,22 +973,67 @@ export const purchaseRouter = router({
         .map((row) => Number(row.id));
       const linkedCashPaidById = new Map<number, string>();
       if (cashOrderIds.length) {
-        const paidRows = await db
-          .select({
-            purchaseOrderId: accountingEntries.purchaseOrderId,
-            paid: sql<string>`COALESCE(SUM(${accountingEntries.amount}),0)`,
-          })
-          .from(accountingEntries)
-          .where(
-            and(
-              inArray(accountingEntries.purchaseOrderId, cashOrderIds),
-              eq(accountingEntries.entryType, "PAYMENT_OUT"),
-            ),
-          )
-          .groupBy(accountingEntries.purchaseOrderId);
+        const [paidRows, refundRows] = await Promise.all([
+          db
+            .select({
+              purchaseOrderId: accountingEntries.purchaseOrderId,
+              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
+            })
+            .from(accountingEntries)
+            .where(
+              and(
+                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
+                sql`${accountingEntries.supplierId} IS NOT NULL`,
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
+                or(
+                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                  and(
+                    eq(accountingEntries.entryType, "PAYMENT_IN"),
+                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                  ),
+                ),
+              ),
+            )
+            .groupBy(accountingEntries.purchaseOrderId),
+          db
+            .select({
+              purchaseOrderId: accountingEntries.purchaseOrderId,
+              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
+            })
+            .from(supplierPaymentRefunds)
+            .innerJoin(
+              supplierPayments,
+              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
+            )
+            .innerJoin(
+              accountingEntries,
+              eq(accountingEntries.id, supplierPayments.accountingEntryId),
+            )
+            .where(
+              and(
+                inArray(accountingEntries.purchaseOrderId, cashOrderIds),
+                sql`${accountingEntries.purchaseOrderId} IS NOT NULL`,
+              ),
+            )
+            .groupBy(accountingEntries.purchaseOrderId),
+        ]);
+        const refundMap = new Map<number, ReturnType<typeof money>>();
+        for (const r of refundRows) {
+          if (r.purchaseOrderId == null) continue;
+          refundMap.set(Number(r.purchaseOrderId), money(r.refunded));
+        }
         for (const row of paidRows) {
           if (row.purchaseOrderId == null) continue;
-          linkedCashPaidById.set(Number(row.purchaseOrderId), row.paid);
+          const poId = Number(row.purchaseOrderId);
+          const rawPaid = money(row.paid);
+          const refundAmount = refundMap.get(poId) ?? money(0);
+          const netPaid = rawPaid.minus(refundAmount);
+          linkedCashPaidById.set(
+            poId,
+            toDbMoney(netPaid.gt(0) ? netPaid : money(0)),
+          );
         }
       }
       const withLinkedPaid = rows.map((row) => ({
@@ -1170,13 +1219,62 @@ export const purchaseRouter = router({
           : activeApprovals[0]?.status === "STALE"
             ? "STALE"
             : "NONE";
+
+      let linkedCashPaidAmount: string = "0.00";
+      if (po.settlementType === "CASH") {
+        const [paidRows, refundRows] = await Promise.all([
+          db
+            .select({
+              paid: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN ${accountingEntries.amount} WHEN ${accountingEntries.entryType} = 'PAYMENT_IN' THEN -${accountingEntries.amount} ELSE 0 END), 0)`,
+            })
+            .from(accountingEntries)
+            .where(
+              and(
+                eq(accountingEntries.purchaseOrderId, po.id),
+                sql`${accountingEntries.supplierId} IS NOT NULL`,
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
+                or(
+                  eq(accountingEntries.entryType, "PAYMENT_OUT"),
+                  and(
+                    eq(accountingEntries.entryType, "PAYMENT_IN"),
+                    sql`COALESCE(${accountingEntries.dedupeKey}, '') NOT LIKE 'PURCHASE_RETURN_REFUND:%'`,
+                  ),
+                ),
+              ),
+            ),
+          db
+            .select({
+              refunded: sql<string>`COALESCE(SUM(${supplierPaymentRefunds.amount}), 0)`,
+            })
+            .from(supplierPaymentRefunds)
+            .innerJoin(
+              supplierPayments,
+              eq(supplierPayments.id, supplierPaymentRefunds.supplierPaymentId),
+            )
+            .innerJoin(
+              accountingEntries,
+              eq(accountingEntries.id, supplierPayments.accountingEntryId),
+            )
+            .where(eq(accountingEntries.purchaseOrderId, po.id)),
+        ]);
+        const rawPaid = money(paidRows[0]?.paid ?? 0);
+        const refundAmount = money(refundRows[0]?.refunded ?? 0);
+        const netPaid = rawPaid.minus(refundAmount);
+        linkedCashPaidAmount = toDbMoney(netPaid.gt(0) ? netPaid : money(0));
+      }
+
       const totalDec = Number(po.total ?? 0);
-      const paidDec = Number(po.paidAmount ?? 0);
+      const effectivePaidDec = Math.max(
+        Number(po.paidAmount ?? 0),
+        Number(linkedCashPaidAmount ?? 0),
+      );
       const nextAction = derivePurchaseOrderNextActionFromRow({
         purchaseOrderId: po.id,
         status: po.status,
         currentRevisionId: po.currentRevisionId,
-        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(paidDec) && totalDec - paidDec > 0,
+        hasUnpaidBalance: Number.isFinite(totalDec) && Number.isFinite(effectivePaidDec) && totalDec - effectivePaidDec > 0,
         approvalRequest,
         requireRequisition: controlSetting?.requireRequisition,
         expectedDeliveryDate: po.expectedDeliveryDate,
@@ -1204,6 +1302,7 @@ export const purchaseRouter = router({
           agreedRate: null,
           invoiceDiscount: null,
           usdInvoiceDiscount: null,
+          linkedCashPaidAmount: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -1222,6 +1321,6 @@ export const purchaseRouter = router({
         );
         return { ...poMasked, items: itemsMasked, nextAction, nextActionReason };
       }
-      return { ...po, items, nextAction, nextActionReason };
+      return { ...po, linkedCashPaidAmount, items, nextAction, nextActionReason };
     }),
 });

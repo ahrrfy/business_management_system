@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import Decimal from "decimal.js";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -152,10 +153,23 @@ export function PurchaseDetailDrawer({
 
   const activeControlRequest = useMemo(() => {
     return (pendingControls.data?.rows ?? []).find(
-      (row) =>
+      (
+        row,
+      ): row is Extract<
+        NonNullable<typeof pendingControls.data>["rows"][number],
+        { documentType: "PURCHASE_ORDER" }
+      > =>
         row.documentType === "PURCHASE_ORDER" &&
         Number(row.purchaseOrderId) === purchaseOrderId &&
         row.kind === "APPROVE_REVISION",
+    );
+  }, [pendingControls.data?.rows, purchaseOrderId]);
+
+  const hasPendingOrderControl = useMemo(() => {
+    return (pendingControls.data?.rows ?? []).some(
+      (row) =>
+        row.documentType === "PURCHASE_ORDER" &&
+        Number(row.purchaseOrderId) === purchaseOrderId,
     );
   }, [pendingControls.data?.rows, purchaseOrderId]);
 
@@ -192,22 +206,44 @@ export function PurchaseDetailDrawer({
   const d = po.data;
   const isUsd = d?.agreedCurrency === "USD";
   const costHidden = d?.total === null;
+  const effectivePaid = d
+    ? Decimal.max(
+        D(d.paidAmount ?? 0),
+        D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0),
+      )
+    : D(0);
   const remaining = costHidden || !d
     ? null
     : isUsd
       ? positiveDiff(d.usdTotal, D(d.paidUsd ?? 0).plus(D(d.returnedUsd ?? 0)).toString())
-      : positiveDiff(d.total, d.paidAmount);
+      : positiveDiff(d.total, effectivePaid.toString());
 
   const openForEditing =
     d?.status === "DRAFT" &&
     !d.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0) &&
     !D(d.paidAmount ?? 0).gt(0) &&
-    !D(d.paidUsd ?? 0).gt(0);
+    !D(d.paidUsd ?? 0).gt(0) &&
+    !D((d as { linkedCashPaidAmount?: string | null }).linkedCashPaidAmount ?? 0).gt(0);
+
+  const currentUserId = me.data?.id;
+  const isOwner = me.data?.isOwner === true;
+  const violatesSod =
+    !isOwner &&
+    (currentUserId == null ||
+      (activeControlRequest != null &&
+        [
+          activeControlRequest.requestedBy,
+          activeControlRequest.creatorId,
+          activeControlRequest.lastEditedBy,
+          d?.lastEditedBy,
+          d?.submittedBy,
+        ].some((id) => id != null && Number(id) === Number(currentUserId))));
 
   const canApproveDirectly =
     canEdit &&
     d &&
-    ((d.status === "SENT" && activeControlRequest != null) || d.status === "DRAFT");
+    ((d.status === "SENT" && activeControlRequest != null && !violatesSod) ||
+     (d.status === "DRAFT" && !hasPendingOrderControl));
 
   function handleApproveAndReceive() {
     if (!d) return;
@@ -317,7 +353,7 @@ export function PurchaseDetailDrawer({
                     <div className="rounded-lg border bg-card p-2 text-center">
                       <div className="text-xs text-muted-foreground">المدفوع</div>
                       <div className="font-bold text-sm text-money-positive tabular-nums">
-                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(d.paidAmount ?? "0")} د.ع`}
+                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(effectivePaid.toString())} د.ع`}
                       </div>
                     </div>
                     <div className="rounded-lg border bg-card p-2 text-center">
@@ -358,7 +394,7 @@ export function PurchaseDetailDrawer({
                     </Button>
                   ) : null}
 
-                  {d.status === "RECEIVED" ? (
+                  {canEdit && d.status === "RECEIVED" ? (
                     <Button asChild size="sm" variant="outline">
                       <Link href={`/purchase-returns/new?po=${encodeURIComponent(d.poNumber)}`}>
                         <Undo2 aria-hidden className="size-4" />
