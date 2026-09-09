@@ -16,13 +16,16 @@ import {
 import { ScreenContainer } from "@/components/screen-container";
 import { loadVerifiedCustomerSession } from "@/lib/customer-session";
 import { loadRecentOrders, type RecentStorefrontOrder } from "@/lib/recent-orders";
+import { loadRecentQuoteRequests, type RecentStorefrontQuoteRequest } from "@/lib/recent-quote-requests";
 import {
   formatIqd,
   formatLatinNumber,
   cancelStorefrontOrder,
   classifyNetworkError,
+  trackStorefrontQuoteRequest,
   trackStorefrontOrder,
   type OnlineOrderTracking,
+  type StorefrontQuoteRequestTracking,
   useStorefrontSettings,
 } from "@/lib/storefront-api";
 
@@ -35,19 +38,43 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
+const QUOTE_REQUEST_STATUS_LABELS: Record<string, string> = {
+  PENDING: "بانتظار مراجعة فريق المبيعات",
+  CONTACTED: "بدأ التواصل معك",
+  QUOTED: "العرض الرسمي قيد المتابعة",
+  CLOSED: "اكتملت المتابعة",
+  CANCELLED: "أُلغي طلب العرض",
+};
+
+const QUOTE_REQUEST_TYPE_LABELS: Record<string, string> = {
+  BULK: "كمية وجملة",
+  CUSTOM_PRINT: "طباعة وتخصيص",
+  BUSINESS: "شركة أو مكتب",
+  GENERAL: "طلب مبيعات",
+};
+
 function firstParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }
 
 export default function OrdersScreen() {
   const settings = useStorefrontSettings();
-  const params = useLocalSearchParams<{ orderNumber?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    orderNumber?: string | string[];
+    quoteRequestNumber?: string | string[];
+  }>();
   const requestedOrderNumber = firstParam(params.orderNumber).toUpperCase();
+  const requestedQuoteRequestNumber = firstParam(params.quoteRequestNumber).toUpperCase();
   const [orderNumber, setOrderNumber] = useState(requestedOrderNumber);
   const [recentOrders, setRecentOrders] = useState<RecentStorefrontOrder[]>([]);
+  const [quoteRequestNumber, setQuoteRequestNumber] = useState(requestedQuoteRequestNumber);
+  const [recentQuoteRequests, setRecentQuoteRequests] = useState<RecentStorefrontQuoteRequest[]>([]);
   const [tracking, setTracking] = useState<OnlineOrderTracking | null>(null);
+  const [quoteTracking, setQuoteTracking] = useState<StorefrontQuoteRequestTracking | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [quoteTrackingError, setQuoteTrackingError] = useState<string | null>(null);
   const [trackingLoading, setTrackingLoading] = useState(false);
+  const [quoteTrackingLoading, setQuoteTrackingLoading] = useState(false);
   const [cancelPrompt, setCancelPrompt] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -63,6 +90,18 @@ export default function OrdersScreen() {
       })
       .catch(() => undefined);
   }, [requestedOrderNumber]);
+
+  useEffect(() => {
+    void loadRecentQuoteRequests()
+      .then((requests) => {
+        setRecentQuoteRequests(requests);
+        if (!requestedQuoteRequestNumber) return;
+        setQuoteRequestNumber(requestedQuoteRequestNumber);
+        setQuoteTracking(null);
+        setQuoteTrackingError(null);
+      })
+      .catch(() => undefined);
+  }, [requestedQuoteRequestNumber]);
 
   const track = async () => {
     if (trackingLoading) return;
@@ -126,6 +165,38 @@ export default function OrdersScreen() {
     }
   };
 
+  const trackQuoteRequest = async (requestedNumber = quoteRequestNumber) => {
+    if (quoteTrackingLoading) return;
+    if (!requestedNumber.trim()) {
+      setQuoteTrackingError("أدخل رقم طلب العرض أو اختر طلباً محفوظاً على هذا الجهاز.");
+      return;
+    }
+    setQuoteTrackingLoading(true);
+    setQuoteTracking(null);
+    setQuoteTrackingError(null);
+    try {
+      const normalizedRequestNumber = requestedNumber.trim().toUpperCase();
+      const recent = recentQuoteRequests.find(
+        (candidate) => candidate.requestNumber === normalizedRequestNumber,
+      );
+      const session = await loadVerifiedCustomerSession();
+      const guestTrackingToken = recent?.guestTrackingToken &&
+        (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
+        ? recent.guestTrackingToken
+        : null;
+      const result = await trackStorefrontQuoteRequest({
+        requestNumber: normalizedRequestNumber,
+        customerSessionToken: session?.token,
+        guestTrackingToken,
+      });
+      setQuoteTracking(result);
+    } catch (reason) {
+      setQuoteTrackingError(classifyNetworkError(reason).message);
+    } finally {
+      setQuoteTrackingLoading(false);
+    }
+  };
+
   const openOrderSupport = async () => {
     if (!tracking) return;
     const number = settings?.whatsappNumber?.replace(/\D/g, "");
@@ -182,6 +253,37 @@ export default function OrdersScreen() {
                 </View>
                 <View style={styles.recentOrderMeta}>
                   <Text style={styles.recentOrderTotal}>{formatIqd(recent.total)}</Text>
+                  <MaterialIcons color="#0C5A4B" name="arrow-back" size={17} />
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+        {recentQuoteRequests.length > 0 && (
+          <View style={styles.recentSection}>
+            <Text style={styles.recentTitle}>طلبات عروض سعر محفوظة على هذا الجهاز</Text>
+            {recentQuoteRequests.map((recent) => (
+              <TouchableOpacity
+                accessibilityLabel={`تتبع طلب عرض السعر ${recent.requestNumber}`}
+                accessibilityRole="button"
+                activeOpacity={0.82}
+                key={recent.requestNumber}
+                onPress={() => {
+                  setQuoteRequestNumber(recent.requestNumber);
+                  void trackQuoteRequest(recent.requestNumber);
+                }}
+                style={styles.recentOrder}
+              >
+                <View>
+                  <Text style={styles.recentOrderNumber}>{recent.requestNumber}</Text>
+                  <Text style={styles.recentOrderDate}>
+                    {new Intl.DateTimeFormat("ar-IQ-u-nu-latn", {
+                      dateStyle: "medium",
+                    }).format(new Date(recent.placedAt))}
+                  </Text>
+                </View>
+                <View style={styles.recentOrderMeta}>
+                  <Text style={styles.recentOrderTotal}>طلب عرض سعر</Text>
                   <MaterialIcons color="#0C5A4B" name="arrow-back" size={17} />
                 </View>
               </TouchableOpacity>
@@ -337,11 +439,98 @@ export default function OrdersScreen() {
             )}
           </View>
         )}
+        <View style={styles.trackCard}>
+          <View style={styles.trackHeading}>
+            <View style={styles.trackIcon}>
+              <MaterialIcons color="#0C5A4B" name="request-quote" size={24} />
+            </View>
+            <View>
+              <Text style={styles.trackTitle}>متابعة عرض سعر</Text>
+              <Text style={styles.trackHint}>
+                للطلبات المحفوظة على الجهاز أو الطلبات المرتبطة بحسابك الموثق
+              </Text>
+            </View>
+          </View>
+          <TextInput
+            autoCapitalize="characters"
+            placeholder="رقم طلب العرض SRQ"
+            placeholderTextColor="#71817B"
+            style={styles.input}
+            textAlign="right"
+            value={quoteRequestNumber}
+            onChangeText={setQuoteRequestNumber}
+          />
+          <TouchableOpacity
+            activeOpacity={0.85}
+            disabled={quoteTrackingLoading}
+            onPress={() => void trackQuoteRequest()}
+            style={[
+              styles.trackButton,
+              quoteTrackingLoading && styles.trackButtonDisabled,
+            ]}
+          >
+            <Text style={styles.trackButtonText}>متابعة طلب العرض</Text>
+            {quoteTrackingLoading ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <MaterialIcons color="#FFFFFF" name="arrow-back" size={18} />
+            )}
+          </TouchableOpacity>
+          {quoteTrackingError && (
+            <Text style={styles.trackError}>{quoteTrackingError}</Text>
+          )}
+        </View>
+        {quoteTracking && (
+          <View style={styles.liveOrder}>
+            <View style={styles.liveTop}>
+              <View>
+                <Text style={styles.liveOrderNumber}>
+                  طلب عرض {quoteTracking.requestNumber}
+                </Text>
+                <Text style={styles.liveDate}>
+                  أُرسل في {new Intl.DateTimeFormat("ar-IQ", {
+                    dateStyle: "medium",
+                  }).format(new Date(quoteTracking.createdAt))}
+                </Text>
+              </View>
+              <View style={styles.status}>
+                <Text style={styles.statusText}>{QUOTE_REQUEST_STATUS_LABELS[quoteTracking.status] ?? "قيد المتابعة"}</Text>
+              </View>
+            </View>
+            <View style={styles.liveDivider} />
+            <Text style={styles.liveMeta}>
+              النوع: {QUOTE_REQUEST_TYPE_LABELS[quoteTracking.requestType] ?? "طلب مبيعات"}
+            </Text>
+            <Text style={styles.liveMeta}>
+              طريقة التواصل: {quoteTracking.contactPreference === "WHATSAPP" ? "واتساب" : "اتصال هاتفي"}
+            </Text>
+            {quoteTracking.governorate && (
+              <Text style={styles.liveMeta}>المحافظة: {quoteTracking.governorate}</Text>
+            )}
+            <Text style={styles.liveMeta}>
+              لا يحجز هذا الطلب مخزوناً ولا يثبت سعراً قبل إصدار العرض الرسمي.
+            </Text>
+            <View style={styles.itemsList}>
+              {quoteTracking.items.map((item, index) => (
+                <View key={`${item.productName}-${index}`} style={styles.itemRow}>
+                  <View style={styles.itemCopy}>
+                    <Text numberOfLines={2} style={styles.itemName}>{item.productName}</Text>
+                    <Text style={styles.itemUnit}>
+                      {[item.variantLabel, `${item.unitName} × ${formatLatinNumber(item.quantity)}`]
+                        .filter(Boolean)
+                        .join(" — ")}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
         <View style={styles.note}>
           <MaterialIcons color="#0C5A4B" name="privacy-tip" size={20} />
           <Text style={styles.noteText}>
-            لا يُرسل رمز التتبع في الرابط ولا يُحفظ في التخزين العادي؛ يبقى داخل
-            SecureStore على الجهاز أو ضمن جلسة الهاتف الموثقة.
+            لا يُرسل رمز تتبع الشراء أو عرض السعر في الرابط ولا يُحفظ في التخزين العادي؛
+            يبقى داخل SecureStore على الجهاز أو ضمن جلسة الهاتف الموثقة.
           </Text>
         </View>
       </ScrollView>

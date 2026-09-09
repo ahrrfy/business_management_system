@@ -212,7 +212,25 @@ export type CreateStorefrontQuoteRequestInput = {
 export type StorefrontQuoteRequestResult = {
   requestId: number;
   requestNumber: string;
+  guestTrackingToken: string | null;
+  guestTrackingExpiresAt: string | null;
   idempotentReplay: boolean;
+};
+export type StorefrontQuoteRequestTracking = {
+  requestNumber: string;
+  status: "PENDING" | "CONTACTED" | "QUOTED" | "CLOSED" | "CANCELLED";
+  requestType: "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
+  companyName: string | null;
+  governorate: string | null;
+  contactPreference: "PHONE" | "WHATSAPP";
+  createdAt: string;
+  updatedAt: string;
+  items: Array<{
+    productName: string;
+    variantLabel: string | null;
+    unitName: string;
+    quantity: number;
+  }>;
 };
 
 export type ApiProduct = {
@@ -826,6 +844,35 @@ export function createStorefrontQuoteRequest(input: CreateStorefrontQuoteRequest
     "storefront.createQuoteRequest",
     input,
   );
+}
+
+export type SecureQuoteRequestTrackingInput = {
+  requestNumber: string;
+  customerSessionToken?: string | null;
+  guestTrackingToken?: string | null;
+};
+
+/** رقم SRQ ليس دليلاً للضيف؛ يستعمل الرمز المحفوظ أو جلسة الهاتف الموثقة فقط. */
+export function secureQuoteRequestTrackingRequest(input: SecureQuoteRequestTrackingInput) {
+  const requestNumber = input.requestNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return {
+      procedure: "storefront.trackQuoteRequestByToken" as const,
+      input: { trackingToken: input.guestTrackingToken },
+    };
+  }
+  if (input.customerSessionToken) {
+    return {
+      procedure: "storefront.trackQuoteRequestPrivate" as const,
+      input: { customerSessionToken: input.customerSessionToken, requestNumber },
+    };
+  }
+  throw new Error("لا توجد صلاحية محفوظة لتتبع طلب عرض السعر. افتحه من جهاز الإرسال أو سجّل الدخول بالحساب المرتبط به.");
+}
+
+export function trackStorefrontQuoteRequest(input: SecureQuoteRequestTrackingInput) {
+  const request = secureQuoteRequestTrackingRequest(input);
+  return storefrontMutation<StorefrontQuoteRequestTracking>(request.procedure, request.input);
 }
 
 /** يسجّل رمز Expo Push؛ جلسة الهاتف الاختيارية تُحل إلى هوية العميل على الخادم ولا تُرسل customerId خاماً. */

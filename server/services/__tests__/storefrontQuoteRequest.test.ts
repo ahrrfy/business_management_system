@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createStorefrontQuoteRequest } from "../storefrontQuoteRequestService";
+import {
+  createStorefrontQuoteRequest,
+  trackStorefrontQuoteRequestByGuestToken,
+  trackStorefrontQuoteRequestForCustomer,
+} from "../storefrontQuoteRequestService";
 import {
   listStorefrontQuoteRequests,
   updateStorefrontQuoteRequestStatus,
@@ -93,6 +97,8 @@ describe("storefront quote requests", () => {
 
     expect(created).toMatchObject({ idempotentReplay: false });
     expect(created.requestNumber).toMatch(/^SRQ-\d+$/);
+    expect(created.guestTrackingToken).toMatch(/^[a-f0-9]{32}\.[a-z0-9]+\.[A-Za-z0-9_-]{43}$/);
+    expect(created.guestTrackingExpiresAt).toBeInstanceOf(Date);
     expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
     expect(await db().select().from(s.branchStock)).toHaveLength(0);
 
@@ -114,6 +120,16 @@ describe("storefront quote requests", () => {
       expect.objectContaining({ productName: "ورق طباعة A4", unitName: "رزمة", quantity: 4, baseQuantity: 2000 }),
       expect.objectContaining({ productName: "ورق طباعة A4", unitName: "رزمة", quantity: 3, baseQuantity: 1500 }),
     ]));
+    const tracking = await trackStorefrontQuoteRequestByGuestToken(
+      created.guestTrackingToken!,
+    );
+    expect(tracking).toMatchObject({
+      requestNumber: created.requestNumber,
+      status: "PENDING",
+      requestType: "BUSINESS",
+    });
+    expect(tracking.items).toHaveLength(2);
+    expect(tracking).not.toHaveProperty("staffNote");
   });
 
   it("يعيد نفس طلب العميل عند إعادة الإرسال ويقيّد متابعته بفرع الموظف", async () => {
@@ -143,10 +159,60 @@ describe("storefront quote requests", () => {
       staffNote: "سيتم التواصل عبر الهاتف صباحاً.",
       scopedBranchId: 1,
     });
+    const request = (await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, first.requestId)))[0]!;
+    const owned = await trackStorefrontQuoteRequestForCustomer(
+      first.requestNumber,
+      Number(request.customerId),
+    );
+    expect(owned.status).toBe("CONTACTED");
+    expect(owned).not.toHaveProperty("staffNote");
     await expect(updateStorefrontQuoteRequestStatus({
       requestId: first.requestId,
       status: "PENDING",
       scopedBranchId: 1,
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يرفض رمز الضيف المزور ولا يسمح لجلسة عميل آخر بتخمين رقم SRQ", async () => {
+    const first = await createStorefrontQuoteRequest({
+      customerName: "شركة الفرات",
+      customerPhone: "07701234567",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج تجهيز قرطاسية وطباعة بطاقات للموظفين.",
+      clientRequestId: "quote-guest-token-first",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    const second = await createStorefrontQuoteRequest({
+      customerName: "مكتب دجلة",
+      customerPhone: "07801234567",
+      contactPreference: "PHONE",
+      requestType: "BULK",
+      note: "نحتاج ملفات وأقلاماً لكمية فصل كامل.",
+      clientRequestId: "quote-guest-token-second",
+      lines: [{ productUnitId: 2, quantity: 4 }],
+    });
+    const forged = `${first.guestTrackingToken!.slice(0, -1)}${first.guestTrackingToken!.endsWith("A") ? "B" : "A"}`;
+    await expect(trackStorefrontQuoteRequestByGuestToken(forged)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(
+      (await trackStorefrontQuoteRequestByGuestToken(second.guestTrackingToken!))
+        .requestNumber,
+    ).toBe(second.requestNumber);
+
+    const firstRequest = (await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, first.requestId)))[0]!;
+    await expect(
+      trackStorefrontQuoteRequestForCustomer(
+        second.requestNumber,
+        Number(firstRequest.customerId),
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

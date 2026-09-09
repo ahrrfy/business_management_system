@@ -29,7 +29,11 @@ import {
   trackOnlineOrderByGuestToken,
   trackOnlineOrderForCustomer,
 } from "../services/onlineOrderService";
-import { createStorefrontQuoteRequest } from "../services/storefrontQuoteRequestService";
+import {
+  createStorefrontQuoteRequest,
+  trackStorefrontQuoteRequestByGuestToken,
+  trackStorefrontQuoteRequestForCustomer,
+} from "../services/storefrontQuoteRequestService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
@@ -369,6 +373,22 @@ export const storefrontRouter = router({
         : null;
       return createStorefrontQuoteRequest({ ...request, authenticatedCustomer });
     }),
+
+  /** مالك موثق: رقم SRQ مرجع فقط، والهوية تأتي من جلسة الهاتف الموقعة. */
+  trackQuoteRequestPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      requestNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return trackStorefrontQuoteRequestForCustomer(input.requestNumber, customer.customerId);
+    }),
+
+  /** الضيف لا يرسل SRQ أو هاتفاً؛ رمز تتبع طلب العرض هو الصلاحية الوحيدة. */
+  trackQuoteRequestByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => trackStorefrontQuoteRequestByGuestToken(input.trackingToken)),
 
   /** تتبّع مالك موثّق؛ رقم الطلب selector فقط وcustomerId يأتي من جلسة Firebase الموقعة. */
   trackOrderPrivate: storefrontPublicWriteProcedure

@@ -2,9 +2,9 @@
  * استفسارات عروض سعر المتجر. هذا المسار متعمّد أن يكون بلا تسعير أو حجز مخزون أو سند مالي:
  * يلتقط حاجة الشركات/الكميات/الطباعة، ثم ينشئ الموظف العرض الرسمي بعد مراجعة التوفر والتخصيص.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   productUnits,
   productVariants,
@@ -13,9 +13,14 @@ import {
   storefrontQuoteRequests,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
-import type { Tx } from "../db";
+import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { retryOnDup } from "../lib/retryDup";
+import {
+  buildStorefrontGuestTrackingToken,
+  hashStorefrontGuestTrackingToken,
+  parseAndVerifyStorefrontGuestTrackingToken,
+} from "../lib/storefrontGuestTracking";
 import { money } from "./money";
 import {
   lockOrCreateOnlineCustomer,
@@ -31,6 +36,9 @@ export type StorefrontQuoteRequestType =
   | "GENERAL";
 export type StorefrontQuoteContactPreference = "PHONE" | "WHATSAPP";
 
+const QUOTE_REQUEST_GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
+const QUOTE_REQUEST_GUEST_TRACKING_DOMAIN = "STORE_QUOTE_REQUEST_TRACKING_V1";
+
 export interface CreateStorefrontQuoteRequestInput {
   customerName: string;
   customerPhone: string;
@@ -42,6 +50,69 @@ export interface CreateStorefrontQuoteRequestInput {
   clientRequestId: string;
   lines: Array<{ productUnitId: number; quantity: number }>;
   authenticatedCustomer?: { customerId: number; phone: string } | null;
+}
+
+export interface StorefrontQuoteRequestTracking {
+  requestNumber: string;
+  status: "PENDING" | "CONTACTED" | "QUOTED" | "CLOSED" | "CANCELLED";
+  requestType: StorefrontQuoteRequestType;
+  companyName: string | null;
+  governorate: string | null;
+  contactPreference: StorefrontQuoteContactPreference;
+  createdAt: Date;
+  updatedAt: Date;
+  items: Array<{
+    productName: string;
+    variantLabel: string | null;
+    unitName: string;
+    quantity: number;
+  }>;
+}
+
+type QuoteRequestGuestTrackingSnapshot = {
+  id: number;
+  requestNumber: string;
+  guestTrackingPublicId: string | null;
+  guestTrackingTokenHash: string | null;
+  guestTrackingExpiresAt: Date | null;
+};
+
+function quoteRequestGuestTrackingResult(
+  request: QuoteRequestGuestTrackingSnapshot,
+  idempotentReplay: boolean,
+): {
+  requestId: number;
+  requestNumber: string;
+  guestTrackingToken: string | null;
+  guestTrackingExpiresAt: Date | null;
+  idempotentReplay: boolean;
+} {
+  let guestTrackingToken: string | null = null;
+  if (
+    request.guestTrackingPublicId &&
+    request.guestTrackingTokenHash &&
+    request.guestTrackingExpiresAt
+  ) {
+    const rebuilt = buildStorefrontGuestTrackingToken(
+      QUOTE_REQUEST_GUEST_TRACKING_DOMAIN,
+      request.guestTrackingPublicId,
+      request.guestTrackingExpiresAt,
+    );
+    if (
+      hashStorefrontGuestTrackingToken(rebuilt) !==
+      request.guestTrackingTokenHash
+    ) {
+      throw new Error("Storefront quote request tracking token snapshot is inconsistent");
+    }
+    guestTrackingToken = rebuilt;
+  }
+  return {
+    requestId: request.id,
+    requestNumber: request.requestNumber,
+    guestTrackingToken,
+    guestTrackingExpiresAt: request.guestTrackingExpiresAt,
+    idempotentReplay,
+  };
 }
 
 function normalizeLines(
@@ -157,11 +228,151 @@ async function loadRequestItems(
   });
 }
 
+type QuoteRequestTrackingHeader = {
+  id: number;
+  requestNumber: string;
+  status: StorefrontQuoteRequestTracking["status"];
+  requestType: StorefrontQuoteRequestType;
+  companyName: string | null;
+  governorate: string | null;
+  contactPreference: StorefrontQuoteContactPreference;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function quoteRequestTrackingHeaderSelection() {
+  return {
+    id: storefrontQuoteRequests.id,
+    requestNumber: storefrontQuoteRequests.requestNumber,
+    status: storefrontQuoteRequests.status,
+    requestType: storefrontQuoteRequests.requestType,
+    companyName: storefrontQuoteRequests.companyName,
+    governorate: storefrontQuoteRequests.governorate,
+    contactPreference: storefrontQuoteRequests.contactPreference,
+    createdAt: storefrontQuoteRequests.createdAt,
+    updatedAt: storefrontQuoteRequests.updatedAt,
+  };
+}
+
+async function buildStorefrontQuoteRequestTracking(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  request: QuoteRequestTrackingHeader,
+): Promise<StorefrontQuoteRequestTracking> {
+  const items = await db
+    .select({
+      productName: storefrontQuoteRequestItems.productName,
+      variantLabel: storefrontQuoteRequestItems.variantLabel,
+      unitName: storefrontQuoteRequestItems.unitName,
+      quantity: storefrontQuoteRequestItems.quantity,
+    })
+    .from(storefrontQuoteRequestItems)
+    .where(eq(storefrontQuoteRequestItems.quoteRequestId, request.id));
+  return {
+    requestNumber: request.requestNumber,
+    status: request.status,
+    requestType: request.requestType,
+    companyName: request.companyName ?? null,
+    governorate: request.governorate ?? null,
+    contactPreference: request.contactPreference,
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    items: items.map((item) => ({
+      productName: item.productName,
+      variantLabel: item.variantLabel ?? null,
+      unitName: item.unitName,
+      quantity: Number(item.quantity),
+    })),
+  };
+}
+
+function quoteRequestTrackingUnavailableError(): TRPCError {
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: appErrorMessage({
+      what: "تعذّر عرض طلب عرض السعر الآن",
+      why: "خدمة طلبات المبيعات غير متاحة مؤقتاً — لم يتغير طلبك",
+      doThis: "أعد المحاولة بعد دقائق، وإن استمرّ الأمر فتواصل مع المكتبة",
+    }),
+  });
+}
+
+function quoteRequestTrackingNotFoundError(): TRPCError {
+  return new TRPCError({
+    code: "NOT_FOUND",
+    message: appErrorMessage({
+      what: "تعذّر عرض طلب عرض السعر",
+      why: "لا يوجد طلب متاح بهذه الصلاحية، أو انتهت صلاحية رمز التتبع",
+      doThis: "افتح الطلب من الجهاز الذي أرسلته منه أو سجّل الدخول بالحساب المرتبط به ثم أعد المحاولة",
+    }),
+  });
+}
+
+/** المالك الموثق يستعمل رقم SRQ مرجعاً فقط؛ العزل الحقيقي بالـ customerId الموقّع. */
+export async function trackStorefrontQuoteRequestForCustomer(
+  requestNumber: string,
+  customerId: number,
+): Promise<StorefrontQuoteRequestTracking> {
+  const db = getDb();
+  if (!db) throw quoteRequestTrackingUnavailableError();
+  const request = (
+    await db
+      .select(quoteRequestTrackingHeaderSelection())
+      .from(storefrontQuoteRequests)
+      .where(
+        and(
+          eq(storefrontQuoteRequests.requestNumber, requestNumber.trim().toUpperCase()),
+          eq(storefrontQuoteRequests.customerId, customerId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!request) throw quoteRequestTrackingNotFoundError();
+  return buildStorefrontQuoteRequestTracking(db, request);
+}
+
+/** الضيف لا يرسل SRQ أو هاتفاً: الرمز الموقّع المنتهي هو صلاحية التتبع الوحيدة. */
+export async function trackStorefrontQuoteRequestByGuestToken(
+  token: string,
+): Promise<StorefrontQuoteRequestTracking> {
+  const verified = parseAndVerifyStorefrontGuestTrackingToken(
+    QUOTE_REQUEST_GUEST_TRACKING_DOMAIN,
+    token,
+  );
+  if (!verified) throw quoteRequestTrackingNotFoundError();
+  const db = getDb();
+  if (!db) throw quoteRequestTrackingUnavailableError();
+  const request = (
+    await db
+      .select({
+        ...quoteRequestTrackingHeaderSelection(),
+        guestTrackingExpiresAt: storefrontQuoteRequests.guestTrackingExpiresAt,
+      })
+      .from(storefrontQuoteRequests)
+      .where(
+        and(
+          eq(storefrontQuoteRequests.guestTrackingPublicId, verified.publicId),
+          eq(storefrontQuoteRequests.guestTrackingTokenHash, verified.tokenHash),
+          sql`${storefrontQuoteRequests.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+        ),
+      )
+      .limit(1)
+  )[0];
+  const storedExpirySeconds = request?.guestTrackingExpiresAt
+    ? Math.floor(request.guestTrackingExpiresAt.getTime() / 1000)
+    : null;
+  if (!request || storedExpirySeconds !== verified.expiresAtSeconds) {
+    throw quoteRequestTrackingNotFoundError();
+  }
+  return buildStorefrontQuoteRequestTracking(db, request);
+}
+
 export async function createStorefrontQuoteRequest(
   input: CreateStorefrontQuoteRequestInput,
 ): Promise<{
   requestId: number;
   requestNumber: string;
+  guestTrackingToken: string | null;
+  guestTrackingExpiresAt: Date | null;
   idempotentReplay: boolean;
 }> {
   // قد تصل نقرتان بالمعرّف نفسه قبل التزام الأولى؛ القيد الفريد هو الحكم، وإعادة المحاولة
@@ -174,6 +385,8 @@ async function createStorefrontQuoteRequestAttempt(
 ): Promise<{
   requestId: number;
   requestNumber: string;
+  guestTrackingToken: string | null;
+  guestTrackingExpiresAt: Date | null;
   idempotentReplay: boolean;
 }> {
   const name = input.customerName.trim();
@@ -210,6 +423,9 @@ async function createStorefrontQuoteRequestAttempt(
           id: storefrontQuoteRequests.id,
           requestNumber: storefrontQuoteRequests.requestNumber,
           customerId: storefrontQuoteRequests.customerId,
+          guestTrackingPublicId: storefrontQuoteRequests.guestTrackingPublicId,
+          guestTrackingTokenHash: storefrontQuoteRequests.guestTrackingTokenHash,
+          guestTrackingExpiresAt: storefrontQuoteRequests.guestTrackingExpiresAt,
         })
         .from(storefrontQuoteRequests)
         .where(eq(storefrontQuoteRequests.clientRequestId, clientRequestId))
@@ -227,13 +443,30 @@ async function createStorefrontQuoteRequestAttempt(
           }),
         });
       }
-      return {
-        requestId: Number(replay.id),
-        requestNumber: replay.requestNumber,
-        idempotentReplay: true,
-      };
+      return quoteRequestGuestTrackingResult(
+        {
+          id: Number(replay.id),
+          requestNumber: replay.requestNumber,
+          guestTrackingPublicId: replay.guestTrackingPublicId,
+          guestTrackingTokenHash: replay.guestTrackingTokenHash,
+          guestTrackingExpiresAt: replay.guestTrackingExpiresAt,
+        },
+        true,
+      );
     }
     const items = await loadRequestItems(tx, lines);
+    const guestTrackingPublicId = randomBytes(16).toString("hex");
+    // عمود MySQL timestamp دقته بالثانية هنا؛ نطبّع قبل التوقيع كي لا يقرّب التخزين
+    // ثانيةً إلى الأمام فيصبح رمز الضيف الجديد غير مطابق للـ hash المحفوظ.
+    const guestTrackingExpiresAt = new Date(
+      Math.floor(Date.now() / 1000) * 1000 +
+        QUOTE_REQUEST_GUEST_TRACKING_TTL_SECONDS * 1000,
+    );
+    const guestTrackingToken = buildStorefrontGuestTrackingToken(
+      QUOTE_REQUEST_GUEST_TRACKING_DOMAIN,
+      guestTrackingPublicId,
+      guestTrackingExpiresAt,
+    );
     const inserted = await tx.insert(storefrontQuoteRequests).values({
       // clientRequestId يصل إلى 80 حرفاً، بينما requestNumber لا يتجاوز 50. لا نضعه هنا
       // كي لا يفشل الطلب الصحيح؛ الاسم المؤقت لا يظهر للعميل ويُستبدل برقم SRQ داخل المعاملة.
@@ -246,6 +479,9 @@ async function createStorefrontQuoteRequestAttempt(
       contactPreference: input.contactPreference,
       customerNote: note,
       clientRequestId,
+      guestTrackingPublicId,
+      guestTrackingTokenHash: hashStorefrontGuestTrackingToken(guestTrackingToken),
+      guestTrackingExpiresAt,
     });
     const requestId = extractInsertId(inserted);
     const requestNumber = `SRQ-${100000 + requestId}`;
@@ -256,6 +492,12 @@ async function createStorefrontQuoteRequestAttempt(
     await tx.insert(storefrontQuoteRequestItems).values(
       items.map((item) => ({ quoteRequestId: requestId, ...item })),
     );
-    return { requestId, requestNumber, idempotentReplay: false };
+    return {
+      requestId,
+      requestNumber,
+      guestTrackingToken,
+      guestTrackingExpiresAt,
+      idempotentReplay: false,
+    };
   });
 }

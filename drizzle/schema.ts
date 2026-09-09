@@ -7961,6 +7961,10 @@ export const storefrontQuoteRequests = mysqlTable(
     customerNote: text("customerNote").notNull(),
     staffNote: text("staffNote"),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // صلاحية ضيف قصيرة العمر لتتبع طلب العرض من دون جعل رقم SRQ قابلاً للاستكشاف.
+    guestTrackingPublicId: char("guestTrackingPublicId", { length: 32 }),
+    guestTrackingTokenHash: char("guestTrackingTokenHash", { length: 64 }),
+    guestTrackingExpiresAt: timestamp("guestTrackingExpiresAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -7979,6 +7983,12 @@ export const storefrontQuoteRequests = mysqlTable(
     ),
     clientRequestUq: unique("uq_store_quote_request_client_request").on(
       table.clientRequestId,
+    ),
+    guestTrackingPublicIdUq: unique("uq_store_quote_request_guest_tracking_public_id").on(
+      table.guestTrackingPublicId,
+    ),
+    guestTrackingTokenHashUq: unique("uq_store_quote_request_guest_tracking_hash").on(
+      table.guestTrackingTokenHash,
     ),
   }),
 );

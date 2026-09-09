@@ -19,6 +19,7 @@ import { checkoutRequestLines } from "@/lib/checkout-selection";
 import { loadVerifiedCustomerSession, type VerifiedCustomerSession } from "@/lib/customer-session";
 import { canonicalIraqiLocalPhone, normalizeIraqiPhone } from "@/lib/iraqi-phone";
 import { selectionDescription } from "@/lib/product-selection";
+import { saveRecentQuoteRequest } from "@/lib/recent-quote-requests";
 import { classifyNetworkError, createStorefrontQuoteRequest } from "@/lib/storefront-api";
 import { governorates } from "@/shared/governorates";
 
@@ -89,6 +90,14 @@ export default function RequestQuoteScreen() {
           session && session.customer.phone === customerPhone ? session.token : undefined,
         lines: requestLines,
       });
+      await Promise.allSettled([
+        saveRecentQuoteRequest({
+          requestNumber: result.requestNumber,
+          placedAt: new Date().toISOString(),
+          guestTrackingToken: result.guestTrackingToken,
+          guestTrackingExpiresAt: result.guestTrackingExpiresAt,
+        }),
+      ]);
       setRequestNumber(result.requestNumber);
     } catch (reason) {
       setError(classifyNetworkError(reason).message);
@@ -106,7 +115,7 @@ export default function RequestQuoteScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <View style={styles.topbar}><TouchableOpacity accessibilityLabel="رجوع" accessibilityRole="button" disabled={submitting} onPress={() => router.back()} style={styles.back}><MaterialIcons color="#0C5A4B" name="arrow-forward" size={23} /></TouchableOpacity><Text style={styles.title}>طلب عرض سعر</Text><View style={styles.back} /></View>
         {requestNumber ? (
-          <View style={styles.success}><View style={styles.successIcon}><MaterialIcons color="#0C5A4B" name="task-alt" size={30} /></View><Text style={styles.successTitle}>وصل طلبك إلى فريق المبيعات</Text><Text style={styles.successText}>رقم المتابعة: {requestNumber}</Text><Text style={styles.successNote}>هذا استفسار فقط ولا يحجز مخزوناً أو يثبت سعراً. سيتواصل معك الفريق لتأكيد التوفر والتفاصيل ثم يرسل العرض الرسمي.</Text><TouchableOpacity accessibilityRole="button" onPress={() => router.replace("/(tabs)/account" as never)} style={styles.primary}><Text style={styles.primaryText}>العودة إلى حسابي</Text></TouchableOpacity></View>
+          <View style={styles.success}><View style={styles.successIcon}><MaterialIcons color="#0C5A4B" name="task-alt" size={30} /></View><Text style={styles.successTitle}>وصل طلبك إلى فريق المبيعات</Text><Text style={styles.successText}>رقم المتابعة: {requestNumber}</Text><Text style={styles.successNote}>هذا استفسار فقط ولا يحجز مخزوناً أو يثبت سعراً. سيتواصل معك الفريق لتأكيد التوفر والتفاصيل ثم يرسل العرض الرسمي.</Text><TouchableOpacity accessibilityRole="button" onPress={() => router.replace({ pathname: "/orders", params: { quoteRequestNumber: requestNumber } } as never)} style={styles.primary}><Text style={styles.primaryText}>تتبع طلب العرض</Text></TouchableOpacity></View>
         ) : <>
           <View style={styles.intro}><MaterialIcons color="#0C5A4B" name="business-center" size={25} /><View style={styles.introCopy}><Text style={styles.introTitle}>للكميات والطباعة وتجهيز الشركات</Text><Text style={styles.introText}>أرسل احتياجك مرة واحدة، وسيراجع الفريق التوفر والمواصفات ويعود إليك بعرض سعر واضح.</Text></View></View>
           <Text style={styles.section}>المنتجات المطلوبة</Text>

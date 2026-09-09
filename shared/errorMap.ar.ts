@@ -190,6 +190,12 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_store_quote_request_client_request: {
     msg: "هذا الإرسال مرتبط بطلب عرض سعر قائم — حدّث الصفحة لعرض رقم الطلب بدلاً من إنشاء طلب مكرر.",
   },
+  uq_store_quote_request_guest_tracking_hash: {
+    msg: "تعارض نادر عند إنشاء رمز تتبع طلب عرض السعر — أعد المحاولة لتوليد رمز جديد.",
+  },
+  uq_store_quote_request_guest_tracking_public_id: {
+    msg: "تعارض نادر عند إنشاء معرّف تتبع طلب عرض السعر — أعد المحاولة لتوليد معرّف جديد.",
+  },
   uq_storefront_review_order_product: {
     msg: "أرسلتَ مراجعةً لهذا المنتج من هذا الطلب مسبقاً — عدّل المراجعة الموجودة بدلاً من إرسال أخرى.",
   },
