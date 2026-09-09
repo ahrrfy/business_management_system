@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HandCoins, Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -74,15 +74,27 @@ export function QuickSalesPaymentDialog({
     confirmed: boolean;
   } | null>(null);
 
+  const prevOpenRef = useRef(open);
   useEffect(() => {
-    if (open) {
+    if (open && !prevOpenRef.current) {
       setAmount(effectiveRemaining);
       setMethod("CASH");
       setReference("");
       setClientRequestId(crypto.randomUUID());
       setExternalAttempt(null);
     }
+    prevOpenRef.current = open;
   }, [open, effectiveRemaining]);
+
+  const prevRemainingRef = useRef(effectiveRemaining);
+  useEffect(() => {
+    if (open && !externalAttempt) {
+      if (amount === prevRemainingRef.current) {
+        setAmount(effectiveRemaining);
+      }
+    }
+    prevRemainingRef.current = effectiveRemaining;
+  }, [open, effectiveRemaining, externalAttempt, amount]);
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
@@ -113,10 +125,13 @@ export function QuickSalesPaymentDialog({
     },
   });
 
+  const isInvoiceRefreshing = invoiceQuery.isLoading || invoiceQuery.isFetching;
   const isBusy = pay.isPending || initiateExternal.isPending || confirmExternal.isPending;
+  const hasConfirmedAttempt = externalAttempt?.confirmed === true;
+  const cannotClose = isBusy || (hasConfirmedAttempt && !pay.isSuccess);
 
   async function confirmExternalPayment() {
-    if (invoiceQuery.isLoading || !inv) {
+    if (isInvoiceRefreshing || !inv) {
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
@@ -158,6 +173,14 @@ export function QuickSalesPaymentDialog({
           deviceId,
         });
         attemptId = initiated.attemptId;
+        // تثبيت المحاولة المُنشأة فوراً قبل محاولة التأكيد لتفادي تكرار الطلب عند فشل الشبكة
+        setExternalAttempt({
+          attemptId,
+          requestId: reqId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
       }
       await confirmExternal.mutateAsync({
         branchId: Number(branchId),
@@ -195,7 +218,7 @@ export function QuickSalesPaymentDialog({
       notify.err("مبلغ غير صالح", "يجب أن يكون مبلغ الدفعة أكبر من صفر.");
       return;
     }
-    if (invoiceQuery.isLoading) {
+    if (isInvoiceRefreshing || !inv) {
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
@@ -230,13 +253,13 @@ export function QuickSalesPaymentDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v && !isBusy) onClose(); }}>
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !cannotClose) onClose(); }}>
       <DialogContent
         className="max-w-md"
         dir="rtl"
-        showCloseButton={!isBusy}
-        onEscapeKeyDown={(e) => { if (isBusy) e.preventDefault(); }}
-        onPointerDownOutside={(e) => { if (isBusy) e.preventDefault(); }}
+        showCloseButton={!cannotClose}
+        onEscapeKeyDown={(e) => { if (cannotClose) e.preventDefault(); }}
+        onPointerDownOutside={(e) => { if (cannotClose) e.preventDefault(); }}
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
@@ -257,7 +280,7 @@ export function QuickSalesPaymentDialog({
             <div>
               <span className="text-muted-foreground block">الرصيد المتبقي:</span>
               <span className="font-bold text-money-negative tabular-nums flex items-center gap-1">
-                {invoiceQuery.isLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                {isInvoiceRefreshing ? <Loader2 className="size-3.5 animate-spin" /> : null}
                 <span>{fmt(effectiveRemaining)} د.ع</span>
               </span>
             </div>
@@ -280,7 +303,9 @@ export function QuickSalesPaymentDialog({
               <Label htmlFor="sales-pay-method" className="text-xs">طريقة القبض</Label>
               <AppSelect
                 value={method}
+                disabled={cannotClose}
                 onValueChange={(v) => {
+                  if (cannotClose) return;
                   setMethod(v as Method);
                   setReference("");
                   setExternalAttempt(null);
@@ -300,6 +325,7 @@ export function QuickSalesPaymentDialog({
                 id="sales-pay-amount"
                 value={amount}
                 onChange={setAmount}
+                disabled={cannotClose}
                 placeholder="0.00"
                 ariaLabel="المبلغ المقبوض"
                 className="font-mono text-sm"
@@ -312,12 +338,13 @@ export function QuickSalesPaymentDialog({
               <PaymentReferenceField
                 value={reference}
                 onChange={(val) => {
+                  if (cannotClose) return;
                   setReference(val);
                   setExternalAttempt(null);
                 }}
                 method={method}
                 confirmed={externalConfirmed}
-                confirming={initiateExternal.isPending || confirmExternal.isPending}
+                confirming={initiateExternal.isPending || confirmExternal.isPending || isInvoiceRefreshing}
                 onConfirm={confirmExternalPayment}
                 inputId="sales-quick-pay-reference"
                 colors={{
@@ -338,7 +365,7 @@ export function QuickSalesPaymentDialog({
               variant="outline"
               size="sm"
               onClick={onClose}
-              disabled={isBusy}
+              disabled={cannotClose}
             >
               إلغاء
             </Button>
@@ -349,7 +376,7 @@ export function QuickSalesPaymentDialog({
                 !parsedAmount.gt(0) ||
                 (method !== "CASH" && !externalConfirmed) ||
                 isBusy ||
-                invoiceQuery.isLoading ||
+                isInvoiceRefreshing ||
                 (inv != null && D(liveRemaining).lte(0))
               }
             >
