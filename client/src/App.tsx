@@ -56,6 +56,9 @@ const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
 const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
+const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
+
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
@@ -448,6 +451,9 @@ export default function App() {
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
+      {/* شاشة التسليم المباشر والإسناد للمندوب — تعمل بالباركود */}
+      <Route path="/reception/workflow"><Shell><ReceptionWorkflowPage /></Shell></Route>
+      <Route path="/reception/handover"><Shell><ReceptionHandoverPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>

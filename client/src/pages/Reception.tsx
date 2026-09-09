@@ -7,9 +7,9 @@ import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
-  ArrowRight,
   CalendarClock,
   Check,
+  CheckCircle2,
   ClipboardList,
   Copy,
   Globe,
@@ -60,8 +60,6 @@ import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import Inbox from "@/pages/Inbox";
-import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
@@ -86,9 +84,6 @@ import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
-import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
-import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
-import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
@@ -341,10 +336,16 @@ export default function Reception() {
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
-  // ش٦ — توصيل الطلب على مستوى السلة: يُملأ قبل التثبيت ويُنفَّذ إسناداً تلقائياً بعده.
-  // حالةُ سلةٍ محلية (لا تُحفظ مع المسوّدة — من استأنف مسوّدةً يعيد إدخال التوصيل).
-  const [orderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
-  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
+  // ش٦ — التوصيل والإسناد انتقلا لشاشة مستقلة /reception/workflow
+  // نُبقي orderDelivery بنوعه الأصلي (ثابت null) لتجنّب كسر منطق handleSubmit
+  type OrderDeliveryValue = {
+    partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
+    recipientPhone: string | null; recipientName: string | null; address: string | null;
+  };
+  const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
+  const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
+  const deliveryDialogOpen = false;
+  const setDeliveryDialogOpen = (_v: boolean) => {};
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
@@ -543,7 +544,7 @@ export default function Reception() {
   // COUNTER يُعرَض عبر heldDelivery أعلاه (لا يُكرَّر هنا). الأجرة عرضٌ فقط — لا تدخل إيراداً أبداً.
   const customDeliveryLinesD = cart.filter((c) => isCustomKind(c) && c.custom?.hasDelivery && D(c.custom.deliveryCost || 0).gt(0));
   const deliveryDisclosure = orderDelivery
-    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName }
+    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName ?? "" }
     : customDeliveryLinesD.length > 0
       ? {
           fee: round2(customDeliveryLinesD.reduce((s, c) => s.plus(D(c.custom!.deliveryCost || 0)), D(0))).toNumber(),
@@ -806,10 +807,72 @@ export default function Reception() {
     },
     [branchId, addRow, utils, effectiveTier, offline],
   );
+  // مسح باركود أمر الشغل للتسليم المباشر (من شاشة الاستقبال فقط)
+  // الإسناد للمندوب انتقل لشاشة /reception/workflow
+  const [scannedWo, setScannedWo] = useState<{ id: number; orderNumber: string; salePrice: string; deposit: string | null } | null>(null);
+  const deliveryPartiesQ = trpc.delivery.listParties.useQuery(
+    { activeOnly: true },
+    { enabled: !!scannedWo },
+  );
+
+  const deliverWoMut = trpc.workOrders.deliver.useMutation({
+    onSuccess: () => {
+      notify.ok("تم تسليم طلب الخدمة بنجاح وقبض المبلغ نقداً");
+      setScannedWo(null);
+      void utils.workOrders.invalidate();
+    },
+    onError: (err: any) => {
+      notify.err(err?.message || "تعذّر تسليم طلب الخدمة");
+    },
+  });
+
+  const dispatchWoMut = trpc.delivery.dispatch.useMutation({
+    onSuccess: (data) => {
+      notify.ok(`تم إسناد الطلب للمندوب برقم إرسالية ${data.consignmentNumber}`);
+      setScannedWo(null);
+      void utils.workOrders.invalidate();
+    },
+    onError: (err: any) => {
+      notify.err(err?.message || "تعذّر إسناد الطلب للمندوب");
+    },
+  });
+
+  const handleWorkOrderScan = useCallback(
+    async (orderNumber: string) => {
+      try {
+        const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
+        if (!wo) {
+          notify.err(`طلب الخدمة غير موجود: ${orderNumber}`);
+          return;
+        }
+        if (wo.status === "DELIVERED") {
+          notify.info(`هذا الطلب تم تسليمه وإغلاقه مسبقاً (${wo.orderNumber})`);
+          return;
+        }
+        if (wo.status !== "READY") {
+          notify.warn(`هذا الطلب ليس في حالة «جاهز للتسليم» بعد (حالته الحالية: ${wo.status})`);
+          return;
+        }
+        setScannedWo({
+          id: wo.id,
+          orderNumber: wo.orderNumber,
+          salePrice: wo.salePrice,
+          deposit: wo.deposit,
+        });
+      } catch (e: any) {
+        notify.err(e?.message || "تعذّر جلب بيانات أمر الشغل");
+      }
+    },
+    [utils],
+  );
+
   const handleHidScan = useCallback(
     async (raw: string) => {
       const r = parseScan(raw);
-      if (r.type === "product") {
+      if (r.type === "workOrder") {
+        await handleWorkOrderScan(r.number);
+        setSearch("");
+      } else if (r.type === "product") {
         await lookupBarcode(r.barcode);
         setSearch("");
       } else if (r.type === "customer") {
@@ -817,7 +880,7 @@ export default function Reception() {
         notify.ok(`تم تحديد العميل #${r.id}`);
       }
     },
-    [lookupBarcode],
+    [lookupBarcode, handleWorkOrderScan],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
   // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
@@ -825,7 +888,12 @@ export default function Reception() {
   // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
   const barcodeInput = useBarcodeInput((code) => {
     setSearch("");
-    void lookupBarcode(code);
+    const r = parseScan(code);
+    if (r.type === "workOrder") {
+      void handleWorkOrderScan(r.number);
+    } else {
+      void lookupBarcode(code);
+    }
   });
 
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
@@ -1701,10 +1769,10 @@ export default function Reception() {
       // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
       const receiptDelivery = orderDelivery && hasCarrierInvoice
         ? {
-            partyName: orderDelivery.partyName,
+            partyName: orderDelivery.partyName ?? "",
             fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
             feeCollection: orderDelivery.feeCollection,
-            address: orderDelivery.address || null,
+            address: orderDelivery.address ?? null,
           }
         : null;
       if (result.regularSale) {
@@ -2539,20 +2607,7 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
-        {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
-        <button
-          type="button"
-          onClick={() => setDeliveryDialogOpen(true)}
-          className={cn(
-            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
-            orderDelivery
-              ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
-              : "hover:bg-muted/60",
-          )}
-        >
-          <Truck aria-hidden className="size-4" />
-          {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
-        </button>
+        {/* التسليم والإسناد يتمّان عبر الباركود في شاشة مستقلة — لا زرّ توصيل هنا */}
 
         </div>
 
@@ -2682,11 +2737,18 @@ export default function Reception() {
             {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
             <div className="ms-auto flex items-center gap-1.5">
               <a
-                href="/reception/orders"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="طابور التسليم والإسناد"
+                href="/reception/handover"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-green-500 bg-green-50 px-2 py-1 text-xs font-extrabold text-green-700 hover:bg-green-100"
+                title="تسليم الطلبات الجاهزة للزبون مباشرة"
               >
-                <ClipboardList aria-hidden className="size-3.5" /> طلبات محطّتي
+                <CheckCircle2 aria-hidden className="size-3.5" /> تسليم مباشر
+              </a>
+              <a
+                href="/reception/workflow"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
+                title="إسناد للمندوب والتوصيل"
+              >
+                <Truck aria-hidden className="size-3.5" /> إسناد وتوصيل
               </a>
               <a
                 href="/reception/invoices"
@@ -2773,9 +2835,17 @@ export default function Reception() {
         onSubmit={(opts) => void handleSubmit(opts)}
       />
 
-      {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
-          وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
+      {/* شارة المزامنة */}
       <OfflineSyncChip userRole={me.data?.role} />
+
+      {/* سحب نقدي من الدرج */}
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={RECEPTION_TOKENS}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
 
       {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
       {depositOpen && activeDraft && (
@@ -2795,33 +2865,6 @@ export default function Reception() {
             setPayInput("");
             void utils.reception.draftList.invalidate();
           }}
-        />
-      )}
-
-      {/* ─── ش٤: سجلّ عرابين الطلب النشط + الردّ ─── */}
-      {paymentsOpen && activeDraft && (
-        <DraftPaymentsDialog
-          draftId={activeDraft.id}
-          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
-          branchId={branchId}
-          onClose={() => setPaymentsOpen(false)}
-          onChanged={(heldNet) => {
-            setDraftHeld(heldNet);
-            void utils.reception.draftList.invalidate();
-          }}
-        />
-      )}
-
-      {/* ─── ش٦: كتلة توصيل الطلب (إسنادٌ تلقائيّ بعد التثبيت) ─── */}
-      {deliveryDialogOpen && (
-        <OrderDeliveryDialog
-          parties={(partiesQ.data ?? []) as DispatchParty[]}
-          initial={orderDelivery}
-          defaultRecipientName={customer.name || null}
-          defaultRecipientPhone={customer.phone || null}
-          onSave={setOrderDelivery}
-          onClear={() => setOrderDelivery(null)}
-          onClose={() => setDeliveryDialogOpen(false)}
         />
       )}
 
@@ -2857,21 +2900,6 @@ export default function Reception() {
         />
       )}
 
-      {/* صندوق القنوات الحقيقي داخل محطة الاستقبال؛ يعود الموظف إلى السلة من دون فقد محتواها. */}
-      {showInbox && (
-        <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
-          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
-            <div>
-              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء</h1>
-              <p className="text-xs text-muted-foreground">تابع رسائل واتساب والاتصالات، واربطها بالعميل عند الحاجة.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
-              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-            </Button>
-          </div>
-          <Inbox onStartOrder={startOrderFromConversation} />
-        </div>
-      )}
       {customerContextId != null && (
         <Contact360Panel
           kind="customer"
@@ -2881,7 +2909,7 @@ export default function Reception() {
         />
       )}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام */}
       {showReceiptOverlay && lastSale && (
         <ReceiptOverlay
           lastSale={lastSale}
@@ -2890,7 +2918,7 @@ export default function Reception() {
         />
       )}
 
-      {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
+      {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && (
         <ManagerApprovalDialog
           pct={approvalAsk.pct}
@@ -2901,14 +2929,6 @@ export default function Reception() {
             setApprovalAsk(null);
             notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
           }}
-        />
-      )}
-
-      {cashDropping && shift && (
-        <CashDropDialog
-          C={RECEPTION_TOKENS}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
         />
       )}
     </div>
