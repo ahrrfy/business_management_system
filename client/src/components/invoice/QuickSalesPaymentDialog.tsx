@@ -72,7 +72,7 @@ export function QuickSalesPaymentDialog({
   const [reference, setReference] = useState("");
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const [externalAttempt, setExternalAttempt] = useState<{
-    attemptId: number;
+    attemptId?: number | null;
     requestId: string;
     deviceId: string;
     fingerprint: string;
@@ -136,20 +136,32 @@ export function QuickSalesPaymentDialog({
   const cannotClose = isBusy || (hasInFlightAttempt && !pay.isSuccess);
 
   async function confirmExternalPayment() {
+    let currentLiveRemaining = D(liveRemaining);
     if (isInvoiceRefreshing || !inv) {
       notify.err("تحديث الفاتورة", "يرجى الانتظار حتى اكتمال تحميل أحدث بيانات الفاتورة.");
       return;
     }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
-      notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
-      return;
+    try {
+      const fresh = await utils.sales.get.fetch({ invoiceId });
+      if (fresh) {
+        const freshTotal = D(fresh.total);
+        const freshPaid = D(fresh.paidAmount);
+        const freshReturned = D(fresh.returnedTotal ?? "0");
+        currentLiveRemaining = round2(freshTotal.minus(freshPaid).minus(freshReturned));
+        if (fresh.status === "CANCELLED" || fresh.status === "RETURNED" || fresh.status === "SUPERSEDED") {
+          notify.err("فاتورة مقفلة", "لا يمكن سداد فاتورة ملغاة أو مرتجعة بالكامل.");
+          return;
+        }
+      }
+    } catch {
+      // الاعتماد على الحالة المحلية إذا تعذّر الاستعلام
     }
-    if (D(liveRemaining).lte(0)) {
+    if (currentLiveRemaining.lte(0)) {
       notify.err("الفاتورة مسددة", "تم سداد كامل رصيد الفاتورة بالفعل.");
       return;
     }
-    if (parsedAmount.gt(D(liveRemaining))) {
-      notify.err("تجاوز الرصيد المحدث", `الرصيد المتبقي الفعلي هو ${fmt(liveRemaining)} د.ع.`);
+    if (parsedAmount.gt(currentLiveRemaining)) {
+      notify.err("تجاوز الرصيد المحدث", `الرصيد المتبقي الفعلي هو ${fmt(currentLiveRemaining.toFixed(2))} د.ع.`);
       return;
     }
     const trimmedRef = reference.trim();
@@ -168,6 +180,14 @@ export function QuickSalesPaymentDialog({
       const reqId = prior?.requestId ?? crypto.randomUUID();
       let attemptId = prior?.attemptId ?? null;
       if (attemptId == null) {
+        // تثبيت معرّف الطلب في حالة المكوّن قبل الإرسال لضمان عدم ضياعه عند أخطاء الشبكة
+        setExternalAttempt({
+          attemptId: null,
+          requestId: reqId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
         const initiated = await initiateExternal.mutateAsync({
           branchId: Number(branchId),
           channel: "SALES_COLLECTION",
@@ -178,7 +198,6 @@ export function QuickSalesPaymentDialog({
           deviceId,
         });
         attemptId = initiated.attemptId;
-        // تثبيت المحاولة المُنشأة فوراً قبل محاولة التأكيد لتفادي تكرار الطلب عند فشل الشبكة
         setExternalAttempt({
           attemptId,
           requestId: reqId,
@@ -200,7 +219,17 @@ export function QuickSalesPaymentDialog({
         fingerprint: externalFingerprint,
         confirmed: true,
       });
-      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${trimmedRef} وجاهز للاعتماد.`);
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${trimmedRef} وجاري ترحيل الدفعة...`);
+      // دمج التأكيد والاستهلاك في تدفق موحد يمنع تباعد الحالتين
+      pay.mutate({
+        invoiceId,
+        amount: normalizedPayAmount,
+        method,
+        reference: trimmedRef,
+        clientRequestId,
+        externalPaymentAttemptId: attemptId,
+        externalPaymentDeviceId: deviceId,
+      });
     } catch (err) {
       notify.err(err instanceof Error ? err.message : "تعذّر تأكيد الدفع الخارجي");
     }
@@ -241,7 +270,7 @@ export function QuickSalesPaymentDialog({
         return;
       }
       if (!externalConfirmed) {
-        notify.err("تأكيد غير مكتمل", "يرجى الضغط على زر تأكيد العملية قبل الحفظ.");
+        await confirmExternalPayment();
         return;
       }
     }
@@ -289,16 +318,16 @@ export function QuickSalesPaymentDialog({
                 <span>{fmt(effectiveRemaining)} د.ع</span>
               </span>
             </div>
-            {totalAmount ? (
+            {totalAmount || inv ? (
               <div>
                 <span className="text-muted-foreground block">إجمالي الفاتورة:</span>
-                <span className="tabular-nums">{fmt(totalAmount)} د.ع</span>
+                <span className="tabular-nums">{fmt(total.toString())} د.ع</span>
               </div>
             ) : null}
-            {paidAmount ? (
+            {paidAmount || inv ? (
               <div>
                 <span className="text-muted-foreground block">المدفوع سابقاً:</span>
-                <span className="text-money-positive tabular-nums">{fmt(paidAmount)} د.ع</span>
+                <span className="text-money-positive tabular-nums">{fmt(paid.toString())} د.ع</span>
               </div>
             ) : null}
           </div>
