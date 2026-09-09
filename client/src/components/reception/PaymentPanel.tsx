@@ -411,7 +411,7 @@ export function PaymentPanel({
               <button
                 type="button"
                 disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
-                onClick={() => onSubmit({ quickFullPay: false })}
+                onClick={() => onSubmit({ quickFullPay: !deferred && paid <= 0 })}
                 title="إتمام البيع المباشر"
                 className="inline-flex h-11 min-w-44 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
               >

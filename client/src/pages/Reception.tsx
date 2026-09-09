@@ -598,16 +598,12 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
+  // البيع متاح لكل عميل مرتبط بلا قيود حد ائتمان — التحصيل والنقود لها شاشات مستقلة
   const deferredAvailable = customer.customerId != null
     && phoneResolution === "RESOLVED"
-    // حدُّ الائتمان جزءٌ من الأهليّة لا شرطٌ يُكتشَف بالرفض بعد الضغط.
-    && customerDeferredEligible
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
-  // ٢٣/٨ (بلاغ المالك): رسالةٌ محدَّدة تشرح السبب الفعليّ لتعطيل زرّ «بدون عربون» — بدل «اربط عميلاً»
-  // المضلِّلة. الترتيب من الأقلّ صعوبةً في الحلّ إلى الأكثر: طلبٌ مخصّصٌ ⇒ يكفي «إتمام»، مسوّدةٌ ⇒
-  // ثبّت مباشرةً، توصيلٌ ⇒ التحصيل عند الاستلام، لا عميل ⇒ اربطه، حدّ الائتمان صفر ⇒ راجع المدير.
   const deferredDisabledReason: string | null = deferredAvailable
     ? null
     : sumDirect === 0 && sumCustom > 0
@@ -617,10 +613,8 @@ export default function Reception() {
         : orderDelivery
           ? "طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"
           : customer.customerId == null || phoneResolution !== "RESOLVED"
-            ? "اربط عميلاً بهاتفٍ عراقيٍّ أوّلاً"
-            : !customerDeferredEligible
-              ? "حدُّ الائتمان للعميل صفر (نقديّ فقط) — راجع المدير لرفعه"
-              : "غير متاح الآن";
+            ? "اربط عميلاً بهاتفٍ أوّلاً"
+            : "غير متاح الآن";
   useEffect(() => {
     if (deferred && !deferredAvailable) setDeferred(false);
   }, [deferred, deferredAvailable]);
@@ -1375,7 +1369,8 @@ export default function Reception() {
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
     // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
-    const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
+    // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
+    const inputPaidD = (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
@@ -1414,28 +1409,30 @@ export default function Reception() {
       if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
-    if (!isValidIqMobile(receptionPhone)) {
-      notify.err("رقم هاتف العميل إلزامي — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+    const hasCustomLines = customWithDeposits.length > 0;
+    // رقم الهاتف إلزامي فقط لأوامر التخصيص/الطباعة — أما البيع المباشر النقدي فالعميل اختياري بالكامل!
+    if (hasCustomLines) {
+      if (!isValidIqMobile(receptionPhone)) {
+        notify.err("رقم هاتف العميل إلزامي لأوامر الشغل والتخصيص — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+      if (!canCreateCustomer) {
+        notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
+        return;
+      }
+    } else if (receptionPhone && receptionPhone.trim().length > 0 && !isValidIqMobile(receptionPhone)) {
+      notify.err("رقم الهاتف غير مكتمل — أكمل ١١ رقماً تبدأ بـ07 أو أفرغ الحقل للبيع النقدي العابر");
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (!canCreateCustomer) {
-      notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
-      return;
-    }
     if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
-      // ٢٣/٨ (بلاغ المالك): رسالة الخطأ صارت تقترح مساراتٍ عمليّة بدل مجرّد الحظر.
-      // الكاشير كان يحدّق في الرسالة دون معرفة كيف يخرج من الحال.
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
         `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
         deferredAvailable
-          ? "اختر «بدون عربون» لتسجيله ذمّةً على العميل، أو أَضِف مبلغاً يغطّي البضاعة الجاهزة."
-          : customer.customerId == null
-            ? "اربط عميلاً بحدّ ائتمانٍ لبيعٍ آجل، أو أَضِف توصيلاً (التحصيل عند الاستلام)، أو أَكمل المبلغ الآن."
-            : !customerDeferredEligible
-              ? "حدّ ائتمان العميل صفر — أَكمل المبلغ نقداً، أو راجع المدير لرفع الحدّ، أو أَضِف توصيلاً."
-              : "أَكمل المبلغ الآن، أو أَضِف توصيلاً للتحصيل عند الاستلام."
+          ? "اختر «آجل (ذمّة)» لتسجيله ذمّةً على العميل، أو سدد المبلغ نقداً أو بالبطاقة."
+          : "أَكمل المبلغ نقداً أو بالبطاقة، أو اربط عميلاً لتسجيله ذمّة."
       );
       return;
     }
@@ -1468,15 +1465,17 @@ export default function Reception() {
       return;
     }
 
-    // هوية العميل جزء من عملية الاستقبال وليست خياراً جانبياً: حسم الهاتف/الاسم يسبق أي فاتورة.
+    // هوية العميل: في البيع النقدي العابر اختياري، وفي التخصيص أو عند إدخال هاتف صحيح يُربط بالعميل
     let customerId: number | null = customer.customerId ?? null;
-    if (customerId == null) {
+    if (customerId == null && isValidIqMobile(receptionPhone)) {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
-        setSubmitting(false);
-        notify.err(e?.message || "تعذّر حفظ العميل");
-        return;
+        if (hasCustomLines || deferred) {
+          setSubmitting(false);
+          notify.err(e?.message || "تعذّر حفظ العميل");
+          return;
+        }
       }
     }
 
@@ -2749,13 +2748,6 @@ export default function Reception() {
                 title="إسناد للمندوب والتوصيل"
               >
                 <Truck aria-hidden className="size-3.5" /> إسناد وتوصيل
-              </a>
-              <a
-                href="/reception/invoices"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="ما عليه مبلغٌ متبقٍّ"
-              >
-                <ReceiptIcon aria-hidden className="size-3.5" /> فواتير للتحصيل
               </a>
             </div>
           </div>
