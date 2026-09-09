@@ -8,7 +8,7 @@
     "check": "tsc --noEmit",
     "lint": "expo lint",
     "format": "prettier --write .",
-    "test": "vitest run",
+    "test": "node scripts/check-query-string-security-compat.mjs && vitest run",
     "check:image-size-security": "node scripts/check-image-size-security.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -71,7 +71,7 @@
     "qrcode": "^1.5.4",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {
@@ -82,6 +82,9 @@
       "@xmldom/xmldom": "^0.9.12",
       "postcss": "^8.5.26",
       "uuid": "^11.1.1",
+      "decode-uri-component": "0.5.0",
+      "js-yaml@^3.0.0": "3.15.2",
+      "js-yaml@^4.0.0": "4.3.2",
       "metro": "0.83.8",
       "metro-babel-transformer": "0.83.8",
       "metro-cache": "0.83.8",
@@ -96,6 +99,9 @@
       "metro-symbolicate": "0.83.8",
       "metro-transform-plugins": "0.83.8",
       "metro-transform-worker": "0.83.8"
+    },
+    "patchedDependencies": {
+      "query-string@7.1.3": "patches/query-string@7.1.3.patch"
     }
   },
   "packageManager": "pnpm@9.12.0"
