@@ -24,8 +24,8 @@ describe("studio capture barcode workflow", () => {
     expect(success.indexOf("setCameraOpen(false)")).toBeLessThan(
       success.indexOf("onClaimed({"),
     );
-    expect(station).toContain("لا توجد صور معتمدة لهذا المنتج بعد");
-    expect(station).toContain("له ${active.approvedImages} صورة معتمدة");
+    expect(station).toContain("لا توجد صور معتمدة سابقة لهذا المنتج");
+    expect(station).toContain("اعتُمدت سابقاً ${active.approvedImages} صور");
   });
 
   it("keeps the mobile scanner open on failure and closes it after success", () => {

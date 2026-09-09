@@ -964,9 +964,11 @@ describe("product studio governed workflow", () => {
     expect(firstPage.items).toHaveLength(50);
     expect(firstPage.items.some((task) => Number(task.id) === 100)).toBe(false);
     const claimed = await claimStudioProductByBarcode(worker, "SCAN-OLD-100");
-    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 1 });
+    // المسح يثبت أن المصوّر الذي فُتحت له المهمة هو من يملك الباركود فعلاً؛
+    // لهذا يرفع revision مرةً واحدة حتى للمهمة المسندة له مسبقاً.
+    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 2 });
     const exact = await listStudioTasks(worker, { scope: "MINE", taskId: claimed.taskId, limit: 1 });
-    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 1 }]);
+    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 2 }]);
     expect(exact.nextCursor).toBeNull();
     expect((await listStudioTasks(otherWorker, { scope: "MINE", taskId: 100 })).items).toEqual([]);
     expect((await listStudioTasks(managerTwo, { scope: "QUEUE", taskId: 100 })).items).toEqual([]);
