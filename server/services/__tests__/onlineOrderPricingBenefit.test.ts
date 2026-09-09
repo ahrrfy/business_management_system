@@ -124,6 +124,7 @@ describe("online storefront pricing benefit", () => {
       pricingBenefitDiscount: "3000.00",
       retailSubtotal: "12000.00",
       subtotal: "9000.00",
+      wholesaleProgress: [],
     });
     expect(quote.lines.map((line) => line.unitPrice)).toEqual(["750.00", "750.00"]);
   });
@@ -139,6 +140,15 @@ describe("online storefront pricing benefit", () => {
       pricingBenefitDiscount: "0.00",
       retailSubtotal: "11000.00",
       subtotal: "11000.00",
+      wholesaleProgress: [
+        {
+          productId: 1,
+          productName: "قلم المدرسة",
+          currentBaseQuantity: 11,
+          minimumBaseQuantity: 12,
+          remainingBaseQuantity: 1,
+        },
+      ],
     });
   });
 

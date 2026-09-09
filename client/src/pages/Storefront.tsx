@@ -3250,6 +3250,25 @@ function StorefrontContent() {
               </p>
             </div>
 
+            {quoteQ.data?.wholesaleProgress.length ? (
+              <div role="status" aria-live="polite" className="rounded-2xl border border-[var(--sem-info)]/25 bg-[var(--sem-info-bg)] p-3.5">
+                <div className="space-y-2">
+                  {quoteQ.data.wholesaleProgress.map((progress) => (
+                    <div key={progress.productId} className="flex items-start gap-2.5">
+                      <Package aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-black leading-5 text-[var(--sem-info)]">أضف {progress.remainingBaseQuantity} قطعة إضافية للوصول إلى سعر الجملة</p>
+                        <p className="mt-0.5 text-[11px] font-bold leading-5 text-[var(--sem-info)]/75">{progress.productName} — تُحسب الألوان والوحدات لهذا المنتج معاً.</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setPanel("cart")} className="mt-3 text-xs font-black text-[var(--sem-info)] underline decoration-[var(--sem-info)]/30 underline-offset-4 hover:opacity-80">
+                  تعديل السلة للوصول إلى سعر الجملة
+                </button>
+              </div>
+            ) : null}
+
             <div className="rounded-2xl border border-[#ead8c8] bg-[#fffdf9] p-3.5 text-sm ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-slate-500">
                 <span>المجموع الفرعي</span>

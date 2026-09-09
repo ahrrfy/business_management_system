@@ -633,8 +633,21 @@ interface StorefrontPricingBenefit {
 interface PricedOnlineOrderLines {
   items: PricedOnlineOrderLine[];
   benefit: StorefrontPricingBenefit;
+  /**
+   * إرشاد قراءةٍ فقط للسلة: يُظهر ما بقي من وحدة الأساس للوصول إلى الجملة،
+   * ويجمع ألوان ووحدات المنتج نفسه كما يفعل محرّك التسعير.
+   */
+  wholesaleProgress: StorefrontWholesaleProgress[];
   /** يختلف عن benefit.discount: يستخدم فقط للتحقق من أن الكوبون يدخل السلة فعلاً. */
   couponCandidateDiscount: string;
+}
+
+export interface StorefrontWholesaleProgress {
+  productId: number;
+  productName: string;
+  currentBaseQuantity: number;
+  minimumBaseQuantity: number;
+  remainingBaseQuantity: number;
 }
 
 export interface OnlineOrderQuoteInput {
@@ -653,6 +666,8 @@ export interface OnlineOrderQuoteResult {
   pricingBenefitLabel: string | null;
   pricingBenefitDiscount: string;
   couponSuperseded: boolean;
+  /** منتجات قريبة من حدّ الجملة وتملك سعراً مخفضاً فعلياً للجملة. */
+  wholesaleProgress: StorefrontWholesaleProgress[];
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -858,6 +873,32 @@ async function priceOnlineOrderLines(
       (baseQuantityByProduct.get(item.productId) ?? 0) + item.baseQuantity,
     );
   }
+  const wholesaleProgress = Array.from(baseQuantityByProduct.entries())
+    .flatMap(([productId, currentBaseQuantity]) => {
+      const productItems = candidates.filter(
+        (item) => item.productId === productId,
+      );
+      const hasDiscountedWholesalePrice = productItems.some(
+        (item) =>
+          item.wholesaleUnitPrice != null &&
+          money(item.wholesaleUnitPrice).lt(money(item.retailUnitPrice)),
+      );
+      if (
+        currentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY ||
+        !hasDiscountedWholesalePrice
+      ) {
+        return [];
+      }
+      return [{
+        productId,
+        productName: productItems[0]!.productName,
+        currentBaseQuantity,
+        minimumBaseQuantity: STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY,
+        remainingBaseQuantity:
+          STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY - currentBaseQuantity,
+      }];
+    })
+    .sort((left, right) => left.productName.localeCompare(right.productName, "ar"));
 
   let wholesaleDiscount = money(0);
   let offerDiscount = money(0);
@@ -976,6 +1017,7 @@ async function priceOnlineOrderLines(
   return {
     items,
     benefit,
+    wholesaleProgress,
     couponCandidateDiscount: round2(couponDiscount).toFixed(2),
   };
 }
@@ -1128,6 +1170,7 @@ export async function quoteOnlineOrder(
         pricingBenefitLabel: pricing.benefit.label,
         pricingBenefitDiscount: pricing.benefit.discount,
         couponSuperseded: pricing.benefit.couponSuperseded,
+        wholesaleProgress: pricing.wholesaleProgress,
         retailSubtotal: retailSubtotal.toFixed(2),
         lines: pricing.items.map((item) => ({
           productUnitId: item.productUnitId,

@@ -416,6 +416,19 @@ export default function CheckoutScreen() {
                   </Text>
                 </View>
               )}
+              {quote.wholesaleProgress.map((progress) => (
+                <View key={progress.productId} style={styles.wholesaleProgress}>
+                  <MaterialIcons color="#0C5A4B" name="inventory-2" size={19} />
+                  <View style={styles.wholesaleProgressCopy}>
+                    <Text style={styles.wholesaleProgressTitle}>
+                      أضف {formatLatinNumber(progress.remainingBaseQuantity)} قطعة إضافية للوصول إلى سعر الجملة
+                    </Text>
+                    <Text style={styles.wholesaleProgressDetail}>
+                      {progress.productName} — تُحسب الألوان والوحدات لهذا المنتج معاً.
+                    </Text>
+                  </View>
+                </View>
+              ))}
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteValue}>
                   {formatIqd(quote.deliveryFee)}
@@ -711,6 +724,32 @@ const styles = StyleSheet.create({
   quoteLabel: { color: "#64786F", fontSize: 12, fontWeight: "700" },
   quoteValue: { color: "#3D5A50", fontSize: 13, fontWeight: "800" },
   discountValue: { color: "#0C7A61", fontSize: 13, fontWeight: "900" },
+  wholesaleProgress: {
+    alignItems: "flex-start",
+    backgroundColor: "#F1F8F4",
+    borderColor: "#CEE6D8",
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 9,
+    marginTop: 12,
+    padding: 10,
+  },
+  wholesaleProgressCopy: { flex: 1 },
+  wholesaleProgressTitle: {
+    color: "#0C5A4B",
+    fontSize: 12,
+    fontWeight: "900",
+    lineHeight: 19,
+    textAlign: "right",
+  },
+  wholesaleProgressDetail: {
+    color: "#547166",
+    fontSize: 10,
+    lineHeight: 16,
+    marginTop: 2,
+    textAlign: "right",
+  },
   quoteDivider: { backgroundColor: "#E7ECE8", height: 1, marginTop: 12 },
   finalValue: {
     color: "#0C5A4B",

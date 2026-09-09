@@ -91,6 +91,13 @@ export type StorefrontOrderQuote = {
   pricingBenefitLabel: string | null;
   pricingBenefitDiscount: string;
   couponSuperseded: boolean;
+  wholesaleProgress: Array<{
+    productId: number;
+    productName: string;
+    currentBaseQuantity: number;
+    minimumBaseQuantity: number;
+    remainingBaseQuantity: number;
+  }>;
   lines: Array<{
     productUnitId: number;
     quantity: number;

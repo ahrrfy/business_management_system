@@ -546,3 +546,12 @@ describe("storefront guest tracking ownership", () => {
     expect(source).toContain("quoteOrderPrivate.useMutation");
   });
 });
+
+describe("storefront wholesale guidance", () => {
+  it("shows a cart action and explains that colours and units are accumulated", () => {
+    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+    expect(source).toContain("quoteQ.data?.wholesaleProgress");
+    expect(source).toContain("تُحسب الألوان والوحدات لهذا المنتج معاً");
+    expect(source).toContain('setPanel("cart")');
+  });
+});
