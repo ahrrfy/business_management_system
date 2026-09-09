@@ -333,6 +333,10 @@ export default function App() {
       <Route path="/print-pos">
         <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
+      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
+      <Route path="/reception">
+        <Redirect to="/pos?mode=RECEPTION" />
+      </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">
         <PriceChecker />
