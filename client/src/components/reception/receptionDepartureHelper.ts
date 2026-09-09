@@ -12,7 +12,7 @@ export interface BuildDepartureInput {
   receiptPhone: string;
   orderDelivery: {
     address?: string | null;
-    partyName: string;
+    partyName?: string | null;
     fee?: string | number | null;
     feeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   };
@@ -28,7 +28,7 @@ export function buildReceptionDepartureData(input: BuildDepartureInput): Deliver
     customerName,
     customerPhone: receiptPhone,
     deliveryAddress: orderDelivery.address,
-    courierName: orderDelivery.partyName,
+    courierName: orderDelivery.partyName ?? "جهة التوصيل",
     courierPhone,
     codAmount: dispatched.codAmount,
     deliveryFee: orderDelivery.fee,

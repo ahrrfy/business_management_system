@@ -1,4 +1,4 @@
-import type { StartOrderFromConversation } from "@/pages/Inbox";
+﻿import type { StartOrderFromConversation } from "@/pages/Inbox";
 import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelOptions } from "@shared/receptionChannel";
@@ -7,9 +7,9 @@ import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
-  ArrowRight,
   CalendarClock,
   Check,
+  CheckCircle2,
   ClipboardList,
   Copy,
   Globe,
@@ -60,8 +60,6 @@ import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import Inbox from "@/pages/Inbox";
-import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
@@ -88,9 +86,6 @@ import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepart
 import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
-import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
-import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
-import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
@@ -344,10 +339,16 @@ export default function Reception() {
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
-  // ش٦ — توصيل الطلب على مستوى السلة: يُملأ قبل التثبيت ويُنفَّذ إسناداً تلقائياً بعده.
-  // حالةُ سلةٍ محلية (لا تُحفظ مع المسوّدة — من استأنف مسوّدةً يعيد إدخال التوصيل).
-  const [orderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
-  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
+  // ش٦ — التوصيل والإسناد انتقلا لشاشة مستقلة /reception/workflow
+  // نُبقي orderDelivery بنوعه الأصلي (ثابت null) لتجنّب كسر منطق handleSubmit
+  type OrderDeliveryValue = {
+    partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
+    recipientPhone: string | null; recipientName: string | null; address: string | null;
+  };
+  const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
+  const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
+  const deliveryDialogOpen = false;
+  const setDeliveryDialogOpen = (_v: boolean) => {};
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
@@ -542,7 +543,7 @@ export default function Reception() {
   // COUNTER يُعرَض عبر heldDelivery أعلاه (لا يُكرَّر هنا). الأجرة عرضٌ فقط — لا تدخل إيراداً أبداً.
   const customDeliveryLinesD = cart.filter((c) => isCustomKind(c) && c.custom?.hasDelivery && D(c.custom.deliveryCost || 0).gt(0));
   const deliveryDisclosure = orderDelivery
-    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName }
+    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName ?? "" }
     : customDeliveryLinesD.length > 0
       ? {
           fee: round2(customDeliveryLinesD.reduce((s, c) => s.plus(D(c.custom!.deliveryCost || 0)), D(0))).toNumber(),
@@ -596,6 +597,7 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
+  // البيع متاح لكل عميل مرتبط بلا قيود حد ائتمان — التحصيل والنقود لها شاشات مستقلة
   const deferredAvailable = customer.customerId != null
     && phoneResolution === "RESOLVED"
     && !activeDraft
@@ -799,10 +801,22 @@ export default function Reception() {
     },
     [branchId, addRow, utils, effectiveTier, offline],
   );
+
+  const handleWorkOrderScan = useCallback(
+    async (orderNumber: string) => {
+      // التسليم والإسناد انتقلا إلى /reception/handover و /reception/workflow
+      notify.info(`مسح أمر شغل ${orderNumber} — استخدم شاشة التسليم المباشر`);
+    },
+    [],
+  );
+
   const handleHidScan = useCallback(
     async (raw: string) => {
       const r = parseScan(raw);
-      if (r.type === "product") {
+      if (r.type === "workOrder") {
+        await handleWorkOrderScan(r.number);
+        setSearch("");
+      } else if (r.type === "product") {
         await lookupBarcode(r.barcode);
         setSearch("");
       } else if (r.type === "customer") {
@@ -810,7 +824,7 @@ export default function Reception() {
         notify.ok(`تم تحديد العميل #${r.id}`);
       }
     },
-    [lookupBarcode],
+    [lookupBarcode, handleWorkOrderScan],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
   // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
@@ -818,7 +832,12 @@ export default function Reception() {
   // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
   const barcodeInput = useBarcodeInput((code) => {
     setSearch("");
-    void lookupBarcode(code);
+    const r = parseScan(code);
+    if (r.type === "workOrder") {
+      void handleWorkOrderScan(r.number);
+    } else {
+      void lookupBarcode(code);
+    }
   });
 
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
@@ -1225,7 +1244,7 @@ export default function Reception() {
     }
   }
 
-  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
     // Fail before customer creation/offline capture: a stale external method must not
     // leave an orphan customer when the checkout service rejects the payment.
     if (!isPosPaymentMethodEnabled(String(method))) {
@@ -1297,10 +1316,15 @@ export default function Reception() {
       return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
+    const isReserve = !!opts.isReservation;
+
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
     // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
-    const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
+    // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
+    const inputPaidD = isReserve
+      ? (paidD.gt(0) ? paidD : D(0))
+      : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
@@ -1335,21 +1359,37 @@ export default function Reception() {
     // بيع مباشر آجل (قرار المالك ١٠/٨): المتبقّي على البضاعة الجاهزة يصير ذمّةً على العميل المسجَّل.
     // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
     // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
-    if (deferred) {
+    if (deferred && !isReserve) {
       if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
-    if (!isValidIqMobile(receptionPhone)) {
-      notify.err("رقم هاتف العميل إلزامي — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+    const hasCustomLines = customWithDeposits.length > 0;
+    // حجز الفاتورة للطلبات عن بعد أو التسليم يتطلب معرفة العميل (اسمه وهاتفه)
+    if (isReserve) {
+      if (!customer.customerId && (!isValidIqMobile(receptionPhone) || customer.name.trim().length < 2)) {
+        notify.err("لحفظ وحجز الفاتورة يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+    }
+    // رقم الهاتف إلزامي فقط لأوامر التخصيص/الطباعة — أما البيع المباشر النقدي فالعميل اختياري بالكامل!
+    if (hasCustomLines) {
+      if (!isValidIqMobile(receptionPhone)) {
+        notify.err("رقم هاتف العميل إلزامي لأوامر الشغل والتخصيص — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+      if (!canCreateCustomer) {
+        notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
+        return;
+      }
+    } else if (receptionPhone && receptionPhone.trim().length > 0 && !isValidIqMobile(receptionPhone)) {
+      notify.err("رقم الهاتف غير مكتمل — أكمل ١١ رقماً تبدأ بـ07 أو أفرغ الحقل للبيع النقدي العابر");
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (!canCreateCustomer) {
-      notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
-      return;
-    }
     // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
-    const willDefer = deferred || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !activeDraft);
+    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !activeDraft);
     if (!orderDelivery && !willDefer && appliedPaidD.plus(heldD).lt(directFloorD)) {
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
@@ -1388,15 +1428,17 @@ export default function Reception() {
       return;
     }
 
-    // هوية العميل جزء من عملية الاستقبال وليست خياراً جانبياً: حسم الهاتف/الاسم يسبق أي فاتورة.
+    // هوية العميل: في البيع النقدي العابر اختياري، وفي التخصيص أو عند إدخال هاتف صحيح يُربط بالعميل
     let customerId: number | null = customer.customerId ?? null;
-    if (customerId == null) {
+    if (customerId == null && isValidIqMobile(receptionPhone)) {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
-        setSubmitting(false);
-        notify.err(e?.message || "تعذّر حفظ العميل");
-        return;
+        if (hasCustomLines || deferred || isReserve) {
+          setSubmitting(false);
+          notify.err(e?.message || "تعذّر حفظ العميل");
+          return;
+        }
       }
     }
 
@@ -1693,10 +1735,10 @@ export default function Reception() {
       // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
       const receiptDelivery = orderDelivery && hasCarrierInvoice
         ? {
-            partyName: orderDelivery.partyName,
+            partyName: orderDelivery.partyName ?? "",
             fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
             feeCollection: orderDelivery.feeCollection,
-            address: orderDelivery.address || null,
+            address: orderDelivery.address ?? null,
           }
         : null;
       if (result.regularSale) {
@@ -1807,7 +1849,14 @@ export default function Reception() {
         : browserFallbacks > 0
           ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
           : "أُرسلت المستندات إلى الطابعة مباشرة";
-      notify.ok(`تمّ ${summary}`, printDescription);
+      if (isReserve) {
+        notify.ok(
+          `تم حفظ وحجز الفاتورة #${result.regularSale?.invoiceNumber ?? ""}`,
+          "جاهزة للتسليم المباشر (/reception/handover) أو الإسناد للتوصيل (/reception/workflow)",
+        );
+      } else {
+        notify.ok(`تمّ ${summary}`, printDescription);
+      }
       // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
       // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
       setLastSale({
@@ -2531,20 +2580,7 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
-        {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
-        <button
-          type="button"
-          onClick={() => setDeliveryDialogOpen(true)}
-          className={cn(
-            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
-            orderDelivery
-              ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
-              : "hover:bg-muted/60",
-          )}
-        >
-          <Truck aria-hidden className="size-4" />
-          {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
-        </button>
+        {/* التسليم والإسناد يتمّان عبر الباركود في شاشة مستقلة — لا زرّ توصيل هنا */}
 
         </div>
 
@@ -2674,18 +2710,18 @@ export default function Reception() {
             {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
             <div className="ms-auto flex items-center gap-1.5">
               <a
-                href="/reception/orders"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="طابور التسليم والإسناد"
+                href="/reception/handover"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-green-500 bg-green-50 px-2 py-1 text-xs font-extrabold text-green-700 hover:bg-green-100"
+                title="تسليم الطلبات الجاهزة للزبون مباشرة"
               >
-                <ClipboardList aria-hidden className="size-3.5" /> طلبات محطّتي
+                <CheckCircle2 aria-hidden className="size-3.5" /> تسليم مباشر
               </a>
               <a
-                href="/reception/invoices"
+                href="/reception/workflow"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="ما عليه مبلغٌ متبقٍّ"
+                title="إسناد للمندوب والتوصيل"
               >
-                <ReceiptIcon aria-hidden className="size-3.5" /> فواتير للتحصيل
+                <Truck aria-hidden className="size-3.5" /> إسناد وتوصيل
               </a>
             </div>
           </div>
@@ -2765,9 +2801,17 @@ export default function Reception() {
         onSubmit={(opts) => void handleSubmit(opts)}
       />
 
-      {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
-          وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
+      {/* شارة المزامنة */}
       <OfflineSyncChip userRole={me.data?.role} />
+
+      {/* سحب نقدي من الدرج */}
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={RECEPTION_TOKENS}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
 
       {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
       {depositOpen && activeDraft && (
@@ -2787,33 +2831,6 @@ export default function Reception() {
             setPayInput("");
             void utils.reception.draftList.invalidate();
           }}
-        />
-      )}
-
-      {/* ─── ش٤: سجلّ عرابين الطلب النشط + الردّ ─── */}
-      {paymentsOpen && activeDraft && (
-        <DraftPaymentsDialog
-          draftId={activeDraft.id}
-          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
-          branchId={branchId}
-          onClose={() => setPaymentsOpen(false)}
-          onChanged={(heldNet) => {
-            setDraftHeld(heldNet);
-            void utils.reception.draftList.invalidate();
-          }}
-        />
-      )}
-
-      {/* ─── ش٦: كتلة توصيل الطلب (إسنادٌ تلقائيّ بعد التثبيت) ─── */}
-      {deliveryDialogOpen && (
-        <OrderDeliveryDialog
-          parties={(partiesQ.data ?? []) as DispatchParty[]}
-          initial={orderDelivery}
-          defaultRecipientName={customer.name || null}
-          defaultRecipientPhone={customer.phone || null}
-          onSave={setOrderDelivery}
-          onClear={() => setOrderDelivery(null)}
-          onClose={() => setDeliveryDialogOpen(false)}
         />
       )}
 
@@ -2849,21 +2866,6 @@ export default function Reception() {
         />
       )}
 
-      {/* صندوق القنوات الحقيقي داخل محطة الاستقبال؛ يعود الموظف إلى السلة من دون فقد محتواها. */}
-      {showInbox && (
-        <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
-          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
-            <div>
-              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء</h1>
-              <p className="text-xs text-muted-foreground">تابع رسائل واتساب والاتصالات، واربطها بالعميل عند الحاجة.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
-              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-            </Button>
-          </div>
-          <Inbox onStartOrder={startOrderFromConversation} />
-        </div>
-      )}
       {customerContextId != null && (
         <Contact360Panel
           kind="customer"
@@ -2884,7 +2886,7 @@ export default function Reception() {
         />
       )}
 
-      {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
+      {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && (
         <ManagerApprovalDialog
           pct={approvalAsk.pct}
@@ -2895,14 +2897,6 @@ export default function Reception() {
             setApprovalAsk(null);
             notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
           }}
-        />
-      )}
-
-      {cashDropping && shift && (
-        <CashDropDialog
-          C={RECEPTION_TOKENS}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
         />
       )}
     </div>

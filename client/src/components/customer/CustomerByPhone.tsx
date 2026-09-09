@@ -56,7 +56,7 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
           <div className="flex items-center gap-2">
             {steps && stepBubble(steps.phone)}
             <h2 id={`${idPrefix}-phone-title`} className="text-xs font-black">رقم هاتف العميل</h2>
-            <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[9px] font-black text-destructive">إلزامي</span>
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">اختياري للنقدي</span>
           </div>
           {api.resolution === "CHECKING" && (
             <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
@@ -96,8 +96,8 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
                 <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
               </div>
               <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{api.phone}</div>
-              <div className={cn("text-[9px] font-bold", api.deferredEligible ? "text-money-positive" : "text-[var(--sem-warn)]")}>
-                {api.deferredEligible ? "مرتبط · البيع بدون عربون متاح" : "مرتبط · نقديٌّ فقط (حدّ ائتمانه صفر)"}
+              <div className="text-[9px] font-bold text-money-positive">
+                مرتبط · جاهز للربط والبيع
               </div>
               {balance != null && (
                 <div className="text-[10px] font-bold text-muted-foreground">
@@ -138,22 +138,6 @@ export function CustomerByPhone({ api, canCreate, steps, identityHeaderExtra, on
                 حفظ وربط
               </Button>
             </div>
-            {/* «حدّ الائتمان» عند الإنشاء — لكلّ من يملك صلاحية إنشاء عميل الاستقبال (كاشير + مدير).
-                الافتراض "0" (نقديّ فقط) لا يُغيَّر إلّا إذا كتب المستعمل قيمة صراحةً. */}
-            {api.resolution === "NEEDS_NAME" && canCreate && (
-              <div className="flex items-center gap-1.5">
-                <Input
-                  value={api.creditLimit}
-                  onChange={(e) => api.setCreditLimit(e.target.value)}
-                  disabled={!api.isValidPhone}
-                  placeholder="حدّ ائتمان اختياريّ (اتركه فارغاً للنقديّ فقط)"
-                  aria-label="حدّ الائتمان للعميل الجديد"
-                  className="h-8 min-w-0 flex-1 text-[11px] tabular-nums"
-                  dir="ltr"
-                />
-                <span className="shrink-0 text-[10px] text-muted-foreground">د.ع</span>
-              </div>
-            )}
           </div>
         )}
         {!canCreate && (

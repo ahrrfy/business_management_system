@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
@@ -33,7 +33,6 @@ import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
 import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
@@ -45,7 +44,7 @@ import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
 import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
-import { StaffConfirmDialog } from "@/components/delivery/StaffConfirmDialog";
+import { StaffConfirmDialog, FailReasonDialog, DeclareReturnDialog, ManualProofDialog } from "@/components/delivery/TransitActionDialogs";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -53,12 +52,7 @@ import { playReadyBeep } from "@/lib/notifyBeep";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import {
-  SHORTFALL_REASONS,
-  SHORTFALL_REASON_LABEL_AR,
-  SHORTFALL_REASON_DESCRIPTION_AR,
-  type ShortfallReason,
-} from "@shared/shortfallReason";
+import { type ShortfallReason } from "@shared/shortfallReason";
 import { PARTY_EXPOSURE_LABEL_AR } from "@shared/partyExposure";
 import { DELIVERY_TERMS as DT } from "@shared/deliveryTerminology";
 import { cn } from "@/lib/utils";
@@ -1188,135 +1182,6 @@ function InTransitTab() {
           invalidateAll();
         }}
       />
-    </div>
-  );
-}
-
-
-// ───────────────────────── حوارات مساعِدة ─────────────────────────
-
-const FAIL_REASONS = [
-  "رفض العميل الاستلام",
-  "العميل غير متوفّر",
-  "عنوان خاطئ",
-  "تعذّر التواصل",
-  "طلب تأجيل التسليم",
-];
-
-function FailReasonDialog({ count, pending, onCancel, onConfirm }: { count: number; pending: boolean; onCancel: () => void; onConfirm: (reason: string) => void }) {
-  const [reason, setReason] = useState("");
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-danger)]">
-          <XCircle aria-hidden className="size-5" />
-          تعذّر تسليم {count > 1 ? `${count} طرداً` : "الطرد"}
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          يُسجَّل السبب على كل طرد ويُوسَم متعذّراً. لا حركة مخزون ولا عكس فاتورة الآن — استلامُ الطرد وفحصه لاحقاً هما ما يُشغّلان العكس الكامل.
-        </p>
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {FAIL_REASONS.map((r) => (
-            <button key={r} type="button" onClick={() => setReason(r)} className={cn(
-              "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              reason === r ? "bg-[var(--sem-danger)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
-            )}>{r}</button>
-          ))}
-        </div>
-        <Input
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="سبب تعذّر التسليم…"
-          className="mb-4"
-        />
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button
-            size="sm"
-            disabled={pending || reason.trim().length < 2}
-            onClick={() => onConfirm(reason.trim())}
-          >
-            {pending ? "جارٍ…" : `تأكيد تعذّر ${count > 1 ? count : ""}`}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const DECLARE_REASONS = [
-  "رفض العميل",
-  "عنوان خاطئ",
-  "لم يُعثر عليه",
-  "تعذّر التواصل",
-];
-
-function DeclareReturnDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (reason: string, statementNumber: string) => void }) {
-  const [reason, setReason] = useState("");
-  const [statementNumber, setStatementNumber] = useState("");
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-warn)]">
-          <Undo2 aria-hidden className="size-5" />
-          إعلان رجوع {row.consignmentNumber ?? `#${row.id}`}
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          يُغلق توقّع التحصيل على الجهة فوراً، ويضع الطرد في «بانتظار المرتجع». لا تعود البضاعة للمخزون ولا تُرجَع الفاتورة — ذلك يقع عند الاستلام والفحص في الفرع.
-        </p>
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {DECLARE_REASONS.map((r) => (
-            <button key={r} type="button" onClick={() => setReason(r)} className={cn(
-              "rounded-full px-2.5 py-1 text-xs font-medium transition",
-              reason === r ? "bg-[var(--sem-warn)] text-background" : "bg-muted text-muted-foreground hover:bg-accent",
-            )}>{r}</button>
-          ))}
-        </div>
-        <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="أو اكتب سبباً حرّاً…" className="mb-2" />
-        <Label htmlFor="declare-stmt" className="text-xs">رقم كشف الشركة (اختياريّ)</Label>
-        <Input id="declare-stmt" value={statementNumber} onChange={(e) => setStatementNumber(e.target.value)} dir="ltr" placeholder="STMT-…" className="mb-4" />
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button size="sm" disabled={pending || reason.trim().length < 3} onClick={() => onConfirm(reason.trim(), statementNumber.trim())}>
-            {pending ? "جارٍ…" : "تأكيد إعلان الرجوع"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ManualProofDialog({ row, pending, onCancel, onConfirm }: { row: InTransitRow; pending: boolean; onCancel: () => void; onConfirm: (collectedAmount: string, evidence: string) => void }) {
-  const remaining = Math.max(0, Number(row.codAmount) - Number(row.collectedAmount ?? 0) - Number(row.counterSettledAmount ?? 0));
-  const [amount, setAmount] = useState(String(remaining));
-  const [evidence, setEvidence] = useState("");
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" onClick={onCancel} dir="rtl">
-      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center gap-2 text-base font-bold text-[var(--sem-info)]">
-          <ShieldCheck aria-hidden className="size-5" />
-          إثبات تسليم يدويّ — {row.consignmentNumber}
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سلطةٌ استثنائية للمدير: لطرد لا بوّابة له ولا كشف بعد. يُثبَت التسليم بدليل مكتوب (مصدره: مكالمة/صورة/شهادة موظّف) وتُدوَّن هويّة الفاعل والدليل في سجلّ التدقيق. المبلغ المُعلَن تحصيله يُبرِئ ذمّة العميل بمقداره، والفرق يبقى ذمّةً حيّةً تُقبَض بالكاونتر.
-        </p>
-        <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border bg-muted/30 p-2 text-xs">
-          <span className="text-muted-foreground">المطلوب تحصيله</span>
-          <span className="text-end font-black tabular-nums" dir="ltr">{fmt(String(remaining))} د.ع</span>
-        </div>
-        <Label htmlFor="proof-amount" className="text-xs">المُعلَن تحصيله فعلاً</Label>
-        <div className="mb-3">
-          <MoneyInput id="proof-amount" value={amount} onChange={(v) => setAmount(v)} ariaLabel="المبلغ المُعلَن تحصيله" />
-        </div>
-        <Label htmlFor="proof-ev" className="text-xs">الدليل (إلزاميّ — ≥٤ حروف)</Label>
-        <Input id="proof-ev" value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder="مصدر الدليل — مكالمة/صورة/شهادة…" className="mb-4" />
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>تراجع</Button>
-          <Button size="sm" disabled={pending || evidence.trim().length < 4 || Number(amount) < 0} onClick={() => onConfirm(String(Number(amount).toFixed(2)), evidence.trim())}>
-            {pending ? "جارٍ…" : "تسجيل الإثبات"}
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }

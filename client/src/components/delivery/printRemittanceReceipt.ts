@@ -24,6 +24,11 @@ export function printRemittanceReceipt(partyName: string, r: { remittanceNumber:
     subtitle: r.remittanceNumber,
     meta: [`الجهة: ${partyName}`, fmtDateTime(new Date())],
     totals,
-    footer: "تسوية تحصيلات المندوب",
+    barcodeSet: {
+      qrPayload: `https://alarabiya.online/remittance/${encodeURIComponent(r.remittanceNumber)}`,
+      barcode128: r.remittanceNumber,
+      displayLabel: `سند تسوية وتوريد: ${r.remittanceNumber}\nالجهة: ${partyName}`,
+    },
+    footer: "تسوية تحصيلات المندوب — موثق بنظام إدارة أعمال الرؤية العربية",
   });
 }

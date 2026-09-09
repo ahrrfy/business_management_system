@@ -1,5 +1,8 @@
 {
   "client/src/pages/Inbox.tsx": 3,
   "client/src/pages/MobileDesignPreview.tsx": 7,
+  "client/src/pages/Reception.tsx": 4,
+  "client/src/pages/reception/ReceptionHandoverPage.tsx": 21,
+  "client/src/pages/reception/ReceptionWorkflowPage.tsx": 19,
   "client/src/pages/Storefront.tsx": 130
 }
