@@ -310,6 +310,7 @@ export default function ProductImageStudio() {
     .map(([, label]) => label);
 
   const canBulkAssign = dashboard.data?.canManage === true && !offline;
+  const canEditProductContent = dashboard.data?.canManage === true;
   const { queuedTaskIds, allQueuedSelected, selectedAssignedTaskIds, selectedActiveTaskIds } = studioTaskSelection(taskItems, selectedTaskIds);
   const toggleTaskSelection = (taskId: number) =>
     setSelectedTaskIds((current) => {
@@ -829,6 +830,7 @@ export default function ProductImageStudio() {
   }, [draftReady, images.length, selectedId, sourcePreview.data]);
 
   function selectTask(task: StudioTask) {
+    if (dashboard.data?.canManage !== true && dashboard.data?.canAudit !== true && Number(captured?.taskId) !== Number(task.id)) { notify.err("امسح باركود المنتج أولاً لفتح مهمة التصوير."); return; }
     setOfflineSelectedDraft(null);
     setScannedTask(null);
     setSelectedId(Number(task.id));
@@ -857,6 +859,7 @@ export default function ProductImageStudio() {
 
   const mobileClaimByBarcode = trpc.productStudio.claimByBarcode.useMutation({
     onSuccess: (result) => {
+      setTaskScannerOpen(false);
       applyStudioClaim({
         taskId: result.taskId,
         productName: result.productName,
@@ -871,7 +874,6 @@ export default function ProductImageStudio() {
 
   function claimScannedBarcode(barcode: string) {
     if (offline || mobileClaimByBarcode.isPending) return;
-    setTaskScannerOpen(false);
     const clean = barcode.trim();
     if (!clean) return;
     mobileClaimByBarcode.mutate({ barcode: clean });
@@ -892,9 +894,7 @@ export default function ProductImageStudio() {
         mode: studioMode === "AI" ? "FLATTEN" : studioMode,
         processingReceipt,
         adminOverrideReason: editOverrideValue,
-        proposedName: name,
-        proposedDescription: description,
-        proposedMarketingCopy: marketingCopy,
+        ...(canEditProductContent ? { proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy } : {}),
       });
       if (authenticatedUserId) await purgeStudioDraft(authenticatedUserId, Number(selected.id));
     } catch (error) {
@@ -2354,7 +2354,7 @@ export default function ProductImageStudio() {
                         </div>
                       )}
                       <StudioCampaignImageBatch key={selected.id} ref={imageBatch} taskId={Number(selected.id)} userId={authenticatedUserId} productName={selected.productName} primaryImages={images} onPrimaryImage={(image) => { setImages([image]); setOriginalDataUrl(image.dataUrl); setProcessingReceipt(null); setStudioMode("FLATTEN"); }} adminOverrideReason={editOverrideValue} offline={offline} submitting={isPreparingThumbnail} onBusyChange={setIsBatchBusy}>
-                      <ProductMediaContentSection title={`صورة الحملة ${selected.activeSlot ?? 1} والمحتوى`} description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
+                      <ProductMediaContentSection title={`صورة الحملة ${selected.activeSlot ?? 1} والمحتوى`} description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} captureOnly={dashboard.data?.canManage !== true} hint="أضف بقية الصور من قسم صور الحملة أعلاه؛ لكل صورة أصل وتعديل ومراجعة مستقلة." />
                       </StudioCampaignImageBatch>
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
@@ -2370,9 +2370,7 @@ export default function ProductImageStudio() {
                             saveDraft.mutate({
                               taskId: Number(selected.id),
                               expectedRevision: selected.revision,
-                              proposedName: name,
-                              proposedDescription: description,
-                              proposedMarketingCopy: marketingCopy,
+                              ...(canEditProductContent ? { proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy } : {}),
                               adminOverrideReason: editOverrideValue,
                             })
                           }

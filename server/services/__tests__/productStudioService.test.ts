@@ -886,6 +886,15 @@ describe("product studio governed workflow", () => {
     expect(stored?.dueAt?.toISOString()).toBe("2026-08-20T09:00:00.000Z");
   });
 
+  it("limits a barcode-gated photographer to image work without clearing catalog content", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await db().update(s.productImageJobs).set({ barcodeVerifiedBy: worker.userId, barcodeVerifiedAt: new Date(), proposedDescription: "محتوى المدير محفوظ" }).where(eq(s.productImageJobs.id, taskId));
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true, proposedDescription: "تعديل مصوّر غير مسموح" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("لا يحرّر المصوّر") });
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true })).resolves.toMatchObject({ ok: true });
+    const [stored] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(stored?.proposedDescription).toBe("محتوى المدير محفوظ");
+  });
+
   it("rolls back an entire bulk assignment when any product already has an active task", async () => {
     await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
     await assignStudioTask(manager, {

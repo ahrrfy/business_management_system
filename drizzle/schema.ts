@@ -4640,6 +4640,9 @@ export const productImageJobs = mysqlTable(
     /** لحظةُ تسليم المهمة لمنفّذ. زمنُ الدورة يُقاس منها لا من الإنشاء: مهامُ الحملة
         تُولَد بالآلاف في لحظةٍ واحدة، فقياسُها من الإنشاء يُبلّغ عمرَ الطابور لا زمنَ العمل. */
     assignedAt: timestamp("assignedAt"),
+    /** لا يكتب المصوّر في المهمة إلا بعد أن يؤكد الخادم مسح باركود المنتج المطابق. */
+    barcodeVerifiedBy: int("barcodeVerifiedBy").references(() => users.id),
+    barcodeVerifiedAt: timestamp("barcodeVerifiedAt"),
     reviewedBy: int("reviewedBy").references(() => users.id),
     /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
     activeSlot: tinyint("activeSlot"),
