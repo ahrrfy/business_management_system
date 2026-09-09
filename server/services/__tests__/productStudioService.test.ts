@@ -1709,11 +1709,12 @@ describe("product studio governed workflow", () => {
       productId: 1,
       assigneeId: worker.userId,
     });
-    await saveStudioDraft(worker, {
+    await saveStudioDraft(admin, {
       taskId,
-      proposedName: "قلم ألوان عملي",
-      proposedDescription: "أربعة ألوان في قلم واحد.",
-      proposedMarketingCopy: "اختيار واضح للاستخدام اليومي.",
+      proposedName: "قلم ألوان موثوق",
+      proposedDescription: "وصف أُرسل ذرياً مع الصورة.",
+      proposedMarketingCopy: "نص ترويجي صادق.",
+      adminOverrideReason: "إعداد محتوى الكتالوج قبل التقاط صورة المهمة المخصصة للمصور",
     });
     const aiReceipt = await attestStudioProcessing(worker, taskId, "AI");
     await bindStudioProcessingCandidate(worker, {
@@ -1736,13 +1737,12 @@ describe("product studio governed workflow", () => {
       processedDataUrl: PNG_1X1,
       mode: "FLATTEN",
       processingReceipt: aiReceipt,
-      proposedName: "قلم ألوان موثوق",
-      proposedDescription: "وصف أُرسل ذرياً مع الصورة.",
-      proposedMarketingCopy: "نص ترويجي صادق.",
     });
 
     const [pending] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
     expect(pending?.status).toBe("PENDING_REVIEW");
+    expect(pending?.contentPreparedBy).toBe(admin.userId);
+    expect(pending?.contentPreparedByManager).toBe(true);
     expect(pending?.originalObjectKey).toMatch(/^single\/studio\/original\//);
     expect(pending?.processedObjectKey).toMatch(/^single\/studio\/candidate\//);
     expect(pending?.processedUrl).toBe(WEBP_1X1);
@@ -1949,13 +1949,13 @@ describe("product studio governed workflow", () => {
     });
   });
 
-  it("rejects approval when product content or the source image changed after assignment", async () => {
+  it("rejects approval when manager-authored product content or the source image changed after assignment", async () => {
     const { taskId } = await assignStudioTask(manager, {
       productId: 1,
-      assigneeId: worker.userId,
+      assigneeId: manager.userId,
       sourceImageId: null,
     });
-    await submitStudioCandidate(worker, {
+    await submitStudioCandidate(manager, {
       taskId,
       originalDataUrl: PNG_1X1,
       processedDataUrl: PNG_1X1_ALT,
@@ -1963,7 +1963,7 @@ describe("product studio governed workflow", () => {
       proposedDescription: "وصف مقترح",
     });
     await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
-    await expect(approveStudioTask(manager, taskId)).rejects.toMatchObject({
+    await expect(approveStudioTask(admin, taskId)).rejects.toMatchObject({
       code: "CONFLICT",
     });
 
@@ -2001,6 +2001,56 @@ describe("product studio governed workflow", () => {
       .set({ contentHash: "f".repeat(64) })
       .where(eq(s.productImages.id, Number(image.id)));
     await expect(approveStudioTask(manager, second.taskId)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("keeps manager-authored content authoritative after its author's role changes", async () => {
+    const { taskId } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: manager.userId,
+      sourceImageId: null,
+    });
+    await submitStudioCandidate(manager, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+      proposedDescription: "وصف مدير موثوق",
+    });
+    await db().update(s.users).set({ role: "print_operator" }).where(eq(s.users.id, manager.userId));
+    await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
+
+    await expect(approveStudioTask(admin, taskId)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("approves a legacy photographer task after catalog content changes without restoring its stale copy", async () => {
+    const { taskId } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: null,
+    });
+    // مهمةٌ من قبل بوابة الباركود: كانت واجهة المصوّر تحفظ اقتراح المحتوى معها.
+    await submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+      proposedDescription: "وصف قديم من مهمة المصوّر",
+    });
+    // بعض المهام القديمة مُسح باركودها بعد إطلاق البوابة؛ لا يجعل ذلك نص المصوّر موثوقاً.
+    await db().update(s.productImageJobs).set({ barcodeVerifiedBy: worker.userId, barcodeVerifiedAt: new Date() }).where(eq(s.productImageJobs.id, taskId));
+    await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
+
+    await expect(approveStudioTask(manager, taskId)).resolves.toMatchObject({ imageId: expect.any(Number) });
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product?.description).toBe("تعديل أحدث من شاشة المنتج");
+    const [task] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(task).toMatchObject({
+      status: "APPROVED",
+      proposedName: null,
+      proposedDescription: null,
+      proposedMarketingCopy: null,
+    });
   });
 
   it("fails closed on incomplete R2 credentials and truncated image data without leaving an upload lease", async () => {
