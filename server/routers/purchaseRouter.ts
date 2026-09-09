@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import {
@@ -984,10 +984,9 @@ export const purchaseRouter = router({
               and(
                 inArray(accountingEntries.purchaseOrderId, cashOrderIds),
                 sql`${accountingEntries.supplierId} IS NOT NULL`,
-                inArray(accountingEntries.purchaseLiabilityAccount, [
-                  "AP",
-                  "CASH_CLEARING",
-                ]),
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
                 or(
                   eq(accountingEntries.entryType, "PAYMENT_OUT"),
                   and(
@@ -1233,10 +1232,9 @@ export const purchaseRouter = router({
               and(
                 eq(accountingEntries.purchaseOrderId, po.id),
                 sql`${accountingEntries.supplierId} IS NOT NULL`,
-                inArray(accountingEntries.purchaseLiabilityAccount, [
-                  "AP",
-                  "CASH_CLEARING",
-                ]),
+                isNull(accountingEntries.deliveryPartyId),
+                sql`COALESCE(${accountingEntries.postingProfile}, '') NOT LIKE '%SHIPPING%'`,
+                sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} IN ('AP', 'CASH_CLEARING'))`,
                 or(
                   eq(accountingEntries.entryType, "PAYMENT_OUT"),
                   and(
