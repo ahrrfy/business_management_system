@@ -551,7 +551,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     // Assignment is not customer delivery. The READY row is excluded from
     // the assignment queue by its consignment, and closes only at delivery.
-    await tx.update(workOrders).set({ invoiceId }).where(eq(workOrders.id, Number(wo.id)));
+    await tx.update(workOrders).set({ invoiceId, status: "DELIVERED", kanbanState: sql`null` }).where(eq(workOrders.id, Number(wo.id)));
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId, payloadHash);
 
     return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2) };

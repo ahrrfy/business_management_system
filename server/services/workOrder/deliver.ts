@@ -1,6 +1,6 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, isNull, notLike, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, notLike, or, sql } from "drizzle-orm";
 import { customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { requiresFullPaymentAtHandover, COD_PICKUP_PAYMENT_ERROR_AR, type CodPaymentMode } from "@shared/codHandoverPolicy";
@@ -409,7 +409,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     await tx
       .update(workOrders)
-      .set({ status: "DELIVERED", invoiceId, deliveredAt: new Date() })
+      .set({ status: "DELIVERED", kanbanState: sql`null`, invoiceId, deliveredAt: new Date() })
       .where(eq(workOrders.id, Number(wo.id)));
 
     if (input.clientRequestId) {

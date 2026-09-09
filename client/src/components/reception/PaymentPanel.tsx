@@ -8,6 +8,7 @@ import {
   Landmark,
   Percent,
   Printer,
+  ShieldCheck,
   Smartphone,
   Ticket,
   Truck,
@@ -301,284 +302,131 @@ export function PaymentPanel({
       {/* صفّ الإجراءات: مبلغ مدفوع + رقائق سريعة | طريقة الدفع | عربون/كوبون | زرّا الإتمام.
           pe-28 يحجز حافّة الشريط اليسرى فارغةً — شارة مزامنة الأوفلاين (fixed bottom-3 left-3
           مشتركة بكل شاشات الكاشير) تطفو فوق تلك الزاوية بالضبط في أي شاشةٍ بشريطٍ سفليّ حافّة-لحافّة. */}
-      <div className="flex flex-wrap items-center gap-2 pe-28">
-        <div className="flex h-10 shrink-0 items-center rounded-lg border bg-muted/40 p-1" aria-label="طريقة التحصيل">
-          <button
-            type="button"
-            aria-pressed={!deferred}
-            onClick={() => setDeferred(false)}
-            className={cn(
-              "h-8 rounded-md px-3 text-xs font-black transition-colors",
-              !deferred ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            دفع الآن
-          </button>
-          <button
-            type="button"
-            aria-pressed={deferred}
-            disabled={!deferredAvailable}
-            // ٢٣/٨ (بلاغ المالك): `title` يشرح السبب الفعليّ حين معطَّل — كان يقول «اربط عميلاً»
-            // حتى حين يكون العميل مرتبطاً لكن حدّ ائتمانه صفر، أو الطلبُ مسوّدةٌ محفوظة، أو
-            // السلّةُ تخصيصاً خالصاً (لا حاجة لعربونٍ أصلاً — يكفي «إتمام الطلب» مباشرةً).
-            title={deferredAvailable ? "تسجيل كامل المبلغ ذمّة على العميل" : (deferredDisabledReason ?? "غير متاح الآن")}
-            onClick={() => {
-              setPayInput("");
-              setDeferred(true);
-            }}
-            className={cn(
-              "h-8 rounded-md px-3 text-xs font-black transition-colors",
-              deferred
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : deferredAvailable
-                  ? "text-primary hover:bg-primary/10"
-                  : "cursor-not-allowed text-muted-foreground/45",
-            )}
-          >
-            بدون عربون
-          </button>
-        </div>
-
-        {!deferred && <>
-        {/* المبلغ المدفوع — حقلٌ نصّي حقيقي (لوحة المفاتيح تكتب مباشرة، بلا حاسبة إضافية).
-            ٢٣/٨ — بلاغ Codex P1 v2: عقد التطبيع المشترك (`shared/numberNormalize`) هو المرجع
-            الوحيد: `1,5` ⇒ `1.5` (عشريّ)، `1,234` ⇒ `1234` (ألوف)، `1،5` كذلك. الحقل يعرض
-            ما يكتبه الكاشير حرفياً (`displayPay`) لكن لا يلتزم قيمةً إلا إن كانت غير ملتبسة.
-            الحالات الوسطى (`1,`، `1.`، `.5`) تُعرض ولا تُلتزم كي لا تتحطّم `D()`. */}
-        <div className="flex h-10 items-center gap-2 rounded-lg border-[1.5px] bg-muted/40 px-3 focus-within:border-primary">
-          <span className="shrink-0 text-xs text-muted-foreground">المدفوع</span>
-          <input
-            value={displayPay}
-            onChange={(e) => {
-              const src = e.target.value;
-              setDisplayPay(src);
-              if (src === "") { setPayInput(""); return; }
-              // حدُّ محارف: أرقام + فواصل شائعة فقط. غير ذلك يُترك دون التزام.
-              if (!/^[\d.,،٫\-]*$/.test(src)) return;
-              const result = normalizeNumberInput(src);
-              if (result.ambiguous) return;
-              const n = result.normalized;
-              if (!n) return;
-              if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(n)) return;
-              if (!Number.isFinite(Number(n))) return;
-              setPayInput(n);
-            }}
-            onFocus={(e) => e.currentTarget.select()}
-            inputMode="decimal"
-            dir="ltr"
-            placeholder="0"
-            aria-label="المبلغ المدفوع"
-            className={cn(
-              "w-28 min-w-0 bg-transparent text-end text-lg font-black tabular-nums outline-none",
-              isOwing && "text-[var(--sem-warn)]",
-              isChange && "text-[var(--sem-pos)]",
-            )}
-          />
-        </div>
-        <button
-          type="button"
-          onClick={payAll}
-          className="h-10 rounded-lg border-[1.5px] border-primary bg-card px-3 text-xs font-extrabold text-primary hover:bg-primary/10"
-        >
-          = الكل
-        </button>
-
-        <div className="mx-1 h-8 w-px shrink-0 bg-border" aria-hidden />
-
-        {/* طريقة الدفع — أزرار أيقونة مدمجة أفقياً بدل شبكة قائمة.
-            صدق طريقة الدفع (١٨/٨): بلا مبلغٍ مقبوضٍ الآن لا معنى لاختيار طريقة — يحلّ محلّها
-            إفصاحٌ صريح بنفس المساحة (بلا قفزة تخطيط) ولا تُرسَل طريقةٌ للخادم أصلاً. */}
-        {noCollectionNow ? (
-          <div
-            className="inline-flex h-10 items-center gap-1.5 rounded-lg border-2 border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 text-[11px] font-extrabold text-[var(--sem-warn)]"
-            role="status"
-          >
-            <Landmark aria-hidden className="size-4" />
-            <span>آجل — لا قبض الآن · تظهر «غير مدفوعة»</span>
-          </div>
-        ) : (
-        <div className="flex items-center gap-1">
-          {(
-            [
-              { v: "CASH", label: "نقدي", Icon: Banknote },
-              { v: "CARD", label: "بطاقة", Icon: CreditCard },
-              { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight },
-              { v: "WALLET", label: "محفظة", Icon: Wallet },
-              { v: "TELECOM", label: "رصيد زين", Icon: Smartphone },
-            ] as const
-          ).map((p) => (
-            <button
-              key={p.v}
-              onClick={() => { if (isPosPaymentMethodEnabled(p.v)) setMethod(p.v); }}
-              disabled={!isPosPaymentMethodEnabled(p.v)}
-              aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-external-payment-disabled" : undefined}
-              title={isPosPaymentMethodEnabled(p.v) ? p.label : posPaymentRejectionMessage(p.v)}
-              aria-pressed={method === p.v}
-              className={cn(
-                "inline-flex h-10 items-center gap-1.5 rounded-lg border-2 px-2.5 text-xs font-extrabold transition-colors",
-                method === p.v
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : isPosPaymentMethodEnabled(p.v)
-                    ? "bg-card hover:bg-muted"
-                    : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
-              )}
-            >
-              <p.Icon aria-hidden className="size-4" />
-              <span className="hidden lg:inline">{p.label}</span>
-            </button>
-          ))}
-        </div>
-        )}
-        {!noCollectionNow && (
-          <span id="reception-external-payment-disabled" className="max-w-48 text-[9px] leading-tight text-muted-foreground">
-            {INBOUND_TELECOM_DISABLED_MESSAGE}
-          </span>
-        )}
-        {needPaymentRef && !noCollectionNow && (
-          <Input
-            value={paymentReference}
-            onChange={(e) => setPaymentReference(e.target.value)}
-            placeholder={
-              method === "CARD" ? "رقم عملية البطاقة"
-              : method === "WALLET" ? "رقم عملية المحفظة"
-              : method === "TELECOM" ? "أرقام كارت شحن زين"
-              : "رقم التحويل"
-            }
-            className="h-10 w-40 text-xs"
-            dir="ltr"
-          />
-        )}
-
-        <div className="mx-1 h-8 w-px shrink-0 bg-border" aria-hidden />
-
-        {/* عربون — منسدلٌ يفتح للأعلى (البار في أسفل الصفحة). */}
-        <div className="relative">
-          <button
-            onClick={() => setDepositMenuOpen((v) => !v)}
-            disabled={cartEmpty}
-            title={cartEmpty ? "أضف ما يريده الزبون أولاً" : "عربون: قبضٌ فوريّ بسند، أو تعبئة سريعة من المخصّص"}
-            className={cn(
-              "inline-flex h-10 items-center gap-1 rounded-lg border-[1.5px] px-3 text-xs font-extrabold",
-              !cartEmpty ? "bg-card hover:bg-muted" : "cursor-not-allowed bg-muted/40 text-muted-foreground/50",
-            )}
-          >
-            عربون <ChevronDown aria-hidden className="size-3" />
-          </button>
-          {depositMenuOpen && !cartEmpty && (
-            <div className="absolute bottom-[calc(100%+4px)] end-0 z-30 w-48 rounded-lg border bg-card p-1.5 shadow-2xl" dir="rtl">
-              {hasCustom && <div className="px-1 pb-1 text-[10px] text-muted-foreground">الجاهز كاملاً + نسبة من المخصّص:</div>}
-              {depositOptions.map((opt) => (
-                <button
-                  key={opt.label}
-                  type="button"
-                  onClick={opt.onPick}
-                  className="block w-full rounded-md px-2 py-1.5 text-start text-xs font-bold hover:bg-muted"
-                >
-                  {opt.label}
-                  <span className="ms-1 text-[10px] font-semibold text-muted-foreground tabular-nums" dir="ltr">
-                    = {opt.amountLabel}
-                  </span>
-                </button>
-              ))}
+      {/* صفّ الإجراءات: مخصّص (حجز مؤقت للتنفيذ) مقابل مبيعات مباشرة (إتمام البيع المباشر) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pe-28">
+        {hasCustom ? (
+          <>
+            <div className="flex items-center gap-2 rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-warn)]">
+              <ShieldCheck aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)]" />
+              <span>حجز مؤقت للتنفيذ · الدفع والتسوية يتمان عند التسليم (مباشر أو مندوب)</span>
             </div>
-          )}
-        </div>
 
-        {/* كوبون — مطويٌّ خلف زرٍّ (نادر الاستعمال)؛ إن كان مُطبَّقاً فرقاقته تظهر بصفّ المعلومات أعلاه. */}
-        {!couponCode && (
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setCouponOpen(!couponOpen)}
-              className="inline-flex h-10 items-center gap-1 rounded-lg border-[1.5px] bg-card px-3 text-xs font-bold text-muted-foreground hover:bg-muted"
-            >
-              <Ticket aria-hidden className="size-3.5" /> كوبون
-            </button>
-            {couponOpen && (
-              <div className="absolute bottom-[calc(100%+4px)] end-0 z-30 w-56 rounded-lg border bg-card p-2 shadow-2xl" dir="rtl">
-                <div className="flex gap-1.5">
-                  <Input
-                    value={couponInput}
-                    onChange={(e) => setCouponInput(e.target.value)}
-                    placeholder="رمز الكوبون"
-                    className="h-9 flex-1 text-xs"
-                    dir="ltr"
-                    autoFocus
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyCoupon(); } }}
-                  />
-                  <button
-                    type="button"
-                    disabled={!couponInput.trim() || couponPending}
-                    onClick={applyCoupon}
-                    className="h-9 shrink-0 rounded-md border-[1.5px] border-primary px-3 text-xs font-bold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:border-border disabled:text-muted-foreground"
-                  >
-                    {couponPending ? "…" : "تطبيق"}
-                  </button>
-                </div>
+            <div className="ms-auto flex items-center gap-2">
+              <button
+                type="button"
+                disabled={cartEmpty || submitting || !hasShift}
+                onClick={() => onSubmit({ quickFullPay: false })}
+                title={
+                  submitting ? "جارٍ الإرسال…" :
+                  cartEmpty ? "أضف منتجاً أوّلاً" :
+                  !hasShift ? "افتح وردية استقبال أوّلاً" :
+                  "حفظ وتأكيد الطلب وإرساله للتنفيذ بالمطبعة"
+                }
+                className="inline-flex h-11 min-w-56 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              >
+                {submitting ? (
+                  "جارٍ الإرسال…"
+                ) : (
+                  <>
+                    <Check aria-hidden className="size-4" />
+                    <span>{sumDirect > 0 ? "حفظ وتأكيد الطلب (إرسال التخصيص للتنفيذ)" : "حفظ وتأكيد الطلب (إرسال للتنفيذ)"}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-lg border bg-card p-1">
+                <span className="px-2 text-xs font-bold text-muted-foreground">المدفوع:</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={displayPay}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setDisplayPay(val);
+                    try {
+                      const norm = normalizeNumberInput(val).normalized;
+                      setPayInput(norm);
+                    } catch {
+                      setPayInput(val);
+                    }
+                  }}
+                  className="h-8 w-24 rounded bg-transparent px-2 text-sm font-black tabular-nums outline-none focus:bg-accent/50"
+                  dir="ltr"
+                  placeholder="0"
+                />
+                <button
+                  type="button"
+                  onClick={payAll}
+                  className="rounded bg-muted px-2 py-1 text-xs font-bold text-muted-foreground hover:bg-primary/20 hover:text-primary"
+                >
+                  = الكل
+                </button>
               </div>
-            )}
-          </div>
-        )}
-        </>}
 
-        {/* ٢٣/٨ (بلاغ المالك): سلّةُ التخصيص الخالصة (لا بضاعة جاهزة ولا طباعة) لا تحتاج عربوناً —
-            الزبون يدفع عند الاستلام. الكاشير كان يظنّ زرّ «بدون عربون» المعطَّل يمنعه أصلاً، بينما
-            زرّ «إتمام الطلب» الرئيس يعمل مباشرةً. إفصاحٌ صريحٌ يقطع الحيرة. */}
-        {!deferred && !cartEmpty && sumDirect === 0 && sumCustom > 0 && paid === 0 && (
-          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">
-            <Check aria-hidden className="size-3" /> طلبٌ مخصّصٌ — لا حاجة لعربون · اضغط «إتمام الطلب» مباشرةً
-          </span>
-        )}
+              <div className="flex rounded-lg border bg-card p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setMethod("CASH")}
+                  className={cn("rounded-md px-2.5 py-1 text-xs font-bold transition-colors", method === "CASH" ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted")}
+                >
+                  نقدي
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMethod("CARD")}
+                  className={cn("rounded-md px-2.5 py-1 text-xs font-bold transition-colors", method === "CARD" ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted")}
+                >
+                  بطاقة
+                </button>
+              </div>
 
-        {/* زرّا الإتمام — يتّجهان لأقصى الشريط، جنباً إلى جنب، ثابتان دائماً (البار لا يُقصّ). */}
-        <div className="ms-auto flex items-center gap-2">
-          {/* ٢٣/٨: تلميحٌ ظاهرٌ على كلّ الأحجام (كان مخفياً على &lt;lg — وهي شاشات الكاشير اللوحيّة).
-              الاختصار سرٌّ قبيليٌّ لا معنى له إن لم يره الكاشير. */}
-          <span className="text-[9px] text-muted-foreground sm:text-[10px]">F4 دفع · F2 بحث</span>
-          {!deferred && (
-            <button
-              type="button"
-              disabled={cartEmpty || submitting || !hasShift}
-              onClick={() => onSubmit({ quickFullPay: true })}
-              title={
-                // ٢٣/٨ (بلاغ فحص UX): زرٌّ معطَّلٌ بلا شرحٍ يترك الكاشير محتاراً — `title` يعلن السبب.
-                submitting ? "جارٍ الإرسال…" :
-                cartEmpty ? "أضف منتجاً أوّلاً" :
-                !hasShift ? "افتح وردية استقبال أوّلاً" :
-                "تحصيل المطلوب الآن وطباعة (F4)"
-              }
-              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-            >
-              <Zap aria-hidden className="size-4" /> تحصيل المطلوب الآن وطباعة
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
-            onClick={() => onSubmit({ quickFullPay: false })}
-            title={
-              submitting ? "جارٍ الإرسال…" :
-              cartEmpty ? "أضف منتجاً أوّلاً" :
-              !hasShift ? "افتح وردية استقبال أوّلاً" :
-              (deferred && !deferredAvailable) ? "الآجل يحتاج عميلاً مرتبطاً بهاتفٍ عراقيّ" :
-              deferred ? "إتمام بدون عربون (يُسجَّل ذمّةً على العميل)" :
-              "إتمام الطلب وطباعة"
-            }
-            className="inline-flex h-11 min-w-48 items-center justify-center gap-1.5 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-          >
-            {submitting ? (
-              "جارٍ الإرسال…"
-            ) : deferred ? (
-              <><Printer aria-hidden className="size-4" /> إتمام بدون عربون وطباعة</>
-            ) : sumCustom > 0 && sumDirect > 0 ? (
-              <><Printer aria-hidden className="size-4" /> تثبيت البيع وإرسال الطباعة</>
-            ) : sumCustom > 0 ? (
-              <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
-            ) : (
-              <><Check aria-hidden className="size-4" /> إتمام الطلب وطباعة</>
-            )}
-          </button>
-        </div>
+              {deferredAvailable && (
+                <button
+                  type="button"
+                  onClick={() => setDeferred(!deferred)}
+                  className={cn("rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors", deferred ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "text-muted-foreground hover:bg-muted")}
+                >
+                  آجل (ذمّة)
+                </button>
+              )}
+            </div>
+
+            <div className="ms-auto flex items-center gap-2">
+              {!deferred && (
+                <button
+                  type="button"
+                  disabled={cartEmpty || submitting || !hasShift}
+                  onClick={() => onSubmit({ quickFullPay: true })}
+                  title="تحصيل المطلوب الآن وطباعة (F4)"
+                  className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+                >
+                  <Zap aria-hidden className="size-4" />
+                  <span>تحصيل المطلوب وطباعة</span>
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={cartEmpty || submitting || !hasShift || (deferred && !deferredAvailable)}
+                onClick={() => onSubmit({ quickFullPay: false })}
+                title="إتمام البيع المباشر"
+                className="inline-flex h-11 min-w-44 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              >
+                {submitting ? (
+                  "جارٍ الإرسال…"
+                ) : (
+                  <>
+                    <Check aria-hidden className="size-4" />
+                    <span>إتمام البيع المباشر</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

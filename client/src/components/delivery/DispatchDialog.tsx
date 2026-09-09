@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Truck, UserPlus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Truck, UserPlus } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,12 +53,13 @@ export interface DispatchConfirmArgs {
  * وُثِّقا عند إنشاء/تصنيف الأمر. الحقلان الآن قابلان للتحرير، ومُهيَّآن افتراضياً من بيانات الأمر
  * (اسم العميل + هاتف التوصيل الصريح أو هاتف العميل احتياطاً).
  */
-export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
+export function DispatchDialog({ order, parties, pending, onClose, onConfirm, onDirectHandover }: {
   order: DispatchableOrder | null;
   parties: DispatchParty[];
   pending: boolean;
   onClose: () => void;
   onConfirm: (args: DispatchConfirmArgs) => void;
+  onDirectHandover?: () => void;
 }) {
   const [partyId, setPartyId] = useState<string>("");
   const [fee, setFee] = useState<string>("0");
@@ -118,8 +119,31 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" dir="rtl" onClick={onClose}>
       <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}» لمندوب</h3>
+        <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}»</h3>
         <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.customerName ?? "عميل نقدي"}</p>
+
+        {onDirectHandover && (
+          <div className="mb-5 rounded-xl border-2 border-emerald-500/40 bg-emerald-500/10 p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-black text-emerald-800 dark:text-emerald-300">تسليم مباشر للزبون الآن</h4>
+                <p className="text-xs text-muted-foreground">الزبون حاضر في المحل · تحصيل نقدي فوري وإغلاق الأمر من اللوحة</p>
+              </div>
+              <Button
+                type="button"
+                variant="default"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-black shrink-0"
+                disabled={pending}
+                onClick={onDirectHandover}
+              >
+                <CheckCircle2 className="size-4 me-1.5" />
+                تسليم مباشر (نقدي)
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-2 text-xs font-bold text-muted-foreground">أو إسناد لشركة/مندوب توصيل:</div>
         <div className="mb-3 grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>

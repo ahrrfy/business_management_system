@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -1068,6 +1068,44 @@ export const workOrderRouter = router({
     }
     return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload, nextAction, nextActionReason };
   }),
+
+  getByNumber: workordersReadProcedure
+    .input(z.object({ orderNumber: z.string().trim().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+      const raw = input.orderNumber.trim();
+      const stripped = raw.replace(/^WO-/i, "");
+      const [row] = await db
+        .select({
+          id: workOrders.id,
+          orderNumber: workOrders.orderNumber,
+          title: workOrders.title,
+          status: workOrders.status,
+          salePrice: workOrders.salePrice,
+          deposit: workOrders.deposit,
+          customerId: workOrders.customerId,
+          customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+          deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          deliveryCost: workOrders.deliveryCost,
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
+          branchId: workOrders.branchId,
+        })
+        .from(workOrders)
+        .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .where(
+          or(
+            eq(workOrders.orderNumber, raw),
+            eq(workOrders.orderNumber, `WO-${stripped}`),
+            eq(workOrders.orderNumber, stripped),
+            like(workOrders.orderNumber, `%${stripped}%`)
+          )
+        )
+        .limit(1);
+      return row ?? null;
+    }),
 
   /**
    * الموظفون المتاحون للإسناد (أسماء+أدوار فقط) — لاختيار المنفّذ عند إنشاء الأمر وللوحة التفاصيل.
