@@ -67,6 +67,7 @@ export function StudioCaptureStation({
       setCode("");
       setScanError("");
       setLinkAllowed(false);
+      setCameraOpen(false);
       onClaimed({
         taskId: result.taskId,
         productName: result.productName,
@@ -311,8 +312,7 @@ export function StudioCaptureStation({
             open
             onClose={() => setCameraOpen(false)}
             onDetect={(barcode) => {
-              // انتهت خطوة المسح: أظهر المنتج أو رسالة الحلّ وأخلِ الكاميرا للتصوير.
-              setCameraOpen(false);
+              // تبقى الكاميرا مفتوحة إن رفض الخادم الرمز؛ لا تُغلق إلا بعد نجاح المطالبة أعلاه.
               submitCode(barcode);
             }}
           />

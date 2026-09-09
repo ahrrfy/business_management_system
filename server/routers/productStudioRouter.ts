@@ -291,7 +291,7 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx), input)),
+    .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx), { ...input, requireBarcodeVerification: true })),
   bindProcessingProof: productStudioWriteProcedure
     .input(
       z.object({
@@ -302,10 +302,10 @@ export const productStudioRouter = router({
         expectedRevision: expectedRevision.optional(),
       }),
     )
-    .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), input)),
+    .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), { ...input, requireBarcodeVerification: true })),
   reserveImages: productStudioWriteProcedure
     .input(z.object({ taskId, count: z.number().int().min(1).max(10), adminOverrideReason }))
-    .mutation(({ ctx, input }) => reserveStudioImageTasks(actor(ctx), input)),
+    .mutation(({ ctx, input }) => reserveStudioImageTasks(actor(ctx), { ...input, requireBarcodeVerification: true })),
   submitCandidate: productStudioWriteProcedure
     .input(
       z.object({
@@ -322,7 +322,7 @@ export const productStudioRouter = router({
         expectedRevision,
       }),
     )
-    .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx), input)),
+    .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx), { ...input, requireBarcodeVerification: true })),
   approve: productStudioManagerProcedure.input(z.object({ taskId, adminOverrideReason, expectedRevision })).mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId, input.adminOverrideReason, input.expectedRevision)),
   reject: productStudioManagerProcedure
     .input(

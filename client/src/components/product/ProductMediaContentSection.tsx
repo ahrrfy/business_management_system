@@ -19,7 +19,7 @@ interface Props {
   title?: string;
   hint?: string;
   onOriginalCaptured?: (dataUrl: string) => void;
-  onStudioModeChange?: (mode: "FLATTEN" | "CUT" | "AI") => void;
+  onStudioModeChange?: (mode: "FLATTEN" | "CUT") => void;
   studioTaskId?: number;
   onProcessingReceiptChange?: (receipt: string | null) => void;
   onStudioBusyChange?: (busy: boolean) => void;
@@ -28,6 +28,7 @@ interface Props {
   offline?: boolean;
   /** المنتج موجود في القاعدة ويمكن إنشاء مهمة له فوراً. */
   productExists?: boolean;
+  captureOnly?: boolean;
 }
 
 /** القسم الموحّد للصور والمحتوى في الإنشاء والتعديل ومركز الاستوديو. */
@@ -49,6 +50,7 @@ export function ProductMediaContentSection({
   adminOverrideReason,
   offline = false,
   productExists = false,
+  captureOnly = false,
 }: Props) {
   const capturedIds = useRef(new Set<string>());
   function handleImages(next: ImageItem[]) {
@@ -76,7 +78,7 @@ export function ProductMediaContentSection({
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="space-y-1.5">
+        {!captureOnly && <div className="space-y-1.5">
           <Label htmlFor="product-media-description">الوصف الواضح للمنتج</Label>
           <Textarea
             id="product-media-description"
@@ -86,8 +88,8 @@ export function ProductMediaContentSection({
             maxLength={5_000}
             placeholder="المواصفات، الاستخدام، وما يحتاج الزبون معرفته قبل الشراء"
           />
-        </div>
-        {onMarketingCopyChange && (
+        </div>}
+        {!captureOnly && onMarketingCopyChange && (
           <div className="space-y-1.5">
             <Label htmlFor="product-media-marketing">النص الترويجي</Label>
             <Textarea

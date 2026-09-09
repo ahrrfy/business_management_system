@@ -212,7 +212,7 @@ function isPendingProcessingReceipt(marker: string | null): boolean {
   return typeof marker === "string" && /^[IP][0-9a-f]{63}$/.test(marker);
 }
 
-function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null }, adminOverrideReason?: string | null): string | null {
+function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null; barcodeVerifiedBy?: number | null }, adminOverrideReason?: string | null, requireBarcodeVerification = false): string | null {
   if (!canCrossBranches(actor) && (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId))) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -223,7 +223,10 @@ function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: nu
       }),
     });
   }
-  if (Number(task.assignedTo) === actor.userId) return null;
+  if (Number(task.assignedTo) === actor.userId) {
+    if (requireBarcodeVerification && !isManager(actor) && Number(task.barcodeVerifiedBy) !== actor.userId) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يمكن بدء تصوير هذه المهمة بعد", why: "لم يُؤكّد الخادم مسح باركود المنتج لهذه المهمة", doThis: "امسح باركود المنتج من محطة التصوير ثم ابدأ الالتقاط" }) });
+    return null;
+  }
   const reason = cleanAdminOverrideReason(adminOverrideReason);
   if (!isAdminActor(actor) || !reason) {
     throw new TRPCError({
@@ -948,6 +951,8 @@ async function claimFreshCampaignTask(
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         createdBy: actor.userId,
         // يبقى ordinal الصورة ثابتاً طوال المهمة، ثم يُستخدم لترتيب النشر حتى لو
         // اكتملت صورة سابقة وعاد المنتج إلى الطابور لجولة تالية.
@@ -1013,7 +1018,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? null
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1024,7 +1029,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? undefined
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1038,6 +1043,9 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
       return claimFreshCampaignTask(tx, actor, resolved);
     }
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(active.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لا يُفتح للتصوير الآن`, why: active.status === "PENDING_REVIEW" ? "صوره أُرسلت للاعتماد وتنتظر قرار المراجع" : "المهمة مغلقة ولا يجوز إعادتها إلى التصوير بالمسح", doThis: "انتقل إلى المنتج التالي، أو راجع المدير إذا كانت الحالة تحتاج إجراءً إدارياً" }) });
+    }
     // ترقيةُ variantId قبل الرجوع «لصاحبها»: إن كان المدير أسنَد مهمّةً مستوى-أمّ
     // (variantId=NULL) إلى المصوّر ثمّ مسح المصوّرُ باركود بديلٍ محدَّد، الصورةُ يجب أن
     // تذهب لذاك البديل. بلا هذه الترقية كانت المهمّةُ تُغلَق مبكّراً بـ«صاحبها» ثمّ الاعتماد
@@ -1045,7 +1053,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (variantId != null && active.variantId == null && Number(active.assignedTo) === actor.userId) {
       await tx
         .update(productImageJobs)
-        .set({ variantId, revision: sql`${productImageJobs.revision} + 1` })
+        .set({ variantId, barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` })
         .where(eq(productImageJobs.id, active.id));
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
@@ -1053,6 +1061,10 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (Number(active.assignedTo) === actor.userId) {
+      if (Number(active.barcodeVerifiedBy) !== actor.userId) {
+        await tx.update(productImageJobs).set({ barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` }).where(eq(productImageJobs.id, active.id));
+        return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+      }
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
@@ -1097,6 +1109,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
             assignedTo: actor.userId,
             assignedBy: actor.userId,
             assignedAt: new Date(),
+            barcodeVerifiedBy: actor.userId,
+            barcodeVerifiedAt: new Date(),
             ...(upgradeVariant ? { variantId } : {}),
             revision: sql`${productImageJobs.revision} + 1`,
           })
@@ -1176,6 +1190,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         ...(upgradeVariant ? { variantId } : {}),
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -3649,6 +3665,8 @@ export async function assignStudioTask(
           assignedTo: input.assigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
           // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
@@ -3900,6 +3918,8 @@ export async function bulkAssignStudioTasks(
               assignedTo: input.assigneeId,
               assignedBy: actor.userId,
               assignedAt: new Date(),
+              barcodeVerifiedBy: null,
+              barcodeVerifiedAt: null,
               sourceProductHash: productContentHash(product),
               // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
               // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
@@ -4025,6 +4045,8 @@ export async function reassignStudioTask(
         assignedTo: input.newAssigneeId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: null,
+        barcodeVerifiedAt: null,
         sourceProductHash: product ? productContentHash(product) : null,
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -4111,6 +4133,8 @@ export async function bulkReassignStudioTasks(
           assignedTo: input.newAssigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           sourceProductHash: product ? productContentHash(product) : null,
           revision: sql`${productImageJobs.revision} + 1`,
         })
@@ -4232,12 +4256,16 @@ export async function saveStudioDraft(
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerCaptureOnly = input.requireBarcodeVerification === true && !isManager(actor);
+    const photographerContentAttempt = photographerCaptureOnly && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4271,9 +4299,9 @@ export async function saveStudioDraft(
     await tx
       .update(productImageJobs)
       .set({
-        proposedName: input.proposedName?.trim() || null,
-        proposedDescription: input.proposedDescription?.trim() || null,
-        proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
+        proposedName: photographerCaptureOnly ? task.proposedName : input.proposedName?.trim() || null,
+        proposedDescription: photographerCaptureOnly ? task.proposedDescription : input.proposedDescription?.trim() || null,
+        proposedMarketingCopy: photographerCaptureOnly ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
         status: "IN_PROGRESS",
         activeSlot: task.activeSlot,
         // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
@@ -4300,11 +4328,11 @@ export async function saveStudioDraft(
  * نشطة مسندة إليه في فرعه؛ لا مسار مباشر للمدير خارج المهمة، وتُعاد مراجعة المهمة تحت قفل عند
  * إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
  */
-export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
+export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null, requireBarcodeVerification = false): Promise<string> {
   const authorization = randomUUID();
   await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason, requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4426,6 +4454,7 @@ export async function bindStudioProcessingCandidate(
     processingReceipt: string;
     candidateDataUrl: string;
     adminOverrideReason?: string | null;
+    requireBarcodeVerification?: boolean;
     /**
      * تحقّقٌ متفائل: كلّ كاتبٍ آخر (`saveDraft`/`updateSchedule`/`submitCandidate`/…)
      * يُلزم `expectedRevision`؛ غيابُه هنا كان يجعل هذا المسار **الوحيد** الذي يقبل
@@ -4440,7 +4469,7 @@ export async function bindStudioProcessingCandidate(
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     if (input.expectedRevision !== undefined) assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4638,10 +4667,11 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
   taskId: number;
   count: number;
   adminOverrideReason?: string | null;
+  requireBarcodeVerification?: boolean;
 }) {
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
     if (!task.productId || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status) ||
         !Number.isInteger(input.count) || input.count < 1 || input.count > MAX_REQUIRED_IMAGES) {
       throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
@@ -4730,13 +4760,16 @@ export async function submitStudioCandidate(
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   const token = randomUUID();
   const lease = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerContentAttempt = input.requireBarcodeVerification === true && !isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
     assertStoragePolicy();
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
@@ -4813,7 +4846,7 @@ export async function submitStudioCandidate(
     const result = await withStudioTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
       assertExpectedRevision(task, input.expectedRevision);
-      assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+      assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
       if (task.uploadLeaseToken !== token || !task.uploadLeaseExpiresAt || task.uploadLeaseExpiresAt <= new Date() || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
         throw new TRPCError({
           code: "CONFLICT",

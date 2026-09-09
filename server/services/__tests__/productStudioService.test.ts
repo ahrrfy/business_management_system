@@ -886,6 +886,15 @@ describe("product studio governed workflow", () => {
     expect(stored?.dueAt?.toISOString()).toBe("2026-08-20T09:00:00.000Z");
   });
 
+  it("limits a barcode-gated photographer to image work without clearing catalog content", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await db().update(s.productImageJobs).set({ barcodeVerifiedBy: worker.userId, barcodeVerifiedAt: new Date(), proposedDescription: "محتوى المدير محفوظ" }).where(eq(s.productImageJobs.id, taskId));
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true, proposedDescription: "تعديل مصوّر غير مسموح" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("لا يحرّر المصوّر") });
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true })).resolves.toMatchObject({ ok: true });
+    const [stored] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(stored?.proposedDescription).toBe("محتوى المدير محفوظ");
+  });
+
   it("rolls back an entire bulk assignment when any product already has an active task", async () => {
     await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
     await assignStudioTask(manager, {
@@ -955,9 +964,11 @@ describe("product studio governed workflow", () => {
     expect(firstPage.items).toHaveLength(50);
     expect(firstPage.items.some((task) => Number(task.id) === 100)).toBe(false);
     const claimed = await claimStudioProductByBarcode(worker, "SCAN-OLD-100");
-    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 1 });
+    // المسح يثبت أن المصوّر الذي فُتحت له المهمة هو من يملك الباركود فعلاً؛
+    // لهذا يرفع revision مرةً واحدة حتى للمهمة المسندة له مسبقاً.
+    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 2 });
     const exact = await listStudioTasks(worker, { scope: "MINE", taskId: claimed.taskId, limit: 1 });
-    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 1 }]);
+    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 2 }]);
     expect(exact.nextCursor).toBeNull();
     expect((await listStudioTasks(otherWorker, { scope: "MINE", taskId: 100 })).items).toEqual([]);
     expect((await listStudioTasks(managerTwo, { scope: "QUEUE", taskId: 100 })).items).toEqual([]);

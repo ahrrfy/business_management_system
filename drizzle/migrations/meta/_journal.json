@@ -2185,6 +2185,13 @@
 			"when": 1788052410000,
 			"tag": "0337_add_job_applicant_profile_fields",
 			"breakpoints": true
+		},
+		{
+			"idx": 338,
+			"version": "5",
+			"when": 1788052411000,
+			"tag": "0338_product_studio_barcode_gate",
+			"breakpoints": true
 		}
 	]
 }
