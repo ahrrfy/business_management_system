@@ -29,6 +29,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: حارِس مبكر لإعداد Firebase ومفاتيح Google المتتبعة
+        run: node scripts/check-firebase-config-security.mjs
       - id: classify
         name: تصنيف نطاق التغيير (docs/** فقط = مسار سريع)
         env:
@@ -310,6 +312,8 @@ jobs:
         run: pnpm check:row-attribution
       - name: حارِس ازدواج حقل البحث (DataTable + ListToolbar معاً)
         run: pnpm check:duplicate-search
+      - name: حارِس إعداد Firebase ومفاتيح Google في الملفات المتتبعة
+        run: pnpm check:firebase-config-security
       - name: ESLint (قواعد الخطّافات — يمنع خطّافاً بعد رجوعٍ مبكّر)
         run: pnpm check:lint
       - name: حارِس تسجيل الحرّاس في CI (يمنع حارساً في aggregate بلا خطوة)

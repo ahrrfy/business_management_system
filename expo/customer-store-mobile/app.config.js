@@ -59,6 +59,13 @@ const env = {
   androidPackage: bundleId,
 };
 
+// ملفات Firebase لا تُتبع في Git. في EAS تُمرر كمتغيرات من نوع file،
+// بينما يبقى المسار المحلي المتجاهَل مناسباً للتطوير على جهاز المطور.
+const firebaseConfigFiles = {
+  ios: process.env.GOOGLE_SERVICE_INFO_PLIST || "./GoogleService-Info.plist",
+  android: process.env.GOOGLE_SERVICES_JSON || "./google-services.json",
+};
+
 /** @type {import('expo/config').ExpoConfig} */
 const config = {
   name: env.appName,
@@ -72,13 +79,13 @@ const config = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    googleServicesFile: "./GoogleService-Info.plist",
+    googleServicesFile: firebaseConfigFiles.ios,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
-    googleServicesFile: "./google-services.json",
+    googleServicesFile: firebaseConfigFiles.android,
     adaptiveIcon: {
       backgroundColor: "#FFF8F2",
       foregroundImage: "./assets/images/android-icon-foreground.png",

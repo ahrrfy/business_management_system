@@ -33,6 +33,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Verify Firebase config stays out of source control
+        run: node ../../scripts/check-firebase-config-security.mjs
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
