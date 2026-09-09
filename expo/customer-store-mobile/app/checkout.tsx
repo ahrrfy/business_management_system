@@ -115,9 +115,11 @@ export default function CheckoutScreen() {
       );
       setQuote(nextQuote);
       setCouponFeedback(
-        nextQuote.couponCode
+        nextQuote.pricingBenefitType === "COUPON"
           ? `تم تطبيق ${nextQuote.couponProgramName ?? "الكوبون"} وخصم ${formatIqd(nextQuote.couponDiscount)}`
-          : null,
+          : nextQuote.couponSuperseded
+            ? `${nextQuote.pricingBenefitLabel ?? "المنفعة التلقائية"} أوفر لك، لذلك لم يُستخدم الكوبون.`
+            : null,
       );
     } catch (reason) {
       const message = classifyNetworkError(reason).message;
@@ -400,10 +402,20 @@ export default function CheckoutScreen() {
               <Text style={styles.quoteTitle}>مراجعة السعر النهائي</Text>
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteValue}>
-                  {formatIqd(quote.subtotal)}
+                  {formatIqd(quote.retailSubtotal)}
                 </Text>
-                <Text style={styles.quoteLabel}>المنتجات</Text>
+                <Text style={styles.quoteLabel}>المنتجات قبل المنفعة</Text>
               </View>
+              {Number(quote.pricingBenefitDiscount) > 0 && (
+                <View style={styles.quoteRow}>
+                  <Text style={styles.discountValue}>
+                    - {formatIqd(quote.pricingBenefitDiscount)}
+                  </Text>
+                  <Text style={styles.quoteLabel}>
+                    {quote.pricingBenefitLabel ?? "المنفعة الأفضل لك"}
+                  </Text>
+                </View>
+              )}
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteValue}>
                   {formatIqd(quote.deliveryFee)}
@@ -412,23 +424,13 @@ export default function CheckoutScreen() {
                   التوصيل إلى {governorateName}
                 </Text>
               </View>
-              {Number(quote.couponDiscount) > 0 && (
-                <View style={styles.quoteRow}>
-                  <Text style={styles.discountValue}>
-                    - {formatIqd(quote.couponDiscount)}
-                  </Text>
-                  <Text style={styles.quoteLabel}>
-                    {quote.couponProgramName ?? "خصم الكوبون"}
-                  </Text>
-                </View>
-              )}
               <View style={styles.quoteDivider} />
               <View style={styles.quoteRow}>
                 <Text style={styles.finalValue}>{formatIqd(quote.total)}</Text>
                 <Text style={styles.finalLabel}>الإجمالي النهائي</Text>
               </View>
               <Text style={styles.quoteNote}>
-                هذه القيم محسوبة من نظام المكتبة الآن، وستثبت عند تأكيد الطلب.
+                هذه القيم محسوبة من نظام المكتبة الآن. سنرسل طلبك للمراجعة، ولا يُعد مؤكداً حتى يعتمدَه موظف المكتبة.
               </Text>
               <View style={styles.codRow}>
                 <MaterialIcons color="#0C5A4B" name="payments" size={18} />
@@ -453,7 +455,7 @@ export default function CheckoutScreen() {
           )}
           <TouchableOpacity
             accessibilityLabel={
-              quote ? "تأكيد وإرسال الطلب" : "مراجعة السعر النهائي"
+              quote ? "إرسال الطلب للمراجعة" : "مراجعة السعر النهائي"
             }
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting, busy: submitting }}
@@ -466,8 +468,8 @@ export default function CheckoutScreen() {
               {submitting
                 ? "جار تحديث الطلب…"
                 : quote
-                  ? "تأكيد وإرسال الطلب"
-                  : "مراجعة السعر النهائي"}
+                ? "إرسال الطلب للمراجعة"
+                : "مراجعة السعر النهائي"}
             </Text>
             {submitting ? (
               <ActivityIndicator color="#FFFFFF" size="small" />

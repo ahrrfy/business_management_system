@@ -21,12 +21,15 @@ import {
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
 import {
   createOnlineOrder,
+  cancelOnlineOrderByGuestToken,
+  cancelOnlineOrderForCustomer,
   findOwnedOnlineOrderReplay,
   quoteOnlineOrder,
   readOnlineOrderLabel,
   trackOnlineOrderByGuestToken,
   trackOnlineOrderForCustomer,
 } from "../services/onlineOrderService";
+import { createStorefrontQuoteRequest } from "../services/storefrontQuoteRequestService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
@@ -338,6 +341,35 @@ export const storefrontRouter = router({
       return result;
     }),
 
+  /** مسار الشركات/الكميات/الطباعة: استفسار فقط، بلا حجز مخزون أو سعر أو فاتورة. */
+  createQuoteRequest: storefrontPublicWriteProcedure
+    .input(
+      z.object({
+        customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
+        customerName: z.string().trim().min(1).max(255),
+        customerPhone: z.string().trim().min(5).max(20),
+        companyName: z.string().trim().max(255).nullish(),
+        governorate: z.string().trim().max(40).nullish(),
+        contactPreference: z.enum(["PHONE", "WHATSAPP"]),
+        requestType: z.enum(["BULK", "CUSTOM_PRINT", "BUSINESS", "GENERAL"]),
+        note: z.string().trim().min(5).max(2_000),
+        clientRequestId: z.string().trim().min(8).max(80),
+        lines: z.array(
+          z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive().max(10_000),
+          }),
+        ).min(1).max(30),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { customerSessionToken, ...request } = input;
+      const authenticatedCustomer = customerSessionToken
+        ? await requireActiveStorefrontCustomer(customerSessionToken)
+        : null;
+      return createStorefrontQuoteRequest({ ...request, authenticatedCustomer });
+    }),
+
   /** تتبّع مالك موثّق؛ رقم الطلب selector فقط وcustomerId يأتي من جلسة Firebase الموقعة. */
   trackOrderPrivate: storefrontPublicWriteProcedure
     .input(z.object({
@@ -353,6 +385,22 @@ export const storefrontRouter = router({
   trackOrderByToken: storefrontPublicWriteProcedure
     .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
     .mutation(({ input }) => trackOnlineOrderByGuestToken(input.trackingToken)),
+
+  /** الإلغاء الذاتي يحمي العميل قبل أن يعتمد الموظف الطلب فقط؛ لا يسمح بتخطي دورة التجهيز. */
+  cancelOrderPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      orderNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return cancelOnlineOrderForCustomer(input.orderNumber, customer.customerId);
+    }),
+
+  /** الضيف لا يقدّم رقم طلب قابل للتخمين؛ رمز تتبّعه الموقّع هو الصلاحية الوحيدة للإلغاء. */
+  cancelOrderByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => cancelOnlineOrderByGuestToken(input.trackingToken)),
 
   /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
   labelSummary: labelSummaryProcedure

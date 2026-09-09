@@ -63,6 +63,10 @@ import {
   scheduleStorefrontPushCampaign,
 } from "../services/storeAdmin/storefrontPushCampaignService";
 import { listStorefrontProductReviewsForAdmin, moderateStorefrontProductReview } from "../services/storeAdmin/storefrontProductReviewAdminService";
+import {
+  listStorefrontQuoteRequests,
+  updateStorefrontQuoteRequestStatus,
+} from "../services/storeAdmin/storefrontQuoteRequestAdminService";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -524,6 +528,41 @@ const reviewsRouter = router({
   }),
 });
 
+/** وارد مبيعات الشركات/الكميات والطباعة؛ يتحول بعد المراجعة إلى quotation الرسمي لا تلقائياً. */
+const quoteRequestsRouter = router({
+  list: storeReadProcedure
+    .input(z.object({
+      status: z.enum(["PENDING", "CONTACTED", "QUOTED", "CLOSED", "CANCELLED"]).nullish(),
+      limit: z.number().int().min(1).max(300).nullish(),
+    }).optional())
+    .query(({ input, ctx }) =>
+      listStorefrontQuoteRequests({
+        scopedBranchId: actorScopedBranch(ctx.user),
+        status: input?.status ?? null,
+        limit: input?.limit ?? undefined,
+      }),
+    ),
+  setStatus: storeFulfillProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      status: z.enum(["PENDING", "CONTACTED", "QUOTED", "CLOSED", "CANCELLED"]),
+      staffNote: z.string().trim().max(2_000).nullish(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await updateStorefrontQuoteRequestStatus({
+        ...input,
+        scopedBranchId: actorScopedBranch(ctx.user),
+      });
+      await logAudit(ctx, {
+        action: "store.quote_request.set_status",
+        entityType: "storefrontQuoteRequest",
+        entityId: input.requestId,
+        newValue: { status: input.status },
+      });
+      return result;
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -536,4 +575,5 @@ export const storeAdminRouter = router({
   loyalty: loyaltyRouter,
   notifications: notificationsRouter,
   reviews: reviewsRouter,
+  quoteRequests: quoteRequestsRouter,
 });

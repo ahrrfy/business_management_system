@@ -61,6 +61,9 @@ export type OnlineOrderTracking = {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   deliveryFee: string;
   deliveryFree?: boolean;
   deliveryWaivedAmount?: string;
@@ -84,6 +87,10 @@ export type StorefrontOrderQuote = {
   couponCode: string | null;
   couponProgramName: string | null;
   couponDiscount: string;
+  pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
+  couponSuperseded: boolean;
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -93,6 +100,7 @@ export type StorefrontOrderQuote = {
     unitPrice: string;
     lineTotal: string;
   }>;
+  retailSubtotal: string;
   subtotal: string;
   deliveryFee: string;
   total: string;
@@ -181,6 +189,23 @@ export type CreateStorefrontOrderInput = {
   clientRequestId: string;
   turnstileToken: string;
   customerSessionToken?: string;
+};
+export type CreateStorefrontQuoteRequestInput = {
+  customerName: string;
+  customerPhone: string;
+  companyName?: string;
+  governorate?: string;
+  contactPreference: "PHONE" | "WHATSAPP";
+  requestType: "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
+  note: string;
+  clientRequestId: string;
+  customerSessionToken?: string;
+  lines: Array<{ productUnitId: number; quantity: number }>;
+};
+export type StorefrontQuoteRequestResult = {
+  requestId: number;
+  requestNumber: string;
+  idempotentReplay: boolean;
 };
 
 export type ApiProduct = {
@@ -729,6 +754,32 @@ export function trackStorefrontOrder(input: SecureTrackingInput) {
   return storefrontMutation<OnlineOrderTracking | null>(request.procedure, request.input);
 }
 
+/** يختار مسار الإلغاء بنفس دليل الملكية المستخدم للتتبّع؛ لا يُرسل رقم الطلب وحده للضيف. */
+export function secureOrderCancellationRequest(input: SecureTrackingInput) {
+  const orderNumber = input.orderNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return {
+      procedure: "storefront.cancelOrderByToken" as const,
+      input: { trackingToken: input.guestTrackingToken },
+    };
+  }
+  if (input.customerSessionToken) {
+    return {
+      procedure: "storefront.cancelOrderPrivate" as const,
+      input: { customerSessionToken: input.customerSessionToken, orderNumber },
+    };
+  }
+  throw new Error("لا توجد صلاحية محفوظة لإلغاء هذا الطلب. تحقق من هاتفك أو استخدم الجهاز الذي أُنشئ منه الطلب.");
+}
+
+export function cancelStorefrontOrder(input: SecureTrackingInput) {
+  const request = secureOrderCancellationRequest(input);
+  return storefrontMutation<{ orderNumber: string; status: "CANCELLED" }>(
+    request.procedure,
+    request.input,
+  );
+}
+
 export function quoteStorefrontOrder(
   governorate: string,
   lines: Array<{ productUnitId: number; quantity: number }>,
@@ -758,6 +809,14 @@ export function createStorefrontOrder(input: CreateStorefrontOrderInput) {
   // الكتابة لا يعاد إرسالها تلقائياً؛ معرف المحاولة يضمن الاسترداد الآمن إن انقطعت الاستجابة.
   return storefrontMutation<StorefrontOrderResult>(
     "storefront.createOrder",
+    input,
+  );
+}
+
+/** طلب مبيعات بلا تسعير أو حجز؛ العرض الرسمي يصدره الموظف بعد مراجعة التوفر والتخصيص. */
+export function createStorefrontQuoteRequest(input: CreateStorefrontQuoteRequestInput) {
+  return storefrontMutation<StorefrontQuoteRequestResult>(
+    "storefront.createQuoteRequest",
     input,
   );
 }

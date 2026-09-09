@@ -2,7 +2,10 @@
   "consumer": "customer-store-mobile",
   "purpose": "عقد الإجراءات التي يستهلكها تطبيق مكتبة العربية الأصلي، وهو مشروع Expo مستقل عن لوحة الإدارة.",
   "procedures": [
+    "storefront.cancelOrderByToken",
+    "storefront.cancelOrderPrivate",
     "storefront.claimFirebaseCustomer",
+    "storefront.createQuoteRequest",
     "storefront.customerBenefits",
     "storefront.createWishlistShare",
     "storefront.getWishlistShare",

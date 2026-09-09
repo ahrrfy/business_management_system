@@ -3,6 +3,8 @@ import { useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,9 +19,11 @@ import { loadRecentOrders, type RecentStorefrontOrder } from "@/lib/recent-order
 import {
   formatIqd,
   formatLatinNumber,
+  cancelStorefrontOrder,
   classifyNetworkError,
   trackStorefrontOrder,
   type OnlineOrderTracking,
+  useStorefrontSettings,
 } from "@/lib/storefront-api";
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
@@ -36,6 +40,7 @@ function firstParam(value: string | string[] | undefined): string {
 }
 
 export default function OrdersScreen() {
+  const settings = useStorefrontSettings();
   const params = useLocalSearchParams<{ orderNumber?: string | string[] }>();
   const requestedOrderNumber = firstParam(params.orderNumber).toUpperCase();
   const [orderNumber, setOrderNumber] = useState(requestedOrderNumber);
@@ -43,6 +48,8 @@ export default function OrdersScreen() {
   const [tracking, setTracking] = useState<OnlineOrderTracking | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
   const [trackingLoading, setTrackingLoading] = useState(false);
+  const [cancelPrompt, setCancelPrompt] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     void loadRecentOrders()
@@ -52,6 +59,7 @@ export default function OrdersScreen() {
         setOrderNumber(requestedOrderNumber);
         setTracking(null);
         setTrackingError(null);
+        setCancelPrompt(false);
       })
       .catch(() => undefined);
   }, [requestedOrderNumber]);
@@ -65,6 +73,7 @@ export default function OrdersScreen() {
     setTrackingLoading(true);
     setTracking(null);
     setTrackingError(null);
+    setCancelPrompt(false);
     try {
       const normalizedOrderNumber = orderNumber.trim().toUpperCase();
       const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
@@ -85,6 +94,55 @@ export default function OrdersScreen() {
     } finally {
       setTrackingLoading(false);
     }
+  };
+
+  const cancelPendingOrder = async () => {
+    if (!tracking || tracking.status !== "PENDING" || cancelling) return;
+    setCancelling(true);
+    setTrackingError(null);
+    try {
+      const normalizedOrderNumber = tracking.orderNumber.trim().toUpperCase();
+      const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
+      const session = await loadVerifiedCustomerSession();
+      const guestTrackingToken = recent?.guestTrackingToken &&
+        (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
+        ? recent.guestTrackingToken
+        : null;
+      const result = await cancelStorefrontOrder({
+        orderNumber: normalizedOrderNumber,
+        customerSessionToken: session?.token,
+        guestTrackingToken,
+      });
+      setTracking((current) =>
+        current?.orderNumber === result.orderNumber
+          ? { ...current, status: result.status }
+          : current,
+      );
+      setCancelPrompt(false);
+    } catch (reason) {
+      setTrackingError(classifyNetworkError(reason).message);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const openOrderSupport = async () => {
+    if (!tracking) return;
+    const number = settings?.whatsappNumber?.replace(/\D/g, "");
+    if (!number) {
+      Alert.alert(
+        "التواصل مع المكتبة",
+        "ستظهر وسيلة التواصل هنا عند ضبطها من إدارة المتجر.",
+      );
+      return;
+    }
+    // رقم الطلب سياقٌ تشغيلي ظاهر بالفعل لمالكه؛ لا نضع رمز الجلسة أو رمز التتبع في رابط WhatsApp.
+    const message = encodeURIComponent(
+      `مرحباً، أحتاج مساعدة أو طلب تعديل للطلب ${tracking.orderNumber}.`,
+    );
+    const url = `https://wa.me/${number}?text=${message}`;
+    if (await Linking.canOpenURL(url)) await Linking.openURL(url);
+    else Alert.alert("تعذّر فتح WhatsApp", "تأكد من وجود WhatsApp على جهازك ثم حاول مرة أخرى.");
   };
 
   return (
@@ -195,6 +253,11 @@ export default function OrdersScreen() {
             <Text style={styles.liveMeta}>
               المجموع: {formatIqd(tracking.total)}
             </Text>
+            {Number(tracking.pricingBenefitDiscount) > 0 && (
+              <Text style={styles.liveMeta}>
+                وفّرت {formatIqd(tracking.pricingBenefitDiscount)} عبر {tracking.pricingBenefitLabel ?? "المنفعة الأفضل"}
+              </Text>
+            )}
             {tracking.deliveryFree && <Text style={styles.liveMeta}>التوصيل: مجاني ضمن العرض</Text>}
             <Text style={styles.liveMeta}>
               عدد المنتجات: {formatLatinNumber(tracking.items.length)}
@@ -210,6 +273,68 @@ export default function OrdersScreen() {
                 </View>
               ))}
             </View>
+            {tracking.status === "PENDING" && (
+              <View style={styles.cancelPanel}>
+                {!cancelPrompt ? (
+                  <TouchableOpacity
+                    accessibilityLabel="إلغاء الطلب قبل تأكيد المكتبة"
+                    accessibilityRole="button"
+                    activeOpacity={0.84}
+                    disabled={cancelling}
+                    onPress={() => setCancelPrompt(true)}
+                    style={styles.cancelOutline}
+                  >
+                    <MaterialIcons color="#A34840" name="cancel" size={17} />
+                    <Text style={styles.cancelOutlineText}>إلغاء الطلب قبل التأكيد</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View>
+                    <Text style={styles.cancelPromptText}>
+                      هل تريد إلغاء الطلب؟ سيُحرر الحجز والكوبون إن وُجد، ولا يمكن التراجع من التطبيق.
+                    </Text>
+                    <View style={styles.cancelActions}>
+                      <TouchableOpacity
+                        accessibilityLabel="الاحتفاظ بالطلب"
+                        accessibilityRole="button"
+                        activeOpacity={0.84}
+                        disabled={cancelling}
+                        onPress={() => setCancelPrompt(false)}
+                        style={styles.keepButton}
+                      >
+                        <Text style={styles.keepButtonText}>الاحتفاظ بالطلب</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        accessibilityLabel="تأكيد إلغاء الطلب"
+                        accessibilityRole="button"
+                        activeOpacity={0.84}
+                        disabled={cancelling}
+                        onPress={() => void cancelPendingOrder()}
+                        style={[styles.cancelButton, cancelling && styles.cancelButtonDisabled]}
+                      >
+                        {cancelling ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.cancelButtonText}>نعم، ألغِ الطلب</Text>}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+            {tracking.status !== "PENDING" && tracking.status !== "CANCELLED" && (
+              <View style={styles.supportPanel}>
+                <Text style={styles.supportHint}>
+                  للتعديل أو الإلغاء بعد التأكيد، يراجع فريق المكتبة طلبك قبل أي تغيير في السعر أو المحتوى.
+                </Text>
+                <TouchableOpacity
+                  accessibilityLabel={`طلب مساعدة للطلب ${tracking.orderNumber}`}
+                  accessibilityRole="button"
+                  activeOpacity={0.84}
+                  onPress={() => void openOrderSupport()}
+                  style={styles.supportButton}
+                >
+                  <MaterialIcons color="#0C5A4B" name="support-agent" size={17} />
+                  <Text style={styles.supportButtonText}>طلب تعديل أو مساعدة</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
         <View style={styles.note}>
@@ -365,6 +490,20 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   statusText: { color: "#0C5A4B", fontSize: 10, fontWeight: "800" },
+  cancelPanel: { borderTopColor: "#CDE0D5", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  cancelOutline: { alignItems: "center", borderColor: "#D9938A", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
+  cancelOutlineText: { color: "#A34840", fontSize: 12, fontWeight: "900" },
+  cancelPromptText: { color: "#71443E", fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
+  cancelActions: { flexDirection: "row-reverse", gap: 8, marginTop: 10 },
+  keepButton: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#A9C6B6", borderRadius: 10, borderWidth: 1, flex: 1, justifyContent: "center", minHeight: 40, paddingHorizontal: 8 },
+  keepButtonText: { color: "#365D4F", fontSize: 11, fontWeight: "900" },
+  cancelButton: { alignItems: "center", backgroundColor: "#A34840", borderRadius: 10, flex: 1, justifyContent: "center", minHeight: 40, paddingHorizontal: 8 },
+  cancelButtonDisabled: { opacity: 0.65 },
+  cancelButtonText: { color: "#FFFFFF", fontSize: 11, fontWeight: "900" },
+  supportPanel: { borderTopColor: "#CDE0D5", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  supportHint: { color: "#395B50", fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
+  supportButton: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#9DC5B2", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", marginTop: 9, minHeight: 42, paddingHorizontal: 12 },
+  supportButtonText: { color: "#0C5A4B", fontSize: 12, fontWeight: "900" },
   note: {
     alignItems: "flex-start",
     backgroundColor: "#F1F4F1",

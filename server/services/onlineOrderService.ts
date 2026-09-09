@@ -20,6 +20,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   bundleComponents,
   categories,
@@ -46,6 +47,7 @@ import { withTx } from "./tx";
 import {
   lockCouponForSale,
   normalizeCouponCode,
+  releaseCouponReservationForOnlineOrder,
   reserveCouponForOnlineOrder,
   type LockedCoupon,
 } from "./couponService";
@@ -58,6 +60,12 @@ import {
 import { retryOnDup } from "../lib/retryDup";
 
 const RETAIL = "RETAIL" as const;
+const WHOLESALE = "WHOLESALE" as const;
+/**
+ * عقد المتجر: لا يصير سعر الجملة خياراً قابلاً للتلاعب من العميل. يجمع الخادم كل ألوان
+ * ووحدات المنتج نفسه بوحدة الأساس، ويستحقه العميل عند اثنتي عشرة قطعة فأكثر فقط.
+ */
+export const STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY = 12;
 const GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
 
@@ -497,7 +505,7 @@ async function loadOwnedReplay(
 }
 
 /** قفل العميل هو أول قفل أعمال مشترك، قبل المخزون، اتساقاً مع createSale/POS. */
-async function lockOrCreateOnlineCustomer(
+export async function lockOrCreateOnlineCustomer(
   tx: Tx,
   phone: string,
   name: string,
@@ -608,6 +616,27 @@ interface PricedOnlineOrderLine {
   couponDiscountPerUnit?: string;
 }
 
+export type StorefrontPricingBenefitType =
+  | "NONE"
+  | "WHOLESALE"
+  | "OFFER"
+  | "COUPON";
+
+interface StorefrontPricingBenefit {
+  type: StorefrontPricingBenefitType;
+  label: string | null;
+  discount: string;
+  /** الكوبون صالح للسلة لكنه خسر أمام منفعة أعلى، فلا نحجزه ولا نستهلكه. */
+  couponSuperseded: boolean;
+}
+
+interface PricedOnlineOrderLines {
+  items: PricedOnlineOrderLine[];
+  benefit: StorefrontPricingBenefit;
+  /** يختلف عن benefit.discount: يستخدم فقط للتحقق من أن الكوبون يدخل السلة فعلاً. */
+  couponCandidateDiscount: string;
+}
+
 export interface OnlineOrderQuoteInput {
   couponCode?: string | null;
   governorate: string;
@@ -620,6 +649,10 @@ export interface OnlineOrderQuoteResult {
   couponCode: string | null;
   couponProgramName: string | null;
   couponDiscount: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
+  couponSuperseded: boolean;
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -628,6 +661,8 @@ export interface OnlineOrderQuoteResult {
     unitPrice: string;
     lineTotal: string;
   }>;
+  /** قيمة المنتجات قبل منفعة السعر الواحدة؛ للعرض الشفاف فقط. */
+  retailSubtotal: string;
   subtotal: string;
   deliveryFee: string;
   deliveryFree: boolean;
@@ -641,10 +676,11 @@ async function priceOnlineOrderLines(
   branchId: number,
   lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
   options: { lock: boolean; coupon?: LockedCoupon | null },
-): Promise<PricedOnlineOrderLine[]> {
+): Promise<PricedOnlineOrderLines> {
   const unitIds = Array.from(
     new Set(lines.map((line) => Number(line.productUnitId))),
   ).sort((a, b) => a - b);
+  const wholesalePrices = alias(productPrices, "storefrontWholesalePrices");
   const query = tx
     .select({
       productId: products.id,
@@ -664,6 +700,7 @@ async function priceOnlineOrderLines(
       isBundle: products.isBundle,
       isCustomizable: products.isCustomizable,
       price: productPrices.price,
+      wholesalePrice: wholesalePrices.price,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -676,12 +713,26 @@ async function priceOnlineOrderLines(
         eq(productPrices.priceTier, RETAIL),
       ),
     )
+    .leftJoin(
+      wholesalePrices,
+      and(
+        eq(wholesalePrices.productUnitId, productUnits.id),
+        eq(wholesalePrices.priceTier, WHOLESALE),
+      ),
+    )
     .where(inArray(productUnits.id, unitIds))
     .orderBy(asc(productUnits.id));
   const rows = options.lock ? await query.for("update") : await query;
   const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
   const todayYmd = todayYmdBaghdad();
-  const priced: PricedOnlineOrderLine[] = [];
+  const candidates: Array<
+    PricedOnlineOrderLine & {
+      automaticDiscountPerUnit: string;
+      automaticPromotionName: string | null;
+      couponDiscountCandidatePerUnit: string;
+      wholesaleUnitPrice: string | null;
+    }
+  > = [];
   for (const line of lines) {
     const quantity = Math.floor(line.quantity);
     const row = byUnit.get(Number(line.productUnitId));
@@ -758,11 +809,6 @@ async function priceOnlineOrderLines(
       lockForUpdate: options.lock,
     });
     const automaticDiscount = promo ? money(promo.discountForUnit) : money(0);
-    const priceAfterAutomatic = round2(
-      retail.minus(automaticDiscount).lt(0)
-        ? money(0)
-        : retail.minus(automaticDiscount),
-    );
     const couponPromo = options.coupon
       ? await resolveCouponPromotionForLine(tx, options.coupon.promotionId, {
           branchId,
@@ -770,8 +816,10 @@ async function priceOnlineOrderLines(
           productId,
           variantId,
           categoryId,
-          unitPrice: priceAfterAutomatic.toFixed(2),
-          lineAmount: priceAfterAutomatic.times(quantity).toFixed(2),
+          // العروض والكوبونات منفعتان بديلتان في المتجر، لا طبقتا خصم. لذلك يُقاس
+          // الكوبون على سعر المفرد الأصلي لا على السعر بعد العرض التلقائي.
+          unitPrice: retail.toFixed(2),
+          lineAmount: retail.times(quantity).toFixed(2),
           hasContractPrice: false,
           todayYmd,
           includeStoreManaged: true,
@@ -781,13 +829,7 @@ async function priceOnlineOrderLines(
     const couponDiscount = couponPromo
       ? money(couponPromo.discountForUnit)
       : money(0);
-    const discount = automaticDiscount.plus(couponDiscount).gt(retail)
-      ? retail
-      : automaticDiscount.plus(couponDiscount);
-    const unitPrice = round2(
-      retail.minus(discount).lt(0) ? money(0) : retail.minus(discount),
-    );
-    priced.push({
+    candidates.push({
       productId,
       categoryId,
       variantId,
@@ -797,13 +839,145 @@ async function priceOnlineOrderLines(
       quantity,
       baseQuantity: base.toNumber(),
       retailUnitPrice: retail.toFixed(2),
-      discountPerUnit: round2(discount).toFixed(2),
-      couponDiscountPerUnit: round2(couponDiscount).toFixed(2),
-      unitPrice: unitPrice.toFixed(2),
-      lineTotal: round2(unitPrice.times(quantity)).toFixed(2),
+      automaticDiscountPerUnit: round2(automaticDiscount).toFixed(2),
+      automaticPromotionName: promo?.promotionName ?? null,
+      couponDiscountCandidatePerUnit: round2(couponDiscount).toFixed(2),
+      wholesaleUnitPrice:
+        row.wholesalePrice == null ? null : round2(row.wholesalePrice).toFixed(2),
+      // تُملأ بعد مقارنة مرشحي الجملة/العرض/الكوبون على مستوى السلة كاملة.
+      discountPerUnit: "0.00",
+      couponDiscountPerUnit: "0.00",
+      unitPrice: retail.toFixed(2),
+      lineTotal: round2(retail.times(quantity)).toFixed(2),
     });
   }
-  return priced;
+  const baseQuantityByProduct = new Map<number, number>();
+  for (const item of candidates) {
+    baseQuantityByProduct.set(
+      item.productId,
+      (baseQuantityByProduct.get(item.productId) ?? 0) + item.baseQuantity,
+    );
+  }
+
+  let wholesaleDiscount = money(0);
+  let offerDiscount = money(0);
+  let couponDiscount = money(0);
+  const offerNames = new Set<string>();
+  for (const item of candidates) {
+    const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
+    const wholesaleDifference = item.wholesaleUnitPrice
+      ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+      : money(0);
+    const wholesalePerUnit = wholesaleDifference.gt(0)
+      ? wholesaleDifference
+      : money(0);
+    if (parentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY) {
+      wholesaleDiscount = wholesaleDiscount.plus(
+        wholesalePerUnit.times(item.quantity),
+      );
+    }
+    const automaticPerUnit = money(item.automaticDiscountPerUnit);
+    offerDiscount = offerDiscount.plus(automaticPerUnit.times(item.quantity));
+    if (automaticPerUnit.gt(0) && item.automaticPromotionName) {
+      offerNames.add(item.automaticPromotionName);
+    }
+    couponDiscount = couponDiscount.plus(
+      money(item.couponDiscountCandidatePerUnit).times(item.quantity),
+    );
+  }
+
+  const candidatesByBenefit: Array<{
+    type: Exclude<StorefrontPricingBenefitType, "NONE">;
+    discount: ReturnType<typeof money>;
+    priority: number;
+    label: string;
+  }> = [
+    // عند التعادل لا نستهلك كوبوناً بلا توفير إضافي؛ تبقى قيمة الكوبون للعميل لاحقاً.
+    { type: "WHOLESALE" as const, discount: wholesaleDiscount, priority: 3, label: "سعر الجملة التلقائي" },
+    {
+      type: "OFFER" as const,
+      discount: offerDiscount,
+      priority: 2,
+      label:
+        offerNames.size === 1
+          ? Array.from(offerNames)[0]!
+          : "أفضل عرض تلقائي",
+    },
+    {
+      type: "COUPON" as const,
+      discount: couponDiscount,
+      priority: 1,
+      label: options.coupon?.programName ?? "خصم الكوبون",
+    },
+  ].filter((candidate) => candidate.discount.gt(0));
+  candidatesByBenefit.sort((a, b) => {
+    const compared = b.discount.comparedTo(a.discount);
+    return compared !== 0 ? compared : b.priority - a.priority;
+  });
+  const selected = candidatesByBenefit[0];
+  const benefit: StorefrontPricingBenefit = selected
+    ? {
+        type: selected.type,
+        label: selected.label,
+        discount: round2(selected.discount).toFixed(2),
+        couponSuperseded:
+          options.coupon != null &&
+          couponDiscount.gt(0) &&
+          selected.type !== "COUPON",
+      }
+    : {
+        type: "NONE",
+        label: null,
+        discount: "0.00",
+        couponSuperseded: false,
+      };
+
+  const items = candidates.map((item) => {
+    const parentBaseQuantity = baseQuantityByProduct.get(item.productId) ?? 0;
+    const wholesaleDifference =
+      parentBaseQuantity >= STOREFRONT_WHOLESALE_MINIMUM_BASE_QUANTITY &&
+      item.wholesaleUnitPrice
+        ? money(item.retailUnitPrice).minus(item.wholesaleUnitPrice)
+        : money(0);
+    const wholesalePerUnit = wholesaleDifference.gt(0)
+      ? wholesaleDifference
+      : money(0);
+    const selectedDiscount =
+      benefit.type === "WHOLESALE"
+        ? wholesalePerUnit
+        : benefit.type === "OFFER"
+          ? money(item.automaticDiscountPerUnit)
+          : benefit.type === "COUPON"
+            ? money(item.couponDiscountCandidatePerUnit)
+            : money(0);
+    const priceAfterBenefit = money(item.retailUnitPrice).minus(selectedDiscount);
+    const unitPrice = round2(
+      priceAfterBenefit.lt(0) ? money(0) : priceAfterBenefit,
+    );
+    return {
+      productId: item.productId,
+      categoryId: item.categoryId,
+      variantId: item.variantId,
+      productName: item.productName,
+      isBundle: item.isBundle,
+      productUnitId: item.productUnitId,
+      quantity: item.quantity,
+      baseQuantity: item.baseQuantity,
+      retailUnitPrice: item.retailUnitPrice,
+      discountPerUnit: round2(selectedDiscount).toFixed(2),
+      couponDiscountPerUnit:
+        benefit.type === "COUPON"
+          ? round2(selectedDiscount).toFixed(2)
+          : "0.00",
+      unitPrice: unitPrice.toFixed(2),
+      lineTotal: round2(unitPrice.times(item.quantity)).toFixed(2),
+    } satisfies PricedOnlineOrderLine;
+  });
+  return {
+    items,
+    benefit,
+    couponCandidateDiscount: round2(couponDiscount).toFixed(2),
+  };
 }
 
 /**
@@ -910,22 +1084,13 @@ export async function quoteOnlineOrder(
             { lock: false },
           )
         : null;
-      const items = await priceOnlineOrderLines(
+      const pricing = await priceOnlineOrderLines(
         tx,
         context.branchId,
         normalizedLines,
         { lock: false, coupon: lockedCoupon },
       );
-      const couponDiscountTotal = round2(
-        items.reduce(
-          (sum, item) =>
-            sum.plus(
-              money(item.couponDiscountPerUnit ?? "0").times(item.quantity),
-            ),
-          money(0),
-        ),
-      );
-      if (lockedCoupon && couponDiscountTotal.lte(0))
+      if (lockedCoupon && money(pricing.couponCandidateDiscount).lte(0))
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: appErrorMessage({
@@ -937,15 +1102,34 @@ export async function quoteOnlineOrder(
         });
       const totals = await totalOnlineOrderQuote(
         tx,
-        items,
+        pricing.items,
         input.governorate,
         settings?.freeShippingThreshold,
       );
+      const retailSubtotal = round2(
+        pricing.items.reduce(
+          (sum, item) =>
+            sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+          money(0),
+        ),
+      );
       return {
-        couponCode: lockedCoupon?.code ?? null,
-        couponProgramName: lockedCoupon?.programName ?? null,
-        couponDiscount: couponDiscountTotal.toFixed(2),
-        lines: items.map((item) => ({
+        couponCode:
+          pricing.benefit.type === "COUPON" ? lockedCoupon?.code ?? null : null,
+        couponProgramName:
+          pricing.benefit.type === "COUPON"
+            ? lockedCoupon?.programName ?? null
+            : null,
+        couponDiscount:
+          pricing.benefit.type === "COUPON"
+            ? pricing.benefit.discount
+            : "0.00",
+        pricingBenefitType: pricing.benefit.type,
+        pricingBenefitLabel: pricing.benefit.label,
+        pricingBenefitDiscount: pricing.benefit.discount,
+        couponSuperseded: pricing.benefit.couponSuperseded,
+        retailSubtotal: retailSubtotal.toFixed(2),
+        lines: pricing.items.map((item) => ({
           productUnitId: item.productUnitId,
           quantity: item.quantity,
           retailUnitPrice: item.retailUnitPrice,
@@ -1136,10 +1320,11 @@ async function createOnlineOrderAttempt(
 
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل الوحدات.
-    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, {
+    const initialPricing = await priceOnlineOrderLines(tx, branchId, normalizedLines, {
       lock: false,
       coupon: lockedCoupon,
     });
+    const items = initialPricing.items;
     const requestedBaseByVariant = new Map<number, number>();
 
     // ترتيب الأقفال العالمي: customer → productUnit → variant/branchStock → order/items.
@@ -1152,12 +1337,13 @@ async function createOnlineOrderAttempt(
     const currentFactorByUnit = new Map(
       currentUnits.map((unit) => [unit.id, unit.conversionFactor]),
     );
-    const currentItems = await priceOnlineOrderLines(
+    const currentPricing = await priceOnlineOrderLines(
       tx,
       branchId,
       normalizedLines,
       { lock: true, coupon: lockedCoupon },
     );
+    const currentItems = currentPricing.items;
     requestedBaseByVariant.clear();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
@@ -1284,16 +1470,7 @@ async function createOnlineOrderAttempt(
         );
       }
     }
-    const couponDiscount = round2(
-      items.reduce(
-        (sum, item) =>
-          sum.plus(
-            money(item.couponDiscountPerUnit ?? "0").times(item.quantity),
-          ),
-        money(0),
-      ),
-    );
-    if (lockedCoupon && couponDiscount.lte(0))
+    if (lockedCoupon && money(currentPricing.couponCandidateDiscount).lte(0))
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -1397,6 +1574,12 @@ async function createOnlineOrderAttempt(
       }
     }
 
+    const selectedCoupon =
+      currentPricing.benefit.type === "COUPON" ? lockedCoupon : null;
+    const couponDiscount = selectedCoupon
+      ? money(currentPricing.benefit.discount)
+      : money(0);
+
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
     const guestTrackingPublicId = randomBytes(16).toString("hex");
     const guestTrackingExpiresAt = new Date(
@@ -1425,8 +1608,11 @@ async function createOnlineOrderAttempt(
       guestTrackingPublicId,
       guestTrackingTokenHash: hashGuestTrackingToken(guestTrackingToken),
       guestTrackingExpiresAt,
-      couponCode: lockedCoupon?.code ?? null,
+      couponCode: selectedCoupon?.code ?? null,
       couponDiscount: toDbMoney(couponDiscount),
+      pricingBenefitType: currentPricing.benefit.type,
+      pricingBenefitLabel: currentPricing.benefit.label,
+      pricingBenefitDiscount: toDbMoney(currentPricing.benefit.discount),
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;
@@ -1470,8 +1656,8 @@ async function createOnlineOrderAttempt(
         total: it.lineTotal,
       });
     }
-    if (lockedCoupon) {
-      await reserveCouponForOnlineOrder(tx, lockedCoupon, {
+    if (selectedCoupon) {
+      await reserveCouponForOnlineOrder(tx, selectedCoupon, {
         onlineOrderId: orderId,
         customerId,
         branchId,
@@ -1501,6 +1687,9 @@ export interface OnlineOrderTracking {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   deliveryFee: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
@@ -1540,6 +1729,9 @@ type TrackingHeader = {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: StorefrontPricingBenefitType;
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   shippingCost: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
@@ -1573,6 +1765,9 @@ async function buildOnlineOrderTracking(
     orderNumber: order.orderNumber,
     status: order.status,
     subtotal: String(order.subtotal),
+    pricingBenefitType: order.pricingBenefitType,
+    pricingBenefitLabel: order.pricingBenefitLabel ?? null,
+    pricingBenefitDiscount: String(order.pricingBenefitDiscount ?? "0"),
     deliveryFee: String(order.shippingCost),
     deliveryFree: order.deliveryFree === true,
     deliveryWaivedAmount: String(order.deliveryWaivedAmount ?? "0"),
@@ -1595,6 +1790,9 @@ function trackingHeaderSelection() {
     orderNumber: onlineOrders.orderNumber,
     status: onlineOrders.status,
     subtotal: onlineOrders.subtotal,
+    pricingBenefitType: onlineOrders.pricingBenefitType,
+    pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
+    pricingBenefitDiscount: onlineOrders.pricingBenefitDiscount,
     shippingCost: onlineOrders.shippingCost,
     deliveryFree: onlineOrders.deliveryFree,
     deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
@@ -1717,6 +1915,127 @@ export async function trackOnlineOrderByGuestToken(
   return buildOnlineOrderTracking(db, order);
 }
 
+type CancellableOnlineOrder = {
+  id: number;
+  orderNumber: string;
+  status: string;
+};
+
+/** العميل لا يغيّر سير التشغيل: الإلغاء الذاتي متاح فقط قبل اعتماد الموظف. */
+async function cancelPendingOnlineOrder(
+  tx: Tx,
+  order: CancellableOnlineOrder | undefined,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  if (!order)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح الطلب",
+        why: "لا يوجد طلب متاح بهذه الصلاحية",
+        doThis: "حدّث قائمة طلباتك أو تواصل معنا ومعك رقم الطلب",
+      }),
+    });
+  if (order.status !== "PENDING")
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "لا يمكن إلغاء الطلب ذاتياً الآن",
+        why: "اعتمد موظف المكتبة الطلب أو بدأ تجهيزه، فلا نغيّر حالته تلقائياً حتى لا يتعطل التجهيز أو التوصيل",
+        doThis: "أرسل طلب تعديل أو إلغاء إلى فريق المكتبة ليراجعه معك",
+      }),
+    });
+  const cancelReason = "أُلغي من العميل قبل تأكيد المكتبة";
+  await tx
+    .update(onlineOrders)
+    .set({ status: "CANCELLED", cancelReason })
+    .where(and(eq(onlineOrders.id, order.id), eq(onlineOrders.status, "PENDING")));
+  await releaseCouponReservationForOnlineOrder(tx, order.id, cancelReason);
+  return { orderNumber: order.orderNumber, status: "CANCELLED" };
+}
+
+/** إلغاء مالك موثّق: رقم الطلب selector فقط وملكية العميل محكومة بخادم الجلسة. */
+export async function cancelOnlineOrderForCustomer(
+  orderNumber: string,
+  customerId: number,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  return withTx(async (tx) => {
+    const order = (
+      await tx
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          status: onlineOrders.status,
+        })
+        .from(onlineOrders)
+        .where(
+          and(
+            eq(onlineOrders.orderNumber, orderNumber.trim()),
+            eq(onlineOrders.customerId, customerId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    return cancelPendingOnlineOrder(
+      tx,
+      order && {
+        id: Number(order.id),
+        orderNumber: order.orderNumber,
+        status: order.status,
+      },
+    );
+  });
+}
+
+/** إلغاء ضيف بالرمز opaque نفسه المخصص للتتبّع؛ لا يقبل رقم طلب قابل للتخمين. */
+export async function cancelOnlineOrderByGuestToken(
+  token: string,
+): Promise<{ orderNumber: string; status: "CANCELLED" }> {
+  const verified = parseAndVerifyGuestTrackingToken(token);
+  if (!verified)
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر فتح الطلب",
+        why: "رمز التتبّع غير صالح أو انتهت صلاحيته",
+        doThis: "سجّل الدخول بحسابك لرؤية الطلب، أو تواصل معنا ومعك رقم الطلب",
+      }),
+    });
+  return withTx(async (tx) => {
+    const order = (
+      await tx
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          status: onlineOrders.status,
+          guestTrackingExpiresAt: onlineOrders.guestTrackingExpiresAt,
+        })
+        .from(onlineOrders)
+        .where(
+          and(
+            eq(onlineOrders.guestTrackingPublicId, verified.publicId),
+            eq(onlineOrders.guestTrackingTokenHash, verified.tokenHash),
+            sql`${onlineOrders.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    const storedExpirySeconds =
+      order?.guestTrackingExpiresAt == null
+        ? null
+        : Math.floor(order.guestTrackingExpiresAt.getTime() / 1000);
+    if (!order || storedExpirySeconds !== verified.expiresAtSeconds) {
+      return cancelPendingOnlineOrder(tx, undefined);
+    }
+    return cancelPendingOnlineOrder(tx, {
+      id: Number(order.id),
+      orderNumber: order.orderNumber,
+      status: order.status,
+    });
+  });
+}
+
 /**
  * ملخص QR المطبوع على الطرد. لا يكفي رقم الطلب المتسلسل للوصول إليه: يجب أن يطابق
  * التوقيع HMAC الذي أنشأه الخادم للملصق، فتظل قراءة الملصق مفيدة للمندوب وآمنة من التخمين.
@@ -1766,6 +2085,9 @@ export async function readOnlineOrderLabel(
         orderNumber: onlineOrders.orderNumber,
         status: onlineOrders.status,
         subtotal: onlineOrders.subtotal,
+        pricingBenefitType: onlineOrders.pricingBenefitType,
+        pricingBenefitLabel: onlineOrders.pricingBenefitLabel,
+        pricingBenefitDiscount: onlineOrders.pricingBenefitDiscount,
         shippingCost: onlineOrders.shippingCost,
         deliveryFree: onlineOrders.deliveryFree,
         deliveryWaivedAmount: onlineOrders.deliveryWaivedAmount,
@@ -1813,6 +2135,9 @@ export async function readOnlineOrderLabel(
     orderNumber: order.orderNumber,
     status: order.status,
     subtotal: String(order.subtotal),
+    pricingBenefitType: order.pricingBenefitType,
+    pricingBenefitLabel: order.pricingBenefitLabel ?? null,
+    pricingBenefitDiscount: String(order.pricingBenefitDiscount ?? "0"),
     deliveryFee: String(order.shippingCost),
     deliveryFree: order.deliveryFree === true,
     deliveryWaivedAmount: String(order.deliveryWaivedAmount ?? "0"),

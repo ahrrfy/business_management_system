@@ -2213,6 +2213,20 @@
 			"when": 1788148803000,
 			"tag": "0343_superapp_expo_push_devices",
 			"breakpoints": true
+		},
+		{
+			"idx": 340,
+			"version": "5",
+			"when": 1788052413000,
+			"tag": "0340_storefront_pricing_benefit_snapshot",
+			"breakpoints": true
+		},
+		{
+			"idx": 341,
+			"version": "5",
+			"when": 1788052414000,
+			"tag": "0341_storefront_quote_requests",
+			"breakpoints": true
 		}
 	]
 }
