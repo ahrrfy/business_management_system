@@ -304,7 +304,7 @@ export function StocktakeDetailDrawer({
             </Link>
 
             {session.status === "COUNTING" && (
-              <Link href="/count-portal">
+              <Link href={session.code ? `/count/${session.code}` : "/my-stocktake"}>
                 <Button variant="outline" size="sm" className="gap-1.5">
                   بوابة العد الميداني
                 </Button>

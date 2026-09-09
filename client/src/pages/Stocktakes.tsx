@@ -418,14 +418,13 @@ export default function Stocktakes() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button asChild variant="outline">
-              <Link href="/count-portal">بوابة العد الميداني</Link>
+              <Link href="/my-stocktake">فضاء عملي (العد الميداني)</Link>
             </Button>
-            <Button asChild variant="outline">
-              <Link href="/my-stocktake">فضاء عملي</Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link href="/reconcile">مطابقة الأرصدة</Link>
-            </Button>
+            {isAdmin && (
+              <Button asChild variant="outline">
+                <Link href="/reconcile">مطابقة الأرصدة</Link>
+              </Button>
+            )}
             {canCreate ? (
               <Button asChild size="lg">
                 <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
