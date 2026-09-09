@@ -65,7 +65,6 @@ function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
-
 /**
  * فرعُ المُسنَد إليه يجب أن يطابق فرع المُسنِد، وكلاهما يجب أن يكون **معروفاً**.
  *
@@ -4266,6 +4265,7 @@ export async function saveStudioDraft(
     const photographerCaptureOnly = input.requireBarcodeVerification === true && !isManager(actor);
     const photographerContentAttempt = photographerCaptureOnly && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
     if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
+    const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4302,6 +4302,8 @@ export async function saveStudioDraft(
         proposedName: photographerCaptureOnly ? task.proposedName : input.proposedName?.trim() || null,
         proposedDescription: photographerCaptureOnly ? task.proposedDescription : input.proposedDescription?.trim() || null,
         proposedMarketingCopy: photographerCaptureOnly ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+        contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+        contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
         status: "IN_PROGRESS",
         activeSlot: task.activeSlot,
         // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
@@ -4870,6 +4872,7 @@ export async function submitStudioCandidate(
         });
       }
       const receiptHash = input.processingReceipt ? contentHash(Buffer.from(input.processingReceipt, "utf8")) : null;
+      const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
       let effectiveMode: "FLATTEN" | "CUT" | "PRO" | "AI" = input.mode;
       if (input.processingReceipt) {
         const proofValid = Boolean(receiptHash && task.processingProofTokenHash === receiptHash && task.processingProofExpiresAt && task.processingProofExpiresAt > new Date() && task.processingProofCandidateHash === processed.hash && (task.processingProofMode === "PRO" || task.processingProofMode === "AI"));
@@ -4904,6 +4907,8 @@ export async function submitStudioCandidate(
           proposedName: input.proposedName === undefined ? task.proposedName : input.proposedName?.trim() || null,
           proposedDescription: input.proposedDescription === undefined ? task.proposedDescription : input.proposedDescription?.trim() || null,
           proposedMarketingCopy: input.proposedMarketingCopy === undefined ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+          contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+          contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
           status: "PENDING_REVIEW",
           submittedAt: new Date(),
           // هوية المرسل حقيقة خادمية من Actor، ولا نقبلها من الحمولة.
@@ -5141,9 +5146,14 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     )[0];
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر اعتماد المهمّة", why: "منتج المهمّة لم يعد موجوداً في الكتالوج — حُذف بعد إنشائها", doThis: "ألغِ المهمّة بسببٍ مكتوب، وأنشئ مهمّةً جديدةً على المنتج الصحيح" }) });
 
-    const actuallyChangesName = task.proposedName != null && task.proposedName.trim() !== "" && task.proposedName.trim() !== product.name.trim();
-    const actuallyChangesDesc = task.proposedDescription != null && task.proposedDescription.trim() !== "" && task.proposedDescription.trim() !== (product.description || "").trim();
-    const actuallyChangesCopy = Boolean(task.proposedMarketingCopy?.trim());
+    // لا تثبت ملكية النص بالباركود ولا بدور المستخدم الحالي: كلاهما متغير بعد الكتابة. لا
+    // يدخل المحتوى في تعارض المصدر أو في تحديث المنتج إلا إذا أثبت الخادم صلاحية مدير عند
+    // لحظة كتابته في contentPreparedByManager.
+    const hasProposedContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    const discardUntrustedContent = hasProposedContent && !task.contentPreparedByManager;
+    const actuallyChangesName = !discardUntrustedContent && task.proposedName != null && task.proposedName.trim() !== "" && task.proposedName.trim() !== product.name.trim();
+    const actuallyChangesDesc = !discardUntrustedContent && task.proposedDescription != null && task.proposedDescription.trim() !== "" && task.proposedDescription.trim() !== (product.description || "").trim();
+    const actuallyChangesCopy = !discardUntrustedContent && Boolean(task.proposedMarketingCopy?.trim());
     const changesProductContent = actuallyChangesName || actuallyChangesDesc || actuallyChangesCopy;
     if (changesProductContent && task.sourceProductHash && productContentHash(product) !== task.sourceProductHash) {
       throw new TRPCError({
@@ -5294,6 +5304,9 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         rejectionReason: null,
         activeSlot: null,
         processedUrl: null,
+        proposedName: discardUntrustedContent ? null : task.proposedName,
+        proposedDescription: discardUntrustedContent ? null : task.proposedDescription,
+        proposedMarketingCopy: discardUntrustedContent ? null : task.proposedMarketingCopy,
         revision: sql`${productImageJobs.revision} + 1`,
       })
       .where(eq(productImageJobs.id, taskId));
@@ -5304,6 +5317,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         processedHash: task.processedContentHash,
         thumbnailHash: thumbnail.hash,
         contentUpdated: Object.keys(productPatch).length > 0,
+        untrustedContentDiscarded: discardUntrustedContent,
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);

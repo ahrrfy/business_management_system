@@ -4643,6 +4643,10 @@ export const productImageJobs = mysqlTable(
     /** لا يكتب المصوّر في المهمة إلا بعد أن يؤكد الخادم مسح باركود المنتج المطابق. */
     barcodeVerifiedBy: int("barcodeVerifiedBy").references(() => users.id),
     barcodeVerifiedAt: timestamp("barcodeVerifiedAt"),
+    /** هوية من أعدّ محتوى الكتالوج للمهمة؛ حذف الحساب لا يمحو دليل الصلاحية وقت الكتابة. */
+    contentPreparedBy: int("contentPreparedBy").references(() => users.id, { onDelete: "set null" }),
+    /** صلاحية ثابتة تُكتب بعد تحقق الخادم من دور المدير، ولا يعاد استنتاجها من دورٍ قابل للتغيير. */
+    contentPreparedByManager: boolean("contentPreparedByManager").notNull().default(false),
     reviewedBy: int("reviewedBy").references(() => users.id),
     /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
     activeSlot: tinyint("activeSlot"),
