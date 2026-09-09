@@ -5,9 +5,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 
-import { Link } from "wouter";
 import {
-  ArrowRight,
   BadgeDollarSign,
   CheckCircle2,
   Package,
@@ -23,10 +21,13 @@ import { trpc } from "@/lib/trpc";
 import { confirm } from "@/lib/confirm";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { PageHeader } from "@/components/PageHeader";
+import { Card } from "@/components/ui/card";
 import { parseScan } from "@/lib/scanRouter";
 
 interface ScannedOrder {
   id: number;
+  kind?: "workOrder" | "invoice";
   orderNumber: string;
   title: string | null;
   customerName: string | null;
@@ -55,18 +56,33 @@ export default function ReceptionHandoverPage() {
   const lookupOrder = useCallback(
     async (raw: string) => {
       const r = parseScan(raw);
-      const orderNumber = r.type === "workOrder" ? r.number : raw.trim();
+      const orderNumber = r.type === "workOrder" || r.type === "invoice" ? r.number : raw.trim();
       if (!orderNumber) return;
       try {
         const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-        if (!wo) { notify.err("طلب غير موجود: " + orderNumber); return; }
-        if (wo.status === "DELIVERED") { notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً"); return; }
-        if (wo.status !== "READY") {
-          notify.warn("الطلب غير جاهز للتسليم — حالته: " + wo.status);
-          return;
+        if (!wo) { notify.err("طلب أو فاتورة غير موجودة: " + orderNumber); return; }
+        if (wo.kind === "workOrder") {
+          if (wo.status === "DELIVERED") { notify.info("الطلب " + wo.orderNumber + " مُسلَّم مسبقاً"); return; }
+          if (wo.status !== "READY") {
+            notify.warn("الطلب غير جاهز للتسليم — حالته: " + wo.status);
+            return;
+          }
+        } else if (wo.kind === "invoice") {
+          if (wo.status === "CANCELLED" || wo.status === "RETURNED") {
+            notify.err("هذه الفاتورة ملغاة أو مرتجعة");
+            return;
+          }
+          if (wo.status === "PAID") {
+            const rem = round2(D(wo.salePrice).minus(D(wo.deposit ?? "0")));
+            if (rem.lte(0)) {
+              notify.info("الفاتورة " + wo.orderNumber + " مسددة بالكامل مسبقاً ومسلّمة");
+              return;
+            }
+          }
         }
         setScanned({
           id: wo.id,
+          kind: wo.kind ?? "workOrder",
           orderNumber: wo.orderNumber,
           title: wo.title,
           customerName: wo.customerName,
@@ -104,13 +120,25 @@ export default function ReceptionHandoverPage() {
     onError: (e) => notify.err(e, "تعذّر التسليم"),
   });
 
+  const collectInvoiceMut = trpc.reception.collectOnInvoice.useMutation({
+    onSuccess: () => {
+      notify.ok("تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? "") + " وتسليمها بنجاح");
+      setScanned(null);
+      void utils.workOrders.invalidate();
+      void shiftQ.refetch();
+      inputRef.current?.focus();
+    },
+    onError: (e) => notify.err(e, "تعذّر تحصيل الفاتورة"),
+  });
+
   async function handleHandover() {
     if (!scanned || !shift) return;
     const remaining = round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")));
+    const docLabel = scanned.kind === "invoice" ? "الفاتورة" : "الطلب";
     const ok = await confirm({
       title: "تأكيد التسليم المباشر",
       description: [
-        "الطلب: #" + scanned.orderNumber,
+        `${docLabel}: #${scanned.orderNumber}`,
         "العميل: " + (scanned.customerName ?? scanned.customerPhone ?? "غير محدد"),
         remaining.gt(0)
           ? "يُحصَّل الآن: " + fmt(remaining.toFixed(2)) + " د.ع نقداً"
@@ -121,13 +149,31 @@ export default function ReceptionHandoverPage() {
         : "تسليم",
     });
     if (!ok) return;
-    deliverMut.mutate({
-      workOrderId: scanned.id,
-      payment: remaining.gt(0)
-        ? { amount: remaining.toFixed(2), method: "CASH" as const }
-        : undefined,
-      clientRequestId: crypto.randomUUID(),
-    });
+
+    if (scanned.kind === "invoice") {
+      if (remaining.gt(0)) {
+        collectInvoiceMut.mutate({
+          invoiceId: scanned.id,
+          amount: remaining.toFixed(2),
+          method: "CASH",
+          clientRequestId: crypto.randomUUID(),
+        });
+      } else {
+        notify.ok("الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
+        setScanned(null);
+        void utils.workOrders.invalidate();
+        void shiftQ.refetch();
+        inputRef.current?.focus();
+      }
+    } else {
+      deliverMut.mutate({
+        workOrderId: scanned.id,
+        payment: remaining.gt(0)
+          ? { amount: remaining.toFixed(2), method: "CASH" as const }
+          : undefined,
+        clientRequestId: crypto.randomUUID(),
+      });
+    }
   }
 
   const remaining = scanned
@@ -140,24 +186,24 @@ export default function ReceptionHandoverPage() {
     <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
 
       {/* رأس الصفحة */}
-      <div className="flex shrink-0 items-center gap-3 border-b bg-card px-4 py-3">
-        <Link
-          href="/pos?mode=RECEPTION"
-          className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted"
-        >
-          <ArrowRight aria-hidden className="size-3.5" />
-          الاستقبال
-        </Link>
-        <h1 className="flex items-center gap-2 text-base font-extrabold">
-          <CheckCircle2 aria-hidden className="size-5 text-green-600" />
-          التسليم المباشر للزبون
-        </h1>
-        <div className="ms-auto">
-          {shift
-            ? <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
-            : <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>
+      <div className="shrink-0 border-b bg-card px-4 py-3">
+        <PageHeader
+          title="التسليم المباشر للزبون"
+          icon={<CheckCircle2 aria-hidden className="size-5 text-green-600" />}
+          backHref="/pos?mode=RECEPTION"
+          backLabel="الاستقبال"
+          actions={
+            shift ? (
+              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">
+                وردية #{shift.id}
+              </span>
+            ) : (
+              <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">
+                لا وردية
+              </span>
+            )
           }
-        </div>
+        />
       </div>
 
       {/* المحتوى */}
@@ -214,7 +260,7 @@ export default function ReceptionHandoverPage() {
         {/* بطاقة الطلب الممسوح */}
         {scanned && (
           <div className="w-full max-w-lg">
-            <div className="overflow-hidden rounded-2xl border bg-card shadow-md">
+            <Card className="overflow-hidden gap-0 py-0 shadow-md">
 
               {/* رأس البطاقة */}
               <div className="border-b bg-green-50 p-5 flex items-center justify-between">
@@ -314,7 +360,7 @@ export default function ReceptionHandoverPage() {
                     : "تسليم (مدفوع كاملاً)"}
                 </Button>
               </div>
-            </div>
+            </Card>
           </div>
         )}
       </div>

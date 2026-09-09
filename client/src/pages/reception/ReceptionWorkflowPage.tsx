@@ -4,9 +4,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Link } from "wouter";
 import type { RouterOutputs } from "@/lib/trpc";
-import { ArrowRight, BadgeDollarSign, Ban, BarChart3, Package, RefreshCcw, ScanLine, Truck, User, Wallet } from "lucide-react";
+import { BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
+import { Card } from "@/components/ui/card";
+import { ACTION_LABELS as L } from "@shared/actionLabels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -21,12 +23,16 @@ import { confirm } from "@/lib/confirm";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { parseScan } from "@/lib/scanRouter";
+import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
+import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
+import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
 
 type Section = "dispatch" | "collect" | "return";
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
 
 interface ScannedOrder {
   id: number;
+  kind?: "workOrder" | "invoice";
   orderNumber: string;
   title: string | null;
   customerName: string | null;
@@ -42,6 +48,7 @@ interface ScannedOrder {
 export default function DeliveryWorkflowPage() {
   const [activeSection, setActiveSection] = useState<Section>("dispatch");
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
+  const [lastDispatchedSlip, setLastDispatchedSlip] = useState<DispatchSlipData | null>(null);
   const [dispatchScanned, setDispatchScanned] = useState<ScannedOrder | null>(null);
   const [dispatchBarcodeInput, setDispatchBarcodeInput] = useState("");
   const [dispatchFee, setDispatchFee] = useState("");
@@ -64,17 +71,21 @@ export default function DeliveryWorkflowPage() {
 
   const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
     const r = parseScan(raw);
-    const orderNumber = r.type === "workOrder" ? r.number : raw.trim();
+    const orderNumber = r.type === "workOrder" || r.type === "invoice" ? r.number : raw.trim();
     if (!orderNumber) return;
     try {
       const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-      if (!wo) { notify.err(`طلب غير موجود: ${orderNumber}`); return; }
+      if (!wo) { notify.err(`طلب أو فاتورة غير موجودة: ${orderNumber}`); return; }
       if (target === "dispatch") {
-        if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
-        if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
+        if (wo.kind === "workOrder") {
+          if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
+          if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
+        } else if (wo.kind === "invoice") {
+          if (wo.status === "CANCELLED" || wo.status === "RETURNED") { notify.warn(`الفاتورة ملغاة أو مرتجعة`); return; }
+        }
       }
       const order: ScannedOrder = {
-        id: wo.id, orderNumber: wo.orderNumber, title: wo.title,
+        id: wo.id, kind: wo.kind ?? "workOrder", orderNumber: wo.orderNumber, title: wo.title,
         customerName: wo.customerName, customerPhone: wo.customerPhone,
         salePrice: wo.salePrice, deposit: wo.deposit,
         deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone,
@@ -112,12 +123,63 @@ export default function DeliveryWorkflowPage() {
   const dispatchMut = trpc.delivery.dispatch.useMutation({
     onSuccess: (data) => {
       notify.ok("أُسند #" + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
+      const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
+      const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
+      const slip: DispatchSlipData = {
+        consignmentNumber: data.consignmentNumber,
+        orderNumber: dispatchScanned?.orderNumber ?? "",
+        orderKind: dispatchScanned?.kind ?? "workOrder",
+        partyName: chosenParty?.name ?? "المندوب",
+        recipientName: recipientName || dispatchScanned?.customerName || "",
+        recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
+        deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
+        salePrice: dispatchScanned?.salePrice ?? "0",
+        deposit: dispatchScanned?.deposit ?? "0",
+        codAmount: cod,
+        deliveryFee: dispatchFee || "0",
+        feeCollection: "COURIER",
+        title: dispatchScanned?.title,
+        dispatchedAt: new Date(),
+      };
+      setLastDispatchedSlip(slip);
+      printDeliveryDispatchSlip(slip);
 
       setDispatchScanned(null); setDispatchBarcodeInput("");
       setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
       void utils.workOrders.invalidate(); void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر الإسناد"),
+  });
+
+  const dispatchInvoiceMut = trpc.delivery.dispatchInvoice.useMutation({
+    onSuccess: (data) => {
+      notify.ok("أُسندت الفاتورة #" + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
+      const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
+      const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
+      const slip: DispatchSlipData = {
+        consignmentNumber: data.consignmentNumber,
+        orderNumber: dispatchScanned?.orderNumber ?? "",
+        orderKind: "invoice",
+        partyName: chosenParty?.name ?? "المندوب",
+        recipientName: recipientName || dispatchScanned?.customerName || "",
+        recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
+        deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
+        salePrice: dispatchScanned?.salePrice ?? "0",
+        deposit: dispatchScanned?.deposit ?? "0",
+        codAmount: cod,
+        deliveryFee: dispatchFee || "0",
+        feeCollection: "COURIER",
+        title: dispatchScanned?.title,
+        dispatchedAt: new Date(),
+      };
+      setLastDispatchedSlip(slip);
+      printDeliveryDispatchSlip(slip);
+
+      setDispatchScanned(null); setDispatchBarcodeInput("");
+      setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
+      void utils.workOrders.invalidate(); void utils.delivery.invalidate();
+    },
+    onError: (e) => notify.err(e, "تعذّر إسناد الفاتورة للتوصيل"),
   });
 
   const cancelMut = trpc.workOrders.cancel.useMutation({
@@ -133,10 +195,11 @@ export default function DeliveryWorkflowPage() {
   async function handleDispatch() {
     if (!dispatchScanned || !selectedPartyId) return;
     const fee = D(dispatchFee || "0");
+    const docLabel = dispatchScanned.kind === "invoice" ? "الفاتورة" : "الطلب";
     const ok = await confirm({
       title: "تأكيد الإسناد",
       description: [
-        `الطلب: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}`,
+        `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}`,
         `العميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}`,
         `العنوان: ${dispatchScanned.deliveryAddress ?? "غير محدد"}`,
         fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة",
@@ -144,13 +207,26 @@ export default function DeliveryWorkflowPage() {
       confirmText: "أسند للمندوب",
     });
     if (!ok) return;
-    dispatchMut.mutate({
-      workOrderId: dispatchScanned.id, partyId: selectedPartyId,
-      deliveryFee: fee.toFixed(2),
-      recipientName: recipientName || undefined,
-      recipientPhone: recipientPhone || undefined,
-      clientRequestId: crypto.randomUUID(),
-    });
+
+    if (dispatchScanned.kind === "invoice") {
+      dispatchInvoiceMut.mutate({
+        invoiceId: dispatchScanned.id,
+        partyId: selectedPartyId,
+        deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
+        recipientName: recipientName || undefined,
+        recipientPhone: recipientPhone || undefined,
+        deliveryAddress: dispatchScanned.deliveryAddress || undefined,
+        clientRequestId: crypto.randomUUID(),
+      });
+    } else {
+      dispatchMut.mutate({
+        workOrderId: dispatchScanned.id, partyId: selectedPartyId,
+        deliveryFee: fee.toFixed(2),
+        recipientName: recipientName || undefined,
+        recipientPhone: recipientPhone || undefined,
+        clientRequestId: crypto.randomUUID(),
+      });
+    }
   }
 
   async function handleFullReturn() {
@@ -173,16 +249,24 @@ export default function DeliveryWorkflowPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
-      <div className="flex shrink-0 items-center gap-3 border-b bg-card px-4 py-3">
-        <Link href="/pos?mode=RECEPTION" className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold text-muted-foreground hover:bg-muted">
-          <ArrowRight aria-hidden className="size-3.5" /> الاستقبال
-        </Link>
-        <h1 className="text-base font-extrabold">التوصيل والإسناد</h1>
-        <div className="ms-auto">
-          {shift
-            ? <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
-            : <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>}
-        </div>
+      <div className="shrink-0 border-b bg-card px-4 py-3">
+        <PageHeader
+          title="التوصيل والإسناد"
+          icon={<Truck aria-hidden className="size-5 text-primary" />}
+          backHref="/pos?mode=RECEPTION"
+          backLabel="الاستقبال"
+          actions={
+            shift ? (
+              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">
+                وردية #{shift.id}
+              </span>
+            ) : (
+              <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">
+                لا وردية
+              </span>
+            )
+          }
+        />
       </div>
 
       <div className="flex shrink-0 border-b bg-card">
@@ -202,7 +286,28 @@ export default function DeliveryWorkflowPage() {
       <div className="flex-1 overflow-auto p-4">
         {activeSection === "dispatch" && (
           <div className="mx-auto max-w-2xl space-y-4">
-            <div className="rounded-2xl border bg-card p-4">
+            {lastDispatchedSlip && (
+              <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)]/20 p-3.5">
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="size-5 text-[var(--sem-pos)] shrink-0" />
+                  <div>
+                    <span className="font-extrabold text-foreground">تم إسناد الطلب #{lastDispatchedSlip.orderNumber} بنجاح</span>
+                    <p className="text-xs text-muted-foreground">إرسالية: {lastDispatchedSlip.consignmentNumber} · المندوب: {lastDispatchedSlip.partyName}</p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => printDeliveryDispatchSlip(lastDispatchedSlip)}
+                  className="font-bold text-xs h-9 gap-1.5 shrink-0 bg-background"
+                >
+                  <Printer className="size-3.5 text-primary" />
+                  إعادة طباعة البوليصة
+                </Button>
+              </div>
+            )}
+
+            <Card className="gap-0 p-4">
               <div className="mb-3 flex items-center gap-2">
                 <span className="grid size-6 place-items-center rounded-full bg-primary text-[11px] font-black text-primary-foreground">١</span>
                 <h2 className="font-extrabold">اختر جهة التوصيل</h2>
@@ -213,7 +318,7 @@ export default function DeliveryWorkflowPage() {
                 <option value="">— اختر المندوب أو شركة التوصيل —</option>
                 {(partiesQ.data ?? []).map((p) => <option key={p.id} value={String(p.id)}>{p.name}</option>)}
               </AppSelect>
-            </div>
+            </Card>
 
             {selectedPartyId && !dispatchScanned && (
               <div className="rounded-2xl border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center">
@@ -235,7 +340,7 @@ export default function DeliveryWorkflowPage() {
             )}
 
             {dispatchScanned && (
-              <div className="rounded-2xl border bg-card shadow-sm">
+              <Card className="overflow-hidden gap-0 py-0 shadow-sm">
                 <div className="flex items-start justify-between border-b bg-muted/30 p-4">
                   <div>
                     <div className="flex items-center gap-2">
@@ -245,7 +350,7 @@ export default function DeliveryWorkflowPage() {
                     </div>
                     {dispatchScanned.title && <p className="mt-1 text-sm text-muted-foreground">{dispatchScanned.title}</p>}
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setDispatchScanned(null); setDispatchBarcodeInput(""); }}>← مسح آخر</Button>
+                  <Button variant="ghost" size="sm" onClick={() => { setDispatchScanned(null); setDispatchBarcodeInput(""); }}>مسح طلب آخر</Button>
                 </div>
                 <div className="space-y-3 p-4">
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -307,7 +412,7 @@ export default function DeliveryWorkflowPage() {
                     {dispatchMut.isPending ? "جارٍ الإسناد…" : D(dispatchFee || "0").gt(0) ? "أسند للمندوب · أجرة " + fmt(dispatchFee) + " د.ع" : "أسند للمندوب"}
                   </Button>
                 </div>
-              </div>
+              </Card>
             )}
           </div>
         )}
@@ -319,7 +424,7 @@ export default function DeliveryWorkflowPage() {
 
         {activeSection === "return" && (
           <div className="mx-auto max-w-2xl space-y-4">
-            <div className="rounded-2xl border bg-card p-4">
+            <Card className="gap-0 p-4">
               <h2 className="mb-3 font-extrabold">نوع الإجراء</h2>
               <div className="grid grid-cols-2 gap-2">
                 {(["FULL", "PARTIAL"] as const).map((t) => (
@@ -330,7 +435,7 @@ export default function DeliveryWorkflowPage() {
                   </button>
                 ))}
               </div>
-            </div>
+            </Card>
 
             {!returnScanned && (
               <div className="rounded-2xl border-2 border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
@@ -351,7 +456,7 @@ export default function DeliveryWorkflowPage() {
             )}
 
             {returnScanned && returnType === "FULL" && (
-              <div className="rounded-2xl border bg-card shadow-sm">
+              <Card className="overflow-hidden gap-0 py-0 shadow-sm">
                 <div className="flex items-start justify-between border-b bg-destructive/10 p-4">
                   <div>
                     <div className="flex items-center gap-2">
@@ -360,7 +465,7 @@ export default function DeliveryWorkflowPage() {
                     </div>
                     <p className="mt-0.5 text-sm font-bold">{returnScanned.customerName}</p>
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>← مسح آخر</Button>
+                  <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح طلب آخر</Button>
                 </div>
                 <div className="space-y-3 p-4">
                   <div className="rounded-xl border bg-background p-3 space-y-1">
@@ -393,10 +498,10 @@ export default function DeliveryWorkflowPage() {
                   </div>
                   <Button variant="destructive" className="w-full py-6 text-base font-extrabold"
                     onClick={() => void handleFullReturn()} disabled={cancelMut.isPending || returnReason.trim().length < 3}>
-                    {cancelMut.isPending ? "جارٍ الإلغاء…" : "إلغاء الطلب بالكامل"}
+                    {cancelMut.isPending ? L.cancelling : "إلغاء الطلب بالكامل"}
                   </Button>
                 </div>
-              </div>
+              </Card>
             )}
 
             {returnScanned && returnType === "PARTIAL" && (
@@ -417,44 +522,134 @@ export default function DeliveryWorkflowPage() {
 
 function CollectSection({ branchId, shift }: { branchId: number; shift: { id: number } | null }) {
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
+  const [settleMode, setSettleMode] = useState<"courier" | "company">("courier");
+  const [statementNumber, setStatementNumber] = useState("");
+  const [statementDeductions, setStatementDeductions] = useState("");
+  const [statementNotes, setStatementNotes] = useState("");
+  const [selectedStatementLines, setSelectedStatementLines] = useState<Record<number, boolean>>({});
   const [countedCash, setCountedCash] = useState("");
   const utils = trpc.useUtils();
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
-  const obligationsQ = trpc.delivery.obligations.useQuery(undefined, { staleTime: 30_000, refetchInterval: 60_000 });
+  const obligationsQ = trpc.delivery.obligations.useQuery(undefined, { staleTime: 10_000, refetchInterval: 30_000 });
   const selectedParty = (obligationsQ.data ?? []).find((p: PartyObligation) => p.partyId === selectedPartyId);
-  const totalObligation = selectedParty ? Number((selectedParty as { codBalance?: string | number }).codBalance ?? 0) : 0;
+  const partyInfo = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
+  const isCompany = partyInfo?.partyType === "COMPANY";
+  const totalObligation = selectedParty ? Number(selectedParty.codDueTotal ?? 0) : 0;
+  const inTransitAmount = selectedParty ? Number(selectedParty.parcelsInTransitAmount ?? 0) : 0;
 
-  // الإرساليات المفتوحة للجهة المختارة — نحتاجها لبناء lines التوريد
+  // الإرساليات المفتوحة للجهة المختارة — نحتاجها لبناء lines التوريد وتأكيد التسليم
   const openConsQ = trpc.delivery.openConsignments.useQuery(
     { partyId: selectedPartyId ?? 0, limit: 200 },
-    { enabled: !!selectedPartyId, staleTime: 30_000 },
+    { enabled: !!selectedPartyId, staleTime: 10_000, refetchInterval: 30_000 },
   );
+
+  const openRows = openConsQ.data?.rows ?? [];
+  const remittableRows = openRows.filter((r) => r.parcelStatus === "DELIVERED");
+  const remittableTotal = remittableRows.reduce((sum, r) => {
+    const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
+    return sum + due;
+  }, 0);
+
+  // حسابات وضع كشف الشركة:
+  const statementSelectedRows = openRows.filter((r) => selectedStatementLines[r.id]);
+  const statementSelectedCodTotal = statementSelectedRows.reduce((sum, r) => {
+    const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
+    return sum + due;
+  }, 0);
+  const statementDeductionsNum = Number(statementDeductions || 0);
+  const statementNetExpected = Math.max(0, statementSelectedCodTotal - statementDeductionsNum);
+
+  const staffConfirmMut = trpc.delivery.staffConfirm.useMutation({
+    onSuccess: () => {
+      notify.ok("تم إثبات تسليم الطرد للزبون", "أصبح المبلغ بعهدة المندوب وجاهزاً للتوريد للدرج.");
+      void obligationsQ.refetch();
+      void openConsQ.refetch();
+      void utils.delivery.invalidate();
+    },
+    onError: (e) => notify.err(e, "تعذّر تأكيد التسليم"),
+  });
 
   const remitMut = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
-      notify.ok("تمّ التحصيل — " + r.remittanceNumber, "صافٍ " + fmt(r.netRemitted) + " د.ع");
-
+      notify.ok("تم التحصيل والتوريد للدرج — " + r.remittanceNumber, "صاف " + fmt(r.netRemitted) + " د.ع");
+      printRemittanceReceipt(selectedParty?.name ?? "المندوب", r);
       setCountedCash("");
       void obligationsQ.refetch();
+      void openConsQ.refetch();
       void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر التحصيل"),
   });
+
+  const companyStatementMut = trpc.delivery.recordCompanyStatement.useMutation({
+    onSuccess: (r) => {
+      notify.ok(`سُجِّل كشف الشركة ${r.statementNumber}`, `سند التوريد ${r.remittanceNumber ?? ""} — صافٍ ${fmt(r.netRemitted)} د.ع`);
+      const remainingOpen = openRows.filter((row) => !selectedStatementLines[row.id]);
+      const remainingOpenAmount = remainingOpen.reduce((sum, row) => sum + Number(row.codAmount || 0), 0);
+      printCompanyStatementReceipt({
+        companyName: partyInfo?.name ?? selectedParty?.name ?? "شركة التوصيل",
+        statementNumber: r.statementNumber,
+        remittanceNumber: r.remittanceNumber,
+        deliveriesConfirmed: r.deliveriesConfirmed,
+        collectedTotal: r.collectedTotal,
+        deductionsTotal: statementDeductions || "0",
+        netRemitted: r.netRemitted,
+        remainingOpenCount: remainingOpen.length,
+        remainingOpenAmount: remainingOpenAmount.toFixed(2),
+        settledAt: new Date(),
+        notes: statementNotes.trim() || undefined,
+      });
+      setStatementNumber("");
+      setStatementDeductions("");
+      setStatementNotes("");
+      setCountedCash("");
+      setSelectedStatementLines({});
+      void obligationsQ.refetch();
+      void openConsQ.refetch();
+      void utils.delivery.invalidate();
+    },
+    onError: (e) => notify.err(e, "تعذّر تسجيل كشف شركة التوصيل"),
+  });
+
+  async function handleConfirmDelivery(row: (typeof openRows)[number]) {
+    const remaining = Math.max(0, Number(row.codAmount ?? 0) - Number(row.collectedAmount ?? 0) - Number((row as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
+    const ok = await confirm({
+      title: "تأكيد تسليم الطرد للزبون",
+      description: [
+        `الإرسالية: ${row.consignmentNumber}`,
+        `الفاتورة: #${row.invoiceNumber ?? row.invoiceId ?? ""}`,
+        row.customerName ? `الزبون: ${row.customerName}` : "",
+        `المبلغ المطلوب: ${fmt(String(remaining))} د.ع`,
+        "سيُسجَّل أن المندوب سلّم الطلب للزبون وقبض المبلغ.",
+      ].filter(Boolean).join("\n"),
+      confirmText: "تأكيد التسليم",
+    });
+    if (!ok) return;
+
+    staffConfirmMut.mutate({
+      consignmentId: row.id,
+      collectedAmount: remaining.toFixed(2),
+      evidence: "تأكيد موظف الاستقبال / عودة المندوب",
+      clientRequestId: crypto.randomUUID(),
+    });
+  }
 
   async function handleCollect() {
     if (!selectedPartyId || !countedCash || !shift) return;
     const amount = D(countedCash);
     if (amount.lte(0)) { notify.err("أدخل مبلغاً صحيحاً"); return; }
 
-    const openRows = openConsQ.data?.rows ?? [];
-    if (openRows.length === 0) { notify.err("لا إرساليات مفتوحة — لا يوجد ما يُسوَّى"); return; }
+    if (remittableRows.length === 0) {
+      notify.err("لا توجد طرود مسلّمة جاهزة للتوريد — تأكد من تأكيد تسليم الطرود أولاً");
+      return;
+    }
 
-    // بناء lines تلقائياً: توزيع المبلغ بالترتيب الزمني حتى ينتهي المبلغ
+    // بناء lines تلقائياً: توزيع المبلغ بالترتيب الزمني على الإرساليات المُسلّمة فقط (DELIVERED)
     let remaining = amount;
     const lines: { consignmentId: number; collectedAmount: string }[] = [];
-    for (const row of openRows) {
+    for (const row of remittableRows) {
       if (remaining.lte(0)) break;
-      const due = D(String(Number(row.codAmount ?? 0) - Number(row.collectedAmount ?? 0) - Number((row as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0)));
+      const due = D(String(Math.max(0, Number(row.codAmount ?? 0) - Number(row.collectedAmount ?? 0) - Number((row as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0))));
       if (due.lte(0)) continue;
       const take = round2(remaining.gte(due) ? due : remaining);
       lines.push({ consignmentId: row.id, collectedAmount: take.toFixed(2) });
@@ -464,94 +659,444 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
     if (lines.length === 0) { notify.err("لا مبالغ مستحقة للتوريد"); return; }
 
     const ok = await confirm({
-      title: "تأكيد التحصيل",
+      title: "تأكيد التحصيل والتوريد للدرج",
       description: [
         `الجهة: ${selectedParty?.name ?? ""}`,
         `المبلغ المستلَم: ${fmt(amount.toFixed(2))} د.ع`,
-        `الذمة الكلية: ${fmt(String(totalObligation))} د.ع`,
+        `الذمة المسلّمة الجاهزة للتوريد: ${fmt(String(remittableTotal))} د.ع`,
         `عدد الإرساليات المُسوَّاة: ${lines.length}`,
-        amount.lt(D(String(totalObligation)))
-          ? `تسوية جزئية — يبقى ${fmt(round2(D(String(totalObligation)).minus(amount)).toFixed(2))} د.ع`
-          : "تسوية كاملة للذمة — الأجرة معزولة تلقائياً",
+        amount.lt(D(String(remittableTotal)))
+          ? `تسوية جزئية — يبقى ${fmt(round2(D(String(remittableTotal)).minus(amount)).toFixed(2))} د.ع نقد بعهدة الجهة`
+          : "تسوية كاملة للطرود المسلّمة — الأجرة معزولة تلقائياً",
       ].join("\n"),
-      confirmText: "قبض وتسوية",
+      confirmText: "قبض وتوريد للدرج",
     });
     if (!ok) return;
     remitMut.mutate({ partyId: selectedPartyId, lines, countedCash: amount.toFixed(2), clientRequestId: crypto.randomUUID() });
   }
 
+  async function handleCompanyStatementCollect() {
+    if (!selectedPartyId || !shift) return;
+    if (!statementNumber.trim()) {
+      notify.err("يرجى إدخال رقم كشف الشركة");
+      return;
+    }
+    const lines = statementSelectedRows.map((r) => {
+      const due = Math.max(0, Number(r.codAmount ?? 0) - Number(r.collectedAmount ?? 0) - Number((r as { counterSettledAmount?: string | number }).counterSettledAmount ?? 0));
+      return { consignmentId: r.id, collectedAmount: due.toFixed(2) };
+    });
+    if (lines.length === 0) {
+      notify.err("يرجى تحديد طرد واحد على الأقل تم تسليمه في الكشف");
+      return;
+    }
+    const cash = D(countedCash || String(statementNetExpected));
+    if (cash.lte(0) && statementNetExpected > 0) {
+      notify.err("أدخل المبلغ الصافي المستلم");
+      return;
+    }
+    const ok = await confirm({
+      title: "تأكيد تسوية كشف شركة التوصيل",
+      description: [
+        `الشركة: ${partyInfo?.name ?? ""}`,
+        `رقم الكشف: ${statementNumber}`,
+        `عدد الطرود المسلّمة بالكشف: ${lines.length}`,
+        `إجمالي مبالغ الطرود (COD): ${fmt(String(statementSelectedCodTotal))} د.ع`,
+        statementDeductionsNum > 0 ? `استقطاعات أجور الشركة: - ${fmt(String(statementDeductionsNum))} د.ع` : "",
+        `صافي النقد المورّد للدرج: ${fmt(cash.toFixed(2))} د.ع`,
+        openRows.length - lines.length > 0 ? `يبقى معلقاً بذمة الشركة: ${openRows.length - lines.length} طرود` : "تسوية شاملة لكل الطرود",
+      ].filter(Boolean).join("\n"),
+      confirmText: "تأكيد التسوية والقبض",
+    });
+    if (!ok) return;
 
+    companyStatementMut.mutate({
+      partyId: selectedPartyId,
+      branchId,
+      shiftType: "RECEPTION",
+      statementNumber: statementNumber.trim(),
+      statementDate: new Date().toISOString().slice(0, 10),
+      deductionsTotal: statementDeductionsNum > 0 ? statementDeductionsNum.toFixed(2) : undefined,
+      notes: statementNotes.trim() || undefined,
+      lines,
+      countedCash: cash.toFixed(2),
+      clientRequestId: crypto.randomUUID(),
+    });
+  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <div className="rounded-2xl border bg-card p-4">
+      <Card className="gap-0 p-4">
         <h2 className="mb-3 font-extrabold flex items-center gap-2">
-          <BarChart3 aria-hidden className="size-5" /> تحصيل وذمم المناديب
+          <BarChart3 aria-hidden className="size-5" /> تحصيل وذمم المناديب والشركات
         </h2>
-        <AppSelect value={selectedPartyId ? String(selectedPartyId) : ""}
-          onValueChange={(v) => { setSelectedPartyId(v ? Number(v) : null); setCountedCash(""); }}
-          className="h-12 w-full text-base">
+        <AppSelect
+          value={selectedPartyId ? String(selectedPartyId) : ""}
+          onValueChange={(v) => {
+            const nextId = v ? Number(v) : null;
+            setSelectedPartyId(nextId);
+            setCountedCash("");
+            setSelectedStatementLines({});
+            const info = (partiesQ.data ?? []).find((p) => p.id === nextId);
+            if (info?.partyType === "COMPANY") setSettleMode("company");
+            else setSettleMode("courier");
+          }}
+          className="h-12 w-full text-base"
+        >
           <option value="">— اختر المندوب أو شركة التوصيل —</option>
           {(partiesQ.data ?? []).map((p) => {
             const ob = (obligationsQ.data ?? []).find((ob: PartyObligation) => ob.partyId === p.id);
-            const bal = Number((ob as { codBalance?: string | number } | undefined)?.codBalance ?? 0);
+            const bal = Number(ob?.codDueTotal ?? 0);
             return (
               <option key={p.id} value={String(p.id)}>
-                {p.name}{bal > 0 ? ` — ذمة: ${fmt(String(bal))} د.ع` : ""}
+                {p.name} {p.partyType === "COMPANY" ? "(شركة)" : "(مندوب)"}{bal > 0 ? ` — ذمة: ${fmt(String(bal))} د.ع` : ""}
               </option>
             );
           })}
         </AppSelect>
-      </div>
+
+        {selectedPartyId && (
+          <div className="mt-3 flex gap-2 border-t pt-3">
+            <button
+              type="button"
+              onClick={() => setSettleMode("courier")}
+              className={cn(
+                "flex-1 py-2 px-3 text-xs font-bold rounded-lg border transition-colors",
+                settleMode === "courier"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:bg-muted/40",
+              )}
+            >
+              تسوية عهدة مندوب (توريد نقد)
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettleMode("company")}
+              className={cn(
+                "flex-1 py-2 px-3 text-xs font-bold rounded-lg border transition-colors flex items-center justify-center gap-1.5",
+                settleMode === "company"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:bg-muted/40",
+              )}
+            >
+              <FileText className="size-3.5" />
+              تسوية كشف شركة التوصيل (مطابقة طلبات)
+            </button>
+          </div>
+        )}
+      </Card>
 
       {selectedPartyId && (
-        <div className="rounded-2xl border bg-card p-4 space-y-3">
+        <Card className="gap-0 p-4 space-y-4">
           {obligationsQ.isLoading ? (
             <div className="py-8 text-center text-muted-foreground">جارٍ تحميل الذمة…</div>
           ) : (
             <>
-              <div className="rounded-xl border bg-muted/30 p-4">
+              {/* ملخص الذمة */}
+              <div className="rounded-xl border bg-muted/30 p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="font-bold">الذمة التراكمية</span>
+                    <span className="font-bold">إجمالي الذمة المسندة (COD)</span>
                     <p className="text-xs text-muted-foreground mt-0.5">مجموع قيمة الإرساليات غير المُسدَّدة — الأجرة معزولة</p>
                   </div>
-                  <span className={cn("text-xl font-extrabold tabular-nums", totalObligation > 0 ? "text-destructive" : "text-green-600")}>
+                  <span className={cn("text-xl font-extrabold tabular-nums", totalObligation > 0 ? "text-destructive" : "text-[var(--sem-pos)]")}>
                     {fmt(String(totalObligation))} د.ع
                   </span>
                 </div>
+
+                {totalObligation > 0 && (
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t text-xs">
+                    <div className="rounded-lg border bg-background/60 p-2.5">
+                      <div className="text-muted-foreground">طرود في الطريق</div>
+                      <div className="text-base font-extrabold tabular-nums text-foreground mt-0.5">
+                        {fmt(String(inTransitAmount))} د.ع
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">بعهدة الجهة للتسليم</div>
+                    </div>
+                    <div className="rounded-lg border bg-background/60 p-2.5">
+                      <div className="text-muted-foreground">نقد جاهز للتوريد</div>
+                      <div className="text-base font-extrabold tabular-nums text-[var(--sem-pos)] mt-0.5">
+                        {fmt(String(remittableTotal))} د.ع
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">سُلِّم للزبون بانتظار التوريد</div>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {shift && totalObligation > 0 && (
-                <div className="rounded-xl border border-green-300 bg-green-50 p-4 space-y-3">
-                  <p className="text-sm font-extrabold text-green-700">قبض من الجهة</p>
-                  <p className="text-xs text-muted-foreground">النظام يُسوّي الإرساليات تلقائياً — الأجرة معزولة</p>
-                  <div className="flex gap-2">
-                    <MoneyInput
-                      value={countedCash}
-                      onChange={setCountedCash}
-                      placeholder={"المبلغ المستلَم (الكامل: " + fmt(String(totalObligation)) + ")"}
-                      className="flex-1 h-11 text-base font-bold"
-                      ariaLabel="المبلغ المستلَم"
-                    />
-                    <Button className="bg-green-600 hover:bg-green-700 text-white px-6"
-                      disabled={!countedCash || remitMut.isPending} onClick={() => void handleCollect()}>
-                      {remitMut.isPending ? "…" : "قبض"}
-                    </Button>
+              {/* ─── وضع كشف شركة التوصيل ─── */}
+              {settleMode === "company" ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Building2 className="size-4 text-primary" />
+                      <span className="text-sm font-extrabold text-primary">بيانات كشف شركة التوصيل</span>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-bold">رقم الكشف المسلَّم من الشركة <span className="text-destructive">*</span></label>
+                        <Input
+                          value={statementNumber}
+                          onChange={(e) => setStatementNumber(e.target.value)}
+                          placeholder="مثال: STMT-2026-09"
+                          className="h-10 bg-background font-mono font-bold"
+                          dir="ltr"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-bold">استقطاعات أجور الشركة (د.ع)</label>
+                        <MoneyInput
+                          value={statementDeductions}
+                          onChange={setStatementDeductions}
+                          placeholder="0"
+                          className="h-10 bg-background"
+                          ariaLabel="استقطاعات أجور الشركة"
+                        />
+                      </div>
+                    </div>
                   </div>
-                  {countedCash && D(String(totalObligation)).gt(0) && D(countedCash).lt(D(String(totalObligation))) && (
-                    <p className="text-xs text-amber-600 font-bold">
-                      تسوية جزئية — يبقى {fmt(round2(D(String(totalObligation)).minus(D(countedCash))).toFixed(2))} د.ع على الجهة
-                    </p>
+
+                  {/* قائمة الطرود مع إمكانية التحديد بالمطابقة */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold text-muted-foreground">
+                        الطرود المفتوحة للشركة ({openRows.length})
+                      </h3>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs h-7 font-bold"
+                          onClick={() => {
+                            const next: Record<number, boolean> = {};
+                            openRows.forEach((r) => { next[r.id] = true; });
+                            setSelectedStatementLines(next);
+                          }}
+                        >
+                          تحديد الكل
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs h-7 font-bold text-muted-foreground"
+                          onClick={() => setSelectedStatementLines({})}
+                        >
+                          إلغاء التحديد
+                        </Button>
+                      </div>
+                    </div>
+
+                    {openRows.length === 0 ? (
+                      <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        لا توجد طرود مفتوحة لهذه الشركة
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {openRows.map((row) => {
+                          const cod = Number(row.codAmount ?? 0);
+                          const isSelected = !!selectedStatementLines[row.id];
+                          return (
+                            <div
+                              key={row.id}
+                              onClick={() => setSelectedStatementLines((prev) => ({ ...prev, [row.id]: !prev[row.id] }))}
+                              className={cn(
+                                "flex items-center justify-between gap-3 rounded-xl border p-3 cursor-pointer transition-colors shadow-xs",
+                                isSelected ? "border-primary bg-primary/5" : "bg-background hover:bg-muted/20",
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="shrink-0 text-primary">
+                                  {isSelected ? <CheckSquare className="size-5" /> : <Square className="size-5 text-muted-foreground" />}
+                                </div>
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-extrabold text-sm">فاتورة #{row.invoiceNumber ?? row.invoiceId}</span>
+                                    <span className="text-xs text-muted-foreground font-mono">{row.consignmentNumber}</span>
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {row.customerName && <span>الزبون: <strong className="text-foreground">{row.customerName}</strong></span>}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="text-end">
+                                <span className="text-xs text-muted-foreground block">المطلوب (COD)</span>
+                                <span className="font-extrabold text-sm tabular-nums text-foreground">{fmt(String(cod))} د.ع</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* حسابات التوريد والتأكيد */}
+                  {shift && statementSelectedRows.length > 0 && (
+                    <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
+                      <p className="text-sm font-extrabold text-[var(--sem-pos)]">مطابقة الكشف والقبض في الدرج</p>
+                      <div className="grid grid-cols-3 gap-2 text-xs border-b border-[var(--sem-pos)]/20 pb-3">
+                        <div>
+                          <span className="text-muted-foreground block">طرود الكشف المسلّمة</span>
+                          <span className="font-extrabold text-sm">{statementSelectedRows.length} طرود</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground block">مجموع الـ COD</span>
+                          <span className="font-extrabold text-sm">{fmt(String(statementSelectedCodTotal))} د.ع</span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground block">صافي النقد المتوقع</span>
+                          <span className="font-extrabold text-sm text-[var(--sem-pos)]">{fmt(String(statementNetExpected))} د.ع</span>
+                        </div>
+                      </div>
+
+                      {openRows.length - statementSelectedRows.length > 0 && (
+                        <p className="text-xs text-[var(--sem-warn)] font-bold">
+                          يبقى معلقاً بذمة الشركة: {openRows.length - statementSelectedRows.length} طرود (لم تُذكر بالكشف أو مؤجلة)
+                        </p>
+                      )}
+
+                      <div className="flex gap-2 pt-1">
+                        <MoneyInput
+                          value={countedCash}
+                          onChange={setCountedCash}
+                          placeholder={"المبلغ الصافي المستلم (المتوقع: " + fmt(String(statementNetExpected)) + ")"}
+                          className="flex-1 h-11 text-base font-bold bg-background"
+                          ariaLabel="المبلغ الصافي المستلم"
+                        />
+                        <Button
+                          className="bg-[var(--sem-pos)] hover:bg-[var(--sem-pos)]/90 text-background px-6 font-bold"
+                          disabled={companyStatementMut.isPending || !statementNumber.trim()}
+                          onClick={() => void handleCompanyStatementCollect()}
+                        >
+                          {companyStatementMut.isPending ? "جارٍ التوريد…" : "تسوية الكشف وتوريد النقد"}
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </div>
+              ) : (
+                /* ─── وضع تسوية المندوب الفردي التقليدي ─── */
+                <>
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-bold text-muted-foreground flex items-center justify-between">
+                      <span>الطرود والإرساليات المسندة ({openRows.length})</span>
+                      {inTransitAmount > 0 && (
+                        <span className="font-normal text-[var(--sem-warn)]">
+                          {openRows.filter((r) => r.parcelStatus !== "DELIVERED").length} طرود في الطريق
+                        </span>
+                      )}
+                    </h3>
+                    {openConsQ.isLoading ? (
+                      <div className="py-4 text-center text-xs text-muted-foreground">جارٍ تحميل الطرود…</div>
+                    ) : openRows.length === 0 ? (
+                      <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                        لا توجد طرود مفتوحة
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {openRows.map((row) => {
+                          const cod = Number(row.codAmount ?? 0);
+                          const isDelivered = row.parcelStatus === "DELIVERED";
+                          const isInTransit = !isDelivered;
+                          return (
+                            <div key={row.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border bg-background p-3 shadow-xs">
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-extrabold text-sm">
+                                    فاتورة #{row.invoiceNumber ?? row.invoiceId}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground font-mono">
+                                    {row.consignmentNumber}
+                                  </span>
+                                  {isInTransit && (
+                                    <Badge variant="secondary" className="text-[11px] font-bold">
+                                      في الطريق
+                                    </Badge>
+                                  )}
+                                  {isDelivered && (
+                                    <Badge className="bg-[var(--sem-pos-bg)] text-[var(--sem-pos)] border-transparent text-[11px] font-bold">
+                                      سلم — جاهز للتوريد
+                                    </Badge>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                                  {row.customerName && <span>الزبون: <strong className="text-foreground">{row.customerName}</strong></span>}
+                                  <span>المطلوب (COD): <strong className="text-foreground tabular-nums">{fmt(String(cod))} د.ع</strong></span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                                {isInTransit && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="font-bold text-xs h-8"
+                                    disabled={staffConfirmMut.isPending}
+                                    onClick={() => void handleConfirmDelivery(row)}
+                                  >
+                                    <CheckCircle2 aria-hidden className="size-3.5 ms-1 text-[var(--sem-pos)]" />
+                                    تأكيد التسليم
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* قسم القبض والتوريد للدرج للمندوب */}
+                  {shift && remittableTotal > 0 && (
+                    <div className="rounded-xl border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)]/20 p-4 space-y-3">
+                      <p className="text-sm font-extrabold text-[var(--sem-pos)]">قبض وتوريد النقد للدرج</p>
+                      <p className="text-xs text-muted-foreground">توريد المبالغ المحصلة من الطرود المسلمة للوردية الحالية — الأجرة معزولة</p>
+                      <div className="flex gap-2">
+                        <MoneyInput
+                          value={countedCash}
+                          onChange={setCountedCash}
+                          placeholder={"المبلغ المستلَم (الكامل: " + fmt(String(remittableTotal)) + ")"}
+                          className="flex-1 h-11 text-base font-bold bg-background"
+                          ariaLabel="المبلغ المستلَم"
+                        />
+                        <Button
+                          className="bg-[var(--sem-pos)] hover:bg-[var(--sem-pos)]/90 text-background px-6 font-bold"
+                          disabled={!countedCash || remitMut.isPending}
+                          onClick={() => void handleCollect()}
+                        >
+                          {remitMut.isPending ? "…" : "قبض وتوريد"}
+                        </Button>
+                      </div>
+                      {countedCash && D(String(remittableTotal)).gt(0) && D(countedCash).lt(D(String(remittableTotal))) && (
+                        <p className="text-xs text-[var(--sem-warn)] font-bold">
+                          تسوية جزئية — يبقى {fmt(round2(D(String(remittableTotal)).minus(D(countedCash))).toFixed(2))} د.ع بعهدة الجهة
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {shift && remittableTotal === 0 && totalObligation > 0 && (
+                    <div className="rounded-xl border bg-muted/40 p-4 space-y-2">
+                      <div className="flex items-center gap-2 font-bold text-xs text-foreground">
+                        <Clock aria-hidden className="size-4 text-muted-foreground" />
+                        <span>الطرود لا تزال في الطريق مع المندوب</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        إجمالي مبالغ الطرود ({fmt(String(totalObligation))} د.ع) لا تزال بعهدة المندوب في الميدان.
+                        عند عودة المندوب وتسليم الطلب، اضغط <strong>«تأكيد التسليم»</strong> على الطرد أعلاه، وسيظهر زر القبض والتوريد للدرج فوراً مع طباعة الإيصال.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
-              {totalObligation === 0 && <div className="rounded-xl border bg-green-50 p-4 text-center text-green-700 font-bold">لا ذمة على هذه الجهة</div>}
+
+              {totalObligation === 0 && (
+                <div className="rounded-xl border bg-[var(--sem-pos-bg)]/20 p-4 text-center text-[var(--sem-pos)] font-bold">
+                  لا ذمة على هذه الجهة
+                </div>
+              )}
 
               {!shift && <p className="text-sm text-destructive text-center">افتح وردية استقبال لتسجيل التحصيل</p>}
             </>
           )}
-        </div>
+        </Card>
       )}
     </div>
   );

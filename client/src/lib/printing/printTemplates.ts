@@ -28,7 +28,7 @@ export type {
   SalesInvoiceV2Data, PurchaseInvoiceV2Data, QuotationV2Data,
   WorkOrderV2Data, StatementV2Data, SalesReportV2Data, VoucherV2Data,
 } from './printTemplatesV2';
-import { qrCodeSvg } from './qr';
+import { qrCodeSvg, qrCodeSvgSync } from './qr';
 import { code128Svg } from './barcode';
 import { buildDigitalBlocks, type DigitalReceiptDetail } from './digitalReceiptLines';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
@@ -902,38 +902,40 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
 
   let barSvg = '';
   try {
-    const bc = code128Svg(d.receiptNumber, { moduleWidth: 0.8, height: 35, showText: true });
+    const bc = code128Svg(d.receiptNumber, { moduleWidth: 1.35, height: 48, showText: true });
     barSvg = bc.svg;
   } catch { /* ignore */ }
 
-  const itemRows = d.items.map(it => `<tr>
-    <td style="padding:1mm 0;">${esc(it.name)}</td>
-    <td style="text-align:center;">${it.quantity}</td>
-    <td style="text-align:left;">${fmt(it.price)}</td>
-    <td style="text-align:left;font-weight:600;">${fmt(it.total)}</td>
+  const qrPayload = d.receiptNumber ? `https://alarabiya.online/r/${encodeURIComponent(d.receiptNumber)}` : "";
+  const qrSvg = qrCodeSvgSync(qrPayload || `INV:${d.receiptNumber}`, { size: 125, margin: 1 });
+
+  const itemRows = d.items.map(it => `<tr style="border-bottom:1px dashed #000;">
+    <td style="padding:1.5mm 0;font-weight:800;font-size:11px;color:#000;">${esc(it.name)}</td>
+    <td style="text-align:center;font-weight:900;font-size:12px;color:#000;">${it.quantity}</td>
+    <td style="text-align:left;font-weight:800;font-size:11px;color:#000;">${fmt(it.price)}</td>
+    <td style="text-align:left;font-weight:900;font-size:11.5px;color:#000;">${fmt(it.total)}</td>
   </tr>`).join('');
 
-  const contactRows = RECEIPT_PHONES.map(p => `<tr style="border-bottom:1px dashed #ccc;">
-    <td style="padding:1mm 0;font-weight:600;">${esc(p.l)}</td>
-    <td style="padding:1mm 0;text-align:left;direction:ltr;font-weight:700;letter-spacing:0.3px;">${esc(p.n)}</td>
+  const contactRows = RECEIPT_PHONES.map(p => `<tr style="border-bottom:1px dashed #000;">
+    <td style="padding:1mm 0;font-weight:800;font-size:10.5px;color:#000;">${esc(p.l)}</td>
+    <td style="padding:1mm 0;text-align:left;direction:ltr;font-weight:900;font-size:11px;letter-spacing:0.3px;color:#000;">${esc(p.n)}</td>
   </tr>`).join('');
 
   // البطاقات الرقمية (ش١٠): كتلة تفاصيل تحت جدول الأصناف — نفس الأسطر التي يرسمها المسار الحراريّ.
   const digitalBlocks = buildDigitalBlocks(d.digitalDetails, { maskPhones: d.maskPhones });
   const digitalHtml = digitalBlocks.length
-    ? `<div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>` +
+    ? `<div style="border-bottom:2px dashed #000;margin:2mm 0;"></div>` +
       digitalBlocks.map(b => `
-        <div style="font-size:10px;margin-bottom:1.5mm;">
-          <div style="font-weight:900;font-size:11px;margin-bottom:0.7mm;">${esc(b.lineName)}</div>
-          ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;">
-            <span style="font-weight:700;color:#222;">${esc(r.label)}</span>
-            <span style="font-weight:900;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
+        <div style="font-size:10.5px;margin-bottom:1.5mm;">
+          <div style="font-weight:900;font-size:12px;margin-bottom:0.7mm;color:#000;">${esc(b.lineName)}</div>
+          ${b.rows.map(r => `<div style="display:flex;justify-content:space-between;gap:2mm;font-size:10.5px;">
+            <span style="font-weight:800;color:#000;">${esc(r.label)}</span>
+            <span style="font-weight:900;color:#000;direction:${/هاتف|رقم|ID/.test(r.label) ? 'ltr' : 'rtl'};">${esc(r.value)}</span>
           </div>`).join('')}
         </div>`).join('')
     : '';
 
-  // ٨/٨ — كتلة التوصيل على الإيصال: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون). الأجرة
-  // خارج `total` دائماً (تمريرٌ لا إيراد) — «يدفع الزبون» = الإجمالي + الأجرة (إلا SHOP فمجّاني).
+  // ٨/٨ — كتلة التوصيل على الإيصال: إفصاحٌ للزبون (الجهة/الأجرة/مَن يقبض/يدفع الزبون).
   const deliveryHtml = d.delivery ? (() => {
     const dl = d.delivery!;
     const fee = Number(dl.fee || 0);
@@ -941,80 +943,111 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
     const pays = Number(d.total || 0) + (shop ? 0 : fee);
     const who = dl.feeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : shop ? "على المكتبة — مجاناً للزبون" : "يقبضها المندوب من الزبون";
     return `
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="font-size:10.5px;border:1.5px solid #000;border-radius:3px;padding:2mm;">
-    <div style="text-align:center;font-weight:900;font-size:12px;margin-bottom:1mm;">التوصيل</div>
-    <div style="display:flex;justify-content:space-between;"><span>الجهة:</span><span style="font-weight:800;">${esc(dl.partyName)}</span></div>
-    ${dl.address ? `<div style="display:flex;justify-content:space-between;gap:2mm;"><span>العنوان:</span><span style="text-align:left;">${esc(dl.address)}</span></div>` : ''}
-    <div style="display:flex;justify-content:space-between;"><span>أجرة التوصيل:</span><span style="font-weight:800;">${shop ? "مجاناً" : fmt(fee)} <span style="font-weight:600;font-size:8.5px;">(${who})</span></span></div>
-    ${shop ? '' : `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:13px;margin-top:1mm;padding-top:1mm;border-top:1px dashed #000;"><span>يدفع الزبون شاملاً التوصيل:</span><span>${fmt(pays)} د.ع</span></div>`}
+  <div style="border-bottom:2px dashed #000;margin:2mm 0;"></div>
+  <div style="font-size:11px;border:2px solid #000;border-radius:4px;padding:2.5mm;color:#000;">
+    <div style="text-align:center;font-weight:900;font-size:13px;margin-bottom:1.5mm;border-bottom:1.5px solid #000;padding-bottom:1mm;">خدمة التوصيل</div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:1mm;"><span>الجهة:</span><span style="font-weight:900;">${esc(dl.partyName)}</span></div>
+    ${dl.address ? `<div style="display:flex;justify-content:space-between;gap:2mm;margin-bottom:1mm;"><span>العنوان:</span><span style="font-weight:800;text-align:left;">${esc(dl.address)}</span></div>` : ''}
+    <div style="display:flex;justify-content:space-between;margin-bottom:1mm;"><span>أجرة التوصيل:</span><span style="font-weight:900;">${shop ? "مجاناً" : fmt(fee)} <span style="font-weight:700;font-size:9.5px;">(${who})</span></span></div>
+    ${shop ? '' : `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin-top:1.5mm;padding-top:1.5mm;border-top:2px dashed #000;"><span>المطلوب من الزبون (شاملاً التوصيل):</span><span>${fmt(pays)} د.ع</span></div>`}
   </div>`;
   })() : '';
 
   const body = `
-  <div style="text-align:center;margin-bottom:2mm;">
-    <img src="${logo}" style="width:20mm;height:20mm;object-fit:contain;" alt="" onerror="this.style.display='none'">
-    <div style="font-size:18px;font-weight:900;margin-top:1.5mm;letter-spacing:-0.3px;">مكتبة العربية</div>
-    <div style="font-size:12px;font-weight:800;margin-top:0.5mm;">للطباعة والقرطاسية</div>
-    <div style="font-size:7.5px;color:#555;margin-top:0.5mm;">${esc(CO.name)}</div>
+  <div style="text-align:center;margin-bottom:2.5mm;">
+    <img src="${logo}" style="width:22mm;height:22mm;object-fit:contain;" alt="" onerror="this.style.display='none'">
+    <div style="font-size:20px;font-weight:900;margin-top:1.5mm;letter-spacing:-0.4px;color:#000;">مكتبة العربية</div>
+    <div style="font-size:13px;font-weight:900;margin-top:0.5mm;color:#000;">للطباعة والقرطاسية</div>
+    <div style="font-size:9px;font-weight:800;color:#000;margin-top:0.5mm;">${esc(CO.name)}</div>
   </div>
+
+  <div style="border-bottom:2.5px solid #000;margin:2.5mm 0;"></div>
+
+  <div style="margin:2.5mm 0;text-align:center;">
+    <div style="display:inline-block;padding:1mm;background:#fff;">${barSvg}</div>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:800;margin-bottom:1mm;color:#000;">
+    <span>رقم: <strong style="font-weight:900;font-size:12px;">${esc(d.receiptNumber)}</strong></span>
+    <span>التاريخ: <strong style="font-weight:900;">${esc(d.date)}</strong></span>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:800;margin-bottom:1mm;color:#000;">
+    ${d.cashierName ? `<span>الكاشير: <strong style="font-weight:900;">${esc(d.cashierName)}</strong></span>` : '<span></span>'}
+    ${d.time ? `<span>الوقت: <strong style="font-weight:900;">${esc(d.time)}</strong></span>` : '<span></span>'}
+  </div>
+  ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:11px;font-weight:800;margin-bottom:1mm;color:#000;"><span>الوردية: <strong style="font-weight:900;">#${d.shiftId}</strong></span><span></span></div>` : ''}
+  ${d.customerName ? `<div style="font-size:12px;font-weight:900;margin-bottom:1mm;padding:1mm 0;border-top:1px dashed #000;border-bottom:1px dashed #000;color:#000;">العميل: <strong style="font-weight:900;">${esc(d.customerName)}</strong></div>` : ''}
+
   <div style="border-bottom:2px solid #000;margin:2mm 0;"></div>
-  <div style="margin:2mm 0;text-align:center;">${barSvg}</div>
-  <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:1mm;">
-    <span>رقم: <strong>${esc(d.receiptNumber)}</strong></span><span>${esc(d.date)}</span>
-  </div>
-  <div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700;margin-bottom:1mm;">
-    ${d.cashierName ? `<span>الكاشير: <strong>${esc(d.cashierName)}</strong></span>` : '<span></span>'}
-    ${d.time ? `<span>الوقت: ${esc(d.time)}</span>` : '<span></span>'}
-  </div>
-  ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:10px;font-weight:700;margin-bottom:1mm;"><span>الوردية: <strong>#${d.shiftId}</strong></span><span></span></div>` : ''}
-  ${d.customerName ? `<div style="font-size:11px;font-weight:800;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <table style="width:100%;font-size:10px;border-collapse:collapse;">
-    <thead><tr style="border-bottom:1px solid #000;">
-      <th style="text-align:right;padding:1mm 0;font-weight:700;">المنتج</th>
-      <th style="text-align:center;padding:1mm 0;font-weight:700;width:8mm;">عدد</th>
-      <th style="text-align:left;padding:1mm 0;font-weight:700;width:14mm;">السعر</th>
-      <th style="text-align:left;padding:1mm 0;font-weight:700;width:16mm;">المبلغ</th>
+
+  <table style="width:100%;font-size:10.5px;border-collapse:collapse;color:#000;">
+    <thead><tr style="border-bottom:2px solid #000;font-size:11px;">
+      <th style="text-align:right;padding:1.5mm 0;font-weight:900;">المنتج</th>
+      <th style="text-align:center;padding:1.5mm 0;font-weight:900;width:8mm;">عدد</th>
+      <th style="text-align:left;padding:1.5mm 0;font-weight:900;width:15mm;">السعر</th>
+      <th style="text-align:left;padding:1.5mm 0;font-weight:900;width:17mm;">المبلغ</th>
     </tr></thead>
     <tbody>${itemRows}</tbody>
   </table>
+
   ${digitalHtml}
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="font-size:10.5px;">
-    <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>
-    ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الخصم:</span><span>-${fmt(d.discount)}</span></div>` : ''}
-    ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الضريبة:</span><span>${fmt(d.tax)}</span></div>` : ''}
-    ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<div style="display:flex;justify-content:space-between;"><span>تقريب نقديّ:</span><span>${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</span></div>` : ''}
-    <div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin:1.5mm 0;
-      padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">
-      <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>
+
+  <div style="border-bottom:2px solid #000;margin:2.5mm 0;"></div>
+
+  <div style="font-size:11px;color:#000;">
+    <div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>المجموع الفرعي:</span><span style="font-weight:900;">${fmt(d.subtotal)} د.ع</span></div>
+    ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>الخصم الممنوح:</span><span style="font-weight:900;">-${fmt(d.discount)} د.ع</span></div>` : ''}
+    ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>الضريبة:</span><span style="font-weight:900;">${fmt(d.tax)} د.ع</span></div>` : ''}
+    ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>تقريب نقديّ:</span><span style="font-weight:900;">${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)} د.ع</span></div>` : ''}
+
+    <div style="display:flex;justify-content:space-between;font-weight:900;font-size:16px;margin:2mm 0;
+      padding:2mm;border:2.5px solid #000;border-radius:4px;background:#fff;color:#000;">
+      <span>الإجمالي الكلي:</span><span style="letter-spacing:-0.3px;">${fmt(d.total)} د.ع</span>
     </div>
-    ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>طريقة الدفع:</span><span>${esc(d.paymentMethod)}</span></div>` : ''}
-    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
-    ${d.change != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
-    ${Number(d.heldDeposits ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>عربون محتجز:</span><span>${fmt(d.heldDeposits)}</span></div>` : ''}
-    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:12.5px;padding:1mm 0;border-top:1px dashed #666;margin-top:1mm;"><span>متبقٍّ (آجل):</span><span>${fmt(d.credit)} د.ع</span></div>` : ''}
+
+    ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>طريقة الدفع:</span><span style="font-weight:900;">${esc(d.paymentMethod)}</span></div>` : ''}
+    ${d.paid != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>المدفوع:</span><span style="font-weight:900;">${fmt(d.paid)} د.ع</span></div>` : ''}
+    ${d.change != null ? `<div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:1mm;"><span>الباقي المسترد:</span><span style="font-weight:900;">${fmt(d.change)} د.ع</span></div>` : ''}
+    ${Number(d.heldDeposits ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;margin-bottom:1mm;"><span>عربون محتجز:</span><span style="font-weight:900;">${fmt(d.heldDeposits)} د.ع</span></div>` : ''}
+    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:900;font-size:13px;padding:1.5mm 0;border-top:2px dashed #000;margin-top:1.5mm;color:#000;"><span>المتبقي (ذمة آجلة):</span><span>${fmt(d.credit)} د.ع</span></div>` : ''}
   </div>
+
   ${deliveryHtml}
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="text-align:center;margin:3mm 0 1mm;">
-    <div style="font-size:12px;font-weight:900;">شكراً لتسوقكم معنا</div>
-    <div style="font-size:9px;color:#555;">نتمنى لكم تجربة ممتعة</div>
+
+  ${qrSvg ? `
+  <div style="border-bottom:2px dashed #000;margin:3mm 0;"></div>
+  <div style="text-align:center;margin:2.5mm 0;">
+    <div style="display:inline-block;padding:2mm;border:2px solid #000;border-radius:4px;background:#fff;">
+      ${qrSvg}
+    </div>
+    <div style="font-size:10px;font-weight:900;margin-top:1mm;color:#000;">رمز التحقق السريع من الفاتورة (QR)</div>
   </div>
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <table style="width:100%;font-size:9.5px;border-collapse:collapse;margin:1mm 0;">
-    <thead><tr style="border-bottom:1px solid #000;">
-      <th style="text-align:right;padding:1mm 0;font-weight:700;">القسم</th>
-      <th style="text-align:left;padding:1mm 0;font-weight:700;">رقم التواصل</th>
+  ` : ''}
+
+  <div style="border-bottom:2px solid #000;margin:2.5mm 0;"></div>
+
+  <div style="text-align:center;margin:2mm 0 1.5mm;">
+    <div style="font-size:13px;font-weight:900;color:#000;">شكراً لتسوقكم معنا</div>
+    <div style="font-size:10px;font-weight:800;color:#000;margin-top:0.5mm;">نتمنى لكم تجربة مميزة</div>
+  </div>
+
+  <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
+
+  <table style="width:100%;font-size:10px;border-collapse:collapse;margin:1mm 0;color:#000;">
+    <thead><tr style="border-bottom:1.5px solid #000;">
+      <th style="text-align:right;padding:1mm 0;font-weight:900;">القسم</th>
+      <th style="text-align:left;padding:1mm 0;font-weight:900;">رقم التواصل</th>
     </tr></thead>
     <tbody>${contactRows}</tbody>
   </table>
-  <div style="text-align:center;font-size:9px;font-weight:600;margin:2mm 0 1mm;">
+
+  <div style="text-align:center;font-size:10px;font-weight:800;margin:2mm 0 1.5mm;color:#000;">
     بغداد — العامرية / شارع العمل الشعبي
   </div>
-  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
-  <div style="text-align:center;margin:2mm 0;padding:2mm;border:1.5px solid #000;border-radius:2px;font-size:9px;font-weight:700;line-height:1.6;">
+
+  <div style="border-bottom:2px solid #000;margin:2mm 0;"></div>
+
+  <div style="text-align:center;margin:2.5mm 0;padding:2.5mm;border:2.5px solid #000;border-radius:4px;font-size:10px;font-weight:900;line-height:1.6;color:#000;">
     نعتذر عن قبول الاسترجاع — والاستبدال متاح<br>
     خلال 48 ساعة بشرط سلامة المنتج بـ100%
   </div>`;

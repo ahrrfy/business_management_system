@@ -801,63 +801,13 @@ export default function Reception() {
     },
     [branchId, addRow, utils, effectiveTier, offline],
   );
-  // مسح باركود أمر الشغل للتسليم المباشر (من شاشة الاستقبال فقط)
-  // الإسناد للمندوب انتقل لشاشة /reception/workflow
-  const [scannedWo, setScannedWo] = useState<{ id: number; orderNumber: string; salePrice: string; deposit: string | null } | null>(null);
-  const deliveryPartiesQ = trpc.delivery.listParties.useQuery(
-    { activeOnly: true },
-    { enabled: !!scannedWo },
-  );
-
-  const deliverWoMut = trpc.workOrders.deliver.useMutation({
-    onSuccess: () => {
-      notify.ok("تم تسليم طلب الخدمة بنجاح وقبض المبلغ نقداً");
-      setScannedWo(null);
-      void utils.workOrders.invalidate();
-    },
-    onError: (err: any) => {
-      notify.err(err?.message || "تعذّر تسليم طلب الخدمة");
-    },
-  });
-
-  const dispatchWoMut = trpc.delivery.dispatch.useMutation({
-    onSuccess: (data) => {
-      notify.ok(`تم إسناد الطلب للمندوب برقم إرسالية ${data.consignmentNumber}`);
-      setScannedWo(null);
-      void utils.workOrders.invalidate();
-    },
-    onError: (err: any) => {
-      notify.err(err?.message || "تعذّر إسناد الطلب للمندوب");
-    },
-  });
 
   const handleWorkOrderScan = useCallback(
     async (orderNumber: string) => {
-      try {
-        const wo = await utils.workOrders.getByNumber.fetch({ orderNumber });
-        if (!wo) {
-          notify.err(`طلب الخدمة غير موجود: ${orderNumber}`);
-          return;
-        }
-        if (wo.status === "DELIVERED") {
-          notify.info(`هذا الطلب تم تسليمه وإغلاقه مسبقاً (${wo.orderNumber})`);
-          return;
-        }
-        if (wo.status !== "READY") {
-          notify.warn(`هذا الطلب ليس في حالة «جاهز للتسليم» بعد (حالته الحالية: ${wo.status})`);
-          return;
-        }
-        setScannedWo({
-          id: wo.id,
-          orderNumber: wo.orderNumber,
-          salePrice: wo.salePrice,
-          deposit: wo.deposit,
-        });
-      } catch (e: any) {
-        notify.err(e?.message || "تعذّر جلب بيانات أمر الشغل");
-      }
+      // التسليم والإسناد انتقلا إلى /reception/handover و /reception/workflow
+      notify.info(`مسح أمر شغل ${orderNumber} — استخدم شاشة التسليم المباشر`);
     },
-    [utils],
+    [],
   );
 
   const handleHidScan = useCallback(
@@ -1294,7 +1244,7 @@ export default function Reception() {
     }
   }
 
-  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
     // Fail before customer creation/offline capture: a stale external method must not
     // leave an orphan customer when the checkout service rejects the payment.
     if (!isPosPaymentMethodEnabled(String(method))) {
@@ -1366,11 +1316,15 @@ export default function Reception() {
       return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
+    const isReserve = !!opts.isReservation;
+
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
     // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
     // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
-    const inputPaidD = (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
+    const inputPaidD = isReserve
+      ? (paidD.gt(0) ? paidD : D(0))
+      : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
@@ -1405,11 +1359,19 @@ export default function Reception() {
     // بيع مباشر آجل (قرار المالك ١٠/٨): المتبقّي على البضاعة الجاهزة يصير ذمّةً على العميل المسجَّل.
     // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
     // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
-    if (deferred) {
+    if (deferred && !isReserve) {
       if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
     const hasCustomLines = customWithDeposits.length > 0;
+    // حجز الفاتورة للطلبات عن بعد أو التسليم يتطلب معرفة العميل (اسمه وهاتفه)
+    if (isReserve) {
+      if (!customer.customerId && (!isValidIqMobile(receptionPhone) || customer.name.trim().length < 2)) {
+        notify.err("لحفظ وحجز الفاتورة يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+    }
     // رقم الهاتف إلزامي فقط لأوامر التخصيص/الطباعة — أما البيع المباشر النقدي فالعميل اختياري بالكامل!
     if (hasCustomLines) {
       if (!isValidIqMobile(receptionPhone)) {
@@ -1426,7 +1388,7 @@ export default function Reception() {
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
+    if (!orderDelivery && !deferred && !isReserve && appliedPaidD.plus(heldD).lt(directFloorD)) {
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
         `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
@@ -1471,7 +1433,7 @@ export default function Reception() {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
-        if (hasCustomLines || deferred) {
+        if (hasCustomLines || deferred || isReserve) {
           setSubmitting(false);
           notify.err(e?.message || "تعذّر حفظ العميل");
           return;
@@ -1648,7 +1610,7 @@ export default function Reception() {
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
         // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
         // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
-        deferredDirect: deferred,
+        deferredDirect: deferred || isReserve,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1882,7 +1844,14 @@ export default function Reception() {
         : browserFallbacks > 0
           ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
           : "أُرسلت المستندات إلى الطابعة مباشرة";
-      notify.ok(`تمّ ${summary}`, printDescription);
+      if (isReserve) {
+        notify.ok(
+          `تم حفظ وحجز الفاتورة #${result.regularSale?.invoiceNumber ?? ""}`,
+          "جاهزة للتسليم المباشر (/reception/handover) أو الإسناد للتوصيل (/reception/workflow)",
+        );
+      } else {
+        notify.ok(`تمّ ${summary}`, printDescription);
+      }
       // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
       // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
       setLastSale({

@@ -409,7 +409,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     await tx
       .update(workOrders)
-      .set({ status: "DELIVERED", kanbanState: sql`null`, invoiceId, deliveredAt: new Date() })
+      .set({ status: "DELIVERED", kanbanState: "NORMAL", invoiceId, deliveredAt: new Date() })
       .where(eq(workOrders.id, Number(wo.id)));
 
     if (input.clientRequestId) {

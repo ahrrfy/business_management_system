@@ -1075,7 +1075,7 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) return null;
       const raw = input.orderNumber.trim();
-      const stripped = raw.replace(/^WO-/i, "");
+      const stripped = raw.replace(/^WO-/i, "").replace(/^INV-/i, "");
       const [row] = await db
         .select({
           id: workOrders.id,
@@ -1104,7 +1104,43 @@ export const workOrderRouter = router({
           )
         )
         .limit(1);
-      return row ?? null;
+      if (row) {
+        return { ...row, kind: "workOrder" as const };
+      }
+
+      const [inv] = await db
+        .select({
+          id: invoices.id,
+          orderNumber: invoices.invoiceNumber,
+          title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
+          status: invoices.status,
+          salePrice: invoices.total,
+          deposit: invoices.paidAmount,
+          customerId: invoices.customerId,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
+          deliveryAddress: sql<string | null>`NULL`,
+          deliveryPhone: sql<string | null>`NULL`,
+          deliveryCost: sql<string | null>`'0.00'`,
+          deliveryFeeCollection: sql<string | null>`'COURIER'`,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(
+          or(
+            eq(invoices.invoiceNumber, raw),
+            eq(invoices.invoiceNumber, `INV-${stripped}`),
+            eq(invoices.invoiceNumber, stripped),
+            like(invoices.invoiceNumber, `%${stripped}%`)
+          )
+        )
+        .limit(1);
+      if (inv) {
+        return { ...inv, kind: "invoice" as const };
+      }
+
+      return null;
     }),
 
   /**
