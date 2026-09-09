@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { InfoField, InfoGrid } from "@/components/data-display/InfoGrid";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -20,12 +21,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { exportRows } from "@/lib/export";
+import { downloadApplicantCv } from "@/lib/applicantCvDownload";
 import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { careersUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
-import { APPLICANT_SOURCES, APPLICANT_STAGES, EMPLOYMENT_TYPES, HR_DEPARTMENTS, applicantSourceLabel, applicantStageLabel, employmentTypeLabel, vacancyAccent } from "@shared/hr";
-import { Briefcase, ChevronLeft, Copy, Download, Eye, ExternalLink, FileSpreadsheet, FileText, GraduationCap, Image as ImageIcon, Link as LinkIcon, Mail, MapPin, Pencil, Phone, Plus, Star, Trash2, Users } from "lucide-react";
+import { APPLICANT_SOURCES, APPLICANT_STAGES, EMPLOYMENT_TYPES, HR_DEPARTMENTS, applicantSourceLabel, applicantStageLabel, employmentTypeLabel, vacancyAccent, type ApplicantStage } from "@shared/hr";
+import { Briefcase, ChevronLeft, ChevronRight, Copy, Download, Eye, ExternalLink, FileSpreadsheet, FileText, GraduationCap, GripVertical, Image as ImageIcon, Link as LinkIcon, Mail, MapPin, Pencil, Phone, Plus, Star, Trash2, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { selectClsSm } from "@/lib/ui/formStyles";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -39,22 +41,23 @@ const STAGE_COLOR: Record<string, string> = {
   archived: "var(--muted-foreground)",
 };
 
-/** المرحلة التالية في المسار (للزر «نقل»). الرفض/الأرشيف نهايتان. */
-const NEXT_STAGE: Record<string, string | null> = {
-  new: "review",
-  review: "interview",
-  interview: "accepted",
-  accepted: null,
-  rejected: null,
-  archived: null,
-};
+const PIPELINE_STAGES: ApplicantStage[] = ["new", "review", "interview", "accepted"];
+
+function adjacentStage(stage: ApplicantStage, direction: "previous" | "next"): ApplicantStage | null {
+  // الحالات النهائية لا تحمل تاريخاً للمرحلة السابقة؛ زر الإرجاع يعيدها للمراجعة،
+  // بينما السحب يسمح باختيار المرحلة الدقيقة المطلوبة.
+  if (stage === "rejected" || stage === "archived") return direction === "previous" ? "review" : null;
+  const index = PIPELINE_STAGES.indexOf(stage);
+  const target = direction === "previous" ? index - 1 : index + 1;
+  return PIPELINE_STAGES[target] ?? null;
+}
 
 type Applicant = {
   id: number;
   name: string;
   jobTitle: string | null;
   source: string;
-  stage: string;
+  stage: ApplicantStage;
   phone: string | null;
   rating: number | null;
   cvFileKey: string | null;
@@ -88,6 +91,8 @@ export default function Recruitment() {
   const [q, setQ] = useState("");
   const [paperOpen, setPaperOpen] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [draggedApplicantId, setDraggedApplicantId] = useState<number | null>(null);
+  const [dropStage, setDropStage] = useState<ApplicantStage | null>(null);
 
   const vacancyOptsQ = trpc.recruitment.vacancyList.useQuery();
 
@@ -137,6 +142,20 @@ export default function Recruitment() {
     },
     onError: (e) => notify.err(e),
   });
+
+  async function moveApplicantTo(applicant: Applicant, targetStage: ApplicantStage) {
+    if (applicant.stage === targetStage || move.isPending) return;
+    if (targetStage === "rejected" || targetStage === "archived") {
+      const approved = await confirm({
+        variant: "warning",
+        title: targetStage === "rejected" ? "رفض المتقدّم" : "أرشفة المتقدّم",
+        description: `نقل المتقدّم «${applicant.name}» إلى مرحلة «${applicantStageLabel(targetStage)}»؟`,
+        confirmText: targetStage === "rejected" ? "رفض" : "أرشفة",
+      });
+      if (!approved) return;
+    }
+    move.mutate({ id: applicant.id, stage: targetStage });
+  }
 
   function copyLink() {
     navigator.clipboard
@@ -259,105 +278,127 @@ export default function Recruitment() {
 
           {list.isError && <ErrorState message="تعذّر تحميل المتقدّمين." onRetry={() => list.refetch()} />}
 
-          {/* مسار المتقدّمين (Kanban) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            {APPLICANT_STAGES.map((st) => {
-              const items = rows.filter((a) => a.stage === st.key);
-              const color = STAGE_COLOR[st.key] ?? "#64748b";
-              return (
-                <div key={st.key} className="bg-muted/40 rounded-lg p-2.5 min-h-24">
-                  <div className="flex items-center justify-between mb-2.5 px-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="size-2 rounded-full shrink-0" style={{ background: color }} />
-                      <span className="text-xs font-semibold">{st.label}</span>
-                    </div>
-                    <span className="text-[11px] text-muted-foreground tabular-nums">{items.length}</span>
-                  </div>
-                  <div className="space-y-2">
-                    {items.map((a) => {
-                      const next = NEXT_STAGE[a.stage];
-                      return (
-                        <div key={a.id} className="bg-card border border-border rounded-lg p-2.5 transition-shadow hover:shadow-sm">
-                          <div className="flex items-center gap-2">
-                            <EmpAvatar name={a.name} color={color} sizePx={28} />
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[12px] font-medium truncate">{a.name}</div>
-                              <div className="text-[10px] text-muted-foreground truncate">{a.jobTitle || "—"}</div>
-                            </div>
-                            <button type="button" onClick={() => setDetailId(a.id)} className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`تفاصيل ${a.name}`} title="عرض التفاصيل">
-                              <Eye className="size-3.5" />
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
-                            <span className="inline-flex items-center gap-1">
-                              {a.source === "external" ? <LinkIcon className="size-3" /> : <FileText className="size-3" />}
-                              {applicantSourceLabel(a.source)}
-                            </span>
-                            <Stars rating={a.rating} />
-                          </div>
-                          {a.phone && (
-                            <div className="flex items-center gap-1 mt-1.5 text-[10px] text-muted-foreground" dir="ltr">
-                              <Phone className="size-3 shrink-0" />
-                              <span className="tabular-nums">{a.phone}</span>
-                            </div>
-                          )}
-                          {next && (
-                            <Button size="sm" variant="outline" className="w-full mt-2 h-7 text-[11px]" disabled={move.isPending} onClick={() => move.mutate({ id: a.id, stage: next as never })}>
-                              نقل إلى «{applicantStageLabel(next)}» <ChevronLeft className="size-3.5" />
-                            </Button>
-                          )}
-                          {a.stage !== "rejected" && a.stage !== "archived" && (
-                            <div className="flex gap-1.5 mt-1.5">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="flex-1 h-6 text-[10px] text-destructive"
-                                disabled={move.isPending}
-                                onClick={async () => {
-                                  if (
-                                    !(await confirm({
-                                      variant: "warning",
-                                      title: "رفض المتقدّم",
-                                      description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("rejected")}»؟`,
-                                      confirmText: "رفض",
-                                    }))
-                                  )
-                                    return;
-                                  move.mutate({ id: a.id, stage: "rejected" });
-                                }}
-                              >
-                                رفض
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="flex-1 h-6 text-[10px] text-muted-foreground"
-                                disabled={move.isPending}
-                                onClick={async () => {
-                                  if (
-                                    !(await confirm({
-                                      variant: "warning",
-                                      title: "أرشفة المتقدّم",
-                                      description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("archived")}»؟`,
-                                      confirmText: "أرشفة",
-                                    }))
-                                  )
-                                    return;
-                                  move.mutate({ id: a.id, stage: "archived" });
-                                }}
-                              >
-                                أرشفة
-                              </Button>
-                            </div>
-                          )}
+          {/* مسار المتقدّمين (Kanban): السحب للفأرة + أزرار صريحة للمس/لوحة المفاتيح. */}
+          <div className="space-y-2">
+            <p className="text-xs leading-5 text-muted-foreground">اسحب بطاقة المتقدّم إلى المرحلة المطلوبة، أو استخدم زري «السابق» و«التالي» داخل البطاقة.</p>
+            <div className="overflow-x-auto pb-2">
+              <div className="grid min-w-[1560px] grid-cols-6 gap-3">
+                {APPLICANT_STAGES.map((st) => {
+                  const targetStage = st.key;
+                  const items = rows.filter((a) => a.stage === targetStage);
+                  const color = STAGE_COLOR[targetStage] ?? "#64748b";
+                  const isDropTarget = draggedApplicantId != null && dropStage === targetStage;
+                  return (
+                    <section
+                      key={targetStage}
+                      aria-label={`مرحلة ${st.label}`}
+                      onDragOver={(event) => {
+                        if (draggedApplicantId == null) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        setDropStage(targetStage);
+                      }}
+                      onDragLeave={(event) => {
+                        const nextTarget = event.relatedTarget;
+                        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) setDropStage((current) => (current === targetStage ? null : current));
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const transferredId = Number(event.dataTransfer.getData("text/plain"));
+                        const applicantId = Number.isInteger(transferredId) && transferredId > 0 ? transferredId : draggedApplicantId;
+                        const applicant = rows.find((row) => row.id === applicantId);
+                        setDraggedApplicantId(null);
+                        setDropStage(null);
+                        if (applicant) void moveApplicantTo(applicant, targetStage);
+                      }}
+                      className={`min-h-52 rounded-lg border p-3 transition-colors ${isDropTarget ? "border-primary bg-primary/5" : "border-transparent bg-muted/40"}`}
+                    >
+                      <div className="mb-3 flex items-center justify-between px-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} />
+                          <span className="text-sm font-semibold">{st.label}</span>
                         </div>
-                      );
-                    })}
-                    {items.length === 0 && <div className="text-[11px] text-muted-foreground text-center py-4">لا طلبات</div>}
-                  </div>
-                </div>
-              );
-            })}
+                        <Badge variant="outline" className="h-6 min-w-6 justify-center px-1.5 tabular-nums">{items.length}</Badge>
+                      </div>
+                      <div className="space-y-2.5">
+                        {items.map((a) => {
+                          const previous = adjacentStage(a.stage, "previous");
+                          const next = adjacentStage(a.stage, "next");
+                          const isDragging = draggedApplicantId === a.id;
+                          return (
+                            <article
+                              key={a.id}
+                              draggable={!move.isPending}
+                              onDragStart={(event) => {
+                                event.dataTransfer.effectAllowed = "move";
+                                event.dataTransfer.setData("text/plain", String(a.id));
+                                setDraggedApplicantId(a.id);
+                              }}
+                              onDragEnd={() => {
+                                setDraggedApplicantId(null);
+                                setDropStage(null);
+                              }}
+                              className={`rounded-lg border border-border bg-card p-3 transition-[opacity,box-shadow] hover:shadow-sm ${isDragging ? "opacity-50" : "opacity-100"}`}
+                            >
+                              <div className="flex items-start gap-2.5">
+                                <GripVertical aria-hidden className="mt-1 size-4 shrink-0 cursor-grab text-muted-foreground" />
+                                <EmpAvatar name={a.name} color={color} sizePx={34} />
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm font-semibold">{a.name}</div>
+                                  <div className="mt-0.5 truncate text-xs text-muted-foreground">{a.jobTitle || "تقديم عام"}</div>
+                                </div>
+                                <button type="button" onClick={() => setDetailId(a.id)} className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`تفاصيل ${a.name}`} title="عرض التفاصيل">
+                                  <Eye className="size-4" />
+                                </button>
+                              </div>
+                              <div className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                <span className="inline-flex min-w-0 items-center gap-1.5">
+                                  {a.source === "external" ? <LinkIcon className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}
+                                  <span className="truncate">{applicantSourceLabel(a.source)}</span>
+                                </span>
+                                <Stars rating={a.rating} />
+                              </div>
+                              {a.phone && (
+                                <a href={`tel:${a.phone}`} className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-foreground hover:text-primary" dir="ltr">
+                                  <Phone className="size-3.5 shrink-0" />
+                                  <span className="tabular-nums">{a.phone}</span>
+                                </a>
+                              )}
+                              {(previous || next) && (
+                                <div className="mt-3 flex gap-2">
+                                  {previous && (
+                                    <Button size="sm" variant="outline" className="h-8 flex-1 px-2 text-xs" disabled={move.isPending} onClick={() => void moveApplicantTo(a, previous)} title={`نقل إلى ${applicantStageLabel(previous)}`}>
+                                      <ChevronRight className="size-3.5" />
+                                      {a.stage === "rejected" || a.stage === "archived" ? "إرجاع للمراجعة" : "السابق"}
+                                    </Button>
+                                  )}
+                                  {next && (
+                                    <Button size="sm" variant="outline" className="h-8 flex-1 px-2 text-xs" disabled={move.isPending} onClick={() => void moveApplicantTo(a, next)} title={`نقل إلى ${applicantStageLabel(next)}`}>
+                                      {applicantStageLabel(next)} <ChevronLeft className="size-3.5" />
+                                    </Button>
+                                  )}
+                                </div>
+                              )}
+                              {a.stage !== "rejected" && a.stage !== "archived" && (
+                                <div className="mt-2 flex gap-2 border-t pt-2">
+                                  <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-destructive" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "rejected")}>رفض</Button>
+                                  <Button size="sm" variant="ghost" className="h-7 flex-1 text-xs text-muted-foreground" disabled={move.isPending} onClick={() => void moveApplicantTo(a, "archived")}>أرشفة</Button>
+                                </div>
+                              )}
+                            </article>
+                          );
+                        })}
+                        {items.length === 0 && (
+                          <div className={`rounded-md border border-dashed px-3 py-8 text-center text-xs ${isDropTarget ? "border-primary text-primary" : "border-border text-muted-foreground"}`}>
+                            {isDropTarget ? `أفلت هنا للنقل إلى «${st.label}»` : "لا طلبات"}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <PaperDialog open={paperOpen} onClose={() => setPaperOpen(false)} onSaved={() => void utils.recruitment.list.invalidate()} />
@@ -371,8 +412,23 @@ export default function Recruitment() {
 /* ====================== حوار تفاصيل المتقدّم ====================== */
 function ApplicantDetailDialog({ id, onClose, vacancies }: { id: number | null; onClose: () => void; vacancies: { id: number; title: string }[] }) {
   const q = trpc.recruitment.get.useQuery({ id: id ?? 0 }, { enabled: id != null });
+  const [isDownloading, setIsDownloading] = useState(false);
   const a = q.data;
   const vacancyTitle = a?.vacancyId != null ? (vacancies.find((v) => v.id === a.vacancyId)?.title ?? null) : null;
+  const positionTitle = vacancyTitle || a?.jobTitle || "تقديم عام";
+
+  async function handleCvDownload() {
+    if (!a?.cvFileKey || isDownloading) return;
+    setIsDownloading(true);
+    try {
+      await downloadApplicantCv(a.cvFileKey, a.name);
+      notify.ok("بدأ تنزيل السيرة الذاتية");
+    } catch (error) {
+      notify.err(error);
+    } finally {
+      setIsDownloading(false);
+    }
+  }
 
   return (
     <Dialog
@@ -381,7 +437,7 @@ function ApplicantDetailDialog({ id, onClose, vacancies }: { id: number | null; 
         if (!o) onClose();
       }}
     >
-      <DialogContent dir="rtl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" dir="rtl">
         <DialogHeader>
           <DialogTitle>تفاصيل المتقدّم</DialogTitle>
         </DialogHeader>
@@ -390,111 +446,64 @@ function ApplicantDetailDialog({ id, onClose, vacancies }: { id: number | null; 
         ) : !a ? (
           <p className="text-sm text-muted-foreground py-4 text-center">تعذّر تحميل بيانات المتقدّم.</p>
         ) : (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <EmpAvatar name={a.name} sizePx={40} />
-              <div>
-                <div className="font-semibold">{a.name}</div>
-                <div className="text-xs text-muted-foreground">{a.jobTitle || vacancyTitle || "—"}</div>
+          <div className="space-y-5">
+            <header className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-4 sm:flex-row sm:items-center">
+              <EmpAvatar name={a.name} sizePx={52} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-lg font-bold">{a.name}</div>
+                <div className="mt-0.5 text-sm text-muted-foreground">{positionTitle}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Badge variant="outline" className="gap-1.5">
+                    <span className="size-2 rounded-full" style={{ background: STAGE_COLOR[a.stage] }} />
+                    {applicantStageLabel(a.stage)}
+                  </Badge>
+                  <Badge variant="secondary">{applicantSourceLabel(a.source)}</Badge>
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2.5 text-xs">
-              <div>
-                <div className="text-muted-foreground mb-0.5">المصدر</div>
-                <div className="font-medium">{applicantSourceLabel(a.source)}</div>
+            </header>
+
+            <section className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-semibold"><Phone aria-hidden className="size-4 text-muted-foreground" /> بيانات الاتصال</h3>
+              <InfoGrid density="wide">
+                <InfoField label="رقم الهاتف" kind="phone" value={a.phone ? <a href={`tel:${a.phone}`} className="hover:text-primary hover:underline">{a.phone}</a> : "غير مسجل"} />
+                <InfoField label="البريد الإلكتروني" value={a.email ? <a href={`mailto:${a.email}`} className="break-all hover:text-primary hover:underline" dir="ltr">{a.email}</a> : "غير مسجل"} />
+                <InfoField label={<span className="inline-flex items-center gap-1.5"><MapPin aria-hidden className="size-3.5" /> عنوان السكن / المنطقة</span>} value={a.residentialAddress || "غير مذكور"} span={2} />
+              </InfoGrid>
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-semibold"><Briefcase aria-hidden className="size-4 text-muted-foreground" /> بيانات الطلب والمؤهلات</h3>
+              <InfoGrid density="wide">
+                <InfoField label="الوظيفة المتقدّم لها" value={positionTitle} />
+                <InfoField label="تاريخ التقديم" value={a.appliedDate ? fmtDate(a.appliedDate) : "غير مسجل"} kind="date" />
+                <InfoField label="سنوات الخبرة" value={a.experience || "غير مذكورة"} />
+                <InfoField label={<span className="inline-flex items-center gap-1.5"><GraduationCap aria-hidden className="size-3.5" /> المؤهل الدراسي</span>} value={a.education || "غير مذكور"} />
+                <InfoField
+                  label="الأعمال النموذجية"
+                  span={2}
+                  value={a.portfolioUrl ? <a href={a.portfolioUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 text-primary hover:underline" dir="ltr"><span className="truncate">{a.portfolioUrl}</span><ExternalLink aria-hidden className="size-3.5 shrink-0" /></a> : "غير مرفقة"}
+                />
+              </InfoGrid>
+            </section>
+
+            <section className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-semibold"><Star aria-hidden className="size-4 text-muted-foreground" /> التقييم والملاحظات</h3>
+              <div className="rounded-lg border bg-muted/15 p-3">
+                <div className="flex items-center justify-between gap-3 border-b pb-3">
+                  <span className="text-xs font-medium text-muted-foreground">التقييم الأولي</span>
+                  <Stars rating={a.rating} />
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-foreground">{a.notes || "لا توجد ملاحظات مسجلة."}</p>
               </div>
-              <div>
-                <div className="text-muted-foreground mb-0.5">المرحلة</div>
-                <div className="font-medium">{applicantStageLabel(a.stage)}</div>
-              </div>
-              {a.phone && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
-                    <Phone className="size-3" /> الهاتف
-                  </div>
-                  <div className="font-medium tabular-nums" dir="ltr">
-                    {a.phone}
-                  </div>
-                </div>
-              )}
-              {a.email && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
-                    <Mail className="size-3" /> البريد
-                  </div>
-                  <div className="font-medium" dir="ltr">
-                    {a.email}
-                  </div>
-                </div>
-              )}
-              {a.experience && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5">الخبرة</div>
-                  <div className="font-medium">{a.experience}</div>
-                </div>
-              )}
-              {a.education && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
-                    <GraduationCap className="size-3" /> المؤهل
-                  </div>
-                  <div className="font-medium">{a.education}</div>
-                </div>
-              )}
-              {a.residentialAddress && (
-                <div className="col-span-2">
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
-                    <MapPin className="size-3" /> عنوان السكن / المنطقة
-                  </div>
-                  <div className="font-medium">{a.residentialAddress}</div>
-                </div>
-              )}
-              {a.portfolioUrl && (
-                <div className="col-span-2">
-                  <div className="text-muted-foreground mb-0.5">الأعمال النموذجية</div>
-                  <a href={a.portfolioUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1 font-medium text-primary underline underline-offset-2" dir="ltr">
-                    <span className="truncate">{a.portfolioUrl}</span>
-                    <ExternalLink className="size-3 shrink-0" />
-                  </a>
-                </div>
-              )}
-              {vacancyTitle && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5 flex items-center gap-1">
-                    <Briefcase className="size-3" /> الوظيفة المتقدَّم لها
-                  </div>
-                  <div className="font-medium">{vacancyTitle}</div>
-                </div>
-              )}
-              {a.appliedDate && (
-                <div>
-                  <div className="text-muted-foreground mb-0.5">تاريخ التقديم</div>
-                  <div className="font-medium tabular-nums" dir="ltr">
-                    {fmtDate(a.appliedDate)}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground mb-0.5">التقييم</div>
-              <Stars rating={a.rating} />
-            </div>
-            {a.notes && (
-              <div>
-                <div className="text-xs text-muted-foreground mb-0.5">ملاحظات</div>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{a.notes}</p>
-              </div>
-            )}
-            {a.cvFileKey && (
-              <Button variant="outline" size="sm" asChild>
-                <a href={`/api/hr/applicant-cv/${encodeURIComponent(a.cvFileKey)}`} download>
-                  <Download className="size-3.5" /> تنزيل السيرة الذاتية
-                </a>
-              </Button>
-            )}
+            </section>
           </div>
         )}
-        <DialogFooter>
+        <DialogFooter className="gap-2 sm:justify-between">
+          {a?.cvFileKey ? (
+            <Button type="button" onClick={() => void handleCvDownload()} disabled={isDownloading}>
+              <Download aria-hidden className="size-4" /> {isDownloading ? ACTION_LABELS.downloading : "تنزيل السيرة الذاتية"}
+            </Button>
+          ) : <span />}
           <Button variant="outline" onClick={onClose}>
             إغلاق
           </Button>
