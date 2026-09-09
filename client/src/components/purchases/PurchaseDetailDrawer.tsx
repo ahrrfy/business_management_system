@@ -353,7 +353,7 @@ export function PurchaseDetailDrawer({
                     <div className="rounded-lg border bg-card p-2 text-center">
                       <div className="text-xs text-muted-foreground">المدفوع</div>
                       <div className="font-bold text-sm text-money-positive tabular-nums">
-                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(d.paidAmount ?? "0")} د.ع`}
+                        {isUsd ? `${fmt(d.paidUsd ?? "0")} $` : `${fmt(effectivePaid.toString())} د.ع`}
                       </div>
                     </div>
                     <div className="rounded-lg border bg-card p-2 text-center">

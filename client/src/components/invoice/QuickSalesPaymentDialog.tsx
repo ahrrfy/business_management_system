@@ -22,8 +22,13 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { invoiceStatusLabel } from "@shared/invoiceStatus";
 
-type Method = "CASH" | "CARD" | "TRANSFER" | "WALLET";
-const METHODS: Method[] = ["CASH", "CARD", "TRANSFER", "WALLET"];
+import {
+  INBOUND_ENABLED_PAYMENT_METHODS,
+  type InboundEnabledPaymentMethod,
+} from "@shared/inboundPaymentPolicy";
+
+type Method = InboundEnabledPaymentMethod;
+const METHODS: readonly Method[] = INBOUND_ENABLED_PAYMENT_METHODS;
 
 export interface QuickSalesPaymentDialogProps {
   open: boolean;
@@ -127,8 +132,8 @@ export function QuickSalesPaymentDialog({
 
   const isInvoiceRefreshing = invoiceQuery.isLoading || invoiceQuery.isFetching;
   const isBusy = pay.isPending || initiateExternal.isPending || confirmExternal.isPending;
-  const hasConfirmedAttempt = externalAttempt?.confirmed === true;
-  const cannotClose = isBusy || (hasConfirmedAttempt && !pay.isSuccess);
+  const hasInFlightAttempt = externalAttempt != null;
+  const cannotClose = isBusy || (hasInFlightAttempt && !pay.isSuccess);
 
   async function confirmExternalPayment() {
     if (isInvoiceRefreshing || !inv) {
