@@ -9,7 +9,7 @@
     "lint": "expo lint",
     "format": "prettier --write .",
     "test": "node scripts/check-query-string-security-compat.mjs && vitest run",
-    "check:firebase-config-security": "node scripts/check-firebase-config-security.mjs",
+    "check:firebase-config-security": "node ../../scripts/check-firebase-config-security.mjs",
     "check:image-size-security": "node scripts/check-image-size-security.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",

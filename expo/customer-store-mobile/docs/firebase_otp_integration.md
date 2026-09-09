@@ -37,7 +37,7 @@
 
 بعد تسجيل التطبيقين، ينزّل Firebase الملفين `google-services.json` و`GoogleService-Info.plist`. يحتفظ المطور بنسختيهما في جذر `customer-store-mobile` محلياً، وهما مستثنيان من Git. تُرفع النسختان إلى EAS كمتغيري ملفات سريين باسم `GOOGLE_SERVICES_JSON` و`GOOGLE_SERVICE_INFO_PLIST` للبيئات `development` و`preview` و`production`؛ ويقرأ `app.config.js` مساريهما من البيئة أثناء البناء.
 
-هذه الملفات إعدادات عميل ستُضمّن في التطبيق المنشور، لذلك إخفاؤها في EAS يمنع تسريبها من المستودع والسجلات ولا يحولها إلى أسرار تفويض. الحماية الفعلية تعتمد على تقييد مفاتيح Google بواجهات Firebase والتطبيق الصحيح، وقواعد Firebase، وApp Check، والتحقق الخادمي من Firebase ID token. يشغّل CI الأمر `pnpm check:firebase-config-security` لمنع إعادة تتبع الملفين أو إدخال نمط مفتاح Google إلى أي ملف متتبع.
+هذه الملفات إعدادات عميل ستُضمّن في التطبيق المنشور، لذلك إخفاؤها في EAS يمنع تسريبها من المستودع والسجلات ولا يحولها إلى أسرار تفويض. الحماية الفعلية تعتمد على تقييد مفاتيح Google بواجهات Firebase والتطبيق الصحيح، وقواعد Firebase، وApp Check، والتحقق الخادمي من Firebase ID token. يشغّل حارس المستودع العام الأمر `pnpm check:firebase-config-security` على كل طلب دمج، كما يشغّله مسار Expo مبكراً، لمنع إعادة تتبع الملفين أو إدخال نمط مفتاح Google إلى أي ملف متتبع.
 
 ### بصمة Google Play للإصدار الداخلي
 
