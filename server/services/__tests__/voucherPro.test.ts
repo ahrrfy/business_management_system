@@ -32,6 +32,7 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
 
 const adminActor = { userId: 1, branchId: 1, role: "admin" };
 const managerActor = { userId: 2, branchId: 1, role: "manager" };
+const ownerManagerActor = { userId: 3, branchId: 1, role: "manager" };
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
@@ -59,7 +60,8 @@ async function seedBase() {
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
-    { id: 2, openId: "mgr", name: "مدير مالك", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 2, openId: "mgr", name: "مدير", role: "manager", loginMethod: "local", branchId: 1, isOwner: false },
+    { id: 3, openId: "owner-mgr", name: "مالك بدور مدير", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0.00" });
@@ -119,7 +121,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيجار شهر مايو",
       voucherCategoryId: 1,
-    }, adminActor);
+    }, managerActor);
     expect(r.voucherNumber).toMatch(/^PV-/);
     expect(r.approvalStatus).toBe("PENDING_APPROVAL");
   });
@@ -131,7 +133,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
       description: "إيجار شهر مايو",
       voucherCategoryId: 1,
       attachmentUrl: "https://drive.example.com/receipt-may.pdf",
-    }, adminActor);
+    }, managerActor);
     expect(r.voucherNumber).toMatch(/^PV-/);
     expect(r.approvalStatus).toBe("PENDING_APPROVAL");
   });
@@ -152,7 +154,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
       voucherType: "PAYMENT", branchId: 1, amount: "10.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "a",
       voucherCategoryId: 3,
-    }, adminActor);
+    }, managerActor);
     const r2 = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "20.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "b",
@@ -196,7 +198,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       paymentMethod: "CASH", partyType: "SUPPLIER", partyId: 1,
       description: "دفعة كبيرة",
       attachmentUrl: "https://example.com/proof.pdf",
-    }, adminActor);
+    }, managerActor);
     expect(r.approvalStatus).toBe("PENDING_APPROVAL");
     // لا قَيد دفتر بَعد
     const ents = await db().select().from(s.accountingEntries);
@@ -270,39 +272,33 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(rc.approvedBy).toBe(1); // adminActor.userId
   });
 
-  // قرار المالك (٣/٩/٢٦): لا اعتماد ثانٍ بعد المالك — مالكٌ (بأيّ دور) يعتمد سنده هو نفسه.
-  it("المالك ينشئ سنده ويعتمده بنفسه ⇒ يُنفَّذ (قرار المالك ٣/٩/٢٦: لا اعتماد ثانٍ بعد المالك)", async () => {
+  it("المالك ينشئ السند ⇒ يعتمد وينفذ في العملية نفسها بلا اعتماد ثان", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
       description: "عُمولة كَبيرة",
       referenceNumber: "TRF-X",
       attachmentUrl: "https://example.com/proof.pdf",
-    }, managerActor);
+    }, ownerManagerActor);
 
-    const ap = await approveVoucher(r.receiptId, managerActor);
-    expect(ap.approvalStatus).toBe("APPROVED");
+    expect(r.approvalStatus).toBe("APPROVED");
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
-    expect(rc.createdBy).toBe(managerActor.userId);
-    expect(rc.approvedBy).toBe(managerActor.userId); // الأثر التدقيقيّ يبقى كاملاً رغم الاعتماد الذاتيّ.
+    expect(rc).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED" });
+    expect(rc.createdBy).toBe(ownerManagerActor.userId);
+    expect(rc.approvedBy).toBe(ownerManagerActor.userId);
+    expect(rc.signatureHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 
-  // الضابط الوحيد المتبقّي على نقدٍ مجهول المصدر (شارك/approvalTriggers.ts:
-  // voucherApprovalRetainsLegacy) — لم يمسّه قرار المالك ٣/٩/٢٦ (لا اعتماد ثانٍ بعد المالك)
-  // لأنه IN بلا systemKind، لا OUT ولا ERASE_EFFECT. مسارٌ حيٌّ: العلَم ownerOnlyApproval مطفأ
-  // ⇒ هذا هو الحارس الفعليّ اليوم على سند قبضٍ من طرف "أخرى" (partyType=OTHER).
-  it("قبض OTHER (نقد مجهول المصدر) — مالكٌ لا يعتمد سند القبض الذي أنشأه بنفسه", async () => {
+  it("قبض OTHER الذي ينشئه المالك يعتمد تلقائيا في العملية نفسها", async () => {
     const r = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "70000.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيراد بيع مخلفات",
     }, adminActor);
-    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
-
-    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر",
-    });
+    expect(r.approvalStatus).toBe("APPROVED");
+    const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
+    expect(stored).toMatchObject({ status: "COMPLETED", approvedBy: adminActor.userId });
   });
 
   it("قبض OTHER — مالكٌ آخر غير المُنشئ يعتمده بنجاح", async () => {
@@ -336,15 +332,15 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
 
   it("الدور الإداري لا يكفي: غير المالك والمالك المعطّل لا يعتمدان أو يرفضان", async () => {
     await db().insert(s.users).values([
-      { id: 3, openId: "not-owner", name: "إداري", role: "admin", branchId: 1, isOwner: false },
-      { id: 4, openId: "inactive-owner", name: "مالك معطل", role: "admin", branchId: 1, isOwner: true, isActive: false },
+      { id: 4, openId: "not-owner", name: "إداري", role: "admin", branchId: 1, isOwner: false },
+      { id: 5, openId: "inactive-owner", name: "مالك معطل", role: "admin", branchId: 1, isOwner: true, isActive: false },
     ]);
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "10.00", paymentMethod: "TRANSFER",
       partyType: "OTHER", description: "اختبار صفة المالك", referenceNumber: "OWNER-AUTHZ",
     }, managerActor);
-    await expect(approveVoucher(r.receiptId, { userId: 3, branchId: 1, role: "admin" })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(rejectVoucher(r.receiptId, { userId: 4, branchId: 1, role: "admin" }, "رفض")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(approveVoucher(r.receiptId, { userId: 4, branchId: 1, role: "admin" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(rejectVoucher(r.receiptId, { userId: 5, branchId: 1, role: "admin" }, "رفض")).rejects.toMatchObject({ code: "FORBIDDEN" });
     const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
     expect(stored.approvalStatus).toBe("PENDING_APPROVAL");
   });
@@ -356,7 +352,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       description: "تَسوية",
       referenceNumber: "TRF-Y",
       attachmentUrl: "https://example.com/proof.pdf",
-    }, adminActor);
+    }, managerActor);
     const ap = await approveVoucher(r.receiptId, adminActor);
     expect(ap.approvalStatus).toBe("APPROVED");
   });
@@ -468,10 +464,10 @@ describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
       voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيراد",
-    }, adminActor);
+    }, managerActor);
     let rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.signatureHash).toBeNull();
-    await approveVoucher(r.receiptId, managerActor);
+    await approveVoucher(r.receiptId, adminActor);
     rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.signatureHash).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -480,13 +476,13 @@ describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
     const r1 = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "x",
-    }, adminActor);
+    }, managerActor);
     const r2 = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "x",
-    }, adminActor);
-    await approveVoucher(r1.receiptId, managerActor);
-    await approveVoucher(r2.receiptId, managerActor);
+    }, managerActor);
+    await approveVoucher(r1.receiptId, adminActor);
+    await approveVoucher(r2.receiptId, adminActor);
     const rc1 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r1.receiptId)))[0];
     const rc2 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r2.receiptId)))[0];
     expect(rc1.signatureHash).not.toBe(rc2.signatureHash);

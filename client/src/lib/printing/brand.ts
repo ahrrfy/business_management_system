@@ -134,3 +134,11 @@ export const CAIRO_FONT = `<style>${[400, 500, 600, 700, 800, 900]
       `@font-face{font-family:'Cairo';font-style:normal;font-weight:${w};font-display:swap;src:url('${FONT_ORIGIN}/fonts/cairo-arabic-${w}-normal.woff2') format('woff2');unicode-range:${CAIRO_ARABIC_RANGE}}`,
   )
   .join("")}</style>`;
+
+/**
+ * الرابط الإنتاجي الثابت للمتجر الإلكتروني لتضمينه في رمز الاستجابة السريعة (QR) على الإيصالات
+ * المطبوعة للزبائن — دائماً الدومين الإنتاجي العام (alarabiya.online/store) حتى وإن طُبع من كاشير محلي.
+ */
+export const STOREFRONT_URL = "https://alarabiya.online/store";
+
+

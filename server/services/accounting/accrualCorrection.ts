@@ -21,9 +21,11 @@ import type { Actor } from "../tx";
 import { withTx } from "../tx";
 import {
   createSystemReceiptRequestTx,
+  finalizeOwnerSystemVoucherTx,
   parseSystemPaymentRequest,
   type SystemPaymentRequest,
 } from "../voucher/create";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   expenseAccrualReversal,
   expenseAccrualSettlement,
@@ -561,7 +563,7 @@ export async function requestAccrualCorrection(
     clientRequestId,
   });
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const [replay] = await tx
       .select()
       .from(accrualCorrectionRequests)
@@ -689,7 +691,7 @@ export async function requestAccrualCorrection(
         cardLastFour: method === "CARD" ? input.refundCardLastFour?.trim() : null,
         attachmentUrl,
         clientRequestId: `accrual-refund-${clientRequestId}`,
-      }, actor, request);
+      }, actor, request, { deferOwnerAutoApproval: true });
       refundRequestReceiptId = refund.receiptId;
       const linkResult = await tx
         .update(accrualCorrectionRequests)
@@ -701,10 +703,23 @@ export async function requestAccrualCorrection(
           ),
         );
       assertOneAffectedRow(linkResult, "تغير طلب التصحيح أثناء ربط سند الاسترداد");
+      await finalizeOwnerSystemVoucherTx(tx, refundRequestReceiptId, actor);
     }
 
     return { correctionRequestId, refundRequestReceiptId, replayed: false as const };
   });
+  if (result.refundRequestReceiptId != null) {
+    await autoDecideForActiveOwner(actor, {
+      kind: "treasury.voucher.approve",
+      id: result.refundRequestReceiptId,
+    });
+  } else {
+    await autoDecideForActiveOwner(actor, {
+      kind: "expense.accrualCorrection.approve",
+      id: result.correctionRequestId,
+    });
+  }
+  return result;
 }
 
 export async function approveAccrualCorrection(
@@ -741,7 +756,7 @@ export async function approveAccrualCorrection(
         }),
       });
     }
-    if (Number(correction.requestedBy) === actor.userId) {
+    if (!actor.isOwner && Number(correction.requestedBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: appErrorMessage({
@@ -800,7 +815,7 @@ async function rejectCorrectionTx(
     occurredAt: Date;
   },
 ) {
-  if (Number(input.correction.requestedBy) === input.reviewer.userId) {
+  if (!input.reviewer.isOwner && Number(input.correction.requestedBy) === input.reviewer.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
@@ -919,7 +934,7 @@ export async function settleAccrualCorrectionRefundTx(
       }),
     });
   }
-  if (Number(correction.requestedBy) === input.approver.userId) {
+  if (!input.approver.isOwner && Number(correction.requestedBy) === input.approver.userId) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: appErrorMessage({
@@ -1361,12 +1376,13 @@ export async function retryAccrualCorrectionRefund(
       cardLastFour: method === "CARD" ? correction.refundCardLastFour : null,
       attachmentUrl: correction.attachmentUrl,
       clientRequestId,
-    }, actor, request);
+    }, actor, request, { deferOwnerAutoApproval: true });
     await bindAccrualCorrectionRefundReplacementTx(tx, {
       correctionRequestId,
       replacementReceiptId: replacement.receiptId,
       actorId: actor.userId,
     });
+    await finalizeOwnerSystemVoucherTx(tx, replacement.receiptId, actor);
     return { correctionRequestId, refundRequestReceiptId: replacement.receiptId };
   });
 }

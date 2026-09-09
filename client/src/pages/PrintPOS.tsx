@@ -41,6 +41,7 @@ import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
+import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { createPortal } from "react-dom";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -852,7 +853,7 @@ export default function PrintPOS() {
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
-      {receipt && <ReceiptOverlay C={C} r={receipt} onDismiss={() => {
+      {receipt && <ReceiptOverlay C={C} receipt={receipt} onDismiss={() => {
         // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
         // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
         setReceipt(null);
@@ -1498,54 +1499,7 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   );
 }
 
-// ─── ReceiptOverlay ──────────────────────────────────────────────────────────
-function ReceiptOverlay({ C, r, onDismiss, onPrint }: { C: C; r: Receipt; onDismiss: () => void; onPrint: () => void }) {
-  return (
-    <div onClick={onDismiss} style={{ position: "fixed", inset: 0, zIndex: 100, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 20, padding: "34px 42px 28px", width: 460, maxWidth: "92vw", boxShadow: "0 28px 72px rgb(0 0 0/.42)", cursor: "default", textAlign: "center" }}>
-        <div style={{ width: 74, height: 74, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: "#fff" }}><Check aria-hidden size={42} strokeWidth={3} /></div>
-        <div style={{ fontSize: 23, fontWeight: 900, marginBottom: 3, color: C.fg }}>تمّت العملية بنجاح</div>
-        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 22, display: "inline-flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
-          <span>فاتورة: {r.num}</span>
-          <CopyButton value={r.num} title="نسخ رقم الفاتورة" successMessage="تم نسخ رقم الفاتورة" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-          {[{ l: "المبلغ المدفوع", v: r.received, c: C.primary }, { l: "إجمالي الفاتورة", v: r.total, c: C.fg }].map((it) => (
-            <div key={it.l} style={{ background: C.muted, borderRadius: 10, padding: "13px 10px", position: "relative" }}>
-              <div style={{ position: "absolute", top: 4, left: 4 }}>
-                <CopyButton value={it.v} title={`نسخ ${it.l}`} successMessage={`تم نسخ ${it.l}`} />
-              </div>
-              <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 3 }}>{it.l}</div>
-              <div style={{ fontSize: 25, fontWeight: 900, direction: "ltr", color: it.c }}>{fmt(it.v)}</div>
-              <div style={{ fontSize: 11, color: C.mutedFg }}>د.ع</div>
-            </div>
-          ))}
-        </div>
-        {r.change > 0 && <Bar C={C} c={C.success} k="الباقي للعميل" v={r.change} copyTitle="نسخ الباقي" />}
-        {r.credit > 0 && <Bar C={C} c={C.amber} k={`آجل على ${r.customer ?? "العميل"}`} v={r.credit} copyTitle="نسخ المتبقي الآجل" />}
-        <div style={{ marginBottom: 18, fontSize: 13, color: C.mutedFg }}>الدفع: <strong style={{ color: C.fg }}>{r.method}</strong> · {r.lines.length} خدمة</div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onPrint} style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <Printer size={18} aria-hidden /> طباعة الإيصال
-          </button>
-          <button onClick={onDismiss} style={{ flex: 1, height: 50, background: C.primary, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.primaryFg }}>فاتورة جديدة</button>
-        </div>
-        <div style={{ marginTop: 14, fontSize: 12, color: C.mutedFg }}>المس الشاشة في أي مكان للمتابعة</div>
-      </div>
-    </div>
-  );
-}
-function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number; copyTitle?: string }) {
-  return (
-    <div style={{ background: `color-mix(in oklch, ${c} 12%, transparent)`, border: `1.5px solid color-mix(in oklch, ${c} 30%, transparent)`, borderRadius: 10, padding: "11px 18px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-      <span style={{ fontSize: 14, fontWeight: 700, color: c }}>{k}</span>
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-        <span style={{ fontSize: 25, fontWeight: 900, color: c, direction: "ltr" }}>{fmt(v)} <span style={{ fontSize: 12 }}>د.ع</span></span>
-        <CopyButton value={v} title={copyTitle ?? `نسخ ${k}`} successMessage={`تم نسخ ${k}`} />
-      </span>
-    </div>
-  );
-}
+
 
 // ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
 function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {

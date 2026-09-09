@@ -1,10 +1,12 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import { isDeadInvoice } from "@shared/predicates";
 import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { eq } from "drizzle-orm";
 import {
   customers,
+  deliveryParties,
   invoices,
   receipts,
   suppliers,
@@ -13,9 +15,11 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import {
   adjustCustomerBalance,
+  adjustDeliveryBalance,
   adjustSupplierBalance,
   postEntry,
 } from "../ledgerService";
+import { appendDeliveryLedgerEntry } from "../delivery/lifecycle";
 import { baghdadToday, todayUtcDate, utcDayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
@@ -39,6 +43,9 @@ import { voucherPostingPlan } from "./posting";
 import { withMysqlDeadlockRetry } from "./deadlockRetry";
 import type { VoucherInput, VoucherResult } from "./types";
 import { createHash } from "node:crypto";
+import { voucherApprovalTrigger } from "@shared/approvalTriggers";
+import { planApproval, resolveApprovalActor } from "../approval/ownerGate";
+import { logAuditTx } from "../auditService";
 import {
   isCanonicalPurchaseUsdSystemPaymentRequest,
   PURCHASE_USD_REFERENCE_PREFIX,
@@ -478,7 +485,11 @@ export async function createVoucherTx(
   tx: Tx,
   input: VoucherInput,
   actor: Actor,
-  options?: { systemRequest?: SystemPaymentRequest },
+  options?: {
+    systemRequest?: SystemPaymentRequest;
+    /** يؤجل اعتماد المالك حتى تربط الوحدة الأم السند بمصدره داخل المعاملة نفسها. */
+    deferOwnerAutoApproval?: boolean;
+  },
 ): Promise<VoucherResult> {
   const normalizedReferenceNumber = input.referenceNumber?.trim() || null;
   const normalizedInternalNote = options?.systemRequest
@@ -597,11 +608,17 @@ export async function createVoucherTx(
         const storedVoucherDate = r.voucherDate
           ? new Date(r.voucherDate).toISOString().slice(0, 10)
           : null;
+        const storedPartyType =
+          r.partyType === "OTHER" &&
+          typeof r.internalNote === "string" &&
+          r.internalNote.startsWith("DELIVERY_PARTY:")
+            ? "DELIVERY_PARTY"
+            : (r.partyType ?? null);
         if (
           Number(r.branchId) !== Number(input.branchId) ||
           r.direction !== requestedDirection ||
           r.paymentMethod !== input.paymentMethod ||
-          (r.partyType ?? null) !== (input.partyType ?? null) ||
+          storedPartyType !== (input.partyType ?? null) ||
           storedPartyId !== requestedPartyId ||
           storedInvoiceId !== requestedInvoiceId ||
           storedCategoryId !== requestedCategoryId ||
@@ -811,6 +828,52 @@ export async function createVoucherTx(
         });
       }
     }
+  } else if (input.partyType === "DELIVERY_PARTY") {
+    if (!input.partyId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل غير محدّدة",
+          doThis: "اختر جهة التوصيل من القائمة ثم أعد المحاولة",
+        }),
+      });
+    }
+    const [dp] = await tx
+      .select()
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, input.partyId))
+      .limit(1);
+    if (!dp) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل غير مسجّلة بالنظام أو حُذفت",
+          doThis: "تحقّق من معرّف جهة التوصيل من شاشة جهات التوصيل",
+        }),
+      });
+    }
+    if (!dp.isActive) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "حساب جهة التوصيل مُعطّل حالياً",
+          doThis: "فعّل جهة التوصيل من شاشة إدارة جهات التوصيل قبل إصدار السند",
+        }),
+      });
+    }
+    if (dp.branchId != null && Number(dp.branchId) !== Number(input.branchId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "تعذّر إصدار سند لجهة التوصيل",
+          why: "جهة التوصيل تتبع فرعاً آخر يختلف عن فرع السند",
+          doThis: "اختر جهة توصيل تابعة لنفس فرع السند أو اختر الفرع المطابق للجهة",
+        }),
+      });
+    }
   } else if (input.partyType === "OTHER") {
     if (!input.counterpartyName?.trim()) {
       throw new TRPCError({
@@ -857,6 +920,26 @@ export async function createVoucherTx(
     direction === "OUT" ||
     forcePendingApproval ||
     options?.systemRequest?.kind === "VOUCHER_CANCELLATION";
+  const resolvedActor = await resolveApprovalActor(tx, actor);
+  const ownerApprovalPlan = planApproval({
+    actor: resolvedActor,
+    trigger: voucherApprovalTrigger(
+      direction,
+      options?.systemRequest?.kind ?? null,
+    ),
+  });
+  const ownerAutoApproves =
+    needsApproval &&
+    resolvedActor.isOwner &&
+    ownerApprovalPlan.executeNow &&
+    !options?.deferOwnerAutoApproval &&
+    // الطلبات النظامية تربط المستند الأم بعد رجوع الإنشاء؛ تعتمدها الوحدة الأم بعد اكتمال الربط.
+    (!options?.systemRequest ||
+      options.systemRequest.kind === "VOUCHER_CANCELLATION" ||
+      options.systemRequest.kind === "EMPLOYEE_ADVANCE" ||
+      options.systemRequest.kind === "TERMINATION_SETTLEMENT" ||
+      options.systemRequest.kind === "PURCHASE_SUPPLIER" ||
+      options.systemRequest.kind === "PURCHASE_SUPPLIER_USD");
 
   // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
   //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).
@@ -889,6 +972,27 @@ export async function createVoucherTx(
     status: needsApproval ? "PENDING" : "COMPLETED",
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
+  const dpRow =
+    input.partyType === "DELIVERY_PARTY" && input.partyId
+      ? (
+          await tx
+            .select({ name: deliveryParties.name })
+            .from(deliveryParties)
+            .where(eq(deliveryParties.id, input.partyId))
+            .limit(1)
+        )[0]
+      : null;
+  const effectiveCounterpartyName =
+    input.partyType === "DELIVERY_PARTY"
+      ? (dpRow?.name ?? input.counterpartyName?.trim() ?? null)
+      : (input.counterpartyName?.trim() || null);
+  const effectiveInternalNote =
+    input.partyType === "DELIVERY_PARTY"
+      ? normalizedInternalNote
+        ? `DELIVERY_PARTY:${input.partyId}:${normalizedInternalNote}`
+        : `DELIVERY_PARTY:${input.partyId}`
+      : normalizedInternalNote;
+
   const rRes = await tx.insert(receipts).values({
     branchId: input.branchId,
     invoiceId:
@@ -903,16 +1007,16 @@ export async function createVoucherTx(
     cardLastFour: input.cardLastFour?.trim() || null,
     status: needsApproval ? "PENDING" : "COMPLETED",
     voucherNumber,
-    partyType: input.partyType,
+    partyType: input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
     partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
     description,
     createdBy: actor.userId,
     // vouchers-pro:
     voucherCategoryId: input.voucherCategoryId ?? null,
-    counterpartyName: input.counterpartyName?.trim() || null,
+    counterpartyName: effectiveCounterpartyName,
     voucherDate: new Date(voucherDate),
     attachmentUrl: input.attachmentUrl?.trim() || null,
-    internalNote: normalizedInternalNote,
+    internalNote: effectiveInternalNote,
     approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
   });
   const receiptId = extractInsertId(rRes);
@@ -942,6 +1046,8 @@ export async function createVoucherTx(
         input.partyType === "CUSTOMER" ? (input.partyId ?? null) : null,
       supplierId:
         input.partyType === "SUPPLIER" ? (input.partyId ?? null) : null,
+      deliveryPartyId:
+        input.partyType === "DELIVERY_PARTY" ? (input.partyId ?? null) : null,
       amount,
       paymentMethod: input.paymentMethod,
       postingIntent: posting.intent,
@@ -978,13 +1084,31 @@ export async function createVoucherTx(
       );
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       await adjustSupplierBalance(tx, input.partyId, amount);
+    } else if (input.partyType === "DELIVERY_PARTY" && input.partyId) {
+      await adjustDeliveryBalance(
+        tx,
+        input.partyId,
+        direction === "IN" ? amount.neg() : amount,
+      );
+      if (direction === "IN") {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `VOUCHER:${receiptId}:COD_REMITTED:${Date.now()}`,
+          partyId: input.partyId,
+          branchId: input.branchId,
+          entryType: "COD_REMITTED",
+          amount: toDbMoney(amount),
+          notes: description,
+          actorUserId: actor.userId,
+          occurredAt: new Date(voucherDate),
+        });
+      }
     }
 
     // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.
     const hash = computeSignature({
       id: receiptId,
       amount: toDbMoney(amount),
-      partyType: input.partyType,
+      partyType: input.partyType === "DELIVERY_PARTY" ? "OTHER" : input.partyType,
       partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
       paymentMethod: input.paymentMethod,
       voucherDate,
@@ -1008,15 +1132,72 @@ export async function createVoucherTx(
     );
   }
 
+  if (ownerAutoApproves) {
+    // الاستيراد الديناميكي يمنع دورة create ⇄ approval وقت تهيئة الوحدات؛ الاعتماد نفسه
+    // يجري داخل tx الحالية، لذلك لا يمكن أن يبقى طلب المالك معلّقاً إذا فشل الأثر المالي.
+    const { approveVoucherTx } = await import("./approval");
+    const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+    await logAuditTx(
+      tx,
+      {
+        user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+        req: undefined as never,
+      },
+      {
+        action: "voucher.approve",
+        entityType: "receipt",
+        entityId: receiptId,
+        branchId: input.branchId,
+        newValue: {
+          voucherNumber: approval.voucherNumber,
+          signatureHash: approval.signatureHash,
+          approvalAuthority: "OWNER_AUTO",
+        },
+      },
+    );
+  }
+
   return {
     receiptId,
     voucherNumber,
     direction,
-    approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
+    approvalStatus:
+      needsApproval && !ownerAutoApproves ? "PENDING_APPROVAL" : "APPROVED",
   };
 }
 
-/** طلب دفع نظامي يعيد استعمال عقد السند الواحد: معلّق دائماً وبلا أثر حتى اعتماد مالك آخر. */
+/** يعتمد سنداً نظامياً للمالك داخل معاملة الوحدة الأم، بعد اكتمال كل روابط المصدر. */
+export async function finalizeOwnerSystemVoucherTx(
+  tx: Tx,
+  receiptId: number,
+  actor: Actor,
+): Promise<boolean> {
+  const resolvedActor = await resolveApprovalActor(tx, actor);
+  if (!resolvedActor.isOwner) return false;
+  const { approveVoucherTx } = await import("./approval");
+  const approval = await approveVoucherTx(tx, receiptId, resolvedActor);
+  await logAuditTx(
+    tx,
+    {
+      user: { id: resolvedActor.userId, branchId: resolvedActor.branchId ?? null } as never,
+      req: undefined as never,
+    },
+    {
+      action: "voucher.approve",
+      entityType: "receipt",
+      entityId: receiptId,
+      branchId: resolvedActor.branchId ?? null,
+      newValue: {
+        voucherNumber: approval.voucherNumber,
+        signatureHash: approval.signatureHash,
+        approvalAuthority: "OWNER_AUTO",
+      },
+    },
+  );
+  return true;
+}
+
+/** طلب دفع نظامي يعيد استعمال عقد السند الواحد؛ طلب الموظف معلّق، وطلب المالك النشط معتمد تلقائياً. */
 export async function createSystemPaymentRequestTx(
   tx: Tx,
   input: Omit<VoucherInput, "voucherType">,
@@ -1045,6 +1226,7 @@ export async function createSystemReceiptRequestTx(
   input: Omit<VoucherInput, "voucherType">,
   actor: Actor,
   request: Extract<SystemPaymentRequest, { kind: "ACCRUAL_CORRECTION_REFUND" }>,
+  options?: { deferOwnerAutoApproval?: boolean },
 ): Promise<VoucherResult> {
   if (
     input.partyType !== "OTHER" ||
@@ -1066,6 +1248,7 @@ export async function createSystemReceiptRequestTx(
   }
   const result = await createVoucherTx(tx, { ...input, voucherType: "RECEIPT" }, actor, {
     systemRequest: request,
+    deferOwnerAutoApproval: options?.deferOwnerAutoApproval,
   });
   // ن-٢-هـ (Codex ٢٩/٨): إشعار مركزيّ لطلب استرداد تصحيح الاستحقاق أيضاً.
   if (result.approvalStatus === "PENDING_APPROVAL") {

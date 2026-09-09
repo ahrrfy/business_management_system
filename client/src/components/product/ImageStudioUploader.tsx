@@ -1,15 +1,15 @@
-import { ArrowLeft, Check, Info, Sparkles, Wand2, X } from "lucide-react";
+import { ArrowLeft, Check, Layers, Sparkles, SunMedium, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   ImageUploader,
   type ImageUploaderProps,
 } from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
-import { normalizeAiStudioImage } from "@/lib/imageStudio/aiStudio";
 import { applyStudioPreviews } from "@/lib/imageStudio/applyPreviews";
 import {
   finishCutFromCutout,
   runFreeStudio,
+  type StudioPreset,
   type StudioResult,
 } from "@/lib/imageStudio/freePipeline";
 import { trpc } from "@/lib/trpc";
@@ -19,7 +19,7 @@ interface StudioPreview {
   before: string;
   after: string;
   sizeKB: number;
-  mode: StudioResult["mode"] | "AI";
+  mode: StudioResult["mode"];
   processingReceipt?: string;
 }
 
@@ -32,12 +32,12 @@ interface StudioPreview {
  * كل صورة يستهدفها وحدها، والمعالجة/المعاينة/الاعتماد تسري على **المستهدَف فقط** (بمطابقة المعرّف عبر
  * `applyStudioPreviews`). زرّ «تحديد كل الصور» يُبقي راحة الدفعة لمن أرادها. ⇒ تعديلٌ متعدّدٌ مستقلّ.
  *
- * ثلاثة مسارات (بحسب الإعداد): **FLATTEN** (توسيط على أبيض، دائماً متاح) · **Pro (remove.bg)** (قصّ
- * احترافيّ) · **الذكاء الاصطناعي** (توليديّ يُعيد التصميم — مراجعة بشرية إلزامية والأصل محفوظ).
+ * مساران فقط: **FLATTEN** (توسيط على أبيض، دائماً متاح) و**Pro (remove.bg)** (قصّ احترافيّ).
+ * لا يولّد الاستوديو صوراً بالذكاء الاصطناعي كي تبقى هوية المنتج وتفاصيله الفعلية كما صوّرها المصوّر.
  * راجع client/src/lib/imageStudio/README.md.
  */
 interface ImageStudioUploaderProps extends ImageUploaderProps {
-  onStudioModeChange?: (mode: "FLATTEN" | "CUT" | "AI") => void;
+  onStudioModeChange?: (mode: "FLATTEN" | "CUT") => void;
   studioTaskId?: number;
   onProcessingReceiptChange?: (receipt: string | null) => void;
   onBusyChange?: (busy: boolean) => void;
@@ -55,8 +55,8 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const [previews, setPreviews] = useState<StudioPreview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [aiPromptText, setAiPromptText] = useState("");
-  // رمز التشغيل: يتزايد عند كلّ إعادة استهداف ⇒ نتيجةُ تشغيلٍ بطيء (Pro/AI) أُطلق على هدفٍ سابق
+  const [preset, setPreset] = useState<StudioPreset>("PURE_WHITE");
+  // رمز التشغيل: يتزايد عند كلّ إعادة استهداف ⇒ نتيجةُ تشغيلٍ بطيء أُطلق على هدفٍ سابق
   // تُتجاهَل إن تغيّر الهدف قبل وصولها (وإلّا ظهرت/اعتُمدت معاينةٌ لصورةٍ غير المحدَّدة — سباق Codex P2).
   const runToken = useRef(0);
 
@@ -71,16 +71,6 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     !offline &&
     workflowTaskId != null &&
     (proConfig.data?.proAvailable ?? false);
-
-  const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, {
-    enabled: workflowTaskId != null && !offline,
-    staleTime: 60_000,
-  });
-  const aiTransform = trpc.imageStudio.aiStudioTransform.useMutation();
-  const aiAvailable =
-    !offline && workflowTaskId != null && (aiConfig.data?.aiAvailable ?? false);
-
-  const aiInPreview = !!previews?.some((p) => p.mode === "AI");
 
   useEffect(() => {
     props.onBusyChange?.(busy);
@@ -134,7 +124,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     let fellBackMsg = "";
     let lowResPreview = false;
     try {
-      // تسلسليّ لا متوازٍ — للسبب نفسه الموثَّق في مسار الذكاء الاصطناعي أدناه:
+      // تسلسليّ لا متوازٍ كي لا يجمع httpBatchLink صور data-URL كبيرة في طلب واحد.
       // httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
       // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر، برسالةٍ لا يفهمها المستخدم.
       // ولا فائدة من التوازي أصلاً: للمزوّد فتحتا تنفيذ تقنيتان. التسلسل يُخلي الخيط بين الصور.
@@ -151,16 +141,17 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
             r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
               trustCutout: true,
+              preset,
             });
             processingReceipt = res.processingReceipt;
             if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
           } catch (e) {
             // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
             fellBackMsg = String((e as { message?: string })?.message ?? "");
-            r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+            r = await runFreeStudio(it.dataUrl, { safeOnly: false, preset });
           }
         } else {
-          r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+          r = await runFreeStudio(it.dataUrl, { safeOnly: false, preset });
         }
         return {
           id: it.id,
@@ -199,66 +190,6 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     }
   };
 
-  const runAiStudio = async () => {
-    if (!targets.length || workflowTaskId == null || offline) return;
-    const myToken = runToken.current; // لقطة الهدف؛ توليد الذكاء الاصطناعي بطيء ⇒ الحارس أهمّ هنا
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const userPrompt = aiPromptText.trim() || undefined;
-    try {
-      // تسلسليّ لا متوازٍ: httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
-      // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر. الإرسال واحداً-تلو-آخر يجعل كلّ صورة
-      // طلباً مستقلّاً (والتوليد بطيء أصلاً ⇒ لا فائدة من التوازي). فشلٌ جزئيّ ⇒ نُظهر ما نجح وننبّه.
-      const ok: StudioPreview[] = [];
-      let firstErr = "";
-      let failedCount = 0;
-      for (const it of targets) {
-        try {
-          const res = await aiTransform.mutateAsync({
-            imageDataUrl: it.dataUrl,
-            userPrompt,
-            mode: "EDIT",
-            taskId: workflowTaskId,
-            adminOverrideReason: props.adminOverrideReason,
-          });
-          const norm = await normalizeAiStudioImage(res.imageDataUrl);
-          ok.push({
-            id: it.id,
-            before: it.dataUrl,
-            after: norm.dataUrl,
-            sizeKB: Math.round(norm.sizeKB),
-            mode: "AI",
-            processingReceipt: res.processingReceipt,
-          });
-        } catch (e) {
-          failedCount++;
-          if (!firstErr)
-            firstErr = String((e as { message?: string })?.message ?? e ?? "");
-        }
-      }
-      if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء التوليد ⇒ تجاهُل النتيجة القديمة
-      if (ok.length === 0) {
-        setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + firstErr);
-        return;
-      }
-      setPreviews(ok);
-      if (failedCount > 0) {
-        setNotice(
-          `تعذّر تحويل ${failedCount} من ${targets.length} صورة (${firstErr}).`,
-        );
-      }
-    } catch (e) {
-      if (myToken === runToken.current)
-        setError(
-          "تعذّر إنشاء استوديو الذكاء الاصطناعي: " +
-            String((e as Error)?.message ?? e),
-        );
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const accept = async () => {
     if (!previews) return;
     const providerPreview = previews.find((preview) => preview.processingReceipt);
@@ -277,11 +208,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
       }
     // نطبّق كلّ ناتجٍ على صورته بالمعرّف حصراً (لا خلط/تكرار على غير المستهدَف) — راجع applyStudioPreviews.
       onChange(applyStudioPreviews(value, previews));
-      const acceptedMode = previews.some((preview) => preview.mode === "AI")
-        ? "AI"
-        : previews.some((preview) => preview.mode === "CUT")
-          ? "CUT"
-          : "FLATTEN";
+      const acceptedMode = previews.some((preview) => preview.mode === "CUT") ? "CUT" : "FLATTEN";
       props.onStudioModeChange?.(acceptedMode);
       props.onProcessingReceiptChange?.(providerPreview?.processingReceipt ?? null);
       setPreviews(null);
@@ -294,8 +221,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     }
   };
 
-  const modeLabel = (m: StudioPreview["mode"]) =>
-    m === "AI" ? "ذكاء اصطناعي" : m === "CUT" ? "قصّ" : "آمن";
+  const modeLabel = (m: StudioPreview["mode"]) => m === "CUT" ? "قصّ" : "آمن";
 
   const targetLabel =
     targets.length === 1
@@ -382,61 +308,59 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={runStudio}
-                  disabled={busy}
-                >
-                  <Sparkles aria-hidden className="size-4" />
-                  {busy
-                    ? "جارٍ التحويل…"
-                    : proAvailable
-                      ? "قصّ الخلفية (استوديو احترافي)"
-                      : "توسيط على خلفية بيضاء"}
-                </Button>
-                {!proAvailable && (
-                  <p className="text-[11px] text-muted-foreground">
-                    المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل
-                    الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من
-                    الإعدادات.
-                  </p>
-                )}
-              </div>
-
-              {aiAvailable && (
-                <div className="space-y-2 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-2.5">
-                  <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
-                    <Wand2 aria-hidden className="size-4" /> استوديو الذكاء
-                    الاصطناعي (استوديو موحّد)
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة
-                    + ظلّ) بحفظ المنتج. برومت الاستوديو الجاهز مُطبَّق تلقائياً
-                    — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
-                  </p>
-                  <textarea
-                    value={aiPromptText}
-                    onChange={(e) => setAiPromptText(e.target.value)}
-                    placeholder="تعليمات إضافية اختيارية (للخلفية/الإطار فقط) — مثلاً: أظهر المنتج من الأمام على أرضية بيضاء ناعمة"
-                    rows={2}
-                    maxLength={2000}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
+              {/* نمط الاستوديو */}
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-muted-foreground">
+                  نمط الاستوديو المعياري:
+                </div>
+                <div className="flex flex-wrap gap-1.5">
                   <Button
                     type="button"
                     size="sm"
-                    onClick={runAiStudio}
-                    disabled={busy}
-                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                    variant={preset === "PURE_WHITE" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("PURE_WHITE")}
                   >
-                    <Wand2 aria-hidden className="size-4" />
-                    {busy ? "جارٍ الإنشاء…" : "إنشاء استوديو بالذكاء الاصطناعي"}
+                    <SunMedium aria-hidden className="size-3.5" />
+                    أبيض استوديو نقي
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={preset === "LUXURY_MIRROR" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("LUXURY_MIRROR")}
+                  >
+                    <Layers aria-hidden className="size-3.5" />
+                    مرآة فاخرة وانعكاس
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={preset === "VIBRANT_COMMERCIAL" ? "default" : "outline"}
+                    className="h-8 text-xs gap-1.5"
+                    onClick={() => setPreset("VIBRANT_COMMERCIAL")}
+                  >
+                    <Sparkles aria-hidden className="size-3.5" />
+                    ألوان تجارية حيوية
                   </Button>
                 </div>
-              )}
+              </div>
+
+              {/* المعالجة تحافظ على الصورة الحقيقية ولا تنشئ بديلاً توليدياً. */}
+              <div className="space-y-2 pt-1">
+                <div className="space-y-1">
+                  <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
+                    <Sparkles aria-hidden className="size-4" />
+                    {busy ? "جارٍ التحويل…" : proAvailable ? "قصّ الخلفية (استوديو احترافي)" : "توسيط وظل استوديو على أبيض"}
+                  </Button>
+                  {!proAvailable && (
+                    <p className="text-[11px] text-muted-foreground">
+                      المسار المجاني يوسّط الصورة على خلفية بيضاء نقية مع ظل احترافي. لإزالة الخلفيات المعقدة بدقة متقدمة فعّل remove.bg من الإعدادات.
+                    </p>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -453,17 +377,6 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
           <p className="text-sm font-medium">
             معاينة الاستوديو — خلفية بيضاء موحّدة بإطار وظلّ (الأصل يمينًا):
           </p>
-          {aiInPreview && (
-            <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs text-[var(--sem-warn)]">
-              <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
-              <span>
-                صورة مُولَّدة بالذكاء الاصطناعي. راجِع تطابق تفاصيل المنتج
-                وكتابته (الأرقام/الحروف) مع الأصل قبل الاعتماد — قد يغيّر الذكاء
-                الاصطناعي تفاصيل دقيقة.{" "}
-                <b>الأصل محفوظ ولا يُستبدَل إلا باعتمادك.</b>
-              </span>
-            </div>
-          )}
           {notice && (
             <p className="text-xs text-[var(--sem-warn)]">
               {notice}

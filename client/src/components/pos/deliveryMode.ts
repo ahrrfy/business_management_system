@@ -64,6 +64,22 @@ export function deliveryModeUnavailableReason(offline: boolean): string | null {
   return offline ? DELIVERY_OFFLINE_REASON : null;
 }
 
+/**
+ * التوصيل مع انقطاع الشبكة — لا التقاطَ محلّيّاً لبيعٍ بتوصيل: إسنادُ جهة التوصيل يحتاج حرّاس الخادم
+ * الحيّة (SLA · الفرع · الجهة)، والخادم يرفضه من الطابور أصلاً. مصدرٌ واحدٌ للقاعدة يستعمله حارسُ
+ * الالتقاط وشرطُ الأهليّة معاً كي لا يسقط التوصيل بصمتاً كبيعٍ نقديٍّ صرف عبر أيّ مسار التقاطٍ
+ * (٥٠٣ · submitSale · quickPay): صفرُ إسنادٍ ⇒ صفرُ تحصيلِ COD ⇒ مالٌ يضيع بلا مسارٍ ولا تبويب.
+ */
+export function deliveryBlocksOfflineCapture(delivery: DeliveryDraft | null | undefined): boolean {
+  return delivery != null;
+}
+
+/** رسالةُ رفض الالتقاط الأوفلاين لسلّة توصيل (ماذا حدث · لماذا · ماذا تفعل الآن). */
+export const OFFLINE_DELIVERY_BLOCK = Object.freeze({
+  title: "لا بيع بتوصيل دون اتصال",
+  body: "إسنادُ جهة التوصيل يحتاج الخادم. أعد المحاولة عند عودة الاتصال، أو أزِل التوصيل للبيع النقديّ المباشر.",
+});
+
 export function emptyDeliveryDraft(): DeliveryDraft {
   return { governorate: "", address: "", partyId: null, partyName: "", fee: "", feeManual: false, feeCollection: "COURIER", recipientName: "", recipientPhone: "", customerPhone: "" };
 }

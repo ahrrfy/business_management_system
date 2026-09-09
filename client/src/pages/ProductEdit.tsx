@@ -183,6 +183,16 @@ export default function ProductEdit() {
   const myBranch = me.data?.branchId ?? 1;
   const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
 
+  const hasStockForSharedCost = useMemo(() => {
+    return variants.some((v) => {
+      // إذا كان للمتغيّر سعر خاص لكن بحقل تكلفة فارغ، فـbuildPayload يتراجع للتكلفة المشتركة؛
+      // لذا يبقى مشمولاً بقفل التكلفة المشتركة طالما له رصيد مخزني (Codex finding).
+      if (v.priceOverride && v.costPrice.trim()) return false;
+      return Object.values(v.stockByBranch ?? {}).some((q) => Number(q) !== 0);
+    });
+  }, [variants]);
+  const isSharedCostLocked = hasStockForSharedCost && !consignment.isConsignment;
+
   // حارس فقد البيانات: أوّل تغيير حقيقي بعد اكتمال التعبئة من الخادم يُعلَّم النموذج «متّسخاً» —
   // يتجاهل عمداً التغييرات التي تُحدِثها التعبئة نفسها (skipNextDirtyCheck يسقط أوّل تشغيلة).
   const [touched, setTouched] = useState(false);
@@ -709,9 +719,26 @@ export default function ProductEdit() {
       <Card>
         <CardHeader><CardTitle className="text-base">التسعير · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"} required hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "موحّد لكل الألوان إلا ما له سعر خاص."}>
-            <MoneyInput value={costPrice} onChange={setCostPrice} placeholder="150" />
-            <CostCoachRow costPrice={costPrice} baseRetail={units.find((u) => u.isBase)?.retail ?? ""} categoryId={categoryId === "" ? null : Number(categoryId)} brand={brand} productType={productType} productId={productId} />
+          <Field
+            label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"}
+            required
+            hint={
+              isSharedCostLocked
+                ? "مقفل لوجود رصيد مخزني فعلي لأحد المتغيّرات."
+                : product.data?.isConsignment
+                  ? "المبلغ المستحقّ للمودِع عند البيع."
+                  : "موحّد لكل الألوان إلا ما له سعر خاص."
+            }
+          >
+            <MoneyInput value={costPrice} onChange={setCostPrice} placeholder="150" disabled={isSharedCostLocked} />
+            {isSharedCostLocked && (
+              <p className="text-[11px] text-[var(--sem-warn)] mt-1 font-medium leading-normal">
+                مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
+              </p>
+            )}
+            {!isSharedCostLocked && (
+              <CostCoachRow costPrice={costPrice} baseRetail={units.find((u) => u.isBase)?.retail ?? ""} categoryId={categoryId === "" ? null : Number(categoryId)} brand={brand} productType={productType} productId={productId} />
+            )}
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field
@@ -830,6 +857,7 @@ export default function ProductEdit() {
             onScan={onScan}
             onColorCommit={commitColorRename}
             stockEditable={false}
+            isConsignment={consignment.isConsignment}
             priceHistory
             emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
           />

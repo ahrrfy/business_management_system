@@ -478,7 +478,10 @@ export async function cancelVoucher(
     return {
       receiptId,
       voucherNumber,
-      status: "PENDING_APPROVAL" as const,
+      status:
+        request.approvalStatus === "APPROVED"
+          ? ("REVERSED" as const)
+          : ("PENDING_APPROVAL" as const),
       approvalReceiptId: request.receiptId,
     };
   });

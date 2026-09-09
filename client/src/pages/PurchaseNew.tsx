@@ -15,7 +15,8 @@
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Landmark, Truck } from "lucide-react";
+import { ClipboardList, Landmark, Truck } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   isWithinPriceDecimals,
   priceDecimalsFor,
@@ -74,13 +75,40 @@ export default function PurchaseNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
+  const searchParams = useMemo(
+    () => new URLSearchParams(window.location.search),
+    [],
+  );
   const requisitionId = useMemo(() => {
-    const raw = new URLSearchParams(window.location.search).get(
-      "requisitionId",
-    );
+    const raw = searchParams.get("requisitionId");
     const value = Number(raw);
     return Number.isInteger(value) && value > 0 ? value : null;
-  }, []);
+  }, [searchParams]);
+  const prefillKey = useMemo(() => searchParams.get("prefillKey"), [searchParams]);
+  const isUnassignedMode = useMemo(() => searchParams.get("mode") === "unassigned_sourcing", [searchParams]);
+  const autoReason = useMemo(() => searchParams.get("autoReason"), [searchParams]);
+
+  const [prefillVariantIds] = useState<number[]>(() => {
+    if (!prefillKey) {
+      const rawItems = searchParams.get("items");
+      if (rawItems) {
+        return rawItems.split(",").map(Number).filter((id) => Number.isInteger(id) && id > 0);
+      }
+      return [];
+    }
+    try {
+      const data = sessionStorage.getItem(prefillKey);
+      if (data) {
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          return parsed.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+    return [];
+  });
 
   /* ─── server data ──────────────────────────────────────────────── */
   const me = trpc.auth.me.useQuery();
@@ -199,6 +227,78 @@ export default function PurchaseNew() {
     requisition.data,
     requisitionCatalog.data,
     requisitionUnitIds,
+  ]);
+
+  const purchasableCatalog = trpc.catalog.forPurchase.useQuery(
+    {
+      branchId: Number(state.branchId || me.data?.branchId || 1),
+      limit: 500,
+    },
+    { enabled: prefillVariantIds.length > 0 },
+  );
+
+  const prefillHydratedRef = useRef(false);
+  useEffect(() => {
+    if (
+      prefillHydratedRef.current ||
+      prefillVariantIds.length === 0 ||
+      !purchasableCatalog.data
+    )
+      return;
+    const variantIdSet = new Set(prefillVariantIds);
+    const matchedRows = new Map<
+      number,
+      (typeof purchasableCatalog.data)[number]
+    >();
+    for (const row of purchasableCatalog.data) {
+      if (variantIdSet.has(Number(row.variantId))) {
+        if (!matchedRows.has(Number(row.variantId)) || row.isBaseUnit) {
+          matchedRows.set(Number(row.variantId), row);
+        }
+      }
+    }
+    const lines: InvoiceLine[] = Array.from(matchedRows.values()).map(
+      (row) => ({
+        productId: Number(row.productId),
+        variantId: Number(row.variantId),
+        productUnitId: Number(row.productUnitId),
+        name: `${row.productName}${row.variantName ? ` — ${row.variantName}` : ""}`,
+        sku: row.sku ?? "",
+        barcode: null,
+        unit: row.unitName ?? "",
+        qty: 1,
+        conversionFactor: String(row.conversionFactor || "1"),
+        stockBase: row.stockBase ?? 0,
+        stockBranchId: state.branchId,
+        reservedBase: 0,
+        availableBase: row.stockBase ?? 0,
+        isService: false,
+        price: row.costPriceBase ?? "0",
+        costBase: row.costPriceBase ?? "0",
+        discount: "0",
+        discountType: "percent",
+        note: autoReason === "low_stock" ? "نواقص مخزون بحاجة لتأمين" : "",
+      }),
+    );
+
+    if (lines.length > 0) {
+      dispatch({ type: "ADD_ITEMS", items: lines });
+      notify.ok(
+        `تم إدراج ${lines.length} صنف من نواقص المخزون تلقائياً في مسودة الشراء`,
+      );
+      if (prefillKey) {
+        try {
+          sessionStorage.removeItem(prefillKey);
+        } catch {}
+      }
+    }
+    prefillHydratedRef.current = true;
+  }, [
+    prefillVariantIds,
+    purchasableCatalog.data,
+    state.branchId,
+    autoReason,
+    prefillKey,
   ]);
 
   // مزامنة الفرع مرة واحدة عند توفّر هويّة المستخدم (إن لم يكن المستخدم قد بدّل الفرع يدوياً).
@@ -366,6 +466,15 @@ export default function PurchaseNew() {
     onError: (e) => notify.err(e),
   });
 
+  const createRequisition = trpc.purchases.createRequisition.useMutation({
+    onSuccess: async () => {
+      await utils.purchases.requisitions.invalidate();
+      notify.ok("تم حفظ طلب التأمين بنجاح وإسناده لمدير المشتريات للبحث والتفاوض مع الموردين في السوق");
+      navigate("/purchase-requisitions");
+    },
+    onError: (e) => notify.err(e),
+  });
+
   /* ─── validation + submit ──────────────────────────────────────── */
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
@@ -480,7 +589,8 @@ export default function PurchaseNew() {
   );
 
   function validate(): string | null {
-    if (!state.entityId) return "اختر المورد قبل الحفظ.";
+    if (!state.entityId)
+      return "اختر المورد قبل حفظ أمر الشراء المباشر، أو احفظ كطلب تأمين بدون مورد.";
     if (!state.branchId) return "اختر الفرع.";
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     for (const l of state.items) {
@@ -610,10 +720,56 @@ export default function PurchaseNew() {
     };
   }
 
+  function handleSaveRequisition() {
+    if (createRequisition.isPending) return;
+    if (state.items.length === 0) {
+      notify.warn("أضف منتجاً واحداً على الأقل لطلب التأمين.");
+      return;
+    }
+    for (const l of state.items) {
+      const qty = D(l.qty);
+      if (!qty.gt(0)) {
+        notify.warn(`الكمية في «${l.name}» يجب أن تكون موجبة.`);
+        return;
+      }
+    }
+
+    createRequisition.mutate({
+      branchId: state.branchId,
+      purpose:
+        state.notes.trim() ||
+        (isUnassignedMode
+          ? "تأمين نواقص من السوق العراقي (مفتوح بدون مورد)"
+          : "طلب تأمين بضاعة ونواقص — تفاوض مع الموردين"),
+      priority: "NORMAL",
+      clientRequestId,
+      items: state.items.map((l) => {
+        const baseQty = Math.max(
+          1,
+          Math.round(toBase(l.qty, l.conversionFactor).toNumber()),
+        );
+        return {
+          variantId: l.variantId,
+          productUnitId: l.productUnitId > 0 ? l.productUnitId : null,
+          requestedBaseQuantity: baseQty,
+          estimatedUnitPrice: toUnitPriceStr(l.price, state.currency),
+          preferredSupplierId: null,
+          justification: (l.note || "تأمين احتياج السوق وتفاوض الموردين")
+            .trim()
+            .padEnd(3, "."),
+        };
+      }),
+    });
+  }
+
   function handleSubmit() {
     // ActionButtons (مشترك) لا يُعطِّل زرّ «مسوّدة» أثناء التحفّظ — حارس محلّي يمنع تضارب حفظَين
     // متزامنين (كلاهما يشترك clientRequestId ثابتاً؛ الخادم يمنع الازدواج، لكن قد يُربَك التوجيه بعد النجاح).
-    if (create.isPending) return;
+    if (create.isPending || createRequisition.isPending) return;
+    if (!state.entityId) {
+      handleSaveRequisition();
+      return;
+    }
     const err = validate();
     if (err) {
       notify.warn(err);
@@ -997,6 +1153,22 @@ export default function PurchaseNew() {
         </div>
       ) : null}
 
+      {!state.entityId && (
+        <div className="rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)]/20 p-3 text-xs text-foreground flex items-start gap-2.5 animate-in fade-in">
+          <ClipboardList className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
+          <div>
+            <div className="font-bold text-foreground">
+              نمط تأمين السوق العراقي (مسودة مفتوحة بدون مورد):
+            </div>
+            <p className="mt-0.5 text-muted-foreground">
+              نظراً لتقلبات الأسعار وتوفر الأصناف بين موردي الجملة (الشورجة / جميلة / السنك)، يمكنك حفظ هذه المسودة كـ
+              <strong className="text-foreground"> «طلب تأمين وإسناد للمدير» </strong>
+              ليتولى الاتصال بالموردين وتثبيت الأسعار، ثم تحويلها إلى أمر شراء نهائي بضغطة زر.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader
         state={state}
@@ -1204,11 +1376,27 @@ export default function PurchaseNew() {
               </div>
             </section>
           )}
+          {!state.entityId && state.items.length > 0 && (
+            <section className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/20 p-3 flex flex-col gap-2">
+              <div className="text-xs font-semibold text-foreground">
+                مسودة بدون مورد محدد (سوق مفتوح):
+              </div>
+              <Button
+                type="button"
+                className="w-full bg-[var(--sem-warn)] hover:bg-[var(--sem-warn)]/90 text-background font-semibold text-xs h-9 shadow-sm gap-1.5"
+                disabled={createRequisition.isPending}
+                onClick={handleSaveRequisition}
+              >
+                <ClipboardList className="size-4" />
+                حفظ كطلب تأمين (إسناد للمدير للتفاوض)
+              </Button>
+            </section>
+          )}
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}
             onAction={handleAction}
-            saving={create.isPending}
+            saving={create.isPending || createRequisition.isPending}
             pasteAvailable={pasteAvailable}
             availableActions={NEW_ACTIONS}
             primaryLabel="حفظ المسودة"

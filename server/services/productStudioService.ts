@@ -8,7 +8,7 @@ import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
-import { normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
+import { addUnitBarcodeAlias, normalizedMatchAny, resolveBarcodeOwnerResult } from "./catalog/barcodeAliases";
 import { barcodesEquivalent, canonicalizeBarcodeInput } from "../../shared/barcodeNormalize";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
@@ -64,7 +64,6 @@ export type StudioCampaignStatus = typeof productStudioCampaigns.$inferSelect.st
 function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
-
 
 /**
  * فرعُ المُسنَد إليه يجب أن يطابق فرع المُسنِد، وكلاهما يجب أن يكون **معروفاً**.
@@ -212,7 +211,7 @@ function isPendingProcessingReceipt(marker: string | null): boolean {
   return typeof marker === "string" && /^[IP][0-9a-f]{63}$/.test(marker);
 }
 
-function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null }, adminOverrideReason?: string | null): string | null {
+function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: number | null; branchId: number | null; barcodeVerifiedBy?: number | null }, adminOverrideReason?: string | null, requireBarcodeVerification = false): string | null {
   if (!canCrossBranches(actor) && (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId))) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -223,7 +222,10 @@ function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: nu
       }),
     });
   }
-  if (Number(task.assignedTo) === actor.userId) return null;
+  if (Number(task.assignedTo) === actor.userId) {
+    if (requireBarcodeVerification && !isManager(actor) && Number(task.barcodeVerifiedBy) !== actor.userId) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يمكن بدء تصوير هذه المهمة بعد", why: "لم يُؤكّد الخادم مسح باركود المنتج لهذه المهمة", doThis: "امسح باركود المنتج من محطة التصوير ثم ابدأ الالتقاط" }) });
+    return null;
+  }
   const reason = cleanAdminOverrideReason(adminOverrideReason);
   if (!isAdminActor(actor) || !reason) {
     throw new TRPCError({
@@ -726,7 +728,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   };
 }
 
-/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
+/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣» مع صور المنتج المعتمدة السابقة. */
 async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null, variantId: number | null = null) {
   const [approved] = await tx
     .select({ count: sql<number>`count(*)` })
@@ -741,7 +743,37 @@ async function studioImageProgress(tx: StudioTx, productId: number, campaignId: 
     const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
     requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
   }
-  return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+
+  const previousImages = await tx
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, productId),
+      variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return {
+    approvedImages: Number(approved?.count ?? 0),
+    requiredImages,
+    previousImages: previousImages.map((img) => ({
+      id: Number(img.id),
+      isPrimary: Boolean(img.isPrimary),
+      sortOrder: Number(img.sortOrder ?? 0),
+      thumbDataUrl: img.thumbDataUrl ?? null,
+      contentHash: img.contentHash ?? null,
+      createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+    })),
+  };
 }
 
 /** عددُ الصور التي تسبق المهمة الجديدة في ترتيب حملتها/بديلها. */
@@ -918,6 +950,8 @@ async function claimFreshCampaignTask(
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         createdBy: actor.userId,
         // يبقى ordinal الصورة ثابتاً طوال المهمة، ثم يُستخدم لترتيب النشر حتى لو
         // اكتملت صورة سابقة وعاد المنتج إلى الطابور لجولة تالية.
@@ -983,7 +1017,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? null
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), eq(productImageJobs.variantId, variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -994,7 +1028,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       ? undefined
       : (
           await tx
-            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId })
+            .select({ id: productImageJobs.id, status: productImageJobs.status, assignedTo: productImageJobs.assignedTo, assignedBy: productImageJobs.assignedBy, assignedAt: productImageJobs.assignedAt, submittedAt: productImageJobs.submittedAt, campaignId: productImageJobs.campaignId, branchId: productImageJobs.branchId, revision: productImageJobs.revision, variantId: productImageJobs.variantId, barcodeVerifiedBy: productImageJobs.barcodeVerifiedBy })
             .from(productImageJobs)
             .where(and(eq(productImageJobs.productId, productId), isNotNull(productImageJobs.activeSlot), isNull(productImageJobs.variantId)))
             .orderBy(sql`case when ${productImageJobs.assignedTo} = ${actor.userId} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') then 0 when ${productImageJobs.assignedTo} is null and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'REJECTED') and ${eligibleQueueCampaign} then 1 else 2 end`, asc(productImageJobs.id))
@@ -1008,6 +1042,9 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
       return claimFreshCampaignTask(tx, actor, resolved);
     }
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(active.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» لا يُفتح للتصوير الآن`, why: active.status === "PENDING_REVIEW" ? "صوره أُرسلت للاعتماد وتنتظر قرار المراجع" : "المهمة مغلقة ولا يجوز إعادتها إلى التصوير بالمسح", doThis: "انتقل إلى المنتج التالي، أو راجع المدير إذا كانت الحالة تحتاج إجراءً إدارياً" }) });
+    }
     // ترقيةُ variantId قبل الرجوع «لصاحبها»: إن كان المدير أسنَد مهمّةً مستوى-أمّ
     // (variantId=NULL) إلى المصوّر ثمّ مسح المصوّرُ باركود بديلٍ محدَّد، الصورةُ يجب أن
     // تذهب لذاك البديل. بلا هذه الترقية كانت المهمّةُ تُغلَق مبكّراً بـ«صاحبها» ثمّ الاعتماد
@@ -1015,7 +1052,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     if (variantId != null && active.variantId == null && Number(active.assignedTo) === actor.userId) {
       await tx
         .update(productImageJobs)
-        .set({ variantId, revision: sql`${productImageJobs.revision} + 1` })
+        .set({ variantId, barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` })
         .where(eq(productImageJobs.id, active.id));
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.claimByBarcode.upgradeVariant", Number(active.id), { productId, variantId, barcode: barcode.slice(0, 64) }),
@@ -1023,10 +1060,86 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
     if (Number(active.assignedTo) === actor.userId) {
+      if (Number(active.barcodeVerifiedBy) !== actor.userId) {
+        await tx.update(productImageJobs).set({ barcodeVerifiedBy: actor.userId, barcodeVerifiedAt: new Date(), revision: sql`${productImageJobs.revision} + 1` }).where(eq(productImageJobs.id, active.id));
+        return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
+      }
       return { taskId: Number(active.id), productName: displayName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)) };
     }
+    if (active.status === "PENDING_REVIEW" || active.submittedAt != null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» صُوِّر بالفعل وبانتظار الاعتماد`,
+          why: "التقط زميلٌ صورةً لهذا المنتج وأرسلها للاعتماد، ولا حاجة لإعادة تصويره",
+          doThis: "انتقل إلى المنتج التالي في الطابور",
+        }),
+      });
+    }
+    // إن كانت المهمّة مسندة لزميل (assignedTo != null)
     if (active.assignedTo != null) {
-      throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({ what: `«${displayName}» بيد زميلٍ آخر الآن`, why: "المهمّة مُسنَدة إلى مصوّرٍ غيرك، ولا تُفتح المهمّة الواحدة لاثنين", doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير نقل المهمّة إليك بإعادة الإسناد" }) });
+      // إن كان مسحاً ذاتياً لم يُصوَّر ومضى عليه أكثر من 15 دقيقة، يُتاح للمصوّر الجديد الذي بيده المنتج حالياً استلامه
+      // بشرط استيفاء عضوية الحملة والفرع:
+      const isSelfClaimed = active.assignedBy != null && Number(active.assignedBy) === Number(active.assignedTo);
+      const CLAIM_STALE_MS = 15 * 60 * 1_000;
+      const isStaleClaim = isSelfClaimed && active.status === "ASSIGNED" && active.submittedAt == null && (
+        !active.assignedAt || (Date.now() - new Date(active.assignedAt).getTime() > CLAIM_STALE_MS)
+      );
+      if (isStaleClaim) {
+        if (!canCrossBranches(actor) && (actor.branchId == null || Number(active.branchId) !== Number(actor.branchId))) {
+          throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: `«${displayName}» لم يُفتح لك`, why: "مهمّة هذا المنتج أُنشئت في فرعٍ غير فرعك، والسحب لا يعبر الفروع", doThis: "اطلب من المدير إنشاء حملةٍ لفرعك، أو نقل هذه المهمّة إلى فرعك" }) });
+        }
+        if (active.campaignId != null) {
+          const member = (
+            await tx
+              .select({ id: productStudioCampaignAssignees.id })
+              .from(productStudioCampaignAssignees)
+              .where(and(eq(productStudioCampaignAssignees.campaignId, Number(active.campaignId)), eq(productStudioCampaignAssignees.userId, actor.userId)))
+              .limit(1)
+          )[0];
+          if (!member && !isManager(actor)) {
+            throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "تعذّر سحب هذه المهمّة", why: "لستَ ضمن مصوّري الحملة التي تتبعها، والسحب محصورٌ بمصوّريها", doThis: "اطلب من المدير إضافتك إلى مصوّري الحملة، ثمّ أعد مسح الباركود" }) });
+          }
+        }
+        const upgradeVariant = variantId != null && active.variantId == null;
+        await tx
+          .update(productImageJobs)
+          .set({
+            assignedTo: actor.userId,
+            assignedBy: actor.userId,
+            assignedAt: new Date(),
+            barcodeVerifiedBy: actor.userId,
+            barcodeVerifiedAt: new Date(),
+            ...(upgradeVariant ? { variantId } : {}),
+            revision: sql`${productImageJobs.revision} + 1`,
+          })
+          .where(eq(productImageJobs.id, active.id));
+        await tx.insert(auditLogs).values(
+          auditValues(actor, "productStudio.claimByBarcode.reclaimStale", Number(active.id), {
+            productId,
+            variantId,
+            previousAssigneeId: Number(active.assignedTo),
+            barcode: barcode.slice(0, 64),
+            campaignId: active.campaignId == null ? null : Number(active.campaignId),
+          }),
+        );
+        return {
+          taskId: Number(active.id),
+          productName: displayName,
+          claimed: true as const,
+          revision: Number(active.revision) + 1,
+          ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId), variantId)),
+        };
+      }
+
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: `«${displayName}» قيد العمل لدى زميلٍ آخر الآن`,
+          why: "المهمّة مفتوحة لدى مصوّرٍ غيرك حالياً، ولا تُفتح المهمّة الواحدة لاثنين معاً",
+          doThis: "انتقل إلى المنتج التالي، أو اطلب من المدير إعادة إسنادها إن كان الزميل قد غادر",
+        }),
+      });
     }
     // فحصُ الفرع وحده هنا: `assertTaskAccess` تفشل مغلقةً على صفٍّ **بلا منفّذ**
     // (`Number(null) === 0` لا يساوي معرّف أحد) — وهو بالضبط ما يعنيه السحب.
@@ -1076,6 +1189,8 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         assignedTo: actor.userId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: actor.userId,
+        barcodeVerifiedAt: new Date(),
         ...(upgradeVariant ? { variantId } : {}),
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -2846,6 +2961,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
 type StudioTaskScope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTaskCursor = {
   scope: StudioTaskScope;
+  taskId: number | null;
   statuses: StudioStatus[];
   priorities: StudioPriority[];
   overdue: boolean | null;
@@ -2865,6 +2981,7 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
+    if ((parsed.taskId ?? null) !== expected.taskId) throw new Error("invalid cursor");
     if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || parsed.search !== expected.search || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
@@ -2883,6 +3000,7 @@ export async function listStudioTasks(
   actor: ProductStudioActor,
   input: {
     scope: StudioTaskScope;
+    taskId?: number;
     limit?: number;
     cursor?: string | null;
     statuses?: StudioStatus[];
@@ -2913,6 +3031,7 @@ export async function listStudioTasks(
   const campaignId = input.campaignId ?? null;
   const cursorScope = {
     scope: input.scope,
+    taskId: input.taskId ?? null,
     statuses,
     priorities,
     overdue: input.overdue ?? null,
@@ -2926,7 +3045,19 @@ export async function listStudioTasks(
   const now = input.now ?? new Date();
   if (!canCrossBranches(actor)) conds.push(eq(productImageJobs.branchId, Number(actor.branchId)));
   const branchAuditHistory = actor.role === "auditor" && input.scope === "HISTORY";
-  if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
+  if (!isManager(actor) && !branchAuditHistory) {
+    if (input.scope === "MINE") {
+      conds.push(eq(productImageJobs.assignedTo, actor.userId));
+    } else {
+      const memberCampaign = sql`exists (select 1 from ${productStudioCampaignAssignees} where ${productStudioCampaignAssignees.campaignId} = ${productImageJobs.campaignId} and ${productStudioCampaignAssignees.userId} = ${actor.userId})`;
+      conds.push(
+        or(
+          eq(productImageJobs.assignedTo, actor.userId),
+          and(isNull(productImageJobs.assignedTo), memberCampaign),
+        )!,
+      );
+    }
+  } else if (input.scope === "MINE") {
     conds.push(eq(productImageJobs.assignedTo, actor.userId));
   }
   // عرض الاستثناءات (متأخّر/بلا منفّذ) يشمل ما ينتظر المراجعة أيضاً، وإلّا خالف العدّادَ
@@ -2942,6 +3073,8 @@ export async function listStudioTasks(
     conds.push(eq(productImageJobs.assignedTo, assigneeId));
   }
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
+  // فتح المهمة الممسوحة لا يعتمد على موضعها في صفحات القائمة؛ يبقى عزل الفرع والمالك أعلاه سارياً.
+  if (input.taskId != null) conds.push(eq(productImageJobs.id, input.taskId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
   // إخفاءُ مهام الحملات النهائيّة (٢٩/٨): يُنفَّذ في WHERE عبر subquery correlated كي لا
@@ -3055,16 +3188,45 @@ export async function listStudioProductImages(actor: ProductStudioActor, product
       .limit(1)
   )[0];
   if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر عرض صور المنتج", why: "لا منتج نشطٌ بهذا الرقم — حُذف أو عُطِّل بعد فتحك الشاشة", doThis: "حدّث الشاشة واختر منتجاً نشطاً من القائمة" }) });
-  return requireDb()
+  const rows = await requireDb()
     .select({
       id: productImages.id,
+      productId: productImages.productId,
+      variantId: productImages.variantId,
+      variantName: productVariants.variantName,
+      url: productImages.url,
       isPrimary: productImages.isPrimary,
       sortOrder: productImages.sortOrder,
+      objectKey: productImages.objectKey,
+      mime: productImages.mime,
+      width: productImages.width,
+      height: productImages.height,
+      bytes: productImages.bytes,
+      thumbDataUrl: productImages.thumbDataUrl,
       origin: productImages.origin,
+      createdAt: productImages.createdAt,
     })
     .from(productImages)
+    .leftJoin(productVariants, eq(productVariants.id, productImages.variantId))
     .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")))
     .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    productId: Number(r.productId),
+    variantId: r.variantId == null ? null : Number(r.variantId),
+    variantName: r.variantName,
+    url: r.url,
+    isPrimary: Boolean(r.isPrimary),
+    sortOrder: Number(r.sortOrder ?? 0),
+    objectKey: r.objectKey,
+    mime: r.mime,
+    width: r.width,
+    height: r.height,
+    bytes: r.bytes,
+    thumbDataUrl: r.thumbDataUrl,
+    origin: r.origin,
+    createdAt: r.createdAt,
+  }));
 }
 
 async function stageStudioObject(objectKey: string): Promise<void> {
@@ -3502,6 +3664,8 @@ export async function assignStudioTask(
           assignedTo: input.assigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
           // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
@@ -3753,6 +3917,8 @@ export async function bulkAssignStudioTasks(
               assignedTo: input.assigneeId,
               assignedBy: actor.userId,
               assignedAt: new Date(),
+              barcodeVerifiedBy: null,
+              barcodeVerifiedAt: null,
               sourceProductHash: productContentHash(product),
               // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
               // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
@@ -3878,6 +4044,8 @@ export async function reassignStudioTask(
         assignedTo: input.newAssigneeId,
         assignedBy: actor.userId,
         assignedAt: new Date(),
+        barcodeVerifiedBy: null,
+        barcodeVerifiedAt: null,
         sourceProductHash: product ? productContentHash(product) : null,
         revision: sql`${productImageJobs.revision} + 1`,
       })
@@ -3964,6 +4132,8 @@ export async function bulkReassignStudioTasks(
           assignedTo: input.newAssigneeId,
           assignedBy: actor.userId,
           assignedAt: new Date(),
+          barcodeVerifiedBy: null,
+          barcodeVerifiedAt: null,
           sourceProductHash: product ? productContentHash(product) : null,
           revision: sql`${productImageJobs.revision} + 1`,
         })
@@ -4085,12 +4255,17 @@ export async function saveStudioDraft(
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerCaptureOnly = input.requireBarcodeVerification === true && !isManager(actor);
+    const photographerContentAttempt = photographerCaptureOnly && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
+    const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4124,9 +4299,11 @@ export async function saveStudioDraft(
     await tx
       .update(productImageJobs)
       .set({
-        proposedName: input.proposedName?.trim() || null,
-        proposedDescription: input.proposedDescription?.trim() || null,
-        proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
+        proposedName: photographerCaptureOnly ? task.proposedName : input.proposedName?.trim() || null,
+        proposedDescription: photographerCaptureOnly ? task.proposedDescription : input.proposedDescription?.trim() || null,
+        proposedMarketingCopy: photographerCaptureOnly ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+        contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+        contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
         status: "IN_PROGRESS",
         activeSlot: task.activeSlot,
         // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
@@ -4153,11 +4330,11 @@ export async function saveStudioDraft(
  * نشطة مسندة إليه في فرعه؛ لا مسار مباشر للمدير خارج المهمة، وتُعاد مراجعة المهمة تحت قفل عند
  * إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
  */
-export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
+export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null, requireBarcodeVerification = false): Promise<string> {
   const authorization = randomUUID();
   await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
-    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason, requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4279,6 +4456,7 @@ export async function bindStudioProcessingCandidate(
     processingReceipt: string;
     candidateDataUrl: string;
     adminOverrideReason?: string | null;
+    requireBarcodeVerification?: boolean;
     /**
      * تحقّقٌ متفائل: كلّ كاتبٍ آخر (`saveDraft`/`updateSchedule`/`submitCandidate`/…)
      * يُلزم `expectedRevision`؛ غيابُه هنا كان يجعل هذا المسار **الوحيد** الذي يقبل
@@ -4293,7 +4471,7 @@ export async function bindStudioProcessingCandidate(
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     if (input.expectedRevision !== undefined) assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -4491,10 +4669,11 @@ export async function reserveStudioImageTasks(actor: ProductStudioActor, input: 
   taskId: number;
   count: number;
   adminOverrideReason?: string | null;
+  requireBarcodeVerification?: boolean;
 }) {
   return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
     if (!task.productId || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status) ||
         !Number.isInteger(input.count) || input.count < 1 || input.count > MAX_REQUIRED_IMAGES) {
       throw new TRPCError({ code: "CONFLICT", message: appErrorMessage({
@@ -4583,13 +4762,16 @@ export async function submitStudioCandidate(
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
     expectedRevision?: number;
+    requireBarcodeVerification?: boolean;
   },
 ) {
   const token = randomUUID();
   const lease = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
-    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
+    const photographerContentAttempt = input.requireBarcodeVerification === true && !isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
+    if (photographerContentAttempt) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يحرّر المصوّر محتوى المنتج", why: "مسؤولية مهمة التصوير هي الصورة الأصلية ومعالجتها فقط، لحماية اسم المنتج ووصفه من التعديل غير المقصود", doThis: "أرسل الصورة للمراجعة؛ يتولى مدير الكتالوج الاسم والوصف والنص التسويقي" }) });
     assertStoragePolicy();
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({
@@ -4666,7 +4848,7 @@ export async function submitStudioCandidate(
     const result = await withStudioTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
       assertExpectedRevision(task, input.expectedRevision);
-      assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+      assertTaskWriteAccess(actor, task, input.adminOverrideReason, input.requireBarcodeVerification);
       if (task.uploadLeaseToken !== token || !task.uploadLeaseExpiresAt || task.uploadLeaseExpiresAt <= new Date() || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -4690,6 +4872,7 @@ export async function submitStudioCandidate(
         });
       }
       const receiptHash = input.processingReceipt ? contentHash(Buffer.from(input.processingReceipt, "utf8")) : null;
+      const managerPreparedContent = isManager(actor) && (input.proposedName !== undefined || input.proposedDescription !== undefined || input.proposedMarketingCopy !== undefined);
       let effectiveMode: "FLATTEN" | "CUT" | "PRO" | "AI" = input.mode;
       if (input.processingReceipt) {
         const proofValid = Boolean(receiptHash && task.processingProofTokenHash === receiptHash && task.processingProofExpiresAt && task.processingProofExpiresAt > new Date() && task.processingProofCandidateHash === processed.hash && (task.processingProofMode === "PRO" || task.processingProofMode === "AI"));
@@ -4724,6 +4907,8 @@ export async function submitStudioCandidate(
           proposedName: input.proposedName === undefined ? task.proposedName : input.proposedName?.trim() || null,
           proposedDescription: input.proposedDescription === undefined ? task.proposedDescription : input.proposedDescription?.trim() || null,
           proposedMarketingCopy: input.proposedMarketingCopy === undefined ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+          contentPreparedBy: managerPreparedContent ? actor.userId : task.contentPreparedBy,
+          contentPreparedByManager: managerPreparedContent ? true : task.contentPreparedByManager,
           status: "PENDING_REVIEW",
           submittedAt: new Date(),
           // هوية المرسل حقيقة خادمية من Actor، ولا نقبلها من الحمولة.
@@ -4869,6 +5054,52 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
   };
 }
 
+/** يعيد الصور المعتمدة السابقة للمنتج للمصور المصرّح له؛ تظهر في محطة التصوير لمنع تكرار الزوايا. */
+export async function getStudioTaskPreviousImages(actor: ProductStudioActor, taskId: number) {
+  const task = (
+    await requireDb()
+      .select({
+        productId: productImageJobs.productId,
+        variantId: productImageJobs.variantId,
+        assignedTo: productImageJobs.assignedTo,
+        branchId: productImageJobs.branchId,
+      })
+      .from(productImageJobs)
+      .where(eq(productImageJobs.id, taskId))
+      .limit(1)
+  )[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task);
+  if (task.productId == null) return [];
+
+  const images = await requireDb()
+    .select({
+      id: productImages.id,
+      isPrimary: productImages.isPrimary,
+      sortOrder: productImages.sortOrder,
+      thumbDataUrl: productImages.thumbDataUrl,
+      contentHash: productImages.contentHash,
+      createdAt: productImages.createdAt,
+    })
+    .from(productImages)
+    .where(and(
+      eq(productImages.productId, task.productId),
+      task.variantId == null ? isNull(productImages.variantId) : eq(productImages.variantId, task.variantId),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id))
+    .limit(10);
+
+  return images.map((img) => ({
+    id: Number(img.id),
+    isPrimary: Boolean(img.isPrimary),
+    sortOrder: Number(img.sortOrder ?? 0),
+    thumbDataUrl: img.thumbDataUrl ?? null,
+    contentHash: img.contentHash ?? null,
+    createdAt: img.createdAt ? img.createdAt.toISOString() : null,
+  }));
+}
+
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withStudioTx(async (tx) => {
@@ -4915,7 +5146,15 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     )[0];
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: appErrorMessage({ what: "تعذّر اعتماد المهمّة", why: "منتج المهمّة لم يعد موجوداً في الكتالوج — حُذف بعد إنشائها", doThis: "ألغِ المهمّة بسببٍ مكتوب، وأنشئ مهمّةً جديدةً على المنتج الصحيح" }) });
 
-    const changesProductContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    // لا تثبت ملكية النص بالباركود ولا بدور المستخدم الحالي: كلاهما متغير بعد الكتابة. لا
+    // يدخل المحتوى في تعارض المصدر أو في تحديث المنتج إلا إذا أثبت الخادم صلاحية مدير عند
+    // لحظة كتابته في contentPreparedByManager.
+    const hasProposedContent = Boolean(task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim());
+    const discardUntrustedContent = hasProposedContent && !task.contentPreparedByManager;
+    const actuallyChangesName = !discardUntrustedContent && task.proposedName != null && task.proposedName.trim() !== "" && task.proposedName.trim() !== product.name.trim();
+    const actuallyChangesDesc = !discardUntrustedContent && task.proposedDescription != null && task.proposedDescription.trim() !== "" && task.proposedDescription.trim() !== (product.description || "").trim();
+    const actuallyChangesCopy = !discardUntrustedContent && Boolean(task.proposedMarketingCopy?.trim());
+    const changesProductContent = actuallyChangesName || actuallyChangesDesc || actuallyChangesCopy;
     if (changesProductContent && task.sourceProductHash && productContentHash(product) !== task.sourceProductHash) {
       throw new TRPCError({
         code: "CONFLICT",
@@ -5051,8 +5290,8 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
 
     const combinedDescription = [task.proposedDescription?.trim(), task.proposedMarketingCopy?.trim()].filter(Boolean).join("\n\n");
     const productPatch: { name?: string; description?: string | null } = {};
-    if (task.proposedName?.trim()) productPatch.name = task.proposedName.trim();
-    if (combinedDescription) productPatch.description = combinedDescription;
+    if (actuallyChangesName) productPatch.name = task.proposedName!.trim();
+    if (actuallyChangesDesc || actuallyChangesCopy) productPatch.description = combinedDescription || null;
     if (Object.keys(productPatch).length) await tx.update(products).set(productPatch).where(eq(products.id, task.productId));
 
     await tx
@@ -5065,6 +5304,9 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         rejectionReason: null,
         activeSlot: null,
         processedUrl: null,
+        proposedName: discardUntrustedContent ? null : task.proposedName,
+        proposedDescription: discardUntrustedContent ? null : task.proposedDescription,
+        proposedMarketingCopy: discardUntrustedContent ? null : task.proposedMarketingCopy,
         revision: sql`${productImageJobs.revision} + 1`,
       })
       .where(eq(productImageJobs.id, taskId));
@@ -5075,6 +5317,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
         processedHash: task.processedContentHash,
         thumbnailHash: thumbnail.hash,
         contentUpdated: Object.keys(productPatch).length > 0,
+        untrustedContentDiscarded: discardUntrustedContent,
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
@@ -5521,3 +5764,121 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     return expectedRevision === undefined ? { imageId: Number(image.id) } : { imageId: Number(image.id), revision: nextRevision(task) };
   });
 }
+
+/**
+ * جلب متغيّرات ووحدات المنتج المتاحة للاستوديو برخصة قراءة الاستوديو
+ * دون كشف الأسعار أو التكاليف أو البيانات الإدارية الحساسة.
+ */
+export async function getStudioProductUnits(actor: ProductStudioActor, productId: number) {
+  const db = requireDb();
+
+  const product = (
+    await db
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.id, productId), eq(products.isActive, true), eq(products.isService, false)))
+      .limit(1)
+  )[0];
+
+  if (!product) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "المنتج غير متاح للاستوديو",
+        why: "المنتج غير موجود أو معطّل أو من نوع خدمة لا تتطلب تصويراً",
+        doThis: "اختر منتجاً نشطاً من قائمة منتجات الاستوديو",
+      }),
+    });
+  }
+
+  const variants = await db
+    .select({
+      id: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      isActive: productVariants.isActive,
+    })
+    .from(productVariants)
+    .where(and(eq(productVariants.productId, productId), eq(productVariants.isActive, true)));
+
+  const variantIds = variants.map((v) => Number(v.id));
+  const units = variantIds.length > 0
+    ? await db
+        .select({
+          id: productUnits.id,
+          variantId: productUnits.variantId,
+          unitName: productUnits.unitName,
+          barcode: productUnits.barcode,
+        })
+        .from(productUnits)
+        .where(and(inArray(productUnits.variantId, variantIds), eq(productUnits.isActive, true)))
+    : [];
+
+  return {
+    variants: variants.map((v) => ({
+      id: Number(v.id),
+      variantName: v.variantName,
+      color: v.color,
+      size: v.size,
+      sku: v.sku,
+      isActive: v.isActive,
+      unitBarcodes: Object.fromEntries(
+        units
+          .filter((u) => Number(u.variantId) === Number(v.id) && u.barcode)
+          .map((u) => [u.unitName, u.barcode!]),
+      ),
+    })),
+    unitTemplate: Array.from(new Set(units.map((u) => u.unitName))).map((unitName) => ({ unitName })),
+  };
+}
+
+/**
+ * ربط باركود غير معروف بوحدة منتج نشطة من واجهة الاستوديو
+ * مع التحقق من أن الوحدة والمتغيّر والمنتج نشطون وغير خدميين.
+ */
+export async function linkStudioBarcode(
+  actor: ProductStudioActor,
+  input: { productUnitId: number; barcode: string; note?: string | null },
+) {
+  const db = requireDb();
+  const unit = (
+    await db
+      .select({
+        id: productUnits.id,
+      })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
+        and(
+          eq(productUnits.id, input.productUnitId),
+          eq(productUnits.isActive, true),
+          eq(productVariants.isActive, true),
+          eq(products.isActive, true),
+          eq(products.isService, false),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  if (!unit) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: appErrorMessage({
+        what: "تعذّر ربط الباركود",
+        why: "وحدة القياس أو المنتج غير موجود أو معطّل أو نوعه خدمة",
+        doThis: "اختر وحدة نشطة لمنتج متاح في الاستوديو",
+      }),
+    });
+  }
+
+  return addUnitBarcodeAlias(
+    input.productUnitId,
+    input.barcode,
+    input.note ?? "رُبط من استوديو المنتجات",
+    actor.userId,
+  );
+}
+

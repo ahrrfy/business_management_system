@@ -37,7 +37,7 @@ const limits = [
     label: "صفحة تشغيلية",
     matches: (asset) =>
       /\.(?:js|mjs)$/.test(asset.name) &&
-      !/^(?:index-|exceljs-|framework-|data-client-|ui-vendor-|observability-|offline-store-|ort\.)/.test(asset.name),
+      !/^(?:index-|exceljs-|framework-|data-client-|ui-vendor-|observability-|offline-store-|motion-|ort\.)/.test(asset.name),
     raw: 600_000,
   },
   {

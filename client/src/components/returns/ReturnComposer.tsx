@@ -63,9 +63,9 @@ export interface ReturnComposerProps {
 export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
-  /** المالك ينفّذ مرتجعه فوراً (قرار المالك ١/٩/٢٦) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
+  /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
   const me = trpc.auth.me.useQuery();
-  const executesImmediately = me.data?.isOwner === true;
+  const executesImmediately = me.data?.isOwner === true || ["admin", "manager", "cashier"].includes(me.data?.role ?? "");
   /**
    * ⭐ في وضع الاعتماد نُحمّل **بنود الطلب** — هي التي سينفّذها الخادم، لا ما يُدخله المدير.
    * كان الجدول يُفتَح فارغاً فيُدخل المدير كمّياتٍ يُقسم بها حوارُ التأكيد ثمّ يتجاهلها
@@ -222,7 +222,8 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
    *    الاسترداد بقناة RETURN لمراجعة المدير، فيصير العجزُ موثَّقاً بمستندٍ لا ضياعاً صامتاً.
    */
   async function captureOfflineReturn(): Promise<boolean> {
-    if (!inv || !executesImmediately || method !== "CASH" || !refundD.gt(0)) return false;
+    const isOwner = me.data?.isOwner === true;
+    if (!inv || !isOwner || method !== "CASH" || !refundD.gt(0)) return false;
     if (!(await isOfflineSaleEnabled())) {
       notify.errBig(
         "العمل دون اتصال مُعطَّل على هذا الجهاز",
@@ -272,8 +273,10 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
        * العائدُ نوعٌ مُميَّزٌ بـ`mode` (قرار المالك ١/٩/٢٦): المالكُ يُنفَّذ مرتجعُه فوراً،
        * وغيرُه يُرسل طلباً. الشاشة تقول أيَّهما وقع — لا نصّاً واحداً يصف الحالتين.
        */
-      if (res.mode === "EXECUTED") {
-        setDone(`نُفِّذ المرتجع فعلاً بقيمة ${fmt(String(res.returnedTotal ?? "0"))} د.ع — تحرّك المخزون والمال.`);
+      const isExecuted = res.mode === "EXECUTED" || (res as { status?: string }).status === "APPROVED";
+      if (isExecuted) {
+        const total = "returnedTotal" in res && res.returnedTotal ? ` بقيمة ${fmt(String(res.returnedTotal))} د.ع` : "";
+        setDone(`نُفِّذ المرتجع فعلاً${total} — تحرّك المخزون والمال.`);
       } else {
         setDone(`أُرسل طلب المرتجع #${res.requestId} للاعتماد — لم يتغيّر المخزون أو المال بعد.`);
       }
@@ -285,8 +288,11 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         utils.returns.getInvoice.invalidate({ invoiceId }),
         utils.salesControl.list.invalidate(),
       ]);
-      if (res.mode === "EXECUTED") {
-        onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
+      if (isExecuted) {
+        onDone?.({
+          fullyReturned: "fullyReturned" in res ? !!res.fullyReturned : false,
+          returnedTotal: "returnedTotal" in res ? String(res.returnedTotal ?? "0") : "0",
+        });
       }
     },
     onError: (e) => {
@@ -343,6 +349,12 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     if (pending && !approvingRequestId) {
       return `على هذه الفاتورة طلبٌ معلّق #${pending.id} — احسمه أولاً (اعتماداً أو رفضاً) قبل إرسال طلبٍ جديد.`;
     }
+    if (!approvingRequestId && me.data?.role === "cashier") {
+      const cashierHasShift = inv?.refundShifts?.some((s) => s.isMine || Number(s.userId) === Number(me.data?.id));
+      if (!cashierHasShift) {
+        return "يشترط وجود وردية مفتوحة للكاشير في فرع الفاتورة لتنفيذ المرتجع.";
+      }
+    }
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
     if (isWalkIn && !returnValue.gt(0)) return "قيمة المرتجع صفر؛ لا يمكن إنشاء تسوية نقدية لزبون عابر.";
     // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
@@ -357,7 +369,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, lockedLines, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -410,7 +422,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
             ? `تنفيذ مرتجع الفاتورة ${inv.invoiceNumber} الآن`
             : `إرسال طلب مرتجع للفاتورة ${inv.invoiceNumber}`,
         description: (approvingRequestId || executesImmediately)
-          ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}.${executesImmediately && !approvingRequestId ? " تنفيذٌ فوريّ بصفتك المالك، موثَّقٌ بسببه في سجلّ التدقيق." : ""} متابعة؟`
+          ? `يُنفَّذ الأثر الآن: ترجع ${scope} — ${moneySentence}، ${stockSentence}.${executesImmediately && !approvingRequestId ? (me.data?.isOwner ? " تنفيذٌ فوريّ بصفتك المالك، موثَّقٌ بسببه في سجلّ التدقيق." : " تنفيذٌ فوريّ ذريّ، موثَّقٌ بسببه في سجلّ التدقيق.") : ""} متابعة؟`
           : `ترسل طلباً بإرجاع ${scope} — وعند الاعتماد ${moneySentence}، ${stockSentence}.\n\nتنبيه: لا تسلّم الزبون نقوداً ولا تستلم البضاعة على هذا الطلب: لا يتغيّر المخزون ولا المال حتى يعتمده مراجعٌ مستقل (غيرك وغير منشئ الفاتورة).`,
         confirmText: approvingRequestId ? "اعتماد وتنفيذ" : executesImmediately ? "تنفيذ المرتجع" : "إرسال الطلب للاعتماد",
       }))
@@ -434,6 +446,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
       ...(!isWalkIn ? { restock } : {}),
       reason: reason.trim(),
       clientRequestId,
+      directExecution: executesImmediately,
     });
   }
 

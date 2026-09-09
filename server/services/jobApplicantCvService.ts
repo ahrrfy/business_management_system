@@ -2,10 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
-import {
-  jobApplicantCvFiles,
-  jobApplicants,
-} from "../../drizzle/schema";
+import { jobApplicantCvFiles, jobApplicants } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import type { CompanyBranchScope } from "./companyBranchScope";
 import { requireDb } from "./tx";
@@ -13,11 +10,15 @@ import { requireDb } from "./tx";
 export const MAX_CV_BYTES = 2 * 1024 * 1024;
 export const MAX_CV_BASE64_CHARS = Math.ceil(MAX_CV_BYTES / 3) * 4;
 export const PDF_MIME = "application/pdf";
-export const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 const PUBLIC_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
-const STRICT_BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const STRICT_BASE64_RE =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const PDF_MAGIC = Buffer.from("%PDF-", "ascii");
+const PDF_ACTIVE_FEATURE_RE =
+  /\/(?:aa|embeddedfile|javascript|js|launch|openaction|richmedia|xfa)\b/i;
 const DOCX_MAIN_CONTENT_TYPE =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 
@@ -50,11 +51,20 @@ function badCv(message: string): never {
 
 /** Decode only canonical base64. Buffer.from() alone silently accepts junk and whitespace. */
 export function decodeStrictBase64(value: string): Buffer {
-  if (!value || value.length > MAX_CV_BASE64_CHARS || value.length % 4 !== 0 || !STRICT_BASE64_RE.test(value)) {
+  if (
+    !value ||
+    value.length > MAX_CV_BASE64_CHARS ||
+    value.length % 4 !== 0 ||
+    !STRICT_BASE64_RE.test(value)
+  ) {
     return badCv("بيانات ملف السيرة الذاتية غير صالحة");
   }
   const bytes = Buffer.from(value, "base64");
-  if (!bytes.length || bytes.length > MAX_CV_BYTES || bytes.toString("base64") !== value) {
+  if (
+    !bytes.length ||
+    bytes.length > MAX_CV_BYTES ||
+    bytes.toString("base64") !== value
+  ) {
     return badCv("حجم السيرة الذاتية يجب ألا يتجاوز 2MB");
   }
   return bytes;
@@ -109,20 +119,41 @@ function parseZipEntries(bytes: Buffer): Map<string, ZipEntry> {
     const commentLength = bytes.readUInt16LE(offset + 32);
     const localOffset = bytes.readUInt32LE(offset + 42);
     const end = offset + 46 + nameLength + extraLength + commentLength;
-    if (nameLength < 1 || end > eocd || compressedSize === 0xffffffff || localOffset === 0xffffffff) {
+    if (
+      nameLength < 1 ||
+      end > eocd ||
+      compressedSize === 0xffffffff ||
+      localOffset === 0xffffffff
+    ) {
       return badCv("بنية ZIP64 غير مسموحة للسيرة الذاتية");
     }
     if ((flags & 0x0001) !== 0) return badCv("ملف DOCX المشفر غير مسموح");
-    const name = bytes.subarray(offset + 46, offset + 46 + nameLength).toString("utf8").replaceAll("\\", "/");
-    if (!name || name.includes("\0") || entries.has(name)) return badCv("أسماء مكونات DOCX غير صالحة");
-    entries.set(name, { name, flags, method, compressedSize, uncompressedSize, localOffset });
+    const name = bytes
+      .subarray(offset + 46, offset + 46 + nameLength)
+      .toString("utf8")
+      .replaceAll("\\", "/");
+    if (!name || name.includes("\0") || entries.has(name))
+      return badCv("أسماء مكونات DOCX غير صالحة");
+    entries.set(name, {
+      name,
+      flags,
+      method,
+      compressedSize,
+      uncompressedSize,
+      localOffset,
+    });
     offset = end;
   }
-  if (offset !== centralOffset + centralSize) return badCv("حجم فهرس DOCX غير متطابق");
+  if (offset !== centralOffset + centralSize)
+    return badCv("حجم فهرس DOCX غير متطابق");
   return entries;
 }
 
-function readZipEntry(bytes: Buffer, entry: ZipEntry, maxOutputLength: number): Buffer {
+function readZipEntry(
+  bytes: Buffer,
+  entry: ZipEntry,
+  maxOutputLength: number,
+): Buffer {
   const offset = entry.localOffset;
   if (offset + 30 > bytes.length || bytes.readUInt32LE(offset) !== 0x04034b50) {
     return badCv("مكوّن DOCX غير صالح");
@@ -133,19 +164,27 @@ function readZipEntry(bytes: Buffer, entry: ZipEntry, maxOutputLength: number): 
   const extraLength = bytes.readUInt16LE(offset + 28);
   const dataStart = offset + 30 + nameLength + extraLength;
   const dataEnd = dataStart + entry.compressedSize;
-  if ((flags & 0x0001) !== 0 || method !== entry.method || dataEnd > bytes.length) {
+  if (
+    (flags & 0x0001) !== 0 ||
+    method !== entry.method ||
+    dataEnd > bytes.length
+  ) {
     return badCv("مكوّن DOCX غير صالح");
   }
   const compressed = bytes.subarray(dataStart, dataEnd);
   let output: Buffer;
   try {
     if (method === 0) output = Buffer.from(compressed);
-    else if (method === 8) output = inflateRawSync(compressed, { maxOutputLength });
+    else if (method === 8)
+      output = inflateRawSync(compressed, { maxOutputLength });
     else return badCv("طريقة ضغط DOCX غير مدعومة");
   } catch {
     return badCv("تعذّر قراءة بنية DOCX");
   }
-  if (output.length !== entry.uncompressedSize || output.length > maxOutputLength) {
+  if (
+    output.length !== entry.uncompressedSize ||
+    output.length > maxOutputLength
+  ) {
     return badCv("حجم مكوّن DOCX غير متطابق");
   }
   return output;
@@ -164,7 +203,9 @@ function assertDocx(bytes: Buffer): void {
     }
   }
   const contentTypesEntry = entries.get("[Content_Types].xml")!;
-  const contentTypes = readZipEntry(bytes, contentTypesEntry, 256 * 1024).toString("utf8").toLowerCase();
+  const contentTypes = readZipEntry(bytes, contentTypesEntry, 256 * 1024)
+    .toString("utf8")
+    .toLowerCase();
   if (
     !contentTypes.includes(DOCX_MAIN_CONTENT_TYPE) ||
     contentTypes.includes("macroenabled") ||
@@ -181,8 +222,18 @@ function extensionOf(fileName: string): ".pdf" | ".docx" | null {
   return null;
 }
 
+/** Reject obvious active PDF actions; files are still always delivered as downloads, never inline. */
+function assertPdfIsPassive(bytes: Buffer): void {
+  if (PDF_ACTIVE_FEATURE_RE.test(bytes.toString("latin1"))) {
+    return badCv("ملف PDF يحتوي على عناصر تفاعلية غير مسموحة");
+  }
+}
+
 /** Original names are display-only; paths, controls and header metacharacters are stripped. */
-export function sanitizeCvFileName(original: string, extension?: ".pdf" | ".docx"): string {
+export function sanitizeCvFileName(
+  original: string,
+  extension?: ".pdf" | ".docx",
+): string {
   const base = original.split(/[\\/]/).pop()?.normalize("NFC") ?? "";
   const clean = base
     .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")
@@ -195,8 +246,15 @@ export function sanitizeCvFileName(original: string, extension?: ".pdf" | ".docx
   return extensionOf(clean) ? clean : `${clean}${ext}`;
 }
 
-export function prepareJobApplicantCv(input: JobApplicantCvUploadInput): PreparedJobApplicantCv {
-  if (!input || typeof input.fileName !== "string" || typeof input.mimeType !== "string" || typeof input.base64 !== "string") {
+export function prepareJobApplicantCv(
+  input: JobApplicantCvUploadInput,
+): PreparedJobApplicantCv {
+  if (
+    !input ||
+    typeof input.fileName !== "string" ||
+    typeof input.mimeType !== "string" ||
+    typeof input.base64 !== "string"
+  ) {
     return badCv("بيانات السيرة الذاتية غير مكتملة");
   }
   const extension = extensionOf(input.fileName.trim());
@@ -205,9 +263,13 @@ export function prepareJobApplicantCv(input: JobApplicantCvUploadInput): Prepare
 
   let mimeType: typeof PDF_MIME | typeof DOCX_MIME;
   if (extension === ".pdf") {
-    if (input.mimeType !== PDF_MIME || !bytes.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)) {
+    if (
+      input.mimeType !== PDF_MIME ||
+      !bytes.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)
+    ) {
       return badCv("محتوى الملف لا يطابق PDF");
     }
+    assertPdfIsPassive(bytes);
     mimeType = PDF_MIME;
   } else {
     if (input.mimeType !== DOCX_MIME) return badCv("نوع ملف DOCX غير صالح");
@@ -240,10 +302,16 @@ export async function insertPreparedJobApplicantCv(
 }
 
 /** Random keys prevent enumeration; persisted applicant ownership enforces branch access. */
-export async function getJobApplicantCvByKey(publicKey: string, scope: CompanyBranchScope) {
+export async function getJobApplicantCvByKey(
+  publicKey: string,
+  scope: CompanyBranchScope,
+) {
   if (!PUBLIC_KEY_RE.test(publicKey)) return null;
   const db = requireDb();
-  const branch = scope.branchId == null ? undefined : eq(jobApplicants.branchId, scope.branchId);
+  const branch =
+    scope.branchId == null
+      ? undefined
+      : eq(jobApplicants.branchId, scope.branchId);
   const [file] = await db
     .select({
       publicKey: jobApplicantCvFiles.publicKey,
@@ -253,14 +321,24 @@ export async function getJobApplicantCvByKey(publicKey: string, scope: CompanyBr
       bytes: jobApplicantCvFiles.bytes,
     })
     .from(jobApplicantCvFiles)
-    .innerJoin(jobApplicants, eq(jobApplicants.id, jobApplicantCvFiles.applicantId))
-    .where(branch ? and(eq(jobApplicantCvFiles.publicKey, publicKey), branch) : eq(jobApplicantCvFiles.publicKey, publicKey))
+    .innerJoin(
+      jobApplicants,
+      eq(jobApplicants.id, jobApplicantCvFiles.applicantId),
+    )
+    .where(
+      branch
+        ? and(eq(jobApplicantCvFiles.publicKey, publicKey), branch)
+        : eq(jobApplicantCvFiles.publicKey, publicKey),
+    )
     .limit(1);
   return file ?? null;
 }
 
 function encodeRfc5987(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 export function buildCvDownloadHeaders(file: {
@@ -268,17 +346,22 @@ export function buildCvDownloadHeaders(file: {
   mimeType: string;
   sizeBytes: number;
 }): Record<string, string> {
-  const contentType = file.mimeType === PDF_MIME || file.mimeType === DOCX_MIME
-    ? file.mimeType
-    : "application/octet-stream";
-  const downloadExtension = contentType === PDF_MIME
-    ? ".pdf"
-    : contentType === DOCX_MIME
-      ? ".docx"
-      : ".bin";
+  const contentType =
+    file.mimeType === PDF_MIME || file.mimeType === DOCX_MIME
+      ? file.mimeType
+      : "application/octet-stream";
+  const downloadExtension =
+    contentType === PDF_MIME
+      ? ".pdf"
+      : contentType === DOCX_MIME
+        ? ".docx"
+        : ".bin";
   // Stored metadata is not trusted at response time: the final extension follows
   // the allowlisted MIME (or .bin), never an attacker-controlled stored suffix.
-  const sanitized = sanitizeCvFileName(file.fileName, downloadExtension === ".docx" ? ".docx" : ".pdf");
+  const sanitized = sanitizeCvFileName(
+    file.fileName,
+    downloadExtension === ".docx" ? ".docx" : ".pdf",
+  );
   const safeName = `${sanitized.replace(/\.(?:pdf|docx)$/i, "")}${downloadExtension}`;
   return {
     "Content-Type": contentType,

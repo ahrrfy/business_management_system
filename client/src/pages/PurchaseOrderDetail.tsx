@@ -322,12 +322,22 @@ export default function PurchaseOrderDetail() {
                     <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
                     <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
                     <Field label="المتبقّي للمورّد ($)">
-                      {fmtAr(remaining?.toString())}
+                      <span
+                        className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
+                      >
+                        {fmtAr(remaining?.toString())}
+                        {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                      </span>
                     </Field>
                   </>
                 ) : (
                   <Field label="المتبقّي">
-                    <span className="font-semibold">{fmtAr(remaining?.toString())}</span>
+                    <span
+                      className={`font-semibold ${remaining && remaining.lte(0) ? "text-money-positive" : ""}`}
+                    >
+                      {fmtAr(remaining?.toString())}
+                      {remaining && remaining.lte(0) ? " (مسدد)" : ""}
+                    </span>
                   </Field>
                 )}
               </div>

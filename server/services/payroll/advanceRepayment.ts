@@ -24,6 +24,7 @@ import { money, round2, toDateStr, toDbMoney } from "../money";
 import { lockFinancialPostingGate } from "../reports/monthCloseGate";
 import { assertPeriodOpen } from "../periodLockService";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import {
   createPostingIntent,
   creditLine,
@@ -376,7 +377,7 @@ async function createRequestTx(
 
 export async function createAdvanceRepaymentRequest(input: CreateAdvanceRepaymentInput, actor: Actor) {
   const evidence = normalizeEvidence(input);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const amount = round2(money(input.amount));
     if (!amount.isFinite() || amount.lte(0)) {
       throw new TRPCError({
@@ -435,11 +436,17 @@ export async function createAdvanceRepaymentRequest(input: CreateAdvanceRepaymen
       evidence,
     }, actor);
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "payroll.advanceRepayment.approve",
+    id: Number(result.id),
+    reason: "سداد سلفة نفذه المالك",
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 export async function createAdvanceRepaymentReturnRequest(input: CreateAdvanceRepaymentReturnInput, actor: Actor) {
   const evidence = normalizeEvidence(input);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     await lockFinancialPostingGate(tx);
     const [original] = await tx
       .select()
@@ -497,6 +504,12 @@ export async function createAdvanceRepaymentReturnRequest(input: CreateAdvanceRe
     }
     return createRequestTx(tx, requestInput, actor);
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "payroll.advanceRepayment.approve",
+    id: Number(result.id),
+    reason: "إرجاع سداد سلفة نفذه المالك",
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 function paymentAssetRole(method: AdvanceRepaymentPaymentMethod): Extract<AccountRole, "CASH" | "CARD_BANK" | "PAYMENT_WALLET"> {

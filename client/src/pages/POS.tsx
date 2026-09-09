@@ -10,13 +10,13 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest, openCashDrawer } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, subscribeOutbox } from "@/lib/offline/outbox";
+import { getLastSyncAt, offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, OFFLINE_CACHE_MAX_AGE_MS, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
@@ -33,12 +33,12 @@ import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefr
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
-import { applyCustomerIdentity, buildDeliveryPayload, deliveryModeUnavailableReason, deliverySendsPayment, saleReceiptAmounts } from "@/components/pos/deliveryMode";
+import { applyCustomerIdentity, buildDeliveryPayload, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
 import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt, computeInvoiceDiscount,
 } from "@/components/pos/posShared";
 import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 import { POSHeader } from "@/components/pos/POSHeader";
@@ -49,6 +49,7 @@ import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
+import { POSFundingBanner } from "@/components/pos/POSFundingBanner";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -384,15 +385,6 @@ export default function POS() {
     const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
     return s.plus(refUnit.times(c.qty));
   }, D(0));
-  const rawInvoiceDiscountPctD = D(activeTab.invoiceDiscountPct || 0);
-  const clampedByFieldD = rawInvoiceDiscountPctD.lt(0)
-    ? D(0)
-    : rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : rawInvoiceDiscountPctD;
-  // **السقف الفعّال المتبقّي**: عتبةُ الخادم ١٥٪ تُقاس على المرجع، فإن كان في السلّة انحرافٌ سطريّ
-  // مسبق (`refGross − subtotal`)، فسلطةُ الكاشير على الرأس = ١٥٪ − (نسبةُ الانحراف المسبقة)،
-  // مقيسةً على الصافي الحاليّ (subtotal). قيمةٌ سالبةٌ ⇒ صفرٌ (لا سلطة).
   const priorDeviationRatioD = referenceGrossD.gt(0)
     ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
     : D(0);
@@ -405,11 +397,12 @@ export default function POS() {
     : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const invoiceDiscountPctD = invoiceDiscountAllowed
-    ? (clampedByFieldD.gt(effectiveHeaderCapPctD) ? effectiveHeaderCapPctD : clampedByFieldD)
-    : D(0);
-  const invoiceDiscountAmountD = round2(subtotalD.times(invoiceDiscountPctD).div(100));
-  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const discountCalc = computeInvoiceDiscount({
+    subtotalD, effectiveHeaderCapPctD, invoiceDiscountAllowed,
+    type: activeTab.invoiceDiscountType ?? "percent",
+    value: activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || ""),
+  });
+  const { discountAmountD: invoiceDiscountAmountD, discountAmount: invoiceDiscountAmount, discountPctD: invoiceDiscountPctD, maxDiscountAmount } = discountCalc;
   const subtotal = round2(subtotalD).toNumber();
   // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
   // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
@@ -730,10 +723,24 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
-      const row = offline
-        ? await offlineFindByBarcode(code, effectiveTier, branchId)
-        : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+      // ش٢ أوفلاين: أثناء الانقطاع أو تذبذب الشبكة تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
+      let row;
+      if (offline) {
+        row = await offlineFindByBarcode(code, effectiveTier, branchId);
+      } else {
+        try {
+          row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+        } catch (fetchErr) {
+          if (!activeTab.customerId) {
+            const lastSync = await getLastSyncAt();
+            const isFresh = Boolean(lastSync && Date.now() - new Date(lastSync).getTime() <= OFFLINE_CACHE_MAX_AGE_MS);
+            if (isFresh) {
+              row = await offlineFindByBarcode(code, effectiveTier, branchId);
+            }
+          }
+          if (!row) throw fetchErr;
+        }
+      }
       if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row as PosRow);
     } catch (e: unknown) {
@@ -908,13 +915,12 @@ export default function POS() {
       // نقداً فقط» — وهي **تعليمةٌ خاطئة وخطِرة**: البطاقة تكون قد خُصمت فعلاً قبل
       // `sales.create` (يشترطها `externalPaymentConfirmed`)، فيُدفع الكاشير إلى تحصيلٍ مكرّر
       // أو ترك عمليةٍ مخصومة معلَّقة. ما لا يُلتقَط يسقط للمسار العاديّ برسالة الخادم كما هي.
-      const offlineCapturable =
-        !!shift &&
+      const offlineCapturable = !!shift &&
         cart.length > 0 &&
         !cart.some((c) => c.digital) &&
         activeTab.method === "CASH" &&
         !isCredit &&
-        !activeTab.couponCode;
+        !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
       if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
         saleCtxRef.current = null;
         void captureOfflineSale();
@@ -1089,6 +1095,9 @@ export default function POS() {
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
     if (!shift || !cart.length) return;
+    // م١ PR-B (سلامة ماليّة): الدفاعُ الأخير لكلّ مسارات الالتقاط (٥٠٣ · submitSale · quickPay) —
+    // سلّةُ توصيلٍ لا تُلتقَط نقداً صرفاً دون إسنادِ جهةٍ ولا تحصيلِ COD (الخادم يرفضها من الطابور).
+    if (deliveryBlocksOfflineCapture(activeTab.delivery)) { notify.errBig(OFFLINE_DELIVERY_BLOCK.title, OFFLINE_DELIVERY_BLOCK.body); return; }
     // البطاقات الرقمية ش٥: البيع الرقميّ **محظور أوفلاين** (مسألة مؤجَّلة صراحةً في §٢٤ من وثيقة
     // التصميم) — السعر والتنفيذ الخارجيّ واستهلاك المحفظة كلّها تحتاج الخادم لحظةَ البيع.
     if (cart.some((c) => c.digital)) {
@@ -1208,10 +1217,9 @@ export default function POS() {
       );
       return;
     }
-    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
+    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل. سلّةُ التوصيل تُرفض
+    // داخل captureOfflineSale نفسها (deliveryBlocksOfflineCapture) ⇒ حارسٌ واحدٌ يغطّي هذا المسار وquickPay.
     if (offline) {
-      // م١ PR-B: لا التقاطَ محلّيّاً لبيعٍ بتوصيل — الإسناد يحتاج حرّاس الخادم الحيّة (الخادم يرفضه من الطابور أصلاً).
-      if (codMode) { notify.err(deliveryModeUnavailableReason(true)!); return; }
       void captureOfflineSale();
       return;
     }
@@ -1322,6 +1330,10 @@ export default function POS() {
   });
 
 
+  // مرجعٌ حيٌّ لأحدث `submitSale`: مستمعُ F4 يُثبَّت مرّةً بتبعيّاتٍ لا تشمل `activeTab.delivery`
+  // (exhaustive-deps مُعطَّل)، فنداءُ الإغلاق المُثبَّت مباشرةً كان قد يبيع سلّةَ توصيلٍ بلا رؤيتها.
+  const submitSaleRef = useRef(submitSale); submitSaleRef.current = submitSale;
+
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1336,10 +1348,11 @@ export default function POS() {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
         // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
         case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
-        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
+        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSaleRef.current(); break;
         case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
           if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
         }).catch((error) => notify.err(error)); break;
+        case "F10": e.preventDefault(); void openCashDrawer().then((res) => { if (res.ok) notify.ok("تم فتح درج النقود"); else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها"); }); break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -1487,20 +1500,16 @@ export default function POS() {
         cardsDisabled={offline}
         cardsDisabledReason={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : undefined}
         branchName={activeBranchName}
+        offline={offline}
       />
 
       {headerActionsNode && createPortal(
         <RetailPosHeaderActions
-          C={C}
-          shift={shift}
-          userRole={me.data?.role}
-          onCloseShift={() => setShifting(true)}
-          onCashDrop={() => setCashDropping(true)}
-          printerReady={printerReady}
-          onConnectPrinter={connectPrinter}
-          bridgeEnabled={bridge.enabled}
-          bridgeDesc={bridge.description}
-          onTestPrint={testServerPrint}
+          placement="inline"
+          C={C} shift={shift} userRole={me.data?.role}
+          onCloseShift={() => setShifting(true)} onCashDrop={() => setCashDropping(true)}
+          printerReady={printerReady} onConnectPrinter={connectPrinter}
+          bridgeEnabled={bridge.enabled} bridgeDesc={bridge.description} onTestPrint={testServerPrint}
         />,
         headerActionsNode,
       )}
@@ -1558,73 +1567,17 @@ export default function POS() {
         }}
       />
 
-      {posFundingRequests.length > 0 && (
-        <div
-          data-testid="pos-shift-funding-banner"
-          style={{
-            margin: "6px 8px 0",
-            border: `1px solid ${C.amber}`,
-            background: C.amberSoft,
-            borderRadius: 8,
-            padding: "8px 10px",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 900, fontSize: 13 }}>عهدة نقدية بانتظار استلامك</div>
-            <div style={{ fontSize: 12, color: C.mutedFg }}>
-              لا تُضاف إلى الدرج إلا بعد عدّ النقد فعلياً وتأكيد الاستلام.
-            </div>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {posFundingRequests.map((request) => (
-              <div key={request.requestReceiptId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontWeight: 800, fontSize: 13 }}>{fmt(Number(request.amount))} د.ع</span>
-                <button
-                  type="button"
-                  disabled={acceptFundingM.isPending}
-                  onClick={() =>
-                    acceptFundingM.mutate({
-                      requestReceiptId: request.requestReceiptId,
-                      decision: "ACCEPT",
-                    })
-                  }
-                  style={{
-                    border: 0,
-                    borderRadius: 6,
-                    padding: "6px 10px",
-                    background: C.success,
-                    color: "white",
-                    fontWeight: 900,
-                    cursor: acceptFundingM.isPending ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {acceptFundingM.isPending ? "جارٍ التثبيت…" : "استلمت النقد"}
-                </button>
-              </div>
-            ))}
-            <Link
-              href="/shifts"
-              style={{
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-                padding: "6px 10px",
-                color: C.fg,
-                fontSize: 12,
-                fontWeight: 800,
-                textDecoration: "none",
-                background: C.card,
-              }}
-            >
-              مراجعة الطلب أو رفضه
-            </Link>
-          </div>
-        </div>
-      )}
+      <POSFundingBanner
+        C={C}
+        posFundingRequests={posFundingRequests}
+        isPending={acceptFundingM.isPending}
+        onAccept={(requestReceiptId) =>
+          acceptFundingM.mutate({
+            requestReceiptId,
+            decision: "ACCEPT",
+          })
+        }
+      />
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
@@ -1641,7 +1594,11 @@ export default function POS() {
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
           invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
-          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v })}
+          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v, invoiceDiscountValue: v, invoiceDiscountType: "percent" })}
+          invoiceDiscountType={activeTab.invoiceDiscountType ?? "percent"}
+          invoiceDiscountValue={activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || "")}
+          onInvoiceDiscountChange={(val, typ) => patchActive({ invoiceDiscountValue: val, invoiceDiscountType: typ, invoiceDiscountPct: typ === "percent" ? val : (discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : "") })}
+          maxDiscountAmount={maxDiscountAmount}
           invoiceDiscountAllowed={invoiceDiscountAllowed}
           effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
           cashRoundingDelta={cashRoundingDelta}
@@ -1738,23 +1695,16 @@ export default function POS() {
           C={C} shift={shift} branchId={branchId}
           onClose={() => setShifting(false)}
           onClosed={() => { setShifting(false); shiftQ.refetch(); }}
-          me={me.data}
-          branches={branches.data}
+          me={me.data} branches={branches.data}
         />
       )}
       {cashDropping && shift && (
-        <CashDropDialog
-          C={C}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
-        />
+        <CashDropDialog C={C} shiftId={shift.id} onClose={() => setCashDropping(false)} />
       )}
       {creditPrompt && (
         <CreditApprovalDialog
-          C={C} message={creditPrompt}
-          mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
-          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending}
+          C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
+          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd} isPending={sale.isPending}
           onApprove={() => submitSale({ email: mgrEmail, password: mgrPwd })}
           onCancel={() => setCreditPrompt(null)}
         />
@@ -1762,5 +1712,3 @@ export default function POS() {
     </div>
   );
 }
-
-

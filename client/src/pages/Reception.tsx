@@ -1,4 +1,4 @@
-import type { StartOrderFromConversation } from "@/pages/Inbox";
+﻿import type { StartOrderFromConversation } from "@/pages/Inbox";
 import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelOptions } from "@shared/receptionChannel";
@@ -82,6 +82,8 @@ import {
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
+import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -321,6 +323,7 @@ export default function Reception() {
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
   const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
+  const [deliveryDeparture, setDeliveryDeparture] = useState<DeliveryDepartureData | null>(null);
   const [cashDropping, setCashDropping] = useState(false);
   const [depositMenuOpen, setDepositMenuOpen] = useState(false);
   const [discountFor, setDiscountFor] = useState<string | null>(null);
@@ -356,15 +359,11 @@ export default function Reception() {
   // م١ PR-B: آلة «العميل بالهاتف» صارت مشتركة مع كاشير التجزئة (`useCustomerByPhone`) — كانت مضمَّنة هنا.
   // تغيّر الهاتف يُسقط «آجل» (تعلّق بعميلٍ آخر) كما كان؛ الفئة والأهليّة تُسقطهما الآلة نفسها.
   const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => setDeferred(false) });
-  const customer = phoneCustomer.customer;
-  const setCustomer = phoneCustomer.setCustomer;
-  const receptionPhone = phoneCustomer.phone;
-  const setReceptionPhone = phoneCustomer.setPhone;
-  const phoneResolution = phoneCustomer.resolution;
-  const phoneResolutionError = phoneCustomer.error;
-  const customerDeferredEligible = phoneCustomer.deferredEligible;
-  const resolvedCustomerTier = phoneCustomer.tier;
-  const resolveReceptionCustomer = phoneCustomer.resolve;
+  const {
+    customer, setCustomer, phone: receptionPhone, setPhone: setReceptionPhone,
+    resolution: phoneResolution, error: phoneResolutionError,
+    tier: resolvedCustomerTier, resolve: resolveReceptionCustomer,
+  } = phoneCustomer;
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
@@ -604,6 +603,7 @@ export default function Reception() {
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
+  // سبب تعطيل زرّ «بدون عربون» عند عدم توفّره.
   const deferredDisabledReason: string | null = deferredAvailable
     ? null
     : sumDirect === 0 && sumCustom > 0
@@ -613,7 +613,7 @@ export default function Reception() {
         : orderDelivery
           ? "طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"
           : customer.customerId == null || phoneResolution !== "RESOLVED"
-            ? "اربط عميلاً بهاتفٍ أوّلاً"
+            ? "اربط عميلاً بهاتفٍ عراقيٍّ أوّلاً"
             : "غير متاح الآن";
   useEffect(() => {
     if (deferred && !deferredAvailable) setDeferred(false);
@@ -1388,14 +1388,15 @@ export default function Reception() {
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (!orderDelivery && !deferred && !isReserve && appliedPaidD.plus(heldD).lt(directFloorD)) {
+    // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
+    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !activeDraft);
+    if (!orderDelivery && !willDefer && appliedPaidD.plus(heldD).lt(directFloorD)) {
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
         `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
-        deferredAvailable
-          ? "اختر «آجل (ذمّة)» لتسجيله ذمّةً على العميل، أو سدد المبلغ نقداً أو بالبطاقة."
-          : "أَكمل المبلغ نقداً أو بالبطاقة، أو اربط عميلاً لتسجيله ذمّة."
+        "اربط عميلاً لتسجيل الفاتورة على حسابه (آجل)، أو أَضِف توصيلاً، أو أَكمل المبلغ الآن.",
       );
+      customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
 
@@ -1610,7 +1611,7 @@ export default function Reception() {
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
         // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
         // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
-        deferredDirect: deferred || isReserve,
+        deferredDirect: willDefer,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1671,6 +1672,10 @@ export default function Reception() {
             `إرسالية ${dispatched.consignmentNumber} — يُحصَّل عند الاستلام ${fmt(dispatched.codAmount)} د.ع`,
           );
           void utils.delivery.invalidate();
+          const pObj = (partiesQ.data ?? []).find((p) => Number(p.id) === Number(orderDelivery.partyId));
+          setDeliveryDeparture(buildReceptionDepartureData({
+            dispatched, result, cart, customerName, receiptPhone, orderDelivery, courierPhone: pObj?.phone,
+          }));
         } else if (routeDeliveryToWO) {
           // ٨/٨ — أمر شغلٍ خالص: التوصيل مُثبَّتٌ على الأمر نفسه (لا إرسالية الآن — يُسنَد
           // للمندوب من طابور الطلبات عند الجاهزية). نجاحٌ لا تحذير («وكأنه غير موجود» سابقاً).
@@ -2870,10 +2875,12 @@ export default function Reception() {
         />
       )}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام */}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة وانطلاق التوصيل. */}
       {showReceiptOverlay && lastSale && (
         <ReceiptOverlay
           lastSale={lastSale}
+          deliveryDeparture={deliveryDeparture}
+          onCloseDeliveryDeparture={() => setDeliveryDeparture(null)}
           onReprint={() => reprintLastRef.current?.()}
           onClose={() => setShowReceiptOverlay(false)}
         />

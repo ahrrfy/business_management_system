@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
+  Ban,
   Check,
   CheckCircle2,
   FileCheck2,
@@ -33,12 +34,16 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
+import { DeliveryDepartureOverlay, type DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
+import { WhatsAppStageActionsMenu } from "@/components/delivery/WhatsAppStageActionsMenu";
 import { ConsignmentTimelineDrawer } from "@/components/delivery/ConsignmentTimelineDrawer";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { DeliveryManifestButton } from "@/components/delivery/DeliveryManifestButton";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { PartyBoardSection } from "@/components/delivery/PartyBoardSection";
 import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
+import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { StaffConfirmDialog, FailReasonDialog, DeclareReturnDialog, ManualProofDialog } from "@/components/delivery/TransitActionDialogs";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
@@ -167,6 +172,7 @@ function DispatchTab() {
     );
   const [target, setTarget] = useState<ReadyOrder | null>(null);
   const [query, setQuery] = useState("");
+  const [departureData, setDepartureData] = useState<DeliveryDepartureData | null>(null);
 
   // كشفُ الطلبات الجديدة بين استعلامَين متتاليَين (Slice A، ٢٩/٨/٢٦) — بلاغ المالك: «الطلب انجزة
   // فني المطبعة وحوّله لجاهز، لا شي يظهر ولا شي يلاحظه موظّفو الاستقبال والتوصيل». تبويب Dispatch
@@ -439,10 +445,28 @@ function DispatchTab() {
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
+            setDepartureData({
+              consignmentNumber: r.consignmentNumber,
+              orderNumber: ord.orderNumber,
+              title: ord.title,
+              customerName: recipientName || ord.customerName,
+              customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
+              deliveryAddress: ord.deliveryAddress,
+              courierName: party?.name ?? "المندوب",
+              courierPhone: party?.phone,
+              codAmount: r.codAmount,
+              deliveryFee: fee,
+              feeCollection: ord.deliveryFeeCollection ?? "COURIER",
+            });
           } catch {
             labelWin?.close();
           }
         }}
+      />
+      <DeliveryDepartureOverlay
+        open={!!departureData}
+        onClose={() => setDepartureData(null)}
+        data={departureData}
       />
     </div>
   );
@@ -484,6 +508,8 @@ function InTransitTab() {
   const [declareTarget, setDeclareTarget] = useState<InTransitRow | null>(null);
   /** الطردُ المفتوحُ حوارُ إرجاعه — يحمل درجَ الردّ الذي كانت الشاشةُ عاجزةً عن تحديده. */
   const [returnTarget, setReturnTarget] = useState<ReturnConsignmentTarget | null>(null);
+  const [collectTarget, setCollectTarget] = useState<InTransitRow | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{ id: number; number: string } | null>(null);
 
   const canFulfil = !!me.data
     && moduleAccessAllowed(
@@ -821,13 +847,37 @@ function InTransitTab() {
               )}
               {/*
                 ٢٣/٨ — الجسر المفقود: الطرد سُلِّم لكن نقده لم يُورَّد بعد ⇒ زرٌّ واحد
-                ينقل الكاشير إلى «تسوية المناديب» بالجهة مختارةً سلفاً كي يُدخل الكشف.
+                يفتح نافذة التحصيل والتوريد الفوري وتصفير الذمة مع إمكانية طباعة السند،
+                مع خيار الانتقال المباشر لتبويب التسوية.
               */}
               {canFulfil && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
-                <Button size="sm" variant="default" asChild title="اذهب لتسجيل النقد المقبوض من هذه الجهة">
-                  <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
+                <>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    className="font-bold gap-1"
+                    title="قبض النقد من المندوب وإصدار سند التوريد فوراً"
+                    onClick={() => setCollectTarget(r)}
+                  >
                     <Wallet aria-hidden className="size-3" /> سجّل التحصيل
-                  </Link>
+                  </Button>
+                  <Button size="sm" variant="ghost" asChild title="الانتقال إلى تسوية الجهة بالكامل">
+                    <Link href={`/delivery?tab=settle&party=${r.partyId}`}>
+                      تسوية الجهة
+                    </Link>
+                  </Button>
+                </>
+              )}
+              {/* إلغاء إسناد الطرد قبل قبوله أو عند تعذّره لإعادته للمخزن أو إعادة التوجيه */}
+              {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "FAILED") && Number(r.collectedAmount ?? 0) === 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  title="إلغاء إسناد الطرد للمندوب وتحرير العهدة وإعادته للفرز"
+                  onClick={() => setCancelTarget({ id: rowId, number: r.consignmentNumber ?? String(rowId) })}
+                >
+                  <Ban aria-hidden className="size-3" /> إلغاء الإسناد
                 </Button>
               )}
               {canFulfil && r.viewKey === "FAILED" && r.returnDeclaredAt == null && (
@@ -856,9 +906,22 @@ function InTransitTab() {
                   <Button size="sm" variant="ghost" asChild title="اتصال بالمستلم">
                     <a href={`tel:${phone}`}><Phone aria-hidden className="size-3" /></a>
                   </Button>
-                  <Button size="sm" variant="ghost" asChild title="واتساب المستلم">
-                    <a href={`https://wa.me/${phone.replace(/[^\d]/g, "")}`} target="_blank" rel="noreferrer"><MessageCircle aria-hidden className="size-3" /></a>
-                  </Button>
+                  <WhatsAppStageActionsMenu
+                    data={{
+                      consignmentNumber: r.consignmentNumber,
+                      orderNumber: r.orderNumber ?? r.invoiceNumber,
+                      customerName: r.recipientName ?? r.customerName,
+                      customerPhone: phone,
+                      deliveryAddress: r.address,
+                      courierName: r.partyName,
+                      codAmount: r.codDue,
+                    }}
+                    target="customer"
+                    size="sm"
+                    variant="ghost"
+                    iconOnly
+                    label="رسائل واتساب للمستلم"
+                  />
                 </>
               )}
               <Button size="sm" variant="ghost" asChild title="فتح جهة التوصيل وتسويتها">
@@ -1076,6 +1139,49 @@ function InTransitTab() {
           }}
         />
       )}
+
+      {/* ─── حوار قبض النقد وتوريد العهدة (مفرد أو كامل الذمة) ─── */}
+      <CollectConsignmentDialog
+        consignment={
+          collectTarget
+            ? {
+                id: Number(collectTarget.id),
+                consignmentNumber: collectTarget.consignmentNumber,
+                partyId: Number(collectTarget.partyId),
+                partyName: collectTarget.partyName,
+                orderNumber: collectTarget.orderNumber,
+                invoiceNumber: collectTarget.invoiceNumber,
+                customerName: collectTarget.recipientName ?? collectTarget.customerName,
+                recipientPhone: collectTarget.recipientPhone,
+                codDue: collectTarget.codDue,
+                codAmount: collectTarget.codDue,
+                collectedAmount: collectTarget.collectedAmount,
+                parcelStatus: collectTarget.parcelStatus,
+              }
+            : null
+        }
+        open={collectTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCollectTarget(null);
+        }}
+        onCompleted={() => {
+          setCollectTarget(null);
+          invalidateAll();
+        }}
+      />
+
+      {/* ─── حوار إلغاء إسناد الإرسالية وتحرير العهدة ─── */}
+      <CancelDeliveryAssignmentDialog
+        consignment={cancelTarget}
+        open={cancelTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCancelTarget(null);
+        }}
+        onCompleted={() => {
+          setCancelTarget(null);
+          invalidateAll();
+        }}
+      />
     </div>
   );
 }

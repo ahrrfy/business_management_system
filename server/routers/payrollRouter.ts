@@ -121,6 +121,21 @@ export const payrollRouter = router({
       };
     }),
 
+  /**
+   * جاهزية جسر البصمات لشهرٍ ما — قراءة استباقية دقيقة لحالة البصمات والأجهزة قبل التوليد:
+   * تكشف البصمات المعلقة التي لم تُطوَ، والبصمات غير المربوطة بموظف، والأيام المفتوحة.
+   */
+  biometricReadiness: hrRead
+    .input(z.object({ period }))
+    .query(({ input, ctx }) =>
+      svc.getBiometricPayrollReadiness(input.period, {
+        userId: ctx.user.id,
+        role: ctx.user.role,
+        branchId: ctx.user.branchId ?? 0,
+        isOwner: ctx.user.isOwner,
+      }),
+    ),
+
   generate: ownerHrWrite
     .input(z.object({ period }))
     .mutation(async ({ input, ctx }) => {

@@ -342,8 +342,8 @@
 .wob-qf-on { color: var(--fg); }
 .wob-qf-on.wob-qf-late { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
 .wob-qf-on.wob-qf-today { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: var(--sem-warn); }
-.wob-qf-on.wob-qf-unassigned { background: var(--sem-info-bg); color: var(--sem-info); border-color: var(--sem-info); }
 .wob-qf-on.wob-qf-blocked { background: var(--sem-neg-bg); color: var(--sem-neg); border-color: var(--sem-neg); }
+.wob-qf-on.wob-qf-deliv { background: var(--sem-warn-bg); color: var(--sem-warn); border-color: var(--sem-warn); }
 .wob-qf-badge {
   display: inline-flex;
   align-items: center;

@@ -116,11 +116,15 @@ export const giftsRouter = router({
             .limit(lim)
             .offset(off),
       });
-      const total = await countIfOffset(usingCursor, async () => {
-        const baseWhere = conds.length ? and(...conds) : undefined;
-        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(giftVouchers).where(baseWhere))[0];
-        return Number(totalRow?.n ?? 0);
-      });
+      const total = await countIfOffset(
+        usingCursor,
+        async () => {
+          const baseWhere = conds.length ? and(...conds) : undefined;
+          const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(giftVouchers).where(baseWhere))[0];
+          return Number(totalRow?.n ?? 0);
+        },
+        { rowsLength: rows.length, limit: input?.limit ?? 50, offset: input?.offset },
+      );
       // حجب التكلفة (تدقيق Codex P1) — نفس دلالة listGifts.redactCost.
       const redact = !canSeeCost(ctx.user.role);
       return {

@@ -11,6 +11,7 @@ import {
   getVoucher,
   listVouchers,
   recentVouchersForParty,
+  listVoucherDeliveryParties,
   rejectVoucher,
 } from "../services/voucherService";
 import {
@@ -44,7 +45,7 @@ import {
 } from "../services/voucher/create";
 import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 
-const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
+const partyType = z.enum(["CUSTOMER", "SUPPLIER", "DELIVERY_PARTY", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
 // وفي المخطط للسجلات التاريخية فقط (فلترة/عرض السندات القديمة).
 const creatableMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
@@ -352,6 +353,15 @@ export const voucherRouter = router({
         limit: input.limit,
       });
     }),
+
+  /** قائمة جهات التوصيل المتاحة لسندات القبض والصرف بالفرع. */
+  deliveryParties: treasuryManagerReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const branchId = restrict ? Number(ctx.user.branchId) : (input?.branchId ?? undefined);
+      return listVoucherDeliveryParties({ branchId });
+    }),
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
@@ -373,7 +383,15 @@ async function aggregateVouchers(input: VoucherListFilters) {
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
-  if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
+  if (input.partyType === "DELIVERY_PARTY") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`${receipts.internalNote} LIKE 'DELIVERY_PARTY:%'`);
+  } else if (input.partyType === "OTHER") {
+    wheres.push(eq(receipts.partyType, "OTHER"));
+    wheres.push(sql`(${receipts.internalNote} NOT LIKE 'DELIVERY_PARTY:%' OR ${receipts.internalNote} IS NULL)`);
+  } else if (input.partyType) {
+    wheres.push(eq(receipts.partyType, input.partyType));
+  }
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
   if (input.approvalStatus) wheres.push(eq(receipts.approvalStatus, input.approvalStatus));
   if (input.voucherCategoryId) wheres.push(eq(receipts.voucherCategoryId, input.voucherCategoryId));
@@ -418,34 +436,54 @@ async function aggregateVouchers(input: VoucherListFilters) {
   };
 }
 
+import { createTtlCache } from "../lib/ttlCache";
+
+const voucherCategoriesCache = createTtlCache<string, any[]>({
+  ttlMs: 60_000,
+  maxEntries: 5,
+});
+
+export function invalidateVoucherCategoriesCache(): void {
+  voucherCategoriesCache.clear();
+}
+
+async function fetchVoucherCategories(includeInactive: boolean) {
+  const db = getDb();
+  if (!db) return [];
+  const wheres: any[] = [];
+  if (!includeInactive) wheres.push(eq(voucherCategories.isActive, true));
+  const [rows, counts] = await Promise.all([
+    db.select().from(voucherCategories)
+      .where(wheres.length ? and(...wheres) : undefined)
+      .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
+    db
+      .select({
+        categoryId: receipts.voucherCategoryId,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(receipts)
+      .where(isNotNull(receipts.voucherCategoryId))
+      .groupBy(receipts.voucherCategoryId),
+  ]);
+  const countById = new Map(
+    counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    usedReceiptCount: countById.get(Number(row.id)) ?? 0,
+  }));
+}
+
 export const voucherCategoryRouter = router({
   list: treasuryGlobalReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
-      const db = getDb();
-      if (!db) return [];
-      const wheres: any[] = [];
-      if (!input?.includeInactive) wheres.push(eq(voucherCategories.isActive, true));
-      const [rows, counts] = await Promise.all([
-        db.select().from(voucherCategories)
-        .where(wheres.length ? and(...wheres) : undefined)
-        .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
-        db
-          .select({
-            categoryId: receipts.voucherCategoryId,
-            count: sql<number>`COUNT(*)`,
-          })
-          .from(receipts)
-          .where(isNotNull(receipts.voucherCategoryId))
-          .groupBy(receipts.voucherCategoryId),
-      ]);
-      const countById = new Map(
-        counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
-      );
-      return rows.map((row) => ({
-        ...row,
-        usedReceiptCount: countById.get(Number(row.id)) ?? 0,
-      }));
+      const includeInactive = !!input?.includeInactive;
+      const cacheKey = includeInactive ? "all" : "active";
+      if (process.env.NODE_ENV === "test") {
+        return fetchVoucherCategories(includeInactive);
+      }
+      return voucherCategoriesCache.get(cacheKey, () => fetchVoucherCategories(includeInactive));
     }),
 
   create: treasuryGlobalProcedure
@@ -480,6 +518,7 @@ export const voucherCategoryRouter = router({
           }),
         );
         await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: id, newValue: { ...input, name } });
+        invalidateVoucherCategoriesCache();
         // نُعيد الصفّ كاملاً كي تنتقيه شاشة السند فوراً بلا جولةِ قراءةٍ ثانية.
         return {
           id,
@@ -517,6 +556,7 @@ export const voucherCategoryRouter = router({
         },
       });
     }
+    invalidateVoucherCategoriesCache();
     return result;
   }),
 
@@ -594,6 +634,7 @@ export const voucherCategoryRouter = router({
           return next;
         });
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
+        invalidateVoucherCategoriesCache();
         return { ok: true };
       } catch (e: any) {
         if (isDupEntry(e)) {
@@ -638,6 +679,7 @@ export const voucherCategoryRouter = router({
         entityType: "voucherCategory",
         entityId: input.id,
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 
@@ -709,6 +751,7 @@ export const voucherCategoryRouter = router({
         entityId: input.fromId,
         newValue: { mergedInto: input.toId },
       });
+      invalidateVoucherCategoriesCache();
       return { ok: true };
     }),
 

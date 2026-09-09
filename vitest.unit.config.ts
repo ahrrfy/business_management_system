@@ -13,6 +13,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "client/src/lib/moneyInput.test.ts",
+      "client/src/lib/applicantCvDownload.test.ts",
       "shared/expenseLabels.test.ts",
       "shared/digitalSale.test.ts",
       "client/src/lib/printing/digitalReceiptLines.test.ts",
@@ -307,6 +308,7 @@ export default defineConfig({
       "scripts/provision-worker-runtime-policy.test.ts",
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
       "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
+      "scripts/__tests__/ciCriticalPathWorkflow.test.ts",
       "scripts/__tests__/rawSelectGuard.test.ts",
       // م٢ ق١١ — مُشتقّ الخطوة التالية (`shared/nextAction.ts`) على الخادم + رقاقة العرض.
       "server/services/__tests__/nextActionDerivation.test.ts",
@@ -338,6 +340,8 @@ export default defineConfig({
       "client/src/components/delivery/partyBoardModel.test.ts",
       "client/src/components/delivery/dailySettlement.test.ts",
       "client/src/components/delivery/companyStatementReconciliation.test.ts",
+      // م٨ (٦/٩/٢٦) — تكافؤ نموذج القدرات مع بوّابات الوحدة (نقيّ، بلا قاعدة).
+      "server/services/__tests__/capabilityGateEquivalence.test.ts",
     ],
   },
 });

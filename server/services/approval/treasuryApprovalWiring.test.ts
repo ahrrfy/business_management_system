@@ -127,29 +127,37 @@ describe("الزوج الذي يمرره كل موضع — تثبيت لا اش�
   });
 });
 
-describe("العلم مطفأ — كل موضع يعيد فحصه القائم بلا فرق واحد", () => {
+describe("العلم مطفأ — الموظف يعيد الفحص القائم والمالك يتجاوز الاعتماد الثاني", () => {
   beforeEach(() => {
     delete process.env[FLAG];
   });
 
-  it.each(SITES)("$name: legacy ينفَّذ للمالك وللموظف معاً", (site) => {
-    for (const actor of [OWNER, STAFF]) {
-      const legacy = vi.fn();
-      assertApprover({
-        actor,
-        trigger: site.trigger,
-        retainLegacy: site.retainLegacy,
-        subject: site.name,
-        legacy,
-      });
-      expect(legacy, `${site.name}/${actor.userId}`).toHaveBeenCalledTimes(1);
-    }
+  it.each(SITES)("$name: legacy ينفَّذ للموظف فقط", (site) => {
+    const staffLegacy = vi.fn();
+    assertApprover({
+      actor: STAFF,
+      trigger: site.trigger,
+      retainLegacy: site.retainLegacy,
+      subject: site.name,
+      legacy: staffLegacy,
+    });
+    expect(staffLegacy).toHaveBeenCalledTimes(1);
+
+    const ownerLegacy = vi.fn();
+    assertApprover({
+      actor: OWNER,
+      trigger: site.trigger,
+      retainLegacy: site.retainLegacy,
+      subject: site.name,
+      legacy: ownerLegacy,
+    });
+    expect(ownerLegacy).not.toHaveBeenCalled();
   });
 
-  it.each(SITES)("$name: رمي فصل المهام يمر كما هو ولا تبتلعه البوابة", (site) => {
+  it.each(SITES)("$name: رمي فصل المهام يبقى للموظف فقط", (site) => {
     expect(() =>
       assertApprover({
-        actor: OWNER,
+        actor: STAFF,
         trigger: site.trigger,
         retainLegacy: site.retainLegacy,
         subject: site.name,
@@ -207,24 +215,25 @@ describe("العلم مفتوح — الأثر المقصود لكل تصنيف"
   );
 
   it.each(SITES.filter((s) => s.retainLegacy))(
-    "$name: الضابط المستبقى ينفَّذ على المالك نفسه — إسقاطه كان يفتح باب الدخول",
+    "$name: الضابط المستبقى يبقى للموظف ويسقط عن المالك",
     (site) => {
       const legacy = vi.fn(() => {
         throw new Error("الضابط المستبقى");
       });
-      for (const actor of [OWNER, STAFF]) {
-        expect(
-          () =>
-            assertApprover({
-              actor,
-              trigger: site.trigger,
-              retainLegacy: site.retainLegacy,
-              subject: site.name,
-              legacy,
-            }),
-          `${site.name}/${actor.userId}`,
-        ).toThrow("الضابط المستبقى");
-      }
+      expect(() => assertApprover({
+        actor: STAFF,
+        trigger: site.trigger,
+        retainLegacy: site.retainLegacy,
+        subject: site.name,
+        legacy,
+      })).toThrow("الضابط المستبقى");
+      expect(() => assertApprover({
+        actor: OWNER,
+        trigger: site.trigger,
+        retainLegacy: site.retainLegacy,
+        subject: site.name,
+        legacy,
+      })).not.toThrow();
     },
   );
 });

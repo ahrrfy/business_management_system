@@ -1,7 +1,7 @@
 // عقد السندات المشترك (PaymentMethod/PartyType داخليان للحزمة، الباقي عام).
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "EXCHANGE";
-type PartyType = "CUSTOMER" | "SUPPLIER" | "OTHER";
+type PartyType = "CUSTOMER" | "SUPPLIER" | "DELIVERY_PARTY" | "OTHER";
 
 export interface VoucherInput {
   /** نوع السند: RECEIPT = قبض (IN)، PAYMENT = صرف (OUT). */

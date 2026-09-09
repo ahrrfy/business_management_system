@@ -3,7 +3,7 @@
 // الجرد الشامل يلتقط لقطة عند الإنشاء لأجل تدقيق الرصيد/الكلفة، لكنه يبقى قيد العد أحياناً
 // بينما ينشئ فريق آخر أصنافاً أو متغيّرات جديدة. هذه المزامنة تُلحق الجديد فقط بالجلسات
 // FULL التي ما زالت COUNTING؛ لا تمس جلسة REVIEW أو APPROVED ولا تغيّر أي عنصر موجود.
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
   branchStock,
   products,
@@ -86,8 +86,16 @@ export async function syncActiveFullStocktakeScopes(): Promise<LiveScopeSyncResu
         )
         .where(
           and(
-            eq(products.isActive, true),
-            eq(productVariants.isActive, true),
+            or(
+              and(eq(products.isActive, true), eq(productVariants.isActive, true)),
+              or(
+                sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+                and(
+                  sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                  eq(products.allowBackorder, false),
+                ),
+              ),
+            ),
             eq(products.isService, false),
             eq(products.isBundle, false),
             isNull(stocktakeItems.id),
