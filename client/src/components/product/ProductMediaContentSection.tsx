@@ -19,7 +19,7 @@ interface Props {
   title?: string;
   hint?: string;
   onOriginalCaptured?: (dataUrl: string) => void;
-  onStudioModeChange?: (mode: "FLATTEN" | "CUT") => void;
+  onStudioModeChange?: (mode: "AI") => void;
   studioTaskId?: number;
   onProcessingReceiptChange?: (receipt: string | null) => void;
   onStudioBusyChange?: (busy: boolean) => void;
@@ -41,7 +41,7 @@ export function ProductMediaContentSection({
   onMarketingCopyChange,
   maxImages = 10,
   title = "الصور والمحتوى",
-  hint = "تُضغط الصور تلقائياً. استخدم زر الاستوديو لتوحيد الخلفية قبل الحفظ.",
+  hint = "تُضغط الصور تلقائياً. عالج الصورة بالذكاء الاصطناعي وقارن النتيجة قبل الاعتماد.",
   onOriginalCaptured,
   onStudioModeChange,
   studioTaskId,
@@ -54,7 +54,7 @@ export function ProductMediaContentSection({
 }: Props) {
   const capturedIds = useRef(new Set<string>());
   function handleImages(next: ImageItem[]) {
-    // أي تعديل/رفع يدوي يبطل receipt سابقاً؛ اعتماد معاينة Pro/AI يعيده فوراً من المكوّن بعد onChange.
+    // أي تعديل/رفع يدوي يبطل receipt سابقاً؛ اعتماد معاينة الذكاء يعيده فوراً من المكوّن بعد onChange.
     onProcessingReceiptChange?.(null);
     if (onOriginalCaptured) {
       const fresh = next.find(

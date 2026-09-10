@@ -223,7 +223,18 @@ function assertTaskWriteAccess(actor: ProductStudioActor, task: { assignedTo: nu
     });
   }
   if (Number(task.assignedTo) === actor.userId) {
-    if (requireBarcodeVerification && !isManager(actor) && Number(task.barcodeVerifiedBy) !== actor.userId) throw new TRPCError({ code: "FORBIDDEN", message: appErrorMessage({ what: "لا يمكن بدء تصوير هذه المهمة بعد", why: "لم يُؤكّد الخادم مسح باركود المنتج لهذه المهمة", doThis: "امسح باركود المنتج من محطة التصوير ثم ابدأ الالتقاط" }) });
+    // الباركود هو مفتاح دخول المنتج للمسار التشغيلي، لا مجرد إشارة UI. حتى المدير المكلّف
+    // بالتصوير يجب أن يثبت المنتج نفسه قبل إرسال الصورة إلى مزوّد مدفوع أو اعتماد مرشّح.
+    if (requireBarcodeVerification && Number(task.barcodeVerifiedBy) !== actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "لا يمكن بدء تصوير هذه المهمة بعد",
+          why: "لم يُؤكّد الخادم مسح باركود المنتج لهذه المهمة",
+          doThis: "امسح باركود المنتج من محطة التصوير ثم ابدأ الالتقاط",
+        }),
+      });
+    }
     return null;
   }
   const reason = cleanAdminOverrideReason(adminOverrideReason);
@@ -4755,7 +4766,7 @@ export async function submitStudioCandidate(
     originalDataUrl?: string | null;
     processedDataUrl: string;
     thumbnailDataUrl: string;
-    mode: "FLATTEN" | "CUT";
+    mode: "FLATTEN" | "CUT" | "AI";
     processingReceipt?: string | null;
     proposedName?: string | null;
     proposedDescription?: string | null;
