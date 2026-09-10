@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3, Boxes, Briefcase, Building2, ClipboardCheck, CreditCard, DollarSign,
   FileCheck2, Gift, Images, Landmark, ListChecks, Lock, Package, PackageCheck, Printer,
-  Receipt, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
+  Receipt, RotateCcw, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
   WalletCards,
 } from "lucide-react";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, type RoleGate } from "@/lib/navVisibility";
@@ -38,6 +38,16 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "myWork", href: "/my-work", label: "مطلوب مني الآن", description: "قرارات ومهام تنتظر الإجراء", section: 4, icon: ClipboardCheck },
   { id: "tasks", href: "/tasks", label: "المهام والتذاكر", description: "إسناد ومتابعة وSLA", section: 4, icon: ListChecks, module: "tasks" },
   { id: "sales", href: "/invoices", label: "المبيعات", description: "فواتير ومدفوعات", section: 1, icon: Receipt, ...INVOICE_LIST_GATE },
+  {
+    id: "returns",
+    href: "/returns",
+    label: "بوابة المرتجعات",
+    description: "مرتجعات شاملة وتحرٍّ جنائي",
+    section: 1,
+    icon: RotateCcw,
+    roles: ["admin", "manager", "cashier", "accountant", "auditor"],
+    module: "sales",
+  },
   { id: "treasury", href: "/treasury", label: "الخزينة والمدفوعات", description: "أرصدة وسندات وتحويلات", section: 3, icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { id: "cardAccount", href: "/card-account", label: "حساب البطاقة/البنك", description: "أرصدة وتسويات البطاقة", section: 3, icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "delivery", href: "/delivery", label: "التوصيل", description: "طلبات وشركات وتحصيل COD", section: 4, icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },

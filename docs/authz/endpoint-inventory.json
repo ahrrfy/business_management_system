@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1234,
+    "trpcTotal": 1236,
     "byKind": {
       "mutation": 640,
-      "query": 594
+      "query": 596
     },
     "byAuthority": {
       "module-gate": 627,
-      "module-map": 392,
+      "module-map": 394,
       "admin": 67,
       "none": 52,
       "raw-role": 34,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 591,
+      "LOW": 593,
       "MEDIUM": 473,
       "HIGH": 170
     },
@@ -38,7 +38,7 @@
       "productStudio": 47,
       "workorders": 47,
       "crm": 42,
-      "sales": 36,
+      "sales": 38,
       "campaigns": 29,
       "assets": 21,
       "commissions": 18,
@@ -77,7 +77,7 @@
     "expressMounts": 12,
     "jobs": 25,
     "routerFiles": 111,
-    "proposedPermissions": 1034,
+    "proposedPermissions": 1036,
     "proposedDomains": {
       "treasury": 108,
       "hr": 107,
@@ -86,7 +86,7 @@
       "inventory": 85,
       "purchasing": 83,
       "catalog": 82,
-      "sales": 57,
+      "sales": 59,
       "workorders": 49,
       "crm": 46,
       "productstudio": 45,
@@ -15408,7 +15408,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/returnRouter.ts:258"
+      "loc": "server/routers/returnRouter.ts:259"
     },
     {
       "surface": "trpc",
@@ -15425,7 +15425,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:48"
+      "loc": "server/routers/returnRouter.ts:49"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
+      "proposedPermission": "sales.return.forensic_trace",
+      "name": "forensicTrace",
+      "kind": "query",
+      "procedure": "salesReadProcedure",
+      "authority": "module-map",
+      "module": "sales",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/returnRouter.ts:697"
     },
     {
       "surface": "trpc",
@@ -15442,7 +15459,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:463"
+      "loc": "server/routers/returnRouter.ts:464"
     },
     {
       "surface": "trpc",
@@ -15459,7 +15476,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:216"
+      "loc": "server/routers/returnRouter.ts:217"
     },
     {
       "surface": "trpc",
@@ -15476,7 +15493,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:334"
+      "loc": "server/routers/returnRouter.ts:335"
     },
     {
       "surface": "trpc",
@@ -15493,7 +15510,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:428"
+      "loc": "server/routers/returnRouter.ts:429"
     },
     {
       "surface": "trpc",
@@ -15510,7 +15527,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/returnRouter.ts:315"
+      "loc": "server/routers/returnRouter.ts:316"
     },
     {
       "surface": "trpc",
@@ -15527,7 +15544,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:168"
+      "loc": "server/routers/returnRouter.ts:169"
     },
     {
       "surface": "trpc",
@@ -15544,7 +15561,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:192"
+      "loc": "server/routers/returnRouter.ts:193"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
+      "proposedPermission": "sales.return.universal_scan",
+      "name": "universalScan",
+      "kind": "query",
+      "procedure": "salesReadProcedure",
+      "authority": "module-map",
+      "module": "sales",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/returnRouter.ts:719"
     },
     {
       "surface": "trpc",

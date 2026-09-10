@@ -194,6 +194,7 @@ export default defineConfig({
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/automaticAuditContract.test.ts",
       "server/services/__tests__/returnAuditContract.test.ts",
+      "server/services/__tests__/forensicTrace.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/reportsFinancialService.test.ts",
       "server/services/__tests__/postingSalesPurchase.test.ts",

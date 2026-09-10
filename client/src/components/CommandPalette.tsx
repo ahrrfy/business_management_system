@@ -60,7 +60,7 @@ const PAGES: PageItem[] = [
   { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
   { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
   { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },
-  { label: "مُرتجَعات البيع", href: "/sales-returns", icon: RotateCcw, keywords: "returns sales إرجاع" },
+  { label: "بوابة المرتجعات المركزية", href: "/returns", icon: RotateCcw, keywords: "returns sales purchases إرجاع مرتجع فواتير مفقودة تقصي" },
   { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },
   { label: "الموردون", href: "/suppliers", icon: Truck, keywords: "suppliers موردين" },
   { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة خدمة" },

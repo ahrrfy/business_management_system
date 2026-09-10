@@ -382,12 +382,12 @@ export default function App() {
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
-      <Route path="/returns"><Shell><Returns /></Shell></Route>
+      <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
       <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
-      <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
+      <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
       <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
-      <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
+      <Route path="/purchase-returns"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
       <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
       {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}

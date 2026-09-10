@@ -11,7 +11,8 @@ import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { router, salesManagerProcedure, salesReadProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { forensicTraceInvoices, universalBarcodeScan } from "../services/returns/forensicTraceService";
 import {
   createReturnRequest,
   listReturnRequests,
@@ -688,4 +689,40 @@ export const returnRouter = router({
       items,
     };
   }),
+
+  /**
+   * التحري والتقصي الجنائي للفواتير المفقودة بعدسات متعددة:
+   * باركود الصنف / آخر ٤ أرقام من البطاقة / هاتف العميل / الوردية والتاريخ
+   */
+  forensicTrace: salesReadProcedure
+    .input(
+      z.object({
+        query: z.string().trim().min(1, "أدخل نص البحث"),
+        mode: z.enum(["ITEM_BARCODE", "CARD_LAST4", "CUSTOMER_PHONE", "DATE_SHIFT"]),
+        days: z.number().int().min(1).max(180).optional(),
+        shiftId: z.number().int().positive().optional(),
+        dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      return forensicTraceInvoices(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+    }),
+
+  /**
+   * المسح الكوني للباركود — يتعرف تلقائياً على نوع المعاملة أو الصنف من الرمز الممسوح.
+   */
+  universalScan: salesReadProcedure
+    .input(z.object({ barcode: z.string().trim().min(1, "امسح الباركود") }))
+    .query(async ({ input, ctx }) => {
+      return universalBarcodeScan(input.barcode, {
+        userId: ctx.user.id,
+        branchId: ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+    }),
 });
