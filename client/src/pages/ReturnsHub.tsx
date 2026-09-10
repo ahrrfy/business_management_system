@@ -33,6 +33,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import PurchaseReturnsGovernance from "@/pages/PurchaseReturnsGovernance";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
+import { NoReceiptReturnDialog, type NoReceiptItem } from "@/components/returns/NoReceiptReturnDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -167,10 +168,26 @@ export default function ReturnsHub() {
 
   // طرود التوصيل الراجعة
   const [deliveryTarget, setDeliveryTarget] = useState<ReturnConsignmentTarget | null>(null);
+  const [deliverySearch, setDeliverySearch] = useState("");
+  const debouncedDeliverySearch = useDebouncedValue(deliverySearch.trim(), 300);
+
   const inTransitQuery = trpc.delivery.inTransit.useQuery(
-    { limit: 30 },
+    { limit: 50 },
     { enabled: activeTab === "delivery" }
   );
+
+  const filteredConsignments = useMemo(() => {
+    const list = inTransitQuery.data?.rows ?? [];
+    if (!debouncedDeliverySearch) return list;
+    const q = debouncedDeliverySearch.toLowerCase();
+    return list.filter(
+      (c) =>
+        c.consignmentNumber.toLowerCase().includes(q) ||
+        String(c.invoiceId).includes(q) ||
+        (c.driverName && c.driverName.toLowerCase().includes(q)) ||
+        (c.partyName && c.partyName.toLowerCase().includes(q))
+    );
+  }, [inTransitQuery.data?.rows, debouncedDeliverySearch]);
 
   const returnDeliveryMutation = trpc.delivery.returnConsignment.useMutation({
     onSuccess: () => {
@@ -185,9 +202,13 @@ export default function ReturnsHub() {
   const [printSearch, setPrintSearch] = useState("");
   const debouncedPrintSearch = useDebouncedValue(printSearch.trim(), 300);
   const workOrdersQuery = trpc.workOrders.list.useQuery(
-    { q: debouncedPrintSearch || undefined },
+    { q: debouncedPrintSearch || undefined, limit: 50 },
     { enabled: activeTab === "print" }
   );
+
+  // حالة بروتوكول الإرجاع بدون فاتورة
+  const [noReceiptOpen, setNoReceiptOpen] = useState(false);
+  const [noReceiptItem, setNoReceiptItem] = useState<NoReceiptItem | null>(null);
 
   // ═════════════════════════════════════════════════════════════════════════
   // أعمدة جدول التقصي الجنائي
@@ -590,8 +611,15 @@ export default function ReturnsHub() {
               </CardDescription>
             </CardHeader>
             <CardContent className="p-4 space-y-3">
+              <Input
+                value={deliverySearch}
+                onChange={(e) => setDeliverySearch(e.target.value)}
+                placeholder="ابحث برقم الإرسالية (DLV-XXX) أو رقم الفاتورة أو اسم المندوب..."
+                className="max-w-md"
+              />
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {(inTransitQuery.data?.rows ?? []).map((cnRow) => (
+                {filteredConsignments.map((cnRow) => (
                   <Card key={cnRow.id} className="p-3 flex flex-col justify-between border">
                     <div>
                       <div className="flex justify-between items-start">
@@ -745,16 +773,37 @@ export default function ReturnsHub() {
 
               {/* أدنى سعر تاريخي محدد إذا كانت العدسة هي الصنف */}
               {forensicTraceQuery.data?.lowestHistoricalPrice && (
-                <div className="p-3 bg-muted/40 rounded-lg flex items-center justify-between text-xs">
+                <div className="p-3 bg-muted/40 rounded-lg flex flex-wrap gap-2 items-center justify-between text-xs">
                   <div>
                     <span className="text-muted-foreground">أدنى سعر بيع تاريخي للصنف (خلال ٦٠ يوماً): </span>
                     <span className="font-bold text-primary font-mono text-sm">
                       {fmt(forensicTraceQuery.data.lowestHistoricalPrice)}
                     </span>
                   </div>
-                  <Badge variant="outline" className="text-[10px]">
-                    سقف بروتوكول عدم الفاتورة
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px]">
+                      سقف بروتوكول عدم الفاتورة
+                    </Badge>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="default"
+                      onClick={() => {
+                        const firstRes = forensicTraceQuery.data?.results[0];
+                        setNoReceiptItem({
+                          productName: firstRes?.matchedItem?.productName || forensicQuery,
+                          sku: null,
+                          barcode: forensicQuery,
+                          lowestHistoricalPrice: forensicTraceQuery.data?.lowestHistoricalPrice ?? "0",
+                        });
+                        setNoReceiptOpen(true);
+                      }}
+                      className="gap-1.5 text-xs"
+                    >
+                      <ShieldAlert className="size-3.5" aria-hidden />
+                      بدء إرجاع بدون فاتورة (رصيد متجر)
+                    </Button>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -765,11 +814,31 @@ export default function ReturnsHub() {
             <CardHeader className="p-4 pb-2">
               <CardTitle className="text-sm font-bold flex items-center justify-between">
                 <span>نتائج التحري والمطابقة ({forensicTraceQuery.data?.results.length ?? 0})</span>
-                {forensicTraceQuery.isFetching && (
-                  <span className="text-xs text-muted-foreground font-normal">
-                    {ACTION_LABELS.loading}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setNoReceiptItem({
+                        productName: forensicQuery || "صنف مرتجع بدون فاتورة",
+                        sku: null,
+                        barcode: forensicQuery || null,
+                        lowestHistoricalPrice: forensicTraceQuery.data?.lowestHistoricalPrice ?? "0",
+                      });
+                      setNoReceiptOpen(true);
+                    }}
+                    className="text-xs gap-1.5"
+                  >
+                    <ShieldAlert className="size-3.5" aria-hidden />
+                    إرجاع استثنائي (بدون فاتورة)
+                  </Button>
+                  {forensicTraceQuery.isFetching && (
+                    <span className="text-xs text-muted-foreground font-normal">
+                      {ACTION_LABELS.loading}
+                    </span>
+                  )}
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-4 pt-2">
@@ -782,6 +851,13 @@ export default function ReturnsHub() {
           </Card>
         </div>
       )}
+
+      {/* نافذة بروتوكول الإرجاع بدون فاتورة */}
+      <NoReceiptReturnDialog
+        open={noReceiptOpen}
+        onOpenChange={setNoReceiptOpen}
+        item={noReceiptItem}
+      />
     </div>
   );
 }
