@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -31,12 +31,46 @@ import {
 } from "@/lib/storefront-api";
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
-  PENDING: "بانتظار تأكيد المكتبة",
-  CONFIRMED: "تم تأكيد الطلب",
+  PENDING: "بانتظار تأكيد الموظف",
+  CONFIRMED: "تم تأكيد الموظف",
   PROCESSING: "جارٍ التجهيز",
   SHIPPED: "مع المندوب",
   DELIVERED: "تم التسليم",
   CANCELLED: "ملغى",
+};
+
+const ORDER_TRACKING_STEPS = [
+  "تأكيد الموظف",
+  "التجهيز",
+  "قيد التوصيل",
+  "تم التسليم",
+] as const;
+
+const ORDER_STATUS_GUIDANCE: Record<string, { description: string; step: number }> = {
+  PENDING: {
+    description: "وصل طلبك إلى المكتبة وهو بانتظار تأكيد الموظف للتوفر والعنوان قبل بدء التجهيز.",
+    step: 0,
+  },
+  CONFIRMED: {
+    description: "أكد الموظف طلبك. يبدأ تجهيز المنتجات الآن قبل تسليمها للتوصيل.",
+    step: 1,
+  },
+  PROCESSING: {
+    description: "يجري تجهيز طلبك الآن. ستظهر حالة التوصيل عند تسليمه للمندوب.",
+    step: 1,
+  },
+  SHIPPED: {
+    description: "طلبك في مرحلة التوصيل. سيكتمل عند استلامك المنتجات.",
+    step: 2,
+  },
+  DELIVERED: {
+    description: "اكتمل الطلب بعد تسجيل التسليم. نرجو التحقق من المنتجات عند الاستلام.",
+    step: 3,
+  },
+  CANCELLED: {
+    description: "أُلغي الطلب ولن ينتقل إلى التجهيز أو التوصيل.",
+    step: -1,
+  },
 };
 
 const QUOTE_REQUEST_STATUS_LABELS: Record<string, string> = {
@@ -79,6 +113,21 @@ export default function OrdersScreen() {
   const [cancelPrompt, setCancelPrompt] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [acceptingQuote, setAcceptingQuote] = useState(false);
+  const [hasVerifiedCustomerSession, setHasVerifiedCustomerSession] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void loadVerifiedCustomerSession()
+      .then((session) => {
+        if (active) setHasVerifiedCustomerSession(Boolean(session?.token));
+      })
+      .catch(() => {
+        if (active) setHasVerifiedCustomerSession(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     void loadRecentOrders()
@@ -119,6 +168,7 @@ export default function OrdersScreen() {
       const normalizedOrderNumber = orderNumber.trim().toUpperCase();
       const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
       const session = await loadVerifiedCustomerSession();
+      setHasVerifiedCustomerSession(Boolean(session?.token));
       const guestTrackingToken = recent?.guestTrackingToken &&
         (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
         ? recent.guestTrackingToken
@@ -145,6 +195,7 @@ export default function OrdersScreen() {
       const normalizedOrderNumber = tracking.orderNumber.trim().toUpperCase();
       const recent = recentOrders.find((candidate) => candidate.orderNumber === normalizedOrderNumber);
       const session = await loadVerifiedCustomerSession();
+      setHasVerifiedCustomerSession(Boolean(session?.token));
       const guestTrackingToken = recent?.guestTrackingToken &&
         (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
         ? recent.guestTrackingToken
@@ -399,6 +450,47 @@ export default function OrdersScreen() {
         </View>
         {tracking && (
           <View style={styles.liveOrder}>
+            {(() => {
+              const guidance = ORDER_STATUS_GUIDANCE[tracking.status] ?? {
+                description: "تتم متابعة طلبك من فريق المكتبة. راجع الحالة لاحقاً أو تواصل معنا عند الحاجة.",
+                step: -1,
+              };
+              return (
+                <View style={styles.statusGuidance}>
+                  <Text style={styles.statusGuidanceTitle}>مراحل الطلب</Text>
+                  <Text style={styles.statusGuidanceText}>{guidance.description}</Text>
+                  {guidance.step >= 0 && (
+                    <View style={styles.timeline}>
+                      {ORDER_TRACKING_STEPS.map((step, index) => {
+                        const complete = index < guidance.step || tracking.status === "DELIVERED";
+                        const current = index === guidance.step && tracking.status !== "DELIVERED";
+                        return (
+                          <View key={step} style={styles.timelineRow}>
+                            <View style={[
+                              styles.timelineMarker,
+                              complete && styles.timelineMarkerComplete,
+                              current && styles.timelineMarkerCurrent,
+                            ]}>
+                              {complete ? (
+                                <MaterialIcons color="#FFFFFF" name="check" size={13} />
+                              ) : (
+                                <Text style={styles.timelineNumber}>{formatLatinNumber(index + 1)}</Text>
+                              )}
+                            </View>
+                            <Text style={[
+                              styles.timelineLabel,
+                              (complete || current) && styles.timelineLabelActive,
+                            ]}>
+                              {step}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
             <View style={styles.liveTop}>
               <View>
                 <Text style={styles.liveOrderNumber}>
@@ -484,6 +576,23 @@ export default function OrdersScreen() {
                     </View>
                   </View>
                 )}
+              </View>
+            )}
+            {tracking.status === "DELIVERED" && hasVerifiedCustomerSession && (
+              <View style={styles.reviewPanel}>
+                <Text style={styles.reviewHint}>
+                  بعد التسليم يمكنك تقييم المنتجات التي استلمتها من صفحة المنتج. يتيح النظام المراجعة فقط للمنتجات التي استلمتها.
+                </Text>
+                <TouchableOpacity
+                  accessibilityLabel="اختيار منتج لتقييمه بعد التسليم"
+                  accessibilityRole="button"
+                  activeOpacity={0.84}
+                  onPress={() => router.push("/" as never)}
+                  style={styles.reviewButton}
+                >
+                  <MaterialIcons color="#0C5A4B" name="rate-review" size={17} />
+                  <Text style={styles.reviewButtonText}>اختيار منتج للتقييم</Text>
+                </TouchableOpacity>
               </View>
             )}
             {tracking.status !== "PENDING" && tracking.status !== "CANCELLED" && (
@@ -783,6 +892,17 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   statusText: { color: "#0C5A4B", fontSize: 10, fontWeight: "800" },
+  statusGuidance: { backgroundColor: "#FFFFFF", borderColor: "#CDE0D5", borderRadius: 12, borderWidth: 1, marginBottom: 12, padding: 11 },
+  statusGuidanceTitle: { color: "#20372F", fontSize: 12, fontWeight: "900", textAlign: "right" },
+  statusGuidanceText: { color: "#395B50", fontSize: 11, fontWeight: "700", lineHeight: 18, marginTop: 4, textAlign: "right" },
+  timeline: { borderTopColor: "#E2ECE6", borderTopWidth: 1, marginTop: 10, paddingTop: 7 },
+  timelineRow: { alignItems: "center", flexDirection: "row-reverse", minHeight: 28 },
+  timelineMarker: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#A9C6B6", borderRadius: 10, borderWidth: 1, height: 20, justifyContent: "center", width: 20 },
+  timelineMarkerComplete: { backgroundColor: "#0C5A4B", borderColor: "#0C5A4B" },
+  timelineMarkerCurrent: { backgroundColor: "#E7F1EC", borderColor: "#0C5A4B" },
+  timelineNumber: { color: "#587067", fontSize: 9, fontWeight: "900" },
+  timelineLabel: { color: "#71817B", fontSize: 11, fontWeight: "700", marginRight: 8, textAlign: "right" },
+  timelineLabelActive: { color: "#0C5A4B", fontWeight: "900" },
   cancelPanel: { borderTopColor: "#CDE0D5", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
   cancelOutline: { alignItems: "center", borderColor: "#D9938A", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", minHeight: 42, paddingHorizontal: 12 },
   cancelOutlineText: { color: "#A34840", fontSize: 12, fontWeight: "900" },
@@ -797,6 +917,10 @@ const styles = StyleSheet.create({
   supportHint: { color: "#395B50", fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
   supportButton: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#9DC5B2", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", marginTop: 9, minHeight: 42, paddingHorizontal: 12 },
   supportButtonText: { color: "#0C5A4B", fontSize: 12, fontWeight: "900" },
+  reviewPanel: { borderTopColor: "#CDE0D5", borderTopWidth: 1, marginTop: 12, paddingTop: 12 },
+  reviewHint: { color: "#395B50", fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
+  reviewButton: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#9DC5B2", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", marginTop: 9, minHeight: 42, paddingHorizontal: 12 },
+  reviewButtonText: { color: "#0C5A4B", fontSize: 12, fontWeight: "900" },
   quoteStateHint: { color: "#476158", fontSize: 12, lineHeight: 19, marginTop: 8, textAlign: "right" },
   quoteAcceptedHint: { color: "#0C5A4B", fontSize: 12, fontWeight: "700", lineHeight: 19, marginTop: 8, textAlign: "right" },
   quoteAcceptButton: { alignItems: "center", backgroundColor: "#0C5A4B", borderRadius: 12, flexDirection: "row", gap: 8, justifyContent: "center", marginTop: 10, minHeight: 42, paddingHorizontal: 14 },

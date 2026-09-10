@@ -105,6 +105,31 @@ export default function OrderConfirmationScreen() {
           «طلباتي».
         </Text>
 
+        <View style={styles.pendingCard}>
+          <View style={styles.pendingHeading}>
+            <MaterialIcons color="#0C5A4B" name="pending-actions" size={21} />
+            <Text style={styles.pendingTitle}>بانتظار تأكيد الموظف</Text>
+          </View>
+          <Text style={styles.pendingText}>
+            تم إرسال طلبك إلى فريق المكتبة. يراجع الموظف التوفر والعنوان ثم يؤكد الطلب قبل بدء التجهيز؛ استلام الطلب في التطبيق لا يعني أنه مؤكد بعد.
+          </Text>
+          <View style={styles.pendingTimeline}>
+            {[
+              "تأكيد الموظف — بانتظار المراجعة",
+              "التجهيز — بعد التأكيد",
+              "قيد التوصيل — عند التسليم للمندوب",
+              "تم التسليم — بعد استلامك المنتجات",
+            ].map((step, index) => (
+              <View key={step} style={styles.pendingTimelineRow}>
+                <View style={[styles.pendingMarker, index === 0 && styles.pendingMarkerCurrent]}>
+                  {index === 0 ? <MaterialIcons color="#0C5A4B" name="schedule" size={13} /> : <Text style={styles.pendingNumber}>{index + 1}</Text>}
+                </View>
+                <Text style={[styles.pendingTimelineText, index === 0 && styles.pendingTimelineTextCurrent]}>{step}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
         <View style={styles.orderCard}>
           <Text style={styles.cardLabel}>رقم الطلب</Text>
           <Text selectable style={styles.orderNumber}>
@@ -202,6 +227,17 @@ const styles = StyleSheet.create({
     maxWidth: 340,
     textAlign: "center",
   },
+  pendingCard: { backgroundColor: "#E7F1EC", borderColor: "#CDE0D5", borderRadius: 16, borderWidth: 1, marginTop: 18, padding: 13, width: "100%" },
+  pendingHeading: { alignItems: "center", flexDirection: "row-reverse", gap: 7, justifyContent: "flex-start" },
+  pendingTitle: { color: "#20372F", fontFamily: "Cairo_800ExtraBold", fontSize: 14, textAlign: "right" },
+  pendingText: { color: "#385A4F", fontFamily: "Cairo_600SemiBold", fontSize: 11, lineHeight: 19, marginTop: 7, textAlign: "right" },
+  pendingTimeline: { borderTopColor: "#CDE0D5", borderTopWidth: 1, marginTop: 10, paddingTop: 7 },
+  pendingTimelineRow: { alignItems: "center", flexDirection: "row-reverse", minHeight: 27 },
+  pendingMarker: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#A9C6B6", borderRadius: 10, borderWidth: 1, height: 20, justifyContent: "center", width: 20 },
+  pendingMarkerCurrent: { backgroundColor: "#E7F1EC", borderColor: "#0C5A4B" },
+  pendingNumber: { color: "#64786F", fontFamily: "Cairo_700Bold", fontSize: 9 },
+  pendingTimelineText: { color: "#64786F", flex: 1, fontFamily: "Cairo_600SemiBold", fontSize: 10, marginRight: 8, textAlign: "right" },
+  pendingTimelineTextCurrent: { color: "#0C5A4B", fontFamily: "Cairo_800ExtraBold" },
   orderCard: {
     backgroundColor: "#FFFFFF",
     borderColor: "#DFE8E2",
