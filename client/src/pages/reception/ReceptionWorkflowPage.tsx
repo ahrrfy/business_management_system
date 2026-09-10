@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { RouterOutputs } from "@/lib/trpc";
-import { BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
+import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
@@ -15,6 +15,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import { cn } from "@/lib/utils";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -43,6 +44,7 @@ interface ScannedOrder {
   deliveryPhone: string | null;
   deliveryCost: string | null;
   version: number;
+  activeConsignment?: { id: number; consignmentNumber: string; partyId: number; partyName: string | null; partyType: "INDIVIDUAL" | "COMPANY" | null; parcelStatus: string; moneyStatus: string; codAmount: string; collectedAmount: string; } | null;
 }
 
 export default function DeliveryWorkflowPage() {
@@ -67,7 +69,11 @@ export default function DeliveryWorkflowPage() {
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   const shiftQ = trpc.shifts.current.useQuery({ branchId: branchId!, shiftType: "RECEPTION" }, { enabled: !!branchId });
   const shift = shiftQ.data ?? null;
-  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { enabled: activeSection === "dispatch", staleTime: 60_000 });
+  const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000 });
+  const allParties = partiesQ.data ?? [];
+  const individualCouriers = allParties.filter((p) => p.partyType === "INDIVIDUAL");
+  const companyCouriers = allParties.filter((p) => p.partyType === "COMPANY");
+  const selectedPartyInfo = allParties.find((p) => p.id === selectedPartyId);
 
   const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
     const r = parseScan(raw);
@@ -84,6 +90,7 @@ export default function DeliveryWorkflowPage() {
           if (wo.status === "CANCELLED" || wo.status === "RETURNED") { notify.warn(`الفاتورة ملغاة أو مرتجعة`); return; }
         }
       }
+      const activeCn = (wo as { activeConsignment?: ScannedOrder["activeConsignment"] }).activeConsignment;
       const order: ScannedOrder = {
         id: wo.id, kind: wo.kind ?? "workOrder", orderNumber: wo.orderNumber, title: wo.title,
         customerName: wo.customerName, customerPhone: wo.customerPhone,
@@ -91,8 +98,12 @@ export default function DeliveryWorkflowPage() {
         deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone,
         deliveryCost: wo.deliveryCost,
         version: (wo as { version?: number }).version ?? 1,
+        activeConsignment: activeCn ?? null,
       };
       if (target === "dispatch") {
+        if (activeCn) {
+          notify.warn(`الطلب مسند حالياً لـ ${activeCn.partyName ?? "جهة أخرى"} بالإرسالية ${activeCn.consignmentNumber}`);
+        }
         setDispatchScanned(order); setDispatchBarcodeInput("");
         setRecipientPhone(wo.deliveryPhone ?? wo.customerPhone ?? "");
         setRecipientName(wo.customerName ?? ""); setDispatchFee(wo.deliveryCost ?? "");
@@ -185,7 +196,6 @@ export default function DeliveryWorkflowPage() {
   const cancelMut = trpc.workOrders.cancel.useMutation({
     onSuccess: () => {
       notify.ok("أُلغي الطلب " + (returnScanned?.orderNumber ?? ""));
-
       setReturnScanned(null); setReturnBarcodeInput(""); setReturnReason("");
       void utils.workOrders.invalidate();
     },
@@ -194,6 +204,13 @@ export default function DeliveryWorkflowPage() {
 
   async function handleDispatch() {
     if (!dispatchScanned || !selectedPartyId) return;
+    if (dispatchScanned.activeConsignment) {
+      notify.err(
+        `لا يمكن إسناد الطلب — مسند حالياً لـ ${dispatchScanned.activeConsignment.partyName ?? "جهة أخرى"} بالإرسالية ${dispatchScanned.activeConsignment.consignmentNumber}`,
+        "ألغِ الإرسالية السابقة أولاً لتجنّب تداخل الذمم والطرود.",
+      );
+      return;
+    }
     const fee = D(dispatchFee || "0");
     const docLabel = dispatchScanned.kind === "invoice" ? "الفاتورة" : "الطلب";
     const ok = await confirm({
@@ -244,7 +261,13 @@ export default function DeliveryWorkflowPage() {
       confirmText: "إلغاء الطلب",
     });
     if (!ok) return;
-    cancelMut.mutate({ workOrderId: returnScanned.id, expectedVersion: returnScanned.version, reason: returnReason.trim() });
+    cancelMut.mutate({
+      workOrderId: returnScanned.id,
+      expectedVersion: returnScanned.version,
+      reason: returnReason.trim(),
+      refundShiftId: shift?.id,
+      clientRequestId: crypto.randomUUID(),
+    });
   }
 
   return (
@@ -257,13 +280,9 @@ export default function DeliveryWorkflowPage() {
           backLabel="الاستقبال"
           actions={
             shift ? (
-              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">
-                وردية #{shift.id}
-              </span>
+              <span className="rounded-full bg-green-100 px-3 py-1 text-xs font-bold text-green-700">وردية #{shift.id}</span>
             ) : (
-              <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">
-                لا وردية
-              </span>
+              <span className="rounded-full bg-destructive/10 px-3 py-1 text-xs font-bold text-destructive">لا وردية</span>
             )
           }
         />
@@ -308,15 +327,41 @@ export default function DeliveryWorkflowPage() {
             )}
 
             <Card className="gap-0 p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <span className="grid size-6 place-items-center rounded-full bg-primary text-[11px] font-black text-primary-foreground">١</span>
-                <h2 className="font-extrabold">اختر جهة التوصيل</h2>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="grid size-6 place-items-center rounded-full bg-primary text-[11px] font-black text-primary-foreground">١</span>
+                  <h2 className="font-extrabold">اختر جهة التوصيل</h2>
+                </div>
+                {selectedPartyInfo && (
+                  <Badge variant="outline" className={selectedPartyInfo.partyType === "COMPANY" ? "border-blue-500 text-blue-700 font-bold" : "border-[var(--sem-pos)] text-[var(--sem-pos)] font-bold"}>
+                    {selectedPartyInfo.partyType === "COMPANY" ? "شركة توصيل خارجية" : "مندوب داخلي"}
+                  </Badge>
+                )}
               </div>
-              <AppSelect value={selectedPartyId ? String(selectedPartyId) : ""}
+              <AppSelect
+                value={selectedPartyId ? String(selectedPartyId) : ""}
                 onValueChange={(v) => { setSelectedPartyId(v ? Number(v) : null); setDispatchScanned(null); setDispatchBarcodeInput(""); }}
-                className="h-12 w-full text-base font-bold">
+                className="h-12 w-full text-base font-bold"
+              >
                 <option value="">— اختر المندوب أو شركة التوصيل —</option>
-                {(partiesQ.data ?? []).map((p) => <option key={p.id} value={String(p.id)}>{p.name}</option>)}
+                {individualCouriers.length > 0 && (
+                  <optgroup label="── المناديب الداخليين (سائقون بعُهدة نقدية) ──">
+                    {individualCouriers.map((p) => (
+                      <option key={p.id} value={String(p.id)}>
+                        {p.name} (مندوب)
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {companyCouriers.length > 0 && (
+                  <optgroup label="── شركات ومكاتب التوصيل (مطابقة كشوفات دورية) ──">
+                    {companyCouriers.map((p) => (
+                      <option key={p.id} value={String(p.id)}>
+                        {p.name} (شركة)
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </AppSelect>
             </Card>
 
@@ -353,6 +398,20 @@ export default function DeliveryWorkflowPage() {
                   <Button variant="ghost" size="sm" onClick={() => { setDispatchScanned(null); setDispatchBarcodeInput(""); }}>مسح طلب آخر</Button>
                 </div>
                 <div className="space-y-3 p-4">
+                  {dispatchScanned.activeConsignment && (
+                    <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3.5 space-y-1">
+                      <div className="flex items-center gap-2 text-destructive font-extrabold text-sm">
+                        <AlertTriangle className="size-4 shrink-0" />
+                        <span>الطلب مسند مسبقاً لجهة أخرى ولا يمكن تكرار إسناده!</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        جهة التوصيل الحالية: <strong className="text-foreground">{dispatchScanned.activeConsignment.partyName ?? "غير محدد"}</strong> · إرسالية: <strong className="font-mono text-foreground">{dispatchScanned.activeConsignment.consignmentNumber}</strong> · حالة الطرد: <strong className="text-foreground">{dispatchScanned.activeConsignment.parcelStatus}</strong>
+                      </p>
+                      <p className="text-xs text-destructive font-bold">
+                        يجب إلغاء الإرسالية السابقة أو استرجاعها أولاً لعزل الذمم ومنع التداخل المالي.
+                      </p>
+                    </div>
+                  )}
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="flex items-center gap-2 rounded-xl border bg-background p-3">
                       <User aria-hidden className="size-4 shrink-0 text-muted-foreground" />
@@ -408,8 +467,18 @@ export default function DeliveryWorkflowPage() {
                       </div>
                     </div>
                   </div>
-                  <Button className="w-full py-6 text-base font-extrabold" onClick={() => void handleDispatch()} disabled={dispatchMut.isPending}>
-                    {dispatchMut.isPending ? "جارٍ الإسناد…" : D(dispatchFee || "0").gt(0) ? "أسند للمندوب · أجرة " + fmt(dispatchFee) + " د.ع" : "أسند للمندوب"}
+                  <Button
+                    className="w-full py-6 text-base font-extrabold"
+                    onClick={() => void handleDispatch()}
+                    disabled={dispatchMut.isPending || !!dispatchScanned.activeConsignment}
+                  >
+                    {dispatchScanned.activeConsignment
+                      ? "مسند مسبقاً للإرسالية " + dispatchScanned.activeConsignment.consignmentNumber
+                      : dispatchMut.isPending
+                        ? "جارٍ الإسناد…"
+                        : D(dispatchFee || "0").gt(0)
+                          ? "أسند للمندوب · أجرة " + fmt(dispatchFee) + " د.ع"
+                          : "أسند للمندوب"}
                   </Button>
                 </div>
               </Card>
@@ -418,9 +487,6 @@ export default function DeliveryWorkflowPage() {
         )}
 
         {activeSection === "collect" && !!branchId && <CollectSection branchId={branchId} shift={shift} />}
-
-
-
 
         {activeSection === "return" && (
           <div className="mx-auto max-w-2xl space-y-4">
@@ -440,7 +506,7 @@ export default function DeliveryWorkflowPage() {
             {!returnScanned && (
               <div className="rounded-2xl border-2 border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
                 <ScanLine aria-hidden className="mx-auto size-10 text-destructive/60" />
-                <p className="mt-2 text-base font-extrabold text-destructive">امسح باركود الطلب</p>
+                <p className="mt-2 text-base font-extrabold text-destructive">امسح باركود الطلب أو الفاتورة</p>
                 <div className="mt-4 flex gap-2">
                   <Input ref={returnRef} value={returnBarcodeInput}
                     onChange={(e) => setReturnBarcodeInput(e.target.value)}
@@ -449,13 +515,38 @@ export default function DeliveryWorkflowPage() {
                       if (!e.defaultPrevented && e.key === "Enter" && returnBarcodeInput.trim())
                         void lookupWorkOrder(returnBarcodeInput.trim(), "return");
                     }}
-                    placeholder="رقم الطلب (Enter)" className="flex-1 text-center font-bold" dir="ltr" />
+                    placeholder="رقم الطلب أو الفاتورة (Enter)" className="flex-1 text-center font-bold" dir="ltr" />
                   <Button variant="outline" onClick={() => void lookupWorkOrder(returnBarcodeInput.trim(), "return")} disabled={!returnBarcodeInput.trim()}>بحث</Button>
                 </div>
               </div>
             )}
 
-            {returnScanned && returnType === "FULL" && (
+            {returnScanned && returnScanned.kind === "invoice" && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-xl border bg-muted/40 p-3">
+                  <div className="flex items-center gap-2">
+                    <Package aria-hidden className="size-5 text-primary" />
+                    <div>
+                      <span className="font-extrabold text-base">فاتورة بيع #{returnScanned.orderNumber}</span>
+                      <p className="text-xs text-muted-foreground">العميل: {returnScanned.customerName || "زبون نقدي"}</p>
+                    </div>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
+                </div>
+                <ReturnComposer
+                  invoiceId={returnScanned.id}
+                  onDone={() => {
+                    notify.ok("تم تسجيل المرتجع بنجاح");
+                    setReturnScanned(null);
+                    setReturnBarcodeInput("");
+                    void utils.workOrders.invalidate();
+                    void utils.delivery.invalidate();
+                  }}
+                />
+              </div>
+            )}
+
+            {returnScanned && returnScanned.kind !== "invoice" && returnType === "FULL" && (
               <Card className="overflow-hidden gap-0 py-0 shadow-sm">
                 <div className="flex items-start justify-between border-b bg-destructive/10 p-4">
                   <div>
@@ -491,8 +582,8 @@ export default function DeliveryWorkflowPage() {
                   <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm">
                     <p className="font-bold text-destructive">تنبيه — سيتمّ عند التأكيد:</p>
                     <ul className="mt-1 space-y-1 list-disc list-inside text-muted-foreground">
-                      <li>إلغاء الطلب نهائياً</li>
-                      {D(returnScanned.deposit ?? "0").gt(0) && <li>ردّ {fmt(returnScanned.deposit!)} د.ع من درج الوردية</li>}
+                      <li>إلغاء أمر الشغل نهائياً</li>
+                      {D(returnScanned.deposit ?? "0").gt(0) && <li>ردّ {fmt(returnScanned.deposit!)} د.ع من درج الوردية #{shift?.id ?? ""}</li>}
                       <li>إعادة المواد والمخزون للرصيد</li>
                     </ul>
                   </div>
@@ -504,11 +595,21 @@ export default function DeliveryWorkflowPage() {
               </Card>
             )}
 
-            {returnScanned && returnType === "PARTIAL" && (
-              <div className="rounded-2xl border border-amber-300 bg-amber-50 p-6 text-center">
-                <RefreshCcw aria-hidden className="mx-auto size-10 text-amber-500" />
-                <p className="mt-3 text-base font-bold text-amber-700">المرتجع الجزئي — قريباً</p>
-                <p className="mt-1 text-sm text-muted-foreground">يُمكّن اختيار البنود وتحديد الكمية والمبلغ المُسترجَع</p>
+            {returnScanned && returnScanned.kind !== "invoice" && returnType === "PARTIAL" && (
+              <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-6 text-center space-y-3">
+                <RefreshCcw aria-hidden className="mx-auto size-10 text-primary" />
+                <p className="text-base font-extrabold text-foreground">أمر شغل مخصص #{returnScanned.orderNumber}</p>
+                <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                  أمر الشغل وحدة تصنيع متكاملة يُلغى بالكامل ويردّ عربونه من درج الوردية. إذا كان الطلب مسجلاً كفاتورة مبيعات، يرجى مسح رقم الفاتورة لإجراء المرتجع الجزئي للبنود والكميات.
+                </p>
+                <div className="flex justify-center gap-2 pt-2">
+                  <Button variant="outline" className="font-bold" onClick={() => setReturnType("FULL")}>
+                    التحويل إلى إلغاء كامل
+                  </Button>
+                  <Button variant="ghost" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>
+                    مسح طلب أو فاتورة أخرى
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -534,6 +635,9 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
   const selectedParty = (obligationsQ.data ?? []).find((p: PartyObligation) => p.partyId === selectedPartyId);
   const partyInfo = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
   const isCompany = partyInfo?.partyType === "COMPANY";
+  const allCollectParties = partiesQ.data ?? [];
+  const collectIndividualCouriers = allCollectParties.filter((p) => p.partyType === "INDIVIDUAL");
+  const collectCompanyCouriers = allCollectParties.filter((p) => p.partyType === "COMPANY");
   const totalObligation = selectedParty ? Number(selectedParty.codDueTotal ?? 0) : 0;
   const inTransitAmount = selectedParty ? Number(selectedParty.parcelsInTransitAmount ?? 0) : 0;
 
@@ -562,9 +666,7 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
   const staffConfirmMut = trpc.delivery.staffConfirm.useMutation({
     onSuccess: () => {
       notify.ok("تم إثبات تسليم الطرد للزبون", "أصبح المبلغ بعهدة المندوب وجاهزاً للتوريد للدرج.");
-      void obligationsQ.refetch();
-      void openConsQ.refetch();
-      void utils.delivery.invalidate();
+      void obligationsQ.refetch(); void openConsQ.refetch(); void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر تأكيد التسليم"),
   });
@@ -574,9 +676,7 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
       notify.ok("تم التحصيل والتوريد للدرج — " + r.remittanceNumber, "صاف " + fmt(r.netRemitted) + " د.ع");
       printRemittanceReceipt(selectedParty?.name ?? "المندوب", r);
       setCountedCash("");
-      void obligationsQ.refetch();
-      void openConsQ.refetch();
-      void utils.delivery.invalidate();
+      void obligationsQ.refetch(); void openConsQ.refetch(); void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر التحصيل"),
   });
@@ -599,14 +699,8 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
         settledAt: new Date(),
         notes: statementNotes.trim() || undefined,
       });
-      setStatementNumber("");
-      setStatementDeductions("");
-      setStatementNotes("");
-      setCountedCash("");
-      setSelectedStatementLines({});
-      void obligationsQ.refetch();
-      void openConsQ.refetch();
-      void utils.delivery.invalidate();
+      setStatementNumber(""); setStatementDeductions(""); setStatementNotes(""); setCountedCash(""); setSelectedStatementLines({});
+      void obligationsQ.refetch(); void openConsQ.refetch(); void utils.delivery.invalidate();
     },
     onError: (e) => notify.err(e, "تعذّر تسجيل كشف شركة التوصيل"),
   });
@@ -740,47 +834,47 @@ function CollectSection({ branchId, shift }: { branchId: number; shift: { id: nu
             if (info?.partyType === "COMPANY") setSettleMode("company");
             else setSettleMode("courier");
           }}
-          className="h-12 w-full text-base"
+          className="h-12 w-full text-base font-bold"
         >
           <option value="">— اختر المندوب أو شركة التوصيل —</option>
-          {(partiesQ.data ?? []).map((p) => {
-            const ob = (obligationsQ.data ?? []).find((ob: PartyObligation) => ob.partyId === p.id);
-            const bal = Number(ob?.codDueTotal ?? 0);
-            return (
-              <option key={p.id} value={String(p.id)}>
-                {p.name} {p.partyType === "COMPANY" ? "(شركة)" : "(مندوب)"}{bal > 0 ? ` — ذمة: ${fmt(String(bal))} د.ع` : ""}
-              </option>
-            );
-          })}
+          {collectIndividualCouriers.length > 0 && (
+            <optgroup label="── المناديب الداخليين (سائقون بعُهدة نقدية) ──">
+              {collectIndividualCouriers.map((p) => {
+                const bal = Number((obligationsQ.data ?? []).find((o: PartyObligation) => o.partyId === p.id)?.codDueTotal ?? 0);
+                return <option key={p.id} value={String(p.id)}>{p.name} (مندوب){bal > 0 ? ` — عهدة: ${fmt(String(bal))} د.ع` : ""}</option>;
+              })}
+            </optgroup>
+          )}
+          {collectCompanyCouriers.length > 0 && (
+            <optgroup label="── شركات ومكاتب التوصيل (مطابقة كشوفات دورية) ──">
+              {collectCompanyCouriers.map((p) => {
+                const bal = Number((obligationsQ.data ?? []).find((o: PartyObligation) => o.partyId === p.id)?.codDueTotal ?? 0);
+                return <option key={p.id} value={String(p.id)}>{p.name} (شركة){bal > 0 ? ` — رصيد معلق: ${fmt(String(bal))} د.ع` : ""}</option>;
+              })}
+            </optgroup>
+          )}
         </AppSelect>
 
-        {selectedPartyId && (
-          <div className="mt-3 flex gap-2 border-t pt-3">
-            <button
-              type="button"
-              onClick={() => setSettleMode("courier")}
-              className={cn(
-                "flex-1 py-2 px-3 text-xs font-bold rounded-lg border transition-colors",
-                settleMode === "courier"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:bg-muted/40",
-              )}
-            >
-              تسوية عهدة مندوب (توريد نقد)
-            </button>
-            <button
-              type="button"
-              onClick={() => setSettleMode("company")}
-              className={cn(
-                "flex-1 py-2 px-3 text-xs font-bold rounded-lg border transition-colors flex items-center justify-center gap-1.5",
-                settleMode === "company"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:bg-muted/40",
-              )}
-            >
-              <FileText className="size-3.5" />
-              تسوية كشف شركة التوصيل (مطابقة طلبات)
-            </button>
+        {selectedPartyId && isCompany && (
+          <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3">
+            <div className="flex items-center gap-2 text-xs font-extrabold text-blue-700">
+              <Building2 className="size-4 shrink-0" />
+              <span>نظام شركة التوصيل: مطابقة كشف الطلبات واستقطاعات الأجور وتوريد الصافي</span>
+            </div>
+            <Badge variant="outline" className="border-blue-500 text-blue-700 font-bold shrink-0">
+              كشف شركة
+            </Badge>
+          </div>
+        )}
+        {selectedPartyId && !isCompany && (
+          <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3">
+            <div className="flex items-center gap-2 text-xs font-extrabold text-[var(--sem-pos)]">
+              <User className="size-4 shrink-0" />
+              <span>نظام المندوب الفردي: عهدة نقدية ميدانية وتوريد مباشر للدرج (الأجرة معزولة)</span>
+            </div>
+            <Badge variant="outline" className="border-[var(--sem-pos)] text-[var(--sem-pos)] font-bold shrink-0">
+              عهدة نقدية
+            </Badge>
           </div>
         )}
       </Card>
