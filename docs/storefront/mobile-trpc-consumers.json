@@ -6,6 +6,7 @@
     "storefront.cancelOrderPrivate",
     "storefront.acceptQuoteRequestByToken",
     "storefront.acceptQuoteRequestPrivate",
+    "storefront.requestFirstOrderCoupon",
     "storefront.claimFirebaseCustomer",
     "storefront.createQuoteRequest",
     "storefront.customerBenefits",

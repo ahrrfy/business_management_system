@@ -46,6 +46,7 @@ import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnsti
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
+import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 
@@ -143,6 +144,14 @@ export const storefrontRouter = router({
   customerBenefitsPrivate: storefrontPublicWriteProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
     .mutation(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
+  /** لا يصدر إلا بطلب صاحب جلسة الهاتف، مرة واحدة وقبل أي طلب متجر سابق. */
+  requestFirstOrderCoupon: storefrontPublicWriteProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return requestStorefrontFirstOrderCoupon(customer.customerId);
+    }),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure

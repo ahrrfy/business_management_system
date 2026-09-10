@@ -241,6 +241,12 @@ export type StorefrontQuoteRequestTracking = {
     quantity: number;
   }>;
 };
+export type StorefrontFirstOrderCouponResult = {
+  outcome: "ISSUED" | "ALREADY_ISSUED";
+  code: string;
+  programName: string;
+  validTo: string | null;
+};
 
 export type ApiProduct = {
   productId: number;
@@ -958,6 +964,14 @@ export function claimStorefrontFirebaseCustomer(input: {
 export function getStorefrontCustomerBenefits(customerSessionToken: string) {
   return storefrontMutation<StorefrontCustomerBenefits>(
     "storefront.customerBenefitsPrivate",
+    { customerSessionToken },
+  );
+}
+
+/** طلب صريح من العميل الموثق؛ الخادم وحده يفحص كونه قبل أول طلب ويصدر مرة واحدة. */
+export function requestStorefrontFirstOrderCoupon(customerSessionToken: string) {
+  return storefrontMutation<StorefrontFirstOrderCouponResult>(
+    "storefront.requestFirstOrderCoupon",
     { customerSessionToken },
   );
 }

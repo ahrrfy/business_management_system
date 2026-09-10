@@ -2224,6 +2224,8 @@ export const couponPrograms = mysqlTable(
     validTo: date("validTo"),
     perCouponLimit: int("perCouponLimit").default(1).notNull(),
     perCustomerLimit: int("perCustomerLimit").default(1).notNull(),
+    /** برنامج اختياري يطلبه العميل الموثق قبل أول طلب متجر؛ لا يصدر تلقائياً. */
+    isFirstOrderSelfService: boolean("isFirstOrderSelfService").default(false).notNull(),
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
@@ -2325,6 +2327,32 @@ export const couponRedemptions = mysqlTable(
 export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
+/** قفل دائمي لطلب كوبون أول طلب: برنامج واحد × عميل واحد، حتى مع الضغط المتزامن. */
+export const storefrontFirstOrderCouponClaims = mysqlTable(
+  "storefrontFirstOrderCouponClaims",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    programId: bigint("programId", { mode: "number" })
+      .notNull()
+      .references(() => couponPrograms.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    couponId: bigint("couponId", { mode: "number" }).references(
+      () => coupons.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    programCustomerUq: unique("uq_store_first_coupon_program_customer").on(
+      table.programId,
+      table.customerId,
+    ),
+    couponUq: unique("uq_store_first_coupon_claim_coupon").on(table.couponId),
+  }),
+);
 
 /* ============================ متجر العملاء — الولاء والنقاط ============================ */
 

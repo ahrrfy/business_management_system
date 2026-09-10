@@ -692,6 +692,8 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_coupon_hash: { msg: "رمز الكوبون مستعمل مسبقاً (تطابق البصمة) — ولّد رمزاً مختلفاً." },
   uq_coupon_redemption_invoice: { msg: "لهذه الفاتورة كوبون مستخدَم مسبقاً — كوبون واحد لكل فاتورة." },
   uq_coupon_redemption_coupon_invoice: { msg: "هذا الكوبون مستخدَم مسبقاً على نفس الفاتورة (حماية من الازدواج)." },
+  uq_store_first_coupon_program_customer: { msg: "طلب هذا العميل كوبون الطلب الأول من هذا البرنامج مسبقاً." },
+  uq_store_first_coupon_claim_coupon: { msg: "هذا الكوبون مرتبط بطلب كوبون أول سابق ولا يمكن ربطه مرة أخرى." },
 
   // ── منصّة تعدّد الشركات (قاعدة التحكّم) ──
   uq_provision_active_code: { msg: "يوجد طلب توفير نشط أو شركة قائمة بنفس الرمز — اختر رمز شركة مختلفاً." },

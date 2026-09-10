@@ -2241,6 +2241,13 @@
 			"when": 1788052417000,
 			"tag": "0344_storefront_quote_request_official_quotation_link",
 			"breakpoints": true
+		},
+		{
+			"idx": 345,
+			"version": "5",
+			"when": 1788052418000,
+			"tag": "0345_storefront_first_order_coupon",
+			"breakpoints": true
 		}
 	]
 }

@@ -1,7 +1,8 @@
 import { randomBytes, createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { appErrorMessage } from "../../shared/errors";
 import {
   auditLogs,
   couponPrograms,
@@ -214,6 +215,7 @@ export const crmRouter = router({
         validTo: couponPrograms.validTo,
         perCouponLimit: couponPrograms.perCouponLimit,
         perCustomerLimit: couponPrograms.perCustomerLimit,
+        isFirstOrderSelfService: couponPrograms.isFirstOrderSelfService,
         codePrefix: couponPrograms.codePrefix,
         designJson: couponPrograms.designJson,
         createdAt: couponPrograms.createdAt,
@@ -252,10 +254,21 @@ export const crmRouter = router({
       validTo: ymd.nullish(),
       perCouponLimit: z.number().int().min(1).max(1000).default(1),
       perCustomerLimit: z.number().int().min(1).max(1000).default(1),
+      isFirstOrderSelfService: z.boolean().default(false),
       codePrefix: z.string().trim().min(1).max(12).default("CRM"),
       design: z.object({ title: z.string().max(80).optional(), subtitle: z.string().max(140).optional(), terms: z.string().max(500).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }).optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.validTo && input.validTo < input.validFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "نهاية الصلاحية أقدم من البداية" });
+      if (input.isFirstOrderSelfService && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر إنشاء برنامج كوبون الطلب الأول",
+            why: "هذا البرنامج يجب أن يسمح باستخدام واحد وكوبون واحد للعميل",
+            doThis: "اضبط حدي الاستخدام لكل كوبون ولكل عميل على 1 ثم احفظ البرنامج",
+          }),
+        });
+      }
       const branchId = ownBranch(ctx, input.branchId);
       const programId = await withTx(async (tx) => {
         const promotion = (await tx.select().from(promotions).where(eq(promotions.id, input.promotionId)).limit(1))[0];
@@ -272,6 +285,7 @@ export const crmRouter = router({
           validTo: input.validTo ? new Date(input.validTo) : null,
           perCouponLimit: input.perCouponLimit,
           perCustomerLimit: input.perCustomerLimit,
+          isFirstOrderSelfService: input.isFirstOrderSelfService,
           codePrefix: input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM",
           designJson: input.design ?? null,
           createdBy: ctx.user.id,
@@ -298,6 +312,32 @@ export const crmRouter = router({
             const campaign = (await tx.select().from(crmCampaigns).where(eq(crmCampaigns.id, program.campaignId)).limit(1))[0];
             if (!campaign || !["APPROVED", "SCHEDULED", "ACTIVE"].includes(campaign.status)) {
               throw new TRPCError({ code: "BAD_REQUEST", message: "اعتمد الحملة أولاً قبل تفعيل برنامج الكوبونات" });
+            }
+          }
+          if (program.isFirstOrderSelfService) {
+            const anotherFirstOrderProgram = (await tx.select({ id: couponPrograms.id })
+              .from(couponPrograms)
+              .where(and(
+                eq(couponPrograms.status, "ACTIVE"),
+                eq(couponPrograms.isFirstOrderSelfService, true),
+                ne(couponPrograms.id, input.programId),
+                program.branchId == null
+                  ? undefined
+                  : or(
+                      isNull(couponPrograms.branchId),
+                      eq(couponPrograms.branchId, program.branchId),
+                    ),
+              ))
+              .limit(1))[0];
+            if (anotherFirstOrderProgram) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                  why: "يوجد برنامج فعّال آخر يخدم الفرع نفسه أو يغطي كل الفروع",
+                  doThis: "أوقف البرنامج الحالي أولاً، ثم فعّل هذا البرنامج",
+                }),
+              });
             }
           }
         }
