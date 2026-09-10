@@ -11,6 +11,7 @@ import {
   products,
   storefrontQuoteRequestItems,
   storefrontQuoteRequests,
+  quotations,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type Tx } from "../db";
@@ -59,6 +60,11 @@ export interface StorefrontQuoteRequestTracking {
   companyName: string | null;
   governorate: string | null;
   contactPreference: StorefrontQuoteContactPreference;
+  /** مرجع العرض الرسمي فقط؛ لا تُكشف الأسعار أو البنود المسعّرة عبر التتبع. */
+  officialQuotation: {
+    quoteNumber: string;
+    validUntil: Date | null;
+  } | null;
   createdAt: Date;
   updatedAt: Date;
   items: Array<{
@@ -236,6 +242,9 @@ type QuoteRequestTrackingHeader = {
   companyName: string | null;
   governorate: string | null;
   contactPreference: StorefrontQuoteContactPreference;
+  officialQuotationId: number | null;
+  officialQuoteNumber: string | null;
+  officialQuoteValidUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -249,6 +258,9 @@ function quoteRequestTrackingHeaderSelection() {
     companyName: storefrontQuoteRequests.companyName,
     governorate: storefrontQuoteRequests.governorate,
     contactPreference: storefrontQuoteRequests.contactPreference,
+    officialQuotationId: storefrontQuoteRequests.officialQuotationId,
+    officialQuoteNumber: quotations.quoteNumber,
+    officialQuoteValidUntil: quotations.validUntil,
     createdAt: storefrontQuoteRequests.createdAt,
     updatedAt: storefrontQuoteRequests.updatedAt,
   };
@@ -274,6 +286,12 @@ async function buildStorefrontQuoteRequestTracking(
     companyName: request.companyName ?? null,
     governorate: request.governorate ?? null,
     contactPreference: request.contactPreference,
+    officialQuotation: request.officialQuotationId && request.officialQuoteNumber
+      ? {
+          quoteNumber: request.officialQuoteNumber,
+          validUntil: request.officialQuoteValidUntil,
+        }
+      : null,
     createdAt: request.createdAt,
     updatedAt: request.updatedAt,
     items: items.map((item) => ({
@@ -318,6 +336,7 @@ export async function trackStorefrontQuoteRequestForCustomer(
     await db
       .select(quoteRequestTrackingHeaderSelection())
       .from(storefrontQuoteRequests)
+      .leftJoin(quotations, eq(quotations.id, storefrontQuoteRequests.officialQuotationId))
       .where(
         and(
           eq(storefrontQuoteRequests.requestNumber, requestNumber.trim().toUpperCase()),
@@ -348,6 +367,7 @@ export async function trackStorefrontQuoteRequestByGuestToken(
         guestTrackingExpiresAt: storefrontQuoteRequests.guestTrackingExpiresAt,
       })
       .from(storefrontQuoteRequests)
+      .leftJoin(quotations, eq(quotations.id, storefrontQuoteRequests.officialQuotationId))
       .where(
         and(
           eq(storefrontQuoteRequests.guestTrackingPublicId, verified.publicId),

@@ -290,6 +290,17 @@ describe("storefront quote requests", () => {
       status: "QUOTED",
       officialQuotationId: official.quotationId,
     });
+    const ownerTracking = await trackStorefrontQuoteRequestForCustomer(
+      request.requestNumber,
+      source.customerId!,
+    );
+    expect(ownerTracking).toMatchObject({
+      officialQuotation: {
+        quoteNumber: official.quoteNumber,
+        validUntil: null,
+      },
+    });
+    expect(ownerTracking.officialQuotation).not.toHaveProperty("total");
     expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
     await expect(createQuotation({
       branchId: 1,

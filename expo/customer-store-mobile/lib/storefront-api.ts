@@ -223,6 +223,11 @@ export type StorefrontQuoteRequestTracking = {
   companyName: string | null;
   governorate: string | null;
   contactPreference: "PHONE" | "WHATSAPP";
+  /** مرجع العرض المرسل من الموظف فقط؛ لا تُحمّل الأسعار الحساسة في شاشة التتبع. */
+  officialQuotation: {
+    quoteNumber: string;
+    validUntil: string | null;
+  } | null;
   createdAt: string;
   updatedAt: string;
   items: Array<{

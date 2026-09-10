@@ -41,7 +41,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
 const QUOTE_REQUEST_STATUS_LABELS: Record<string, string> = {
   PENDING: "بانتظار مراجعة فريق المبيعات",
   CONTACTED: "بدأ التواصل معك",
-  QUOTED: "العرض الرسمي قيد المتابعة",
+  QUOTED: "صدر عرض رسمي",
   CLOSED: "اكتملت المتابعة",
   CANCELLED: "أُلغي طلب العرض",
 };
@@ -510,6 +510,16 @@ export default function OrdersScreen() {
             <Text style={styles.liveMeta}>
               لا يحجز هذا الطلب مخزوناً ولا يثبت سعراً قبل إصدار العرض الرسمي.
             </Text>
+            {quoteTracking.officialQuotation && (
+              <View style={styles.supportPanel}>
+                <Text style={styles.supportHint}>
+                  صدر العرض الرسمي رقم {quoteTracking.officialQuotation.quoteNumber}.
+                  {quoteTracking.officialQuotation.validUntil
+                    ? ` صالح حتى ${new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium" }).format(new Date(quoteTracking.officialQuotation.validUntil))}.`
+                    : " راجع وسيلة التواصل التي اخترتها لاستلامه."}
+                </Text>
+              </View>
+            )}
             <View style={styles.itemsList}>
               {quoteTracking.items.map((item, index) => (
                 <View key={`${item.productName}-${index}`} style={styles.itemRow}>
