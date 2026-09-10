@@ -850,7 +850,7 @@ export default function SalesInvoiceNew() {
         return;
       }
       case "return":
-        navigate("/sales-returns/new");
+        navigate("/returns?tab=sales");
         return;
     }
   }

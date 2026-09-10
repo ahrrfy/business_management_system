@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   AlertTriangle,
+  ArrowLeftRight,
   BookOpen,
   Building2,
   Clock,
@@ -32,7 +33,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ReturnComposer } from "@/components/returns/ReturnComposer";
-import PurchaseReturnsGovernance from "@/pages/PurchaseReturnsGovernance";
+import PurchaseReturns from "@/pages/PurchaseReturns";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { NoReceiptReturnDialog, type NoReceiptItem } from "@/components/returns/NoReceiptReturnDialog";
 import { ReturnsLedgerView } from "@/components/returns/ReturnsLedgerView";
@@ -50,6 +51,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { cn } from "@/lib/utils";
 
 export type ReturnsTabKey = "sales" | "print" | "delivery" | "purchases" | "forensic" | "ledger";
 
@@ -85,6 +87,7 @@ export default function ReturnsHub() {
   // ═════════════════════════════════════════════════════════════════════════
   const [universalBarcode, setUniversalBarcode] = useState("");
   const [isScanning, setIsScanning] = useState(false);
+  const [scannedItemBarcode, setScannedItemBarcode] = useState<string | null>(null);
 
   const handleUniversalScan = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -109,16 +112,25 @@ export default function ReturnsHub() {
           switchTab("purchases");
           notify.ok(`تم التعرف على مرتجع مشتريات: #${res.number}`);
         } else if (res.kind === "PRODUCT") {
+          if (activeTab === "sales" && selectedInvoiceId) {
+            setScannedItemBarcode(barcode);
+            notify.info(`تم توجيه باركود الصنف إلى الفاتورة المحددة`);
+          } else {
+            setForensicQuery(barcode);
+            setForensicMode("ITEM_BARCODE");
+            switchTab("forensic");
+            notify.info(`تم التعرف على باركود صنف — جاري التقصي الجنائي في الفواتير`);
+          }
+        }
+      } else {
+        if (activeTab === "sales" && selectedInvoiceId) {
+          setScannedItemBarcode(barcode);
+        } else {
           setForensicQuery(barcode);
           setForensicMode("ITEM_BARCODE");
           switchTab("forensic");
-          notify.info(`تم التعرف على باركود صنف — جاري التقصي الجنائي في الفواتير`);
+          notify.info(`رمز غير مباشر — تم تفعيل محرك التقصي الجنائي`);
         }
-      } else {
-        setForensicQuery(barcode);
-        setForensicMode("ITEM_BARCODE");
-        switchTab("forensic");
-        notify.info(`رمز غير مباشر — تم تفعيل محرك التقصي الجنائي`);
       }
     } catch {
       notify.err("تعذّر مسح الباركود");
@@ -335,7 +347,7 @@ export default function ReturnsHub() {
   const pendingCount = pendingRequestsQuery.data?.length ?? 0;
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-4 pb-12">
       {/* الترويسة الرئيسية */}
       <PageHeader
         title="بوابة المرتجعات المركزية"
@@ -343,109 +355,144 @@ export default function ReturnsHub() {
         backLabel="المبيعات"
       />
 
-      {/* شريط المسح الكوني الذكي والمؤشرات */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* حقل المسح الكوني للباركود */}
-        <Card className="lg:col-span-8 border-primary/30 bg-card/60 shadow-sm">
-          <CardContent className="p-4">
-            <form onSubmit={handleUniversalScan} className="flex gap-2">
-              <div className="relative flex-1">
-                <ScanLine className="absolute right-3 top-3 size-4 text-muted-foreground" aria-hidden />
-                <Input
-                  value={universalBarcode}
-                  onChange={(e) => setUniversalBarcode(e.target.value)}
-                  placeholder="امسح أي باركود: فاتورة INV، صنف، طرد توصيل DLV، أمر مطبعة WO، مرتجع PR..."
-                  className="pr-9 font-mono"
-                  autoFocus
-                />
-              </div>
-              <Button type="submit" disabled={isScanning || !universalBarcode.trim()}>
-                {isScanning ? ACTION_LABELS.loading : "التقاط وتوجيه"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* المؤشرات اللحظية */}
-        <div className="lg:col-span-4 grid grid-cols-2 gap-2">
-          <Card className="p-3 bg-muted/30 flex flex-col justify-center items-center text-center">
-            <div className="text-xs text-muted-foreground font-semibold">طلبات معلّقة للاعتماد</div>
-            <div className="text-xl font-bold text-stock-low">{pendingCount}</div>
-          </Card>
-          <Card className="p-3 bg-muted/30 flex flex-col justify-center items-center text-center">
-            <div className="text-xs text-muted-foreground font-semibold">المسار النشط</div>
-            <div className="text-sm font-bold text-primary">
-              {activeTab === "sales" && "مبيعات التجزئة"}
-              {activeTab === "print" && "المطبعة والاستنساخ"}
-              {activeTab === "delivery" && "التوصيل والاستقبال"}
-              {activeTab === "purchases" && "المشتريات والموردين"}
-              {activeTab === "forensic" && "التقصي الجنائي"}
-              {activeTab === "ledger" && "سجل قيود المرتجعات"}
+      {/* شريط المسح الكوني للباركود والتنبيهات المدمجة */}
+      <Card className="p-2.5 shadow-2xs">
+        <CardContent className="p-0 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <form onSubmit={handleUniversalScan} className="flex-1 flex items-center gap-2">
+            <div className="relative flex-1">
+              <ScanLine className="absolute right-3 top-2.5 size-4 text-muted-foreground" aria-hidden />
+              <Input
+                value={universalBarcode}
+                onChange={(e) => setUniversalBarcode(e.target.value)}
+                placeholder="امسح أي باركود: فاتورة INV، صنف، طرد توصيل DLV، أمر مطبعة WO..."
+                className="pr-9 h-9 font-mono text-xs"
+                autoFocus
+              />
             </div>
-          </Card>
-        </div>
-      </div>
+            <Button type="submit" size="sm" className="h-9 gap-1.5 shrink-0" disabled={isScanning || !universalBarcode.trim()}>
+              {isScanning ? ACTION_LABELS.loading : "مسح وتوجيه"}
+            </Button>
+          </form>
 
-      {/* شريط التبويبات السيادية الموحدة */}
-      <div className="flex flex-wrap gap-2 border-b pb-3">
-        <Button
-          variant={activeTab === "sales" ? "default" : "outline"}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setNoReceiptItem(null);
+              setNoReceiptOpen(true);
+            }}
+            className="h-9 shrink-0 gap-1.5 border-dashed border-primary/50 bg-primary/5 text-primary hover:bg-primary/10 font-bold text-xs shadow-2xs"
+          >
+            <ArrowLeftRight className="size-3.5" aria-hidden />
+            <span>سلة الإرجاع والاستبدال (بدون فاتورة)</span>
+          </Button>
+
+          {pendingCount > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => switchTab("sales")}
+              className="h-9 shrink-0 gap-1.5 border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30 text-stock-low hover:bg-[var(--sem-warn-bg)]/50 font-bold text-xs"
+            >
+              <Clock className="size-3.5" aria-hidden />
+              <span>{pendingCount} طلب بانتظار الاعتماد</span>
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* شريط التبويبات المقطعي الرشيق الموحد */}
+      <div className="bg-muted/40 p-1 rounded-xl border flex flex-wrap lg:flex-nowrap gap-1 items-center text-xs font-semibold">
+        <button
+          type="button"
           onClick={() => switchTab("sales")}
-          className="gap-2 font-bold"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "sales"
+              ? "bg-background text-foreground shadow-2xs border"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+          )}
         >
-          <Receipt className="size-4" aria-hidden />
-          مرتجعات التجزئة
+          <Receipt className="size-4 shrink-0" aria-hidden />
+          <span>مرتجعات التجزئة</span>
           {pendingCount > 0 && (
             <Badge variant="destructive" className="mr-1 text-[10px] px-1.5 py-0">
               {pendingCount}
             </Badge>
           )}
-        </Button>
+        </button>
 
-        <Button
-          variant={activeTab === "print" ? "default" : "outline"}
+        <button
+          type="button"
           onClick={() => switchTab("print")}
-          className="gap-2 font-bold"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "print"
+              ? "bg-background text-foreground shadow-2xs border"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+          )}
         >
-          <Printer className="size-4" aria-hidden />
-          المطبعة والاستنساخ
-        </Button>
+          <Printer className="size-4 shrink-0" aria-hidden />
+          <span>المطبعة والاستنساخ</span>
+        </button>
 
-        <Button
-          variant={activeTab === "delivery" ? "default" : "outline"}
+        <button
+          type="button"
           onClick={() => switchTab("delivery")}
-          className="gap-2 font-bold"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "delivery"
+              ? "bg-background text-foreground shadow-2xs border"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+          )}
         >
-          <Truck className="size-4" aria-hidden />
-          التوصيل والاستقبال
-        </Button>
+          <Truck className="size-4 shrink-0" aria-hidden />
+          <span>التوصيل والاستقبال</span>
+        </button>
 
-        <Button
-          variant={activeTab === "purchases" ? "default" : "outline"}
+        <button
+          type="button"
           onClick={() => switchTab("purchases")}
-          className="gap-2 font-bold"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "purchases"
+              ? "bg-background text-foreground shadow-2xs border"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+          )}
         >
-          <Building2 className="size-4" aria-hidden />
-          مشتريات الموردين
-        </Button>
+          <Building2 className="size-4 shrink-0" aria-hidden />
+          <span>مشتريات الموردين</span>
+        </button>
 
-        <Button
-          variant={activeTab === "forensic" ? "default" : "outline"}
+        <button
+          type="button"
           onClick={() => switchTab("forensic")}
-          className="gap-2 font-bold border-[var(--sem-warn)]/40 text-stock-low"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "forensic"
+              ? "bg-background text-stock-low shadow-2xs border border-[var(--sem-warn)]/40"
+              : "text-muted-foreground hover:text-stock-low hover:bg-background/50"
+          )}
         >
-          <FileSearch className="size-4" aria-hidden />
-          التحري الجنائي (فواتير مفقودة)
-        </Button>
+          <FileSearch className="size-4 shrink-0" aria-hidden />
+          <span>التحري الجنائي (مفقودة)</span>
+        </button>
 
-        <Button
-          variant={activeTab === "ledger" ? "default" : "outline"}
+        <button
+          type="button"
           onClick={() => switchTab("ledger")}
-          className="gap-2 font-bold"
+          className={cn(
+            "flex-1 min-w-[130px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg transition-all text-xs font-bold",
+            activeTab === "ledger"
+              ? "bg-background text-foreground shadow-2xs border"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/50"
+          )}
         >
-          <BookOpen className="size-4" aria-hidden />
-          سجل المرتجعات والتدقيق
-        </Button>
+          <BookOpen className="size-4 shrink-0" aria-hidden />
+          <span>سجل القيود والتدقيق</span>
+        </button>
       </div>
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
@@ -504,17 +551,19 @@ export default function ReturnsHub() {
                   ابحث برقم الفاتورة أو اسم الزبون لتسجيل مرتجع جديد
                 </CardDescription>
               </CardHeader>
-              <CardContent className="p-4 pt-2 space-y-3">
-                <Input
-                  value={salesSearch}
-                  onChange={(e) => setSalesSearch(e.target.value)}
-                  placeholder="بحث (رقم الفاتورة / اسم العميل)..."
-                />
-
+              <CardContent className="p-4 pt-1">
                 <DataTable
                   columns={salesInvoiceColumns}
                   data={salesInvoicesQuery.data?.rows ?? []}
                   loading={salesInvoicesQuery.isLoading}
+                  searchable={true}
+                  searchPlaceholder="بحث برقم الفاتورة أو اسم العميل..."
+                  serverSearch={{
+                    value: salesSearch,
+                    onChange: setSalesSearch,
+                  }}
+                  pageSize={20}
+                  embedded
                 />
               </CardContent>
             </Card>
@@ -526,8 +575,11 @@ export default function ReturnsHub() {
               <ReturnComposer
                 invoiceId={selectedInvoiceId}
                 approvingRequestId={approvingRequestId}
+                scannedBarcode={scannedItemBarcode}
+                onBarcodeHandled={() => setScannedItemBarcode(null)}
                 onDone={() => {
                   setSelectedInvoiceId(null);
+                  setScannedItemBarcode(null);
                   utils.sales.listPage.invalidate();
                   utils.returns.requests.invalidate();
                 }}
@@ -550,19 +602,12 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {activeTab === "print" && (
         <div className="space-y-4">
-          <Card className="border-primary/20 bg-primary/5">
-            <CardContent className="p-4 text-xs space-y-2">
-              <div className="font-bold text-sm flex items-center gap-2 text-primary">
-                <ShieldCheck className="size-4" aria-hidden />
-                حوكمة مرتجعات وأوامر الشغل الطباعية
-              </div>
-              <p className="text-muted-foreground">
-                المواد الخام (أوراق غير مطبوعة، باجات، دروع فارغة) تُعاد للمخزن.
-                أجور التصميم والطباعة والتجليد هدر إنتاجي يُسجل في أمر الشغل؛ ويمكن إعادة الطباعة (Rework)
-                أو عكس تسليم الطلب من تفاصيل أمر الشغل مباشرةً.
-              </p>
-            </CardContent>
-          </Card>
+          <div className="p-3 text-xs rounded-xl bg-primary/5 border border-primary/20 text-muted-foreground flex items-center gap-2.5">
+            <ShieldCheck className="size-4 text-primary shrink-0" aria-hidden />
+            <span>
+              <strong>حوكمة مرتجعات أوامر الشغل:</strong> المواد الخام تُعاد للمخزن، وأجور التصميم والطباعة هدر إنتاجي يُوثق في أمر الشغل مباشرة مع إمكانية عكس التسليم أو إعادة التشغيل.
+            </span>
+          </div>
 
           <Card>
             <CardHeader className="p-4 pb-2">
@@ -686,7 +731,7 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {activeTab === "purchases" && (
         <div className="space-y-4">
-          <PurchaseReturnsGovernance />
+          <PurchaseReturns embedded />
         </div>
       )}
 
@@ -695,63 +740,70 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {activeTab === "forensic" && (
         <div className="space-y-6">
-          {/* بطاقة التوجيه الأمني */}
-          <Card className="border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]/20">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-sm font-bold flex items-center gap-2 text-stock-low">
-                <ShieldAlert className="size-4" aria-hidden />
-                محرك التقصي الجنائي وبروتوكول الإرجاع بدون فاتورة
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-1 text-xs space-y-2 text-muted-foreground">
-              <p>
-                استخدم العدسات الأربع للعثور على الفاتورة الأصلية. في حال تعذر العثور التام: يُقفل الإرجاع
-                على <strong>أدنى سعر بيع تاريخي</strong> مع <strong>منع صرف النقد كاش نهائياً</strong>،
-                ويُستعاض عنه بإصدار قسيمة رصيد متجر (Store Credit) أو استبدال فوري بموافقة المدير.
-              </p>
-            </CardContent>
-          </Card>
+          {/* شريط التوجيه الأمني */}
+          <div className="p-3 text-xs rounded-xl border border-[var(--sem-warn)]/30 bg-[var(--sem-warn-bg)]/20 text-muted-foreground flex items-start gap-2.5">
+            <ShieldAlert className="size-4 text-stock-low shrink-0 mt-0.5" aria-hidden />
+            <div>
+              <strong className="text-stock-low">محرك التقصي الجنائي وبروتوكول عدم الفاتورة:</strong> استخدم العدسات الأربع للعثور على الفاتورة الأصلية. في حال تعذر العثور التام: يُقفل الإرجاع على <strong>أدنى سعر بيع تاريخي</strong> مع <strong>منع صرف النقد كاش نهائياً</strong> والاستعاضة عنه برصيد متجر أو استبدال فوري بموافقة المدير.
+            </div>
+          </div>
 
           {/* محدد العدسة والبحث */}
           <Card>
             <CardContent className="p-4 space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
-                <Button
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 bg-muted/40 rounded-xl border">
+                <button
                   type="button"
-                  variant={forensicMode === "ITEM_BARCODE" ? "default" : "outline"}
                   onClick={() => setForensicMode("ITEM_BARCODE")}
-                  className="text-xs justify-start gap-2"
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all",
+                    forensicMode === "ITEM_BARCODE"
+                      ? "bg-background text-primary shadow-2xs border"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
                 >
-                  <ScanLine className="size-4" aria-hidden />
-                  عدسة باركود الصنف
-                </Button>
-                <Button
+                  <ScanLine className="size-3.5 shrink-0" aria-hidden />
+                  <span>باركود الصنف</span>
+                </button>
+                <button
                   type="button"
-                  variant={forensicMode === "CARD_LAST4" ? "default" : "outline"}
                   onClick={() => setForensicMode("CARD_LAST4")}
-                  className="text-xs justify-start gap-2"
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all",
+                    forensicMode === "CARD_LAST4"
+                      ? "bg-background text-primary shadow-2xs border"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
                 >
-                  <CreditCard className="size-4" aria-hidden />
-                  عدسة البطاقة والدفع
-                </Button>
-                <Button
+                  <CreditCard className="size-3.5 shrink-0" aria-hidden />
+                  <span>البطاقة والدفع</span>
+                </button>
+                <button
                   type="button"
-                  variant={forensicMode === "CUSTOMER_PHONE" ? "default" : "outline"}
                   onClick={() => setForensicMode("CUSTOMER_PHONE")}
-                  className="text-xs justify-start gap-2"
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all",
+                    forensicMode === "CUSTOMER_PHONE"
+                      ? "bg-background text-primary shadow-2xs border"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
                 >
-                  <UserCheck className="size-4" aria-hidden />
-                  عدسة هاتف الزبون
-                </Button>
-                <Button
+                  <UserCheck className="size-3.5 shrink-0" aria-hidden />
+                  <span>هاتف العميل</span>
+                </button>
+                <button
                   type="button"
-                  variant={forensicMode === "DATE_SHIFT" ? "default" : "outline"}
                   onClick={() => setForensicMode("DATE_SHIFT")}
-                  className="text-xs justify-start gap-2"
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all",
+                    forensicMode === "DATE_SHIFT"
+                      ? "bg-background text-primary shadow-2xs border"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
                 >
-                  <Clock className="size-4" aria-hidden />
-                  عدسة الوردية والتاريخ
-                </Button>
+                  <Clock className="size-3.5 shrink-0" aria-hidden />
+                  <span>الوردية والتاريخ</span>
+                </button>
               </div>
 
               <div className="flex gap-2">
@@ -858,6 +910,13 @@ export default function ReturnsHub() {
                 columns={forensicColumns}
                 data={forensicTraceQuery.data?.results ?? []}
                 loading={forensicTraceQuery.isLoading}
+                searchable={false}
+                pageSize={20}
+                emptyText={
+                  debouncedForensicQuery.length >= 2
+                    ? "لا توجد فواتير مطابقة لبيانات التحري في النطاق الزمني المحدد"
+                    : "امسح باركود الصنف أو اكتب بيانات العميل/البطاقة لبدء التحري"
+                }
               />
             </CardContent>
           </Card>
