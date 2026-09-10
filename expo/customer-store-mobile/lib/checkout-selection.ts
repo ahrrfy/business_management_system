@@ -24,6 +24,17 @@ export function checkoutSelectionFingerprint(lines: readonly CartLine[]) {
 }
 
 /**
+ * يربط عرض السعر بالسلة التي حُسب لها تحديداً. لا نعيد استعمال عرضٍ قديم بعد
+ * تغيير الكمية أو البديل أو التخصيص عند الرجوع من السلة إلى صفحة الدفع.
+ */
+export function checkoutQuoteFingerprint(lines: readonly CartLine[]) {
+  return JSON.stringify({
+    lines: checkoutRequestLines(lines),
+    selections: checkoutSelectionFingerprint(lines),
+  });
+}
+
+/**
  * قناة توافق مؤقتة مع عقد createOrder الحالي: يحفظ الموظف وصف الاختيار في ملاحظات الطلب.
  * لا تُستعمل للتسعير أبداً، وتستبدل بحقل structured selectionDetails عند إضافته خادمياً.
  */

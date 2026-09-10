@@ -23,7 +23,13 @@ import {
   requestIdForFingerprint,
 } from "@/lib/checkout-attempt";
 import { useCart } from "@/lib/cart-context";
-import { checkoutRequestLines, checkoutSelectionFingerprint, checkoutSelectionIssue, checkoutSelectionNotes } from "@/lib/checkout-selection";
+import {
+  checkoutQuoteFingerprint,
+  checkoutRequestLines,
+  checkoutSelectionFingerprint,
+  checkoutSelectionIssue,
+  checkoutSelectionNotes,
+} from "@/lib/checkout-selection";
 import { selectionDescription } from "@/lib/product-selection";
 import {
   classifyNetworkError,
@@ -54,6 +60,7 @@ export default function CheckoutScreen() {
   const [address, setAddress] = useState("");
   const [governorate, setGovernorate] = useState("baghdad");
   const [quote, setQuote] = useState<StorefrontOrderQuote | null>(null);
+  const [quoteCartFingerprint, setQuoteCartFingerprint] = useState<string | null>(null);
   const [couponDraft, setCouponDraft] = useState("");
   const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(
     null,
@@ -77,6 +84,9 @@ export default function CheckoutScreen() {
   const governorateName =
     governorates.find((item) => item.id === governorate)?.name ?? "بغداد";
   const requestLines = useMemo(() => checkoutRequestLines(lines), [lines]);
+  const cartQuoteFingerprint = checkoutQuoteFingerprint(lines);
+  const activeQuote = quoteCartFingerprint === cartQuoteFingerprint ? quote : null;
+  const quoteNeedsRefresh = Boolean(quote && !activeQuote);
   const customerSessionToken = verifiedSession && normalizeIraqiPhone(phoneLocal) === verifiedSession.customer.phone
     ? verifiedSession.token
     : undefined;
@@ -114,6 +124,7 @@ export default function CheckoutScreen() {
         customerSessionToken,
       );
       setQuote(nextQuote);
+      setQuoteCartFingerprint(cartQuoteFingerprint);
       setCouponFeedback(
         nextQuote.pricingBenefitType === "COUPON"
           ? `تم تطبيق ${nextQuote.couponProgramName ?? "الكوبون"} وخصم ${formatIqd(nextQuote.couponDiscount)}`
@@ -150,7 +161,7 @@ export default function CheckoutScreen() {
     setQuote(null);
   };
   const submitVerifiedOrder = async (turnstileToken: string) => {
-    if (!quote || submitting || !validate()) return;
+    if (!activeQuote || submitting || !validate()) return;
     setShowVerification(false);
     setSubmitting(true);
     setError(null);
@@ -162,10 +173,10 @@ export default function CheckoutScreen() {
         phone: customerPhone,
         governorate,
         address: address.trim(),
-        couponCode: quote.couponCode,
-        total: quote.total,
+        couponCode: activeQuote.couponCode,
+        total: activeQuote.total,
         selectionDetails: checkoutSelectionFingerprint(lines),
-        lines: quote.lines.map((line) => [
+        lines: activeQuote.lines.map((line) => [
           line.productUnitId,
           line.quantity,
           line.unitPrice,
@@ -173,18 +184,18 @@ export default function CheckoutScreen() {
       });
       const clientRequestId = await requestIdForFingerprint(fingerprint);
       const result = await createStorefrontOrder({
-        couponCode: quote.couponCode ?? undefined,
+        couponCode: activeQuote.couponCode ?? undefined,
         customerName: name.trim(),
         customerPhone,
         governorate,
         addressText: address.trim(),
         notes: checkoutSelectionNotes(lines),
-        lines: quote.lines.map((line) => ({
+        lines: activeQuote.lines.map((line) => ({
           productUnitId: line.productUnitId,
           quantity: line.quantity,
           expectedUnitPrice: line.unitPrice,
         })),
-        expectedGrandTotal: quote.total,
+        expectedGrandTotal: activeQuote.total,
         clientRequestId,
         turnstileToken,
         customerSessionToken,
@@ -254,7 +265,7 @@ export default function CheckoutScreen() {
               <Text style={styles.stepText}>البيانات</Text>
             </View>
             <View style={styles.stepLine} />
-            <View style={[styles.step, quote && styles.stepActive]}>
+            <View style={[styles.step, activeQuote && styles.stepActive]}>
               <Text style={styles.stepNumber}>2</Text>
               <Text style={styles.stepText}>المراجعة</Text>
             </View>
@@ -274,8 +285,8 @@ export default function CheckoutScreen() {
                 {formatLatinNumber(itemCount)} منتجات في السلة
               </Text>
             </View>
-            {quote && (
-              <Text style={styles.total}>{formatIqd(quote.total)}</Text>
+            {activeQuote && (
+              <Text style={styles.total}>{formatIqd(activeQuote.total)}</Text>
             )}
           </View>
           <View style={styles.selectionReview}>
@@ -397,26 +408,34 @@ export default function CheckoutScreen() {
               {couponFeedback}
             </Text>
           )}
-          {quote && (
+          {quoteNeedsRefresh && (
+            <View accessibilityRole="alert" style={styles.quoteRefreshNotice}>
+              <MaterialIcons color="#8B5A44" name="refresh" size={19} />
+              <Text style={styles.quoteRefreshText}>
+                تغيّرت السلة بعد المراجعة؛ حدّث السعر النهائي قبل إرسال الطلب.
+              </Text>
+            </View>
+          )}
+          {activeQuote && (
             <View style={styles.quoteCard}>
               <Text style={styles.quoteTitle}>مراجعة السعر النهائي</Text>
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteValue}>
-                  {formatIqd(quote.retailSubtotal)}
+                  {formatIqd(activeQuote.retailSubtotal)}
                 </Text>
                 <Text style={styles.quoteLabel}>المنتجات قبل المنفعة</Text>
               </View>
-              {Number(quote.pricingBenefitDiscount) > 0 && (
+              {Number(activeQuote.pricingBenefitDiscount) > 0 && (
                 <View style={styles.quoteRow}>
                   <Text style={styles.discountValue}>
-                    - {formatIqd(quote.pricingBenefitDiscount)}
+                    - {formatIqd(activeQuote.pricingBenefitDiscount)}
                   </Text>
                   <Text style={styles.quoteLabel}>
-                    {quote.pricingBenefitLabel ?? "المنفعة الأفضل لك"}
+                    {activeQuote.pricingBenefitLabel ?? "المنفعة الأفضل لك"}
                   </Text>
                 </View>
               )}
-              {quote.wholesaleProgress.map((progress) => (
+              {activeQuote.wholesaleProgress.map((progress) => (
                 <View key={progress.productId} style={styles.wholesaleProgress}>
                   <MaterialIcons color="#0C5A4B" name="inventory-2" size={19} />
                   <View style={styles.wholesaleProgressCopy}>
@@ -431,30 +450,30 @@ export default function CheckoutScreen() {
               ))}
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteValue}>
-                  {formatIqd(quote.deliveryFee)}
+                  {formatIqd(activeQuote.deliveryFee)}
                 </Text>
                 <Text style={styles.quoteLabel}>
                   التوصيل إلى {governorateName}
                 </Text>
               </View>
-              {quote.deliveryFree ? (
+              {activeQuote.deliveryFree ? (
                 <View style={styles.freeDeliveryRow}>
                   <Text style={styles.freeDeliveryValue}>
-                    وفّرت {formatIqd(quote.deliveryWaivedAmount ?? "0")}
+                    وفّرت {formatIqd(activeQuote.deliveryWaivedAmount ?? "0")}
                   </Text>
                   <Text style={styles.freeDeliveryLabel}>تم تطبيق التوصيل المجاني</Text>
                 </View>
-              ) : Number(quote.freeShippingRemaining ?? "0") > 0 ? (
+              ) : Number(activeQuote.freeShippingRemaining ?? "0") > 0 ? (
                 <View style={styles.freeDeliveryRow}>
                   <Text style={styles.freeDeliveryValue}>
-                    أضف {formatIqd(quote.freeShippingRemaining ?? "0")}
+                    أضف {formatIqd(activeQuote.freeShippingRemaining ?? "0")}
                   </Text>
                   <Text style={styles.freeDeliveryLabel}>للوصول إلى التوصيل المجاني</Text>
                 </View>
               ) : null}
               <View style={styles.quoteDivider} />
               <View style={styles.quoteRow}>
-                <Text style={styles.finalValue}>{formatIqd(quote.total)}</Text>
+                <Text style={styles.finalValue}>{formatIqd(activeQuote.total)}</Text>
                 <Text style={styles.finalLabel}>الإجمالي النهائي</Text>
               </View>
               <Text style={styles.quoteNote}>
@@ -483,19 +502,19 @@ export default function CheckoutScreen() {
           )}
           <TouchableOpacity
             accessibilityLabel={
-              quote ? "إرسال الطلب للمراجعة" : "مراجعة السعر النهائي"
+              activeQuote ? "إرسال الطلب للمراجعة" : "مراجعة السعر النهائي"
             }
             accessibilityRole="button"
             accessibilityState={{ disabled: submitting, busy: submitting }}
             activeOpacity={0.88}
             disabled={submitting}
-            onPress={quote ? () => setShowVerification(true) : prepare}
+            onPress={activeQuote ? () => setShowVerification(true) : prepare}
             style={[styles.submit, submitting && styles.submitDisabled]}
           >
             <Text style={styles.submitText}>
               {submitting
                 ? "جار تحديث الطلب…"
-                : quote
+                : activeQuote
                 ? "إرسال الطلب للمراجعة"
                 : "مراجعة السعر النهائي"}
             </Text>
@@ -504,7 +523,7 @@ export default function CheckoutScreen() {
             ) : (
               <MaterialIcons
                 color="#FFFFFF"
-                name={quote ? "lock" : "arrow-back"}
+                name={activeQuote ? "lock" : "arrow-back"}
                 size={19}
               />
             )}
@@ -728,6 +747,25 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   line: { backgroundColor: "#EDF0ED", height: 1 },
+  quoteRefreshNotice: {
+    alignItems: "flex-start",
+    backgroundColor: "#FFF7E8",
+    borderColor: "#E9D5A8",
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row-reverse",
+    gap: 8,
+    marginTop: 14,
+    padding: 12,
+  },
+  quoteRefreshText: {
+    color: "#795A22",
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "800",
+    lineHeight: 18,
+    textAlign: "right",
+  },
   quoteCard: {
     backgroundColor: "#FFFFFF",
     borderColor: "#DCE8E1",
