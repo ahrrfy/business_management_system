@@ -489,16 +489,41 @@ export default function POS() {
       const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === currentRow.productUnitId);
       if (i >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
+        const updated = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
+        next.splice(i, 1);
+        next.unshift(updated);
         return next;
       }
-      return [...prev, { row: currentRow, qty: 1 }];
+      return [{ row: currentRow, qty: 1 }, ...prev];
     });
     setSelId(currentRow.productUnitId);
     // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
     setAddTick((t) => t + 1);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
+  }
+
+  function changeItemUnit(oldUnitId: number, newRow: PosRow) {
+    if (receipt) setReceipt(null);
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
+    setCart((raw) => {
+      const prev = resetCouponItems(raw);
+      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === oldUnitId);
+      if (i < 0) return prev;
+      const target = prev[i];
+      const dupIdx = prev.findIndex((c, idx) => idx !== i && !c.digital && c.row.productUnitId === currentRow.productUnitId);
+      if (dupIdx >= 0) {
+        const merged = { ...prev[dupIdx], qty: prev[dupIdx].qty + target.qty, row: currentRow };
+        const next = prev.filter((_, idx) => idx !== i && idx !== dupIdx);
+        next.unshift(merged);
+        return next;
+      }
+      const next = [...prev];
+      next[i] = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
+      return next;
+    });
+    setSelId(currentRow.productUnitId);
   }
 
   function changeQty(id: number, qty: number) {
@@ -1643,6 +1668,7 @@ export default function POS() {
           cart={cart} total={total}
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
+          onUnitChange={changeItemUnit}
           numMode={activeTab.numMode} setNumMode={setNumMode}
           customerId={activeTab.customerId}
           selectedCustomer={selectedCustomer}

@@ -172,11 +172,38 @@ export function PaymentPanel({
             </span>
           )
         )}
-        {couponCode && (
+        {couponCode ? (
           <span className="inline-flex items-center gap-1.5 rounded-md border border-money-positive/40 bg-money-positive/10 px-2 py-0.5 text-[11px] font-bold text-money-positive">
             <Ticket aria-hidden className="size-3" /> {couponLabel ?? couponCode}
-            <button type="button" onClick={clearCoupon} className="font-semibold underline">إزالة</button>
+            <button type="button" onClick={clearCoupon} className="font-semibold underline text-destructive hover:text-destructive/80">إزالة</button>
           </span>
+        ) : (
+          <div className="inline-flex items-center gap-1 rounded-md border border-dashed border-primary/40 bg-card px-2 py-0.5 text-foreground transition-colors hover:border-primary">
+            <Ticket aria-hidden className="size-3 text-primary" />
+            <input
+              type="text"
+              value={couponInput}
+              onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  applyCoupon();
+                }
+              }}
+              placeholder="كود الكوبون"
+              className="w-20 bg-transparent text-xs font-bold uppercase outline-none placeholder:text-muted-foreground/60"
+              dir="ltr"
+              disabled={couponPending || cartEmpty}
+            />
+            <button
+              type="button"
+              disabled={couponPending || !couponInput.trim() || cartEmpty}
+              onClick={applyCoupon}
+              className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {couponPending ? "…" : "تطبيق"}
+            </button>
+          </div>
         )}
 
         {/* ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر: بلاغ المالك «الخصم غير ظاهر». الحقلُ ظاهرٌ
