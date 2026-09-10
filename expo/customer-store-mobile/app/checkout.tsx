@@ -437,6 +437,21 @@ export default function CheckoutScreen() {
                   التوصيل إلى {governorateName}
                 </Text>
               </View>
+              {quote.deliveryFree ? (
+                <View style={styles.freeDeliveryRow}>
+                  <Text style={styles.freeDeliveryValue}>
+                    وفّرت {formatIqd(quote.deliveryWaivedAmount ?? "0")}
+                  </Text>
+                  <Text style={styles.freeDeliveryLabel}>تم تطبيق التوصيل المجاني</Text>
+                </View>
+              ) : Number(quote.freeShippingRemaining ?? "0") > 0 ? (
+                <View style={styles.freeDeliveryRow}>
+                  <Text style={styles.freeDeliveryValue}>
+                    أضف {formatIqd(quote.freeShippingRemaining ?? "0")}
+                  </Text>
+                  <Text style={styles.freeDeliveryLabel}>للوصول إلى التوصيل المجاني</Text>
+                </View>
+              ) : null}
               <View style={styles.quoteDivider} />
               <View style={styles.quoteRow}>
                 <Text style={styles.finalValue}>{formatIqd(quote.total)}</Text>
@@ -676,6 +691,18 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   couponFeedbackApplied: { color: "#0C5A4B" },
+  freeDeliveryRow: {
+    alignItems: "center",
+    backgroundColor: "#EAF7F0",
+    borderRadius: 10,
+    flexDirection: "row-reverse",
+    justifyContent: "space-between",
+    marginTop: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  freeDeliveryLabel: { color: "#346653", fontSize: 11, fontWeight: "800", textAlign: "right" },
+  freeDeliveryValue: { color: "#0C5A4B", fontSize: 11, fontWeight: "900", textAlign: "left" },
   input: { color: "#20372F", fontSize: 14, height: 53, paddingHorizontal: 14 },
   address: { height: 90, paddingTop: 13, textAlignVertical: "top" },
   phoneHint: {

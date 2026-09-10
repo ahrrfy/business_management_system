@@ -682,6 +682,10 @@ export interface OnlineOrderQuoteResult {
   deliveryFee: string;
   deliveryFree: boolean;
   deliveryWaivedAmount: string;
+  /** العتبة التي فعّلتها الإدارة الآن؛ null يعني أن حافز التوصيل المجاني غير مفعّل. */
+  freeShippingThreshold: string | null;
+  /** ما ينقص من قيمة المنتجات لبلوغ العتبة؛ null عندما لا تكون هناك عتبة مفعّلة. */
+  freeShippingRemaining: string | null;
   total: string;
 }
 
@@ -1058,24 +1062,29 @@ async function totalOnlineOrderQuote(
     | "deliveryFee"
     | "deliveryFree"
     | "deliveryWaivedAmount"
+    | "freeShippingThreshold"
+    | "freeShippingRemaining"
     | "total"
   >
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
   const actualDeliveryFee = await resolveDeliveryFee(tx, governorate);
   let customerDeliveryFee = actualDeliveryFee;
-  const freeThreshold = freeShippingThreshold
+  const configuredThreshold = freeShippingThreshold
     ? money(freeShippingThreshold)
     : null;
-  const deliveryFree = Boolean(
-    freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold),
-  );
+  const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
+  const deliveryFree = Boolean(freeThreshold && subtotal.gte(freeThreshold));
   if (deliveryFree) customerDeliveryFee = round2(money(0));
   return {
     subtotal: subtotal.toFixed(2),
     deliveryFee: customerDeliveryFee.toFixed(2),
     deliveryFree,
     deliveryWaivedAmount: deliveryFree ? actualDeliveryFee.toFixed(2) : "0.00",
+    freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
+    freeShippingRemaining: freeThreshold
+      ? (subtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(subtotal)).toFixed(2)
+      : null,
     total: round2(subtotal.plus(customerDeliveryFee)).toFixed(2),
   };
 }
