@@ -34,6 +34,16 @@ const esc = (s: unknown): string =>
 const htmlLines = (s: unknown): string =>
   esc(s).replace(/\r\n?|\n/g, "<br>");
 
+export function resolveQrUrl(payload: string): string {
+  if (!payload) return "";
+  if (payload.startsWith("http://") || payload.startsWith("https://")) return payload;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  if (origin) {
+    return `${origin}/verify?payload=${encodeURIComponent(payload)}`;
+  }
+  return payload;
+}
+
 export interface TextMeasureLike {
   measureText(text: string): { width: number };
 }
@@ -158,7 +168,7 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   let barcodeSection = "";
   if (doc.barcodeSet) {
     const [qrSvg, bc128Result] = await Promise.all([
-      qrCodeSvg(doc.barcodeSet.qrPayload, { size: 140, margin: 1 }),
+      qrCodeSvg(resolveQrUrl(doc.barcodeSet.qrPayload), { size: 140, margin: 1 }),
       Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 2, height: 48, showText: true })),
     ]);
     const labelHtml = doc.barcodeSet.displayLabel
@@ -375,7 +385,7 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
 
     // QR — يُحمَّل كـ PNG data URL ويُرسم على Canvas
     try {
-      const qrUrl = await qrCodeDataUrl(doc.barcodeSet.qrPayload, { size: QR_SIZE });
+      const qrUrl = await qrCodeDataUrl(resolveQrUrl(doc.barcodeSet.qrPayload), { size: QR_SIZE });
       await drawImage(ctx, qrUrl, (widthPx - QR_SIZE) / 2, y, QR_SIZE, QR_SIZE);
     } catch { /* تدهور سلس */ }
     y += QR_SIZE + 6;

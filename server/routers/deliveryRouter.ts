@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { z } from "zod";
-import { deliveryOutbox } from "../../drizzle/schema";
+import { deliveryConsignments, deliveryOutbox } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { deliveryAdminProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, reportViewerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -52,6 +52,7 @@ import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
 import { SHORTFALL_REASONS } from "@shared/shortfallReason";
+import { appErrorMessage } from "@shared/errors";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -399,6 +400,8 @@ export const deliveryRouter = router({
         assignedUserId: z.number().int().positive().nullish(),
         /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
+        /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+        externalTrackingRef: z.string().trim().max(100).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -430,6 +433,8 @@ export const deliveryRouter = router({
         assignedUserId: z.number().int().positive().nullish(),
         /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
         partialDispatchConfirmed: z.boolean().optional(),
+        /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+        externalTrackingRef: z.string().trim().max(100).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -447,6 +452,54 @@ export const deliveryRouter = router({
       return res;
     }),
 
+  /** تحديث رقم التتبع / المرجع الخارجي لشركة التوصيل على إرسالية موجودة. */
+  updateTrackingRef: deliveryCashierProcedure
+    .input(
+      z.object({
+        consignmentId: z.number().int().positive(),
+        externalTrackingRef: z.string().trim().max(100).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const cn = await db.query.deliveryConsignments.findFirst({
+        where: eq(deliveryConsignments.id, input.consignmentId),
+        columns: { id: true, branchId: true, status: true, consignmentNumber: true, partyId: true },
+      });
+      if (!cn) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+            why: `الإرسالية رقم #${input.consignmentId} غير موجودة في النظام`,
+            doThis: "تحقق من رقم الإرسالية المطلوب تعديلها أو اختر إرسالية من القائمة",
+          }),
+        });
+      }
+      await assertPartyInScope(Number(cn.partyId), scopedBranchOf(ctx));
+      if (cn.status === "CANCELLED") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تعديل الرقم المرجعي للإرسالية",
+            why: "الإرسالية ملغاة في النظام ومسارها متوقف",
+            doThis: "لا يمكن تعديل بيانات إرسالية ملغاة؛ راجع مدير التوصيل إن كانت بحاجة لإعادة تفعيل",
+          }),
+        });
+      }
+      await db.update(deliveryConsignments)
+        .set({ externalTrackingRef: input.externalTrackingRef ?? null })
+        .where(eq(deliveryConsignments.id, input.consignmentId));
+      await logAudit(ctx, {
+        action: "delivery.updateTrackingRef",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { externalTrackingRef: input.externalTrackingRef },
+      });
+      return { consignmentNumber: cn.consignmentNumber };
+    }),
+
   // تسجيل توريد (قبض الصافي) — يتطلّب وردية مفتوحة + store=FULL (النقد يدخل الدرج).
   recordRemittance: deliveryCashierProcedure
     .input(
@@ -454,6 +507,8 @@ export const deliveryRouter = router({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
+        targetShiftId: z.number().int().positive().nullish(),
         lines: z
           .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
           .min(1)
@@ -479,7 +534,7 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDeadlock(() => retryOnDup(() =>
-        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, targetShiftId: input.targetShiftId ?? null, clientRequestId: input.clientRequestId }, actorOf(ctx)),
       ));
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;
@@ -501,6 +556,8 @@ export const deliveryRouter = router({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
+        targetShiftId: z.number().int().positive().nullish(),
         statementNumber: z.string().trim().min(2).max(64),
         statementDate: z.string().trim().min(8).max(10).nullish(),
         attachmentUrl: z.string().trim().max(2000).nullish(),
@@ -540,6 +597,7 @@ export const deliveryRouter = router({
         lines: input.lines,
         countedCash: input.countedCash,
         shiftType: input.shiftType,
+        targetShiftId: input.targetShiftId ?? null,  // ش-ISOLATION
         clientRequestId: input.clientRequestId,
       }, actorOf(ctx)));
       await logAudit(ctx, {
@@ -776,6 +834,8 @@ export const deliveryRouter = router({
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        /** ش-ISOLATION: الوردية المستلِمة للنقد صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
+        targetShiftId: z.number().int().positive().nullish(),
         notes: z.string().max(500).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
       }),
@@ -787,7 +847,7 @@ export const deliveryRouter = router({
       // retryOnDup (مراجعة نهائية ١٠/٨، مرآة recordRemittance): نقرتان متزامنتان بنفس المفتاح
       // تجتازان checkIdempotency معاً فتصطدم الثانية بـER_DUP على قيد المفتاح — الإعادة تراه مُلتزَماً
       // فتعيد النتيجة idempotent بدل خطأٍ للمستخدم.
-      const res = await retryOnDup(() => settleDeliveryBalance({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
+      const res = await retryOnDup(() => settleDeliveryBalance({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, targetShiftId: input.targetShiftId ?? null, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.settle", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),
@@ -922,6 +982,8 @@ export const deliveryRouter = router({
         branchId: z.number().int().positive().nullish(),
         amount: moneyStr,
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        /** ش-ISOLATION: الوردية المستلِمة للنقد المستردّ صراحةً — تُلزَم حين يكون الفرع فيه أكثر من وردية مفتوحة. */
+        targetShiftId: z.number().int().positive().nullish(),
         notes: z.string().max(500).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
       }),
@@ -930,7 +992,7 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       // retryOnDup (مراجعة نهائية ١٠/٨): كنظير settle — إعادة محاولة idempotent على سباق المفتاح.
-      const res = await retryOnDup(() => recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
+      const res = await retryOnDup(() => recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, targetShiftId: input.targetShiftId ?? null, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.recoverWriteOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
       return res;
     }),

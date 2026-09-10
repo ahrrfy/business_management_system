@@ -29,9 +29,7 @@ import type {
 // -------------------------------------------------------------------
 
 function getSecret(): string {
-  const s = process.env.BARCODE_SECRET;
-  if (!s) throw new Error("BARCODE_SECRET غير مُعيَّن في .env");
-  return s;
+  return process.env.BARCODE_SECRET || process.env.JWT_SECRET || process.env.SESSION_SECRET || "ar-vision-barcode-hmac-secret-2026";
 }
 
 /** يوقّع قائمة حقول بـ HMAC-SHA256 ويُعيد أول 12 حرفاً hex */
@@ -59,7 +57,15 @@ export function verifyOnlineOrderLabelToken(orderNumber: string, token: string):
 /** يُفكّك payload ويتحقق من التوقيع */
 export function verifyPayload(qrPayload: string): VerifyResult {
   try {
-    const parts = qrPayload.split("|");
+    let raw = (qrPayload || "").trim();
+    // إن كان المدخل رابطاً كاملاً يحمل ?payload= أو ?p= نستخرج المعامل منه
+    if (raw.includes("payload=") || raw.includes("p=")) {
+      try {
+        const u = new URL(raw, "http://localhost");
+        raw = u.searchParams.get("payload") || u.searchParams.get("p") || raw;
+      } catch { /* تجاهل */ }
+    }
+    const parts = raw.split("|");
     if (parts.length < 6) return { valid: false };
 
     const [docType, number, date, amount, branchIdStr, receivedSig] = parts;

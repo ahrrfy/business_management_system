@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { hasCashVariance } from "@shared/cashDailyReconciliation";
+import { appErrorMessage } from "@shared/errors";
 import { and, desc, eq, gt, inArray, like, sql } from "drizzle-orm";
 import {
   expenses,
@@ -1198,7 +1199,56 @@ export async function shiftIdForCashTx(
   branchId: number,
   label: string = "معاملة نقدية",
   preferredType: ShiftType = "RETAIL",
+  /** ش-ISOLATION: وردية صريحة تُجاوز البحث الآلي بـactor.userId.
+   *  تُستعمل حين يكون الفرع فيه ورديتان مفتوحتان لموظفَين مختلفَين،
+   *  فيختار المُرسِل أيّ درجٍ سيستلم هذا النقد فعلياً.
+   *  الشروط: يجب أن تكون الوردية مفتوحة وتنتمي لنفس الفرع. */
+  explicitShiftId?: number | null,
 ): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
+  // ش-ISOLATION: وردية صريحة — تُجاوز كل منطق البحث الآلي.
+  // لا يُشترط أن تكون لـactor.userId (المدير/المشرف يُودع في درج كاشير آخر).
+  if (explicitShiftId != null) {
+    const locked = (
+      await tx
+        .select({ id: shifts.id, status: shifts.status, branchId: shifts.branchId })
+        .from(shifts)
+        .where(eq(shifts.id, explicitShiftId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!locked) {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: appErrorMessage({
+          what: `الوردية رقم ${explicitShiftId} غير موجودة`,
+          why: "رقم الوردية المُحدَّدة غير موجود في النظام — ربما حُذفت أو الرقم خاطئ",
+          doThis: "اختر وردية صحيحة من القائمة ثم أعد المحاولة",
+        }),
+      });
+    }
+    if (locked.status !== "OPEN") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: appErrorMessage({
+          what: "الوردية المحدَّدة مغلقة ولا تقبل معاملات نقدية",
+          why: `وردية رقم ${explicitShiftId} حالتها «${locked.status}» لا «OPEN»`,
+          doThis: "اختر وردية مفتوحة من القائمة لاستلام النقد",
+        }),
+      });
+    }
+    if (Number(locked.branchId) !== branchId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: appErrorMessage({
+          what: "الوردية المحدَّدة تخصّ فرعاً مختلفاً",
+          why: `الوردية تنتمي للفرع ${locked.branchId} والعملية تُجرى على الفرع ${branchId}`,
+          doThis: "اختر وردية من نفس فرع العملية",
+        }),
+      });
+    }
+    return { shiftId: Number(locked.id), cashBucket: "DRAWER" };
+  }
+
   const role = actor.role ?? (await resolveActorRoleTx(tx, actor.userId));
   if (role === "admin" || role === "manager") {
     // الأدوار الإدارية: إن وُجدت وردية مفتوحة (تغطية كاشير) ⇒ استَعملها (DRAWER)؛

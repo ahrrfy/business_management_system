@@ -72,6 +72,13 @@ export interface CompanyStatementInput {
   /** النقد المعدود فعلاً — تفرض آلةُ التوريد مطابقتَه لصافي الكشف بالضبط. */
   countedCash: string;
   shiftType?: "RECEPTION" | "RETAIL";
+  /**
+   * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
+   * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
+   * أكثر من وردية مفتوحة لموظفَين مختلفَين.
+   * بدونه: السلوك الحالي (درج actor) — متوافق للخلف تماماً.
+   */
+  targetShiftId?: number | null;
   clientRequestId?: string | null;
 }
 
@@ -348,6 +355,7 @@ export async function recordCompanyStatement(
     countedCash: round2(money(input.countedCash)).toFixed(2),
     shiftType: input.shiftType,
     clientRequestId: input.clientRequestId ?? `stmt:${input.partyId}:${statementNumber}`,
+    targetShiftId: input.targetShiftId,  // ش-ISOLATION: تمرير الدرج الصريح
     companyStatement: {
       statementNumber,
       statementDate: input.statementDate ?? null,

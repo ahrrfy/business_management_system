@@ -165,6 +165,12 @@ export interface SettleDailyInput extends DailySettlementScope {
   shortfallReason?: ShortfallReason | string | null;
   shortfallNotes?: string | null;
   shiftType?: "RECEPTION" | "RETAIL";
+  /**
+   * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
+   * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
+   * أكثر من وردية مفتوحة لموظفَين مختلفَين.
+   */
+  targetShiftId?: number | null;
   clientRequestId?: string | null;
 }
 
@@ -191,6 +197,8 @@ export async function settleDailyTx(
     countedCash: toDbMoney(input.countedCash),
     shortfallReason: input.shortfallReason ?? null,
     shiftType: input.shiftType ?? "RECEPTION",
+    // ش-ISOLATION: الوردية المستلِمة جزء من هوية التسوية — إعادة بوردية مختلفة تعارض لا replay.
+    targetShiftId: input.targetShiftId ?? null,
   });
   if (input.clientRequestId) {
     const existingId = await checkIdempotency(
@@ -271,6 +279,7 @@ export async function settleDailyTx(
       shiftType: input.shiftType ?? "RECEPTION",
       clientRequestId: input.clientRequestId ?? null,
       shortfall,
+      targetShiftId: input.targetShiftId,  // ش-ISOLATION: تمرير الدرج الصريح
     },
     actor,
   );

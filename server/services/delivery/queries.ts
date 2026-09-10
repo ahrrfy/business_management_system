@@ -590,6 +590,7 @@ export async function getConsignmentTimeline(consignmentId: number) {
         returnDeclaredReason: deliveryConsignments.returnDeclaredReason,
         remittanceId: deliveryConsignments.remittanceId,
         remittanceNumber: deliveryRemittances.remittanceNumber,
+        externalTrackingRef: deliveryConsignments.externalTrackingRef,
       })
       .from(deliveryConsignments)
       .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))

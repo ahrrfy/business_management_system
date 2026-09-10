@@ -5,8 +5,10 @@
  * يُفتح بالنقر على رقم الإرسالية في أيّ جدول (قيد التوصيل، تسوية، …) — سؤالٌ يوميّ («أين
  * طردي؟ من أخرجه؟ متى قُبل؟ لماذا فشل؟») بإجابةٍ واحدة: بيانات + خط زمن + قيود دفتر.
  */
-import { AlertCircle, ExternalLink, FileText, Loader2, MapPin, MessageCircle, Package, Phone, User } from "lucide-react";
+import { useState } from "react";
+import { AlertCircle, ExternalLink, FileText, Loader2, MapPin, MessageCircle, Package, Pencil, Phone, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { EmptyState } from "@/components/EmptyState";
 import { trpc } from "@/lib/trpc";
@@ -31,6 +33,33 @@ function eventDot(eventType: string): string {
     return "bg-[var(--sem-danger)]";
   if (eventType === "RETURN_DECLARED" || eventType === "RETURNED") return "bg-[var(--sem-warn)]";
   return "bg-[var(--sem-info)]";
+}
+
+/** مكوّن تعديل رقم التتبع inline — زر قلم يفتح حقل تعديل صغيراً. */
+function TrackingRefEditor({ consignmentId, current }: { consignmentId: number; current: string | null }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(current ?? "");
+  const utils = trpc.useUtils();
+  const update = trpc.delivery.updateTrackingRef.useMutation({
+    onSuccess: () => {
+      void utils.delivery.consignmentTimeline.invalidate({ consignmentId });
+      setEditing(false);
+    },
+  });
+  if (!editing) {
+    return (
+      <Button size="icon" variant="ghost" className="size-7 shrink-0" onClick={() => { setValue(current ?? ""); setEditing(true); }}>
+        <Pencil aria-label="تعديل رقم التتبع" className="size-3.5" />
+      </Button>
+    );
+  }
+  return (
+    <form className="flex gap-1.5" onSubmit={(e) => { e.preventDefault(); update.mutate({ consignmentId, externalTrackingRef: value.trim() || null }); }}>
+      <Input value={value} onChange={(e) => setValue(e.target.value)} maxLength={100} className="h-7 w-44 text-xs font-mono" dir="ltr" autoFocus />
+      <Button type="submit" size="sm" variant="default" className="h-7 px-2 text-xs" disabled={update.isPending}>حفظ</Button>
+      <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setEditing(false)}>إلغاء</Button>
+    </form>
+  );
 }
 
 export interface ConsignmentTimelineDrawerProps {
@@ -142,6 +171,17 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                     <ExternalLink aria-hidden className="size-3" />
                   </a>
                 )}
+              </div>
+            </section>
+
+            {/* رقم التتبع / المرجع الخارجي للشركة */}
+            <section>
+              <h3 className="mb-2 text-xs font-black text-muted-foreground">مرجع شركة التوصيل</h3>
+              <div className="flex items-center gap-2 rounded-lg border bg-card/50 p-3 text-sm">
+                <span dir="ltr" className="flex-1 font-mono text-sm">
+                  {cn_.externalTrackingRef ?? <span className="text-muted-foreground text-xs">لم يُدخَل رقم تتبع بعد</span>}
+                </span>
+                <TrackingRefEditor consignmentId={cn_.id} current={cn_.externalTrackingRef ?? null} />
               </div>
             </section>
 

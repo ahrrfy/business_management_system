@@ -2171,6 +2171,13 @@
 			"when": 1788052408000,
 			"tag": "0335_supplier_barcode_identity_index",
 			"breakpoints": true
+		},
+		{
+			"idx": 340,
+			"version": "5",
+			"when": 1788148800000,
+			"tag": "0340_consignment_external_tracking_ref",
+			"breakpoints": true
 		}
 	]
 }

@@ -93,6 +93,16 @@ export interface RemittanceInput {
    * الزبون سدّد للمندوب فعلاً. بدونه يبقى الشرطُ القائم: المعدود = الصافي تماماً.
    */
   shortfall?: { reason: ShortfallReason; notes?: string | null } | null;
+  /**
+   * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
+   *
+   * يُستعمَل حين يكون الفرع فيه أكثر من وردية مفتوحة لموظفَين مختلفَين،
+   * فيختار المُرسِل (الواجهة) أيّ كاشير/درجٍ سيستلم التوريد. يُجاوز `shiftType`
+   * والبحث الآلي بـ`actor.userId` في `shiftIdForCashTx`.
+   *
+   * بدونه: السلوك الحالي (يُستخدَم درج actor) — متوافق للخلف تماماً.
+   */
+  targetShiftId?: number | null;
 }
 
 export async function recordDeliveryRemittance(
@@ -161,6 +171,8 @@ export async function recordDeliveryRemittanceInTx(
       countedCash: toDbMoney(round2(money(input.countedCash))),
       // م١ (PR-2): سببُ العجز جزءٌ من هويّة التوريد — إعادةٌ بسببٍ مختلف تعارضٌ لا replay.
       shortfallReason: input.shortfall?.reason ?? null,
+      // ش-ISOLATION: الوردية المستلِمة جزءٌ من هويّة التوريد — إعادةٌ بوردية مختلفة تعارضٌ لا replay.
+      targetShiftId: input.targetShiftId ?? null,
     });
     const replayResult = async () => {
       if (!input.clientRequestId) return null;
@@ -239,6 +251,7 @@ export async function recordDeliveryRemittanceInTx(
       input.branchId,
       "توريد مندوب",
       input.shiftType ?? "RECEPTION",
+      input.targetShiftId,  // ش-ISOLATION: الدرج الصريح من الواجهة (إن وُجد)
     );
     await lockCashSourceForUpdate(tx, {
       branchId: input.branchId,
