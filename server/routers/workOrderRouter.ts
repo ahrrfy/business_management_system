@@ -85,11 +85,9 @@ const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   CONCAT('مستخدم #', ${workOrders.createdBy})
 )`;
 
-// سطوح نقطة البيع/الاستقبال نقدية فقط حتى يوجد مزوّد وتسوية موثوقان.
 const receptionPaymentMethod = z
   .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
-  .transform((value) => value as "CASH");
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const workOrderControlReason = z.string().trim().min(3).max(500);
