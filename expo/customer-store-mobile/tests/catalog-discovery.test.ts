@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 
 const homeScreen = readFileSync(resolve(process.cwd(), "app/(tabs)/index.tsx"), "utf8");
 
-describe("دليل اكتشاف الكتالوج", () => {
+describe("دليل اكتشاف المنتجات", () => {
   it("يوجّه الطالب والفرد والمكتب والشركة عبر المسارات الموجودة", () => {
-    expect(homeScreen).toContain("دليل سريع لاكتشاف الكتالوج");
+    expect(homeScreen).toContain("تسوّق حسب احتياجك");
     expect(homeScreen).toContain('audience: "طالب"');
     expect(homeScreen).toContain('audience: "فرد"');
     expect(homeScreen).toContain('audience: "مكتب"');

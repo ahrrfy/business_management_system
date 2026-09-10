@@ -49,7 +49,7 @@ export default function ProductDetailScreen() {
   const galleryWidth = width - 32;
 
   if (loading) return <ScreenContainer className="items-center justify-center px-6" containerClassName="bg-background"><ActivityIndicator accessibilityLabel="جار تحميل المنتج" color="#0E806A" size="large" /><Text style={styles.stateText}>جار تحميل المنتج…</Text></ScreenContainer>;
-  if (!product) return <ScreenContainer className="items-center justify-center px-6" containerClassName="bg-background"><MaterialIcons color="#A25A50" name="cloud-off" size={36} /><Text accessibilityRole="alert" style={styles.stateTitle}>{error ?? "المنتج غير متاح"}</Text><Text style={styles.stateText}>تحقق من الاتصال ثم عد إلى الكتالوج وحاول مجدداً.</Text><TouchableOpacity accessibilityRole="button" onPress={() => router.back()} style={styles.backSimple}><Text style={styles.backSimpleText}>العودة للمتجر</Text></TouchableOpacity></ScreenContainer>;
+  if (!product) return <ScreenContainer className="items-center justify-center px-6" containerClassName="bg-background"><MaterialIcons color="#A25A50" name="cloud-off" size={36} /><Text accessibilityRole="alert" style={styles.stateTitle}>{error ?? "المنتج غير متاح"}</Text><Text style={styles.stateText}>تحقق من الاتصال ثم عد إلى المنتجات وحاول مجدداً.</Text><TouchableOpacity accessibilityRole="button" onPress={() => router.back()} style={styles.backSimple}><Text style={styles.backSimpleText}>العودة للمتجر</Text></TouchableOpacity></ScreenContainer>;
 
   const priceProduct = { ...product, price: selectedUnit?.price ?? product.price, salePrice: selectedUnit?.salePrice ?? product.salePrice };
   const discount = productDiscountPercent(priceProduct);
