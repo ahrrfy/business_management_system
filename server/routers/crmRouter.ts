@@ -359,6 +359,16 @@ export const crmRouter = router({
         if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
         ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
         if (program.status === "ENDED") throw new TRPCError({ code: "BAD_REQUEST", message: "البرنامج منتهٍ" });
+        if (program.isFirstOrderSelfService) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "لا يمكن إصدار دفعة يدوية لكوبون الطلب الأول",
+              why: "هذا البرنامج يصدر رمزاً شخصياً فقط عندما يطلبه العميل قبل أول طلب متجر",
+              doThis: "دع العميل يطلب الكوبون من صفحة الولاء، أو أنشئ برنامجاً عادياً للإصدار الإداري",
+            }),
+          });
+        }
         const uniqueCodes = new Set<string>();
         while (uniqueCodes.size < input.count) uniqueCodes.add(makeCode(program.codePrefix));
         const rows = Array.from(uniqueCodes, (code) => {

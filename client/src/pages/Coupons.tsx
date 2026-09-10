@@ -8,6 +8,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { confirm } from "@/lib/confirm";
 import { exportSheets, type SheetSpec } from "@/lib/export";
@@ -63,6 +64,7 @@ export default function Coupons() {
   const [prefix, setPrefix] = useState("CRM");
   const [perCouponLimit, setPerCouponLimit] = useState("1");
   const [perCustomerLimit, setPerCustomerLimit] = useState("1");
+  const [isFirstOrderSelfService, setIsFirstOrderSelfService] = useState(false);
   const [title, setTitle] = useState("هدية خاصة لك");
   const [subtitle, setSubtitle] = useState("");
   const [terms, setTerms] = useState("");
@@ -221,6 +223,14 @@ export default function Coupons() {
       cell: ({ row }) => <Badge variant={row.original.status === "ACTIVE" ? "default" : "secondary"}>{PROGRAM_STATUS_AR[row.original.status] ?? row.original.status}</Badge>,
     },
     {
+      id: "issuance",
+      header: "طريقة الإصدار",
+      accessorFn: (r) => r.isFirstOrderSelfService ? "طلب العميل الأول" : "إصدار إداري",
+      cell: ({ row }) => row.original.isFirstOrderSelfService
+        ? <Badge variant="outline">طلب العميل الأول</Badge>
+        : <span className="text-muted-foreground">إصدار إداري</span>,
+    },
+    {
       id: "counts",
       header: "صادر / صالح / مستخدم",
       accessorFn: (r) => `${r.issued} / ${r.activeCoupons} / ${r.redeemed}`,
@@ -326,13 +336,31 @@ export default function Coupons() {
         <Field label="صالح من" required><Input type="date" value={validFrom} onChange={(event) => setValidFrom(event.target.value)} /></Field>
         <Field label="صالح إلى"><Input type="date" value={validTo} onChange={(event) => setValidTo(event.target.value)} /></Field>
         <Field label="بادئة الرمز"><Input dir="ltr" maxLength={12} value={prefix} onChange={(event) => setPrefix(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} /></Field>
-        <Field label="مرات استخدام الكوبون"><Input type="number" min={1} max={1000} value={perCouponLimit} onChange={(event) => setPerCouponLimit(event.target.value)} /></Field>
-        <Field label="حد الاستخدام لكل عميل"><Input type="number" min={1} max={1000} value={perCustomerLimit} onChange={(event) => setPerCustomerLimit(event.target.value)} /></Field>
+        <Field label="مرات استخدام الكوبون"><Input type="number" min={1} max={1000} disabled={isFirstOrderSelfService} value={perCouponLimit} onChange={(event) => setPerCouponLimit(event.target.value)} /></Field>
+        <Field label="حد الاستخدام لكل عميل"><Input type="number" min={1} max={1000} disabled={isFirstOrderSelfService} value={perCustomerLimit} onChange={(event) => setPerCustomerLimit(event.target.value)} /></Field>
+        <div className="md:col-span-4 flex items-start gap-3 rounded-md border bg-muted/30 p-3">
+          <Checkbox
+            id="first-order-self-service"
+            checked={isFirstOrderSelfService}
+            onCheckedChange={(checked) => {
+              const enabled = checked === true;
+              setIsFirstOrderSelfService(enabled);
+              if (enabled) {
+                setPerCouponLimit("1");
+                setPerCustomerLimit("1");
+              }
+            }}
+          />
+          <label htmlFor="first-order-self-service" className="cursor-pointer text-sm leading-6">
+            <span className="font-medium">كوبون الطلب الأول — طلب ذاتي</span>
+            <span className="block text-xs text-muted-foreground">يطلبه العميل الموثق بنفسه قبل أول طلب متجر. لا تُصدر له الإدارة دفعات يدوية، ويُفرض استخدام واحد فقط.</span>
+          </label>
+        </div>
         <Field label="عنوان البطاقة" className="md:col-span-2"><Input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} /></Field>
         <Field label="عبارة قصيرة" className="md:col-span-2"><Input value={subtitle} maxLength={140} onChange={(event) => setSubtitle(event.target.value)} /></Field>
         <Field label="لون الهوية"><Input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></Field>
         <Field label="شروط مختصرة" className="md:col-span-3"><Input value={terms} maxLength={500} onChange={(event) => setTerms(event.target.value)} placeholder="لا يجمع مع سعر تعاقدي" /></Field>
-        <div className="md:col-span-4 flex items-center justify-between gap-3 border-t pt-4"><div className="text-xs text-muted-foreground">يُنشأ البرنامج مسوّدة، ثم يُفعّل بعد مراجعة العرض والحملة.</div><Button disabled={!name.trim() || !promotionId || !validFrom || (!!validTo && validTo < validFrom) || create.isPending} onClick={() => create.mutate({ name: name.trim(), promotionId: Number(promotionId), campaignId: campaignId ? Number(campaignId) : null, validFrom, validTo: validTo || null, codePrefix: prefix || "CRM", perCouponLimit: clampInt(perCouponLimit, 1, 1000), perCustomerLimit: clampInt(perCustomerLimit, 1, 1000), design: { title: title || undefined, subtitle: subtitle || undefined, terms: terms || undefined, color } })}>حفظ كمسوّدة</Button></div>
+        <div className="md:col-span-4 flex items-center justify-between gap-3 border-t pt-4"><div className="text-xs text-muted-foreground">يُنشأ البرنامج مسوّدة، ثم يُفعّل بعد مراجعة العرض والحملة.</div><Button disabled={!name.trim() || !promotionId || !validFrom || (!!validTo && validTo < validFrom) || create.isPending} onClick={() => create.mutate({ name: name.trim(), promotionId: Number(promotionId), campaignId: campaignId ? Number(campaignId) : null, validFrom, validTo: validTo || null, codePrefix: prefix || "CRM", perCouponLimit: isFirstOrderSelfService ? 1 : clampInt(perCouponLimit, 1, 1000), perCustomerLimit: isFirstOrderSelfService ? 1 : clampInt(perCustomerLimit, 1, 1000), isFirstOrderSelfService, design: { title: title || undefined, subtitle: subtitle || undefined, terms: terms || undefined, color } })}>حفظ كمسوّدة</Button></div>
       </CardContent>
     </Card>}
 
@@ -353,7 +381,7 @@ export default function Coupons() {
 
     {selectedProgram && <div className="grid gap-4 xl:grid-cols-[0.8fr_1.5fr]">
       <div className="space-y-4">
-        <Card><CardHeader><CardTitle className="text-base">إصدار دفعة — {selectedProgram.name}</CardTitle></CardHeader><CardContent className="space-y-4"><div className="grid grid-cols-2 gap-3"><Field label="عدد الكوبونات"><Input type="number" min={1} max={500} value={count} onChange={(event) => setCount(event.target.value)} /></Field><Field label="تخصيص لعميل (اختياري)"><Input value={customerId == null ? customerQuery : customerName} onChange={(event) => { setCustomerId(null); setCustomerName(""); setCustomerQuery(event.target.value); }} placeholder="ابحث بالاسم أو الهاتف" /></Field></div>
+        {selectedProgram.isFirstOrderSelfService ? <Card><CardHeader><CardTitle className="text-base">إصدار ذاتي للطلب الأول</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><Badge variant="outline">طلب العميل الأول</Badge><p>يصدر الرمز الشخصي عندما يطلبه العميل الموثق من تطبيق المتجر قبل إنشاء أول طلب له.</p><p className="text-xs text-muted-foreground">لا توجد دفعات يدوية أو بطاقات مطبوعة لهذا البرنامج؛ لكل عميل رمز واحد واستخدام واحد فقط.</p></CardContent></Card> : <><Card><CardHeader><CardTitle className="text-base">إصدار دفعة — {selectedProgram.name}</CardTitle></CardHeader><CardContent className="space-y-4"><div className="grid grid-cols-2 gap-3"><Field label="عدد الكوبونات"><Input type="number" min={1} max={500} value={count} onChange={(event) => setCount(event.target.value)} /></Field><Field label="تخصيص لعميل (اختياري)"><Input value={customerId == null ? customerQuery : customerName} onChange={(event) => { setCustomerId(null); setCustomerName(""); setCustomerQuery(event.target.value); }} placeholder="ابحث بالاسم أو الهاتف" /></Field></div>
           {customerId == null && customerQuery.trim().length >= 2 && <div className="max-h-36 overflow-auto rounded-md border">{(customerSearch.data?.rows ?? []).map((customer) => <button type="button" key={customer.id} className="block w-full border-b px-3 py-2 text-right text-sm last:border-0 hover:bg-muted" onClick={() => { setCustomerId(customer.id); setCustomerName(customer.name); setCustomerQuery(""); }}>{customer.name}</button>)}{customerSearch.isFetched && (customerSearch.data?.rows.length ?? 0) === 0 && <div className="p-3 text-xs text-muted-foreground">لا عميل مطابق.</div>}</div>}
           {customerId != null && <div className="flex items-center justify-between rounded-md border bg-muted/30 p-2 text-sm"><span>مخصص إلى: <b>{customerName}</b></span><Button size="sm" variant="ghost" onClick={() => { setCustomerId(null); setCustomerName(""); }}>إزالة</Button></div>}
           <Button className="w-full" disabled={selectedProgram.status === "ENDED" || issue.isPending} onClick={() => issue.mutate({ programId: selectedProgram.id, count: clampInt(count, 1, 500), customerId })}><Ticket className="size-4" /> {issue.isPending ? "جارٍ الإصدار…" : "إصدار الدفعة"}</Button><div className="text-xs text-muted-foreground">الإصدار عملية ذرية مسجلة: إما تُنشأ الدفعة كاملة أو لا يُنشأ شيء.</div>
@@ -373,6 +401,7 @@ export default function Coupons() {
             emptyText="لا دفعات مسجلة."
           />
         </CardContent></Card>
+        </>}
       </div>
       <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-base">سجل الكوبونات</CardTitle><span className="text-xs text-muted-foreground">حقل الرمز في الطباعة: 40×8 مم</span></CardHeader><CardContent><div className="mb-3 flex flex-wrap items-center gap-2"><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input className="h-8 pr-8" value={codeQuery} onChange={(event) => setCodeQuery(event.target.value)} placeholder="بحث خادمي بالرمز…" /></div><AppSelect value={statusFilter} onValueChange={(value) => setStatusFilter(value as CouponStatusFilter)} className="h-8 w-32" size="sm"><option value="ALL">كل الحالات</option><option value="ACTIVE">نشط</option><option value="REDEEMED">مستخدم</option><option value="VOID">ملغى</option></AppSelect><Button size="sm" variant="outline" onClick={exportWorkbook}><Download className="size-4" /> Excel شامل</Button><Button size="sm" variant="outline" disabled={activeCount === 0 || printing} onClick={() => void printActive()}><FileText className="size-4" /> {printing ? "تحضير…" : `A4 / PDF للنشطة (${activeCount})`}</Button></div>
         {/* الترقيم خادميّ ويُصيّره DataTable نفسه — لا `TablePager` منفصل تحته (شريطان يقفزان
