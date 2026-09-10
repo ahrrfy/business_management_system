@@ -7,16 +7,14 @@ import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
-  ArrowRight,
-  BadgeCheck,
   CalendarClock,
   Check,
+  CheckCircle2,
   ClipboardList,
   Copy,
   Globe,
   HandCoins,
   Instagram,
-  LoaderCircle,
   MessageCircle,
   Music2,
   Package,
@@ -28,13 +26,13 @@ import {
   ShoppingCart,
   Store,
   Truck,
-  UserRound,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { SmartCustomerValue } from "@/components/form/SmartCustomerInput";
-import { isValidIqMobile, PhoneDigitsInput, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
+import { isValidIqMobile, toLocalIqMobileDigits } from "@/components/form/PhoneDigitsInput";
+import { CustomerByPhone } from "@/components/customer/CustomerByPhone";
+import { useCustomerByPhone } from "@/components/customer/useCustomerByPhone";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
@@ -62,8 +60,6 @@ import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import Inbox from "@/pages/Inbox";
-import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
 import { receptionCheckoutReceiptMeta } from "@/lib/printing/receptionReceiptMeta";
@@ -86,11 +82,11 @@ import {
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
 import { ReceiptOverlay } from "@/components/reception/ReceiptOverlay";
+import type { DeliveryDepartureData } from "@/components/delivery/DeliveryDepartureOverlay";
+import { buildReceptionDepartureData } from "@/components/reception/receptionDepartureHelper";
 import { ManagerApprovalDialog } from "@/components/reception/ManagerApprovalDialog";
+import { ReceptionShiftCloseDialog } from "@/components/reception/ReceptionShiftCloseDialog";
 import DepositDialog from "@/components/reception/DepositDialog";
-import DraftPaymentsDialog from "@/components/reception/DraftPaymentsDialog";
-import OrderDeliveryDialog, { type OrderDeliveryValue } from "@/components/reception/OrderDeliveryDialog";
-import type { DispatchParty } from "@/components/delivery/DispatchDialog";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { CashDropDialog, type PosTokens } from "@/components/pos/CashDropDialog";
 import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
@@ -205,8 +201,6 @@ export default function Reception() {
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
-  const [counted, setCounted] = useState("");
-  const [countEntered, setCountEntered] = useState(false);
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
     [branchesQ.data, branchId],
@@ -235,54 +229,6 @@ export default function Reception() {
     onError: (e) => notify.err(e),
   });
 
-
-  // تقرير الوردية (Z) — يُحمَّل فقط عند فتح نافذة الإغلاق.
-  const reportQ = trpc.shifts.report.useQuery({ shiftId: shift?.id ?? 0 }, { enabled: closing && !!shift });
-
-  const closeShiftM = trpc.shifts.close.useMutation({
-    onSuccess: async (r) => {
-      const rep = reportQ.data;
-      void printShiftClose({
-        shiftId: r.shiftId,
-        openedAt: shift?.openedAt ?? null,
-        closedAt: new Date(),
-        cashierName: me.data?.name ?? "موظف الخدمة",
-        branchName,
-        openingBalance: r.openingBalance,
-        invoiceCount: rep?.invoiceCount ?? 0,
-        salesTotal: rep?.salesTotal ?? "0",
-        payments: (rep?.payments ?? []).map((p) => ({
-          method: p.method,
-          direction: p.direction as "IN" | "OUT",
-          count: Number(p.count),
-          total: p.total,
-        })),
-        expectedCash: r.expectedCash,
-        countedCash: r.countedCash,
-        variance: r.variance,
-        // ش٤ (I14): إفصاح عرابين الطلبات غير المُثبَّتة على Z المطبوع أيضاً.
-        heldDepositsCount: rep?.heldDepositsCount ?? 0,
-        heldDepositsTotal: rep?.heldDepositsTotal ?? "0",
-        treasuryReturn: r.treasuryReturn
-          ? {
-              amount: r.countedCash,
-              referenceNumber: r.treasuryReturn.handoverNumber,
-            }
-          : null,
-      });
-      if (r.treasuryReturn) {
-        notify.ok(
-          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
-          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
-        );
-      }
-      setClosing(false);
-      setCounted("");
-      setCountEntered(false);
-      await utils.shifts.current.invalidate();
-    },
-    onError: (e) => notify.err(e),
-  });
 
   // ترويسة الصفحة تُقاس بالنافذة عمداً (لا باللوحة): تقليصها يُطيل اللوحة، فقياسها باللوحة
   // يصنع حلقة «يُخفى ⇒ تتّسع ⇒ يظهر ⇒ تضيق». النافذة مقياسٌ مستقلّ عن هذا التغذّي الراجع.
@@ -328,6 +274,7 @@ export default function Reception() {
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
   const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
+  const [deliveryDeparture, setDeliveryDeparture] = useState<DeliveryDepartureData | null>(null);
   const [cashDropping, setCashDropping] = useState(false);
   const [depositMenuOpen, setDepositMenuOpen] = useState(false);
   const [discountFor, setDiscountFor] = useState<string | null>(null);
@@ -343,10 +290,16 @@ export default function Reception() {
   const [draftInfo, setDraftInfo] = useState<{ draftNumber: string } | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
-  // ش٦ — توصيل الطلب على مستوى السلة: يُملأ قبل التثبيت ويُنفَّذ إسناداً تلقائياً بعده.
-  // حالةُ سلةٍ محلية (لا تُحفظ مع المسوّدة — من استأنف مسوّدةً يعيد إدخال التوصيل).
-  const [orderDelivery, setOrderDelivery] = useState<OrderDeliveryValue | null>(null);
-  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
+  // ش٦ — التوصيل والإسناد انتقلا لشاشة مستقلة /reception/workflow
+  // نُبقي orderDelivery بنوعه الأصلي (ثابت null) لتجنّب كسر منطق handleSubmit
+  type OrderDeliveryValue = {
+    partyId: number; partyName: string | null; fee: string; feeCollection: "COUNTER" | "COURIER" | "SHOP";
+    recipientPhone: string | null; recipientName: string | null; address: string | null;
+  };
+  const [orderDelivery] = useState<OrderDeliveryValue | null>(null);
+  const setOrderDelivery = (_v: OrderDeliveryValue | null) => {};
+  const deliveryDialogOpen = false;
+  const setDeliveryDialogOpen = (_v: boolean) => {};
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
@@ -354,23 +307,14 @@ export default function Reception() {
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
-  const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
-  const [receptionPhone, setReceptionPhone] = useState("");
-  const [phoneResolution, setPhoneResolution] = useState<"EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR">("EMPTY");
-  /**
-   * أهليّة **البيع الآجل** للعميل المربوط — مصدرها الخادم (`deferredEligible`) لا استنتاجُ
-   * الشاشة (١٩/٨، بلاغ المالك الحيّ): كانت الشارة تَعِد بالآجل لكل عميلٍ مرتبط، ثمّ يرفضه
-   * `assertCreditLimit` لأنّ حدّه صفر — وهو **افتراضي كل عميلٍ جديد** بقرار المالك.
-   */
-  const [customerDeferredEligible, setCustomerDeferredEligible] = useState(false);
-  /**
-   * ٣٠/٨/٢٦ (بلاغ المالك الحيّ): «حدّ ائتمانه 0 ويمنع البيع». الأدمن/المدير يستطيع تحديد حدٍّ عند
-   * الإنشاء (سلطته الأصليّة بقرار المالك ١٢/٨). الكاشير لا يراه (يبقى على "0" الافتراضيّ).
-   * "" (فارغ) = افتراض الخادم "0"، "unlimited" = null (بلا حدّ)، رقم = سقف صريح.
-   */
-  const [newCustomerCreditLimit, setNewCustomerCreditLimit] = useState<string>("");
-  const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
-  const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
+  // م١ PR-B: آلة «العميل بالهاتف» صارت مشتركة مع كاشير التجزئة (`useCustomerByPhone`) — كانت مضمَّنة هنا.
+  // تغيّر الهاتف يُسقط «آجل» (تعلّق بعميلٍ آخر) كما كان؛ الفئة والأهليّة تُسقطهما الآلة نفسها.
+  const phoneCustomer = useCustomerByPhone({ onPhoneChange: () => setDeferred(false) });
+  const {
+    customer, setCustomer, phone: receptionPhone, setPhone: setReceptionPhone,
+    resolution: phoneResolution, error: phoneResolutionError,
+    tier: resolvedCustomerTier, resolve: resolveReceptionCustomer,
+  } = phoneCustomer;
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
   const [couponInput, setCouponInput] = useState("");
@@ -424,81 +368,6 @@ export default function Reception() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer.customerId]);
-
-  const resolveReceptionCustomerM = trpc.customers.receptionResolveByPhone.useMutation();
-  const resolveReceptionCustomerByPhone = resolveReceptionCustomerM.mutateAsync;
-  const phoneLookupSequence = useRef(0);
-
-  const resolveReceptionCustomer = useCallback(async (name?: string, announce = false) => {
-    if (!isValidIqMobile(receptionPhone)) return null;
-    const sequence = ++phoneLookupSequence.current;
-    setPhoneResolution("CHECKING");
-    setPhoneResolutionError(null);
-    try {
-      const result = await resolveReceptionCustomerByPhone({
-        phone: receptionPhone,
-        ...(name?.trim() ? { name: name.trim() } : {}),
-        // ٣٠/٨/٢٦: إن كان الدور مدير/أدمن + الحقل مُلىء ⇒ نمرّره (الخادم يرفض غير المرتفعين).
-        // "unlimited" على الواجهة يعني null (بلا حدّ) — نُرسله فارغاً لأنّ الحقل النصّيّ لا يقبل null،
-        // لكنّ الاتّفاق الحاليّ: الخادم يقبل "0"/موجب فقط عبر هذا المسار. "unlimited" يُعالَج
-        // مستقبلاً بإضافة حقل صريح `null`. الآن: قيمة رقمية أو فارغة.
-        // ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): كاشير الاستقبال أيضاً يستطيع تحديد الحدّ عند إنشاء
-        // عميل — القيد على المدير أُلغيَ (الخادم يقبل من كلّ من يملك بوابة الإنشاء).
-        ...(newCustomerCreditLimit.trim() && newCustomerCreditLimit !== "unlimited"
-          ? { creditLimit: newCustomerCreditLimit.trim() }
-          : {}),
-      });
-      if (sequence !== phoneLookupSequence.current) return null;
-      if (result.status === "NEEDS_NAME") {
-        setCustomer((previous) => ({ customerId: null, name: previous.name, phone: receptionPhone, isNew: true }));
-        setResolvedCustomerTier(null);
-        setCustomerDeferredEligible(false);
-        setPhoneResolution("NEEDS_NAME");
-        return result;
-      }
-      setCustomer({
-        customerId: Number(result.customerId),
-        name: result.name ?? name?.trim() ?? "",
-        phone: receptionPhone,
-        isNew: false,
-      });
-      setResolvedCustomerTier(result.defaultPriceTier as Tier);
-      setCustomerDeferredEligible(!!result.deferredEligible);
-      setPhoneResolution("RESOLVED");
-      if (announce) notify.ok(result.created ? "تم إنشاء العميل وربطه بالطلب" : "تم ربط العميل الموجود بالطلب");
-      return result;
-    } catch (error: any) {
-      if (sequence !== phoneLookupSequence.current) return null;
-      const message = error?.message || "تعذّر التحقق من رقم العميل";
-      setPhoneResolutionError(message);
-      setPhoneResolution("ERROR");
-      if (announce) notify.err(message);
-      return null;
-    }
-  }, [receptionPhone, resolveReceptionCustomerByPhone]);
-
-  // لا نبحث قبل اكتمال الخانات الإحدى عشرة. بعد الاكتمال يتحول الهاتف إلى مفتاح هوية واحد:
-  // عميل موجود يُربط فوراً، ورقم جديد يفتح الاسم فقط.
-  useEffect(() => {
-    phoneLookupSequence.current += 1;
-    setDeferred(false);
-    setResolvedCustomerTier(null);
-    if (!receptionPhone) {
-      setPhoneResolution("EMPTY");
-      setPhoneResolutionError(null);
-      setCustomer({ customerId: null, name: "", phone: null, isNew: false });
-      return;
-    }
-    if (!isValidIqMobile(receptionPhone)) {
-      setPhoneResolution("INCOMPLETE");
-      setPhoneResolutionError(null);
-      setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: false });
-      return;
-    }
-    setCustomer({ customerId: null, name: "", phone: receptionPhone, isNew: true });
-    const timer = window.setTimeout(() => { void resolveReceptionCustomer(); }, 180);
-    return () => window.clearTimeout(timer);
-  }, [receptionPhone, resolveReceptionCustomer]);
 
   const connectPrinter = async () => {
     try {
@@ -625,7 +494,7 @@ export default function Reception() {
   // COUNTER يُعرَض عبر heldDelivery أعلاه (لا يُكرَّر هنا). الأجرة عرضٌ فقط — لا تدخل إيراداً أبداً.
   const customDeliveryLinesD = cart.filter((c) => isCustomKind(c) && c.custom?.hasDelivery && D(c.custom.deliveryCost || 0).gt(0));
   const deliveryDisclosure = orderDelivery
-    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName }
+    ? { fee: round2(D(orderDelivery.fee || 0)).toNumber(), feeCollection: orderDelivery.feeCollection, partyName: orderDelivery.partyName ?? "" }
     : customDeliveryLinesD.length > 0
       ? {
           fee: round2(customDeliveryLinesD.reduce((s, c) => s.plus(D(c.custom!.deliveryCost || 0)), D(0))).toNumber(),
@@ -679,16 +548,13 @@ export default function Reception() {
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
   const hasCustom = cart.some(isCustomKind);
+  // البيع متاح لكل عميل مرتبط بلا قيود حد ائتمان — التحصيل والنقود لها شاشات مستقلة
   const deferredAvailable = customer.customerId != null
     && phoneResolution === "RESOLVED"
-    // حدُّ الائتمان جزءٌ من الأهليّة لا شرطٌ يُكتشَف بالرفض بعد الضغط.
-    && customerDeferredEligible
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
-  // ٢٣/٨ (بلاغ المالك): رسالةٌ محدَّدة تشرح السبب الفعليّ لتعطيل زرّ «بدون عربون» — بدل «اربط عميلاً»
-  // المضلِّلة. الترتيب من الأقلّ صعوبةً في الحلّ إلى الأكثر: طلبٌ مخصّصٌ ⇒ يكفي «إتمام»، مسوّدةٌ ⇒
-  // ثبّت مباشرةً، توصيلٌ ⇒ التحصيل عند الاستلام، لا عميل ⇒ اربطه، حدّ الائتمان صفر ⇒ راجع المدير.
+  // سبب تعطيل زرّ «بدون عربون» عند عدم توفّره.
   const deferredDisabledReason: string | null = deferredAvailable
     ? null
     : sumDirect === 0 && sumCustom > 0
@@ -699,9 +565,7 @@ export default function Reception() {
           ? "طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"
           : customer.customerId == null || phoneResolution !== "RESOLVED"
             ? "اربط عميلاً بهاتفٍ عراقيٍّ أوّلاً"
-            : !customerDeferredEligible
-              ? "حدُّ الائتمان للعميل صفر (نقديّ فقط) — راجع المدير لرفعه"
-              : "غير متاح الآن";
+            : "غير متاح الآن";
   useEffect(() => {
     if (deferred && !deferredAvailable) setDeferred(false);
   }, [deferred, deferredAvailable]);
@@ -752,25 +616,27 @@ export default function Reception() {
     });
   }, []);
 
-  /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق غير مخصّص إن وُجد. */
+  /** يضيف صنفاً جاهزاً (بلا تخصيص) بسعره العادي — يدمج مع سطرٍ مطابق ويصعّده لأول السلة ليبقى ظاهراً للكاشير. */
   const addDirectLine = useCallback((row: PosRow) => {
     clearCouponIfApplied();
     setCart((prev) => {
-      // دمج كميّات الصنف الجاهز المُكرَّر (لا تكرار سطر).
+      // دمج كميّات الصنف الجاهز المُكرَّر وتصعيده لقمة السلة ليبقى في متناول يد ونظر الكاشير
       const i = prev.findIndex((c) => !isCustomKind(c) && c.row.productUnitId === row.productUnitId);
       if (i >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], qty: next[i].qty + 1 };
-        setSelKey(next[i].key);
+        const updated = { ...next[i], qty: next[i].qty + 1 };
+        next.splice(i, 1);
+        next.unshift(updated);
+        setSelKey(updated.key);
         return next;
       }
       const key = `d-${row.productUnitId}-${Date.now()}`;
       setSelKey(key);
-      return [...prev, { key, row, qty: 1 }];
+      return [{ key, row, qty: 1 }, ...prev];
     });
     // ٢٣/٨ (Codex P2): أشِر إلى الجدول أنّ إضافةً حدثت — يشمل رفع الكمّية على السطر الأصل.
     setAddTick((t) => t + 1);
-  }, []);
+  }, [clearCouponIfApplied]);
 
   const addRow = useCallback((row: PosRow) => {
     // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعرٍ
@@ -792,7 +658,7 @@ export default function Reception() {
     setSearch("");
     setShowDrop(false);
     searchRef.current?.focus();
-  }, [addDirectLine]);
+  }, [addDirectLine, effectiveTier]);
 
   /** العميل يريد هذه القطعة تحديداً بلا تخصيص (بسعرها العادي) رغم أنّ صنفها قابلٌ للتخصيص — يسمح
    *  بمزج قطعةٍ مخصّصة وأخرى جاهزة من نفس المنتج في طلبٍ واحد. */
@@ -829,12 +695,30 @@ export default function Reception() {
       setCart((prev) => prev.map((c) => (c.key === editingKey ? { ...c, custom: data } : c)));
     } else {
       const key = `c-${row.productUnitId}-${Date.now()}`;
-      setCart((prev) => [...prev, { key, row, qty: 1, custom: data, manualService: row.variantId === 0 }]);
+      setCart((prev) => [{ key, row, qty: 1, custom: data, manualService: row.variantId === 0 }, ...prev]);
       setSelKey(key);
     }
     setShowCustomization(null);
     requestAnimationFrame(() => cartSectionRef.current?.focus());
   }
+
+  /** تبديل وحدة الصنف مع الرفع التلقائي للسعر والمعامل ومطابقة المخزون. */
+  const changeLineUnit = useCallback((lineKey: string, newRow: PosRow) => {
+    clearCouponIfApplied();
+    setCart((prev) =>
+      prev.map((c) => {
+        if (c.key !== lineKey) return c;
+        return {
+          ...c,
+          row: {
+            ...newRow,
+            isCustomizable: c.row.isCustomizable,
+          },
+          disc: undefined,
+        };
+      }),
+    );
+  }, [clearCouponIfApplied]);
 
   function changeQty(key: string, delta: number) {
     clearCouponIfApplied();
@@ -888,10 +772,22 @@ export default function Reception() {
     },
     [branchId, addRow, utils, effectiveTier, offline],
   );
+
+  const handleWorkOrderScan = useCallback(
+    async (orderNumber: string) => {
+      // التسليم والإسناد انتقلا إلى /reception/handover و /reception/workflow
+      notify.info(`مسح أمر شغل ${orderNumber} — استخدم شاشة التسليم المباشر`);
+    },
+    [],
+  );
+
   const handleHidScan = useCallback(
     async (raw: string) => {
       const r = parseScan(raw);
-      if (r.type === "product") {
+      if (r.type === "workOrder") {
+        await handleWorkOrderScan(r.number);
+        setSearch("");
+      } else if (r.type === "product") {
         await lookupBarcode(r.barcode);
         setSearch("");
       } else if (r.type === "customer") {
@@ -899,7 +795,7 @@ export default function Reception() {
         notify.ok(`تم تحديد العميل #${r.id}`);
       }
     },
-    [lookupBarcode],
+    [lookupBarcode, handleWorkOrderScan],
   );
   useBarcodeScanner(handleHidScan, { enabled: !showCustomization && !submitting });
   // مطابقة الماسح داخل حقل البحث المركَّز عبر hook مخصّص (PR #501): توقيتُ الحرف نفسه + تطبيع
@@ -907,7 +803,12 @@ export default function Reception() {
   // تلقائياً» بلا الاعتماد على استقرار البحث المؤجَّل، ويصحّح المسح حين تكون اللوحة عربيةً.
   const barcodeInput = useBarcodeInput((code) => {
     setSearch("");
-    void lookupBarcode(code);
+    const r = parseScan(code);
+    if (r.type === "workOrder") {
+      void handleWorkOrderScan(r.number);
+    } else {
+      void lookupBarcode(code);
+    }
   });
 
   // إصلاح (٧/٨، طلب مالك): أزرار الفواتير/الطلبات/الحجوزات/الوردية… تنتقل إلى الشريط العلوي
@@ -1314,7 +1215,7 @@ export default function Reception() {
     }
   }
 
-  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
+  async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean; isReservation?: boolean }) {
     // Fail before customer creation/offline capture: a stale external method must not
     // leave an orphan customer when the checkout service rejects the payment.
     if (!isPosPaymentMethodEnabled(String(method))) {
@@ -1386,10 +1287,15 @@ export default function Reception() {
       return { c, depositStr: "0.00", salePriceStr: full.toFixed(2) };
     });
 
+    const isReserve = !!opts.isReservation;
+
     // ش٠ (V1): كل المقارنات على الإجمالي **الفعليّ** (المقرَّب عند سريان التقريب) — إرسال مبالغ
     // غير مقرَّبة مع علم التقريب كان يجعل الخادم يرى نقصاً (رفضٌ للزبون العابر) أو ذمّةً صامتة.
     // ش٤: المستحقّ الآن = الإجمالي − العربون المقبوض سلفاً (heldD) — الدفع الجديد يقاس عليه.
-    const inputPaidD = opts.quickFullPay ? expectedNowD : paidD;
+    // إذا لم يُدخل الكاشير مبلغاً مخصصاً في حقل المدفوع، نعتبر البيع المباشر مدفوعاً بالكامل نقداً
+    const inputPaidD = isReserve
+      ? (paidD.gt(0) ? paidD : D(0))
+      : (opts.quickFullPay || (!payInput && !deferred && sumDirectNetD.gt(0))) ? expectedNowD : paidD;
     const appliedPaidD = method === "CASH" && inputPaidD.gt(expectedNowD) ? expectedNowD : inputPaidD;
 
     // غير النقد كلّه صالح كعربون، لكن بلا فكّة وبمرجع تتبّع إلزامي (كود الكارت لرصيد زين).
@@ -1424,33 +1330,44 @@ export default function Reception() {
     // بيع مباشر آجل (قرار المالك ١٠/٨): المتبقّي على البضاعة الجاهزة يصير ذمّةً على العميل المسجَّل.
     // مسار مباشر حصراً (لا مسوّدة — توزيعها يفترض دفعاً كاملاً، ولا توصيل — يُحصَّل عند الاستلام)،
     // ويلزمه عميلٌ مسجَّل (لا ذمّة بلا صاحب — createSaleInTx يرفض الآجل بلا customerId).
-    if (deferred) {
+    if (deferred && !isReserve) {
       if (activeDraft) { notify.err("البيع الآجل غير متاح للطلب المحفوظ — ثبّته مباشرةً بلا حفظ مسوّدة"); return; }
       if (orderDelivery) { notify.err("طلب التوصيل يُحصَّل عند الاستلام — لا حاجة لوضع «آجل»"); return; }
     }
-    if (!isValidIqMobile(receptionPhone)) {
-      notify.err("رقم هاتف العميل إلزامي — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+    const hasCustomLines = customWithDeposits.length > 0;
+    // حجز الفاتورة للطلبات عن بعد أو التسليم يتطلب معرفة العميل (اسمه وهاتفه)
+    if (isReserve) {
+      if (!customer.customerId && (!isValidIqMobile(receptionPhone) || customer.name.trim().length < 2)) {
+        notify.err("لحفظ وحجز الفاتورة يرجى إدخال اسم العميل ورقم هاتفه العراقي (١١ رقماً تبدأ بـ07)");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+    }
+    // رقم الهاتف إلزامي فقط لأوامر التخصيص/الطباعة — أما البيع المباشر النقدي فالعميل اختياري بالكامل!
+    if (hasCustomLines) {
+      if (!isValidIqMobile(receptionPhone)) {
+        notify.err("رقم هاتف العميل إلزامي لأوامر الشغل والتخصيص — أكمل ١١ رقماً عراقياً تبدأ بـ07");
+        customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+      if (!canCreateCustomer) {
+        notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
+        return;
+      }
+    } else if (receptionPhone && receptionPhone.trim().length > 0 && !isValidIqMobile(receptionPhone)) {
+      notify.err("رقم الهاتف غير مكتمل — أكمل ١١ رقماً تبدأ بـ07 أو أفرغ الحقل للبيع النقدي العابر");
       customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
-    if (!canCreateCustomer) {
-      notify.err("دورك لا يملك بوابة ربط عميل الاستقبال — راجع إعداد صلاحية أوامر الشغل");
-      return;
-    }
-    if (!orderDelivery && !deferred && appliedPaidD.plus(heldD).lt(directFloorD)) {
-      // ٢٣/٨ (بلاغ المالك): رسالة الخطأ صارت تقترح مساراتٍ عمليّة بدل مجرّد الحظر.
-      // الكاشير كان يحدّق في الرسالة دون معرفة كيف يخرج من الحال.
+    // الافتراضي يقبل الفواتير بدون ائتمان: وجود عميل مسجّل يحوّل أي نقص نقدي إلى آجل (ذمّة) تلقائياً.
+    const willDefer = deferred || isReserve || (customer.customerId != null && phoneResolution === "RESOLVED" && !orderDelivery && !activeDraft);
+    if (!orderDelivery && !willDefer && appliedPaidD.plus(heldD).lt(directFloorD)) {
       const shortfall = round2(directFloorD.minus(appliedPaidD).minus(heldD));
       notify.errBig(
         `البضاعة الجاهزة تحتاج ${fmt(directFloorD.toFixed(2))} د.ع (ناقصٌ ${fmt(shortfall.toFixed(2))})`,
-        deferredAvailable
-          ? "اختر «بدون عربون» لتسجيله ذمّةً على العميل، أو أَضِف مبلغاً يغطّي البضاعة الجاهزة."
-          : customer.customerId == null
-            ? "اربط عميلاً بحدّ ائتمانٍ لبيعٍ آجل، أو أَضِف توصيلاً (التحصيل عند الاستلام)، أو أَكمل المبلغ الآن."
-            : !customerDeferredEligible
-              ? "حدّ ائتمان العميل صفر — أَكمل المبلغ نقداً، أو راجع المدير لرفع الحدّ، أو أَضِف توصيلاً."
-              : "أَكمل المبلغ الآن، أو أَضِف توصيلاً للتحصيل عند الاستلام."
+        "اربط عميلاً لتسجيل الفاتورة على حسابه (آجل)، أو أَضِف توصيلاً، أو أَكمل المبلغ الآن.",
       );
+      customerSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       return;
     }
 
@@ -1482,15 +1399,17 @@ export default function Reception() {
       return;
     }
 
-    // هوية العميل جزء من عملية الاستقبال وليست خياراً جانبياً: حسم الهاتف/الاسم يسبق أي فاتورة.
+    // هوية العميل: في البيع النقدي العابر اختياري، وفي التخصيص أو عند إدخال هاتف صحيح يُربط بالعميل
     let customerId: number | null = customer.customerId ?? null;
-    if (customerId == null) {
+    if (customerId == null && isValidIqMobile(receptionPhone)) {
       try {
         customerId = await ensureCustomerId();
       } catch (e: any) {
-        setSubmitting(false);
-        notify.err(e?.message || "تعذّر حفظ العميل");
-        return;
+        if (hasCustomLines || deferred || isReserve) {
+          setSubmitting(false);
+          notify.err(e?.message || "تعذّر حفظ العميل");
+          return;
+        }
       }
     }
 
@@ -1663,7 +1582,7 @@ export default function Reception() {
         openingSellUnavailableConfirmed: opts.openingConfirmed === true,
         // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من البضاعة الجاهزة بلا توصيل ⇒ المتبقّي ذمّة
         // على العميل المسجَّل (حدّ الائتمان نافذ خادمياً). مسار مباشر فقط (لا مسوّدة، لا توصيل).
-        deferredDirect: deferred,
+        deferredDirect: willDefer,
         // م٦: اعتماد المدير للخصم >١٠٪ — التُقط استباقياً عند التطبيق ويُتحقَّق خادمياً الآن.
         managerApproval: mgrCredsRef.current ?? undefined,
         clientRequestId: reqIdRef.current,
@@ -1724,6 +1643,10 @@ export default function Reception() {
             `إرسالية ${dispatched.consignmentNumber} — يُحصَّل عند الاستلام ${fmt(dispatched.codAmount)} د.ع`,
           );
           void utils.delivery.invalidate();
+          const pObj = (partiesQ.data ?? []).find((p) => Number(p.id) === Number(orderDelivery.partyId));
+          setDeliveryDeparture(buildReceptionDepartureData({
+            dispatched, result, cart, customerName, receiptPhone, orderDelivery, courierPhone: pObj?.phone,
+          }));
         } else if (routeDeliveryToWO) {
           // ٨/٨ — أمر شغلٍ خالص: التوصيل مُثبَّتٌ على الأمر نفسه (لا إرسالية الآن — يُسنَد
           // للمندوب من طابور الطلبات عند الجاهزية). نجاحٌ لا تحذير («وكأنه غير موجود» سابقاً).
@@ -1783,10 +1706,10 @@ export default function Reception() {
       // إيراد ⇒ خارج الإجمالي؛ الإيصال يعرض «يدفع الزبون شاملاً التوصيل» شفافيةً.
       const receiptDelivery = orderDelivery && hasCarrierInvoice
         ? {
-            partyName: orderDelivery.partyName,
+            partyName: orderDelivery.partyName ?? "",
             fee: round2(D(orderDelivery.fee || 0)).toFixed(2),
             feeCollection: orderDelivery.feeCollection,
-            address: orderDelivery.address || null,
+            address: orderDelivery.address ?? null,
           }
         : null;
       if (result.regularSale) {
@@ -1897,7 +1820,14 @@ export default function Reception() {
         : browserFallbacks > 0
           ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
           : "أُرسلت المستندات إلى الطابعة مباشرة";
-      notify.ok(`تمّ ${summary}`, printDescription);
+      if (isReserve) {
+        notify.ok(
+          `تم حفظ وحجز الفاتورة #${result.regularSale?.invoiceNumber ?? ""}`,
+          "جاهزة للتسليم المباشر (/reception/handover) أو الإسناد للتوصيل (/reception/workflow)",
+        );
+      } else {
+        notify.ok(`تمّ ${summary}`, printDescription);
+      }
       // ش١ (§٨.٦): نافذة الإيصال — الفكّة بخطٍّ ضخم + أرقام المستندات + إعادة الطباعة (F9)،
       // ولافتةٌ تسمّي ما لم يُطبَع (كان يُبتلَع في toast عابرٍ بلا أيّ سبيلٍ لإعادة الطباعة).
       setLastSale({
@@ -2298,151 +2228,18 @@ export default function Reception() {
     );
   }
 
-  // رقم الخادم نفسه الذي يفرضه closeShift (DRAWER فقط)؛ لا نعيد تركيب المعادلة من تقرير طرق الدفع.
-  const recExpected = Number(reportQ.data?.expectedCash ?? shift.openingBalance ?? 0);
-  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
-  const showRecExpected = isElevatedRole || countEntered;
-  const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
-  const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
-
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
-      {/* ١٩/٨: طبقةُ الحجوزات زالت — لها **شاشتُها** `/reservations` (طلب المالك: لكل مفهومٍ
-          شاشةٌ واحدة). وهذه الشاشة صارت ما اسمُها: سلّةُ بيعٍ ودفع. */}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
-      {closing && (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-          dir="rtl"
-          onClick={() => setClosing(false)}
-        >
-          <div
-            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="mb-1 text-lg font-extrabold">إنهاء الوردية وعدّ النقدية</h3>
-            <p className="mb-4 text-xs text-muted-foreground">
-              {fmtDate(new Date())}
-            </p>
-            {reportQ.isLoading ? (
-              <div className="py-6 text-center text-muted-foreground">جارٍ تجهيز ملخص اليوم…</div>
-            ) : (
-              <>
-                {(
-                  [
-                    ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
-                    ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
-                    // إفصاح (مراجعة ٥/٨): فواتير تسليم الطلبات ضمن الإجمالي أعلاه، لكن عرابينها
-                    // قُبضت في ورديات سابقة — السطر يمنع قراءة «مبيعاتي ≠ درجي» كعجز.
-                    ...(Number(reportQ.data?.woInvoicesCount ?? 0) > 0
-                      ? [[
-                          `منها فواتير تسليم طلبات (${reportQ.data?.woInvoicesCount})`,
-                          `${fmt(Number(reportQ.data?.woInvoicesTotal ?? 0))} د.ع`,
-                        ] as [string, string]]
-                      : []),
-                    // ش٤ (I14): عرابين قُبضت على هذه الوردية لطلباتٍ لم تُثبَّت بعد — نقدٌ في الدرج
-                    // بلا فاتورة؛ السطر يمنع قراءته «فائضاً مجهولاً» ولا يمنع الإغلاق.
-                    ...(Number(reportQ.data?.heldDepositsCount ?? 0) > 0
-                      ? [[
-                          `عرابين طلبات لم تُثبَّت (${reportQ.data?.heldDepositsCount})`,
-                          `${fmt(Number(reportQ.data?.heldDepositsTotal ?? 0))} د.ع`,
-                        ] as [string, string]]
-                      : []),
-                    // توصيل (١٠/٨): توريدات المناديب وأجورهم كانت تذوب في «نقدي وارد/صادر» —
-                    // السطران يفسّران وارداً متضخماً ليس مبيعات هذا الدرج وصادرَ أجورٍ ليس مصروفاً عاماً.
-                    ...(Number(reportQ.data?.deliveryInCount ?? 0) > 0
-                      ? [[
-                          `منها توريدات مناديب (${reportQ.data?.deliveryInCount})`,
-                          `${fmt(Number(reportQ.data?.deliveryInTotal ?? 0))} د.ع`,
-                        ] as [string, string]]
-                      : []),
-                    ...(Number(reportQ.data?.deliveryOutCount ?? 0) > 0
-                      ? [[
-                          `مدفوعات توصيل صادرة (${reportQ.data?.deliveryOutCount})`,
-                          `${fmt(Number(reportQ.data?.deliveryOutTotal ?? 0))} د.ع`,
-                        ] as [string, string]]
-                      : []),
-                    ["المبلغ عند بدء الوردية", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
-                    ...(showRecExpected
-                      ? [["المبلغ المفترض وجوده في الدرج", `${fmt(recExpected)} د.ع`] as [string, string]]
-                      : []),
-                  ] as [string, string][]
-                ).map(([l, v]) => (
-                  <div key={l} className="flex justify-between border-b py-2 text-sm">
-                    <span className="text-muted-foreground">{l}</span>
-                    <span className="font-bold tabular-nums" dir="ltr">{v}</span>
-                  </div>
-                ))}
-                <div
-                  className="my-4 space-y-1.5"
-                  onBlur={() => setCountEntered(counted.trim() !== "")}
-                >
-                  <label htmlFor="rec-counted-cash" className="block text-sm font-bold">
-                    المبلغ الذي عددته في الدرج (د.ع)
-                  </label>
-                  <MoneyInput
-                    id="rec-counted-cash"
-                    value={counted}
-                    onChange={(value) => {
-                      setCounted(value);
-                      setCountEntered(false);
-                    }}
-                    placeholder="0"
-                    ariaLabel="النقد المعدود عند إغلاق الوردية"
-                    className="h-12 text-center text-lg font-extrabold"
-                  />
-                  {!showRecExpected && (
-                    <p className="text-xs text-muted-foreground">
-                      أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
-                    </p>
-                  )}
-                </div>
-                {recDiff !== null && (
-                  <div
-                    className={cn(
-                      "mt-2 inline-flex flex-wrap items-center gap-1 text-sm font-bold",
-                      recDiff < 0 ? "text-destructive" : "text-[var(--sem-pos)]",
-                    )}
-                  >
-                    <span>الفرق: {recDiff >= 0 ? "+" : ""}{fmt(recDiff)} د.ع</span>
-                    {recDiff === 0 && (
-                      <span className="inline-flex items-center gap-1">
-                        <Check aria-hidden className="size-3.5" /> مطابق تماماً
-                      </span>
-                    )}
-                    {recDiff > 0 && <span>(زيادة)</span>}
-                    {recDiff < 0 && <span>(عجز)</span>}
-                  </div>
-                )}
-                {hasRecVariance && (
-                  <div className="mt-4 space-y-2 rounded-xl border border-destructive/60 bg-destructive/10 p-3">
-                    <p className="text-sm font-extrabold text-destructive">
-                      لا يمكن إنهاء الوردية لأن المبلغ المعدود لا يطابق المبلغ المسجّل في النظام.
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      أعد عدّ النقدية وراجع عمليات البيع والإرجاع. إذا بقي الفرق، اطلب من المدير المراجعة.
-                    </p>
-                  </div>
-                )}
-                <div className="mt-5 flex gap-2.5">
-                  <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
-                    إلغاء
-                  </Button>
-                  <Button
-                    className="flex-1"
-                    disabled={!counted || closeShiftM.isPending || hasRecVariance}
-                    onClick={() => closeShiftM.mutate({
-                      shiftId: shift.id,
-                      countedCash: counted,
-                    })}
-                  >
-                    {closeShiftM.isPending ? "جارٍ الإنهاء…" : hasRecVariance ? "لا يمكن الإنهاء قبل حل الفرق" : "تأكيد الإنهاء وطباعة الملخص"}
-                  </Button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+      {closing && shift && (
+        <ReceptionShiftCloseDialog
+          open={closing}
+          onClose={() => setClosing(false)}
+          shift={shift}
+          branchName={branchName}
+          cashierName={me.data?.name ?? "موظف الخدمة"}
+          isElevatedRole={isElevatedRole}
+        />
       )}
       {/* أربع مناطق حقيقية: تفاصيل أمر الشغل جزء من السلة، فلا نكررها كمرحلة مستقلة. */}
       <div className={cn("flex-shrink-0 border-b bg-card px-4", compactHeader ? "space-y-1.5 py-1.5" : "space-y-2 py-2.5")}>
@@ -2507,42 +2304,14 @@ export default function Reception() {
             )}
           </section>
 
-          {/* ٢ — الهاتف هو مفتاح الهوية في كل القنوات، لا حقل تابع لواتساب وحده. */}
-          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-phone-title">
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٢</span>
-                <h2 id="reception-phone-title" className="text-xs font-black">رقم هاتف العميل</h2>
-                <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[9px] font-black text-destructive">إلزامي</span>
-              </div>
-              {phoneResolution === "CHECKING" && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
-                  <LoaderCircle aria-hidden className="size-3 animate-spin" /> جارٍ التحقق
-                </span>
-              )}
-            </div>
-            <PhoneDigitsInput
-              value={receptionPhone}
-              onChange={setReceptionPhone}
-              ariaLabel="رقم هاتف العميل العراقي"
-              className="max-w-full"
-            />
-            <div className="mt-1.5 min-h-4 text-[10px] font-semibold">
-              {phoneResolution === "EMPTY" && <span className="text-muted-foreground">اكتب ١١ رقماً؛ سنبحث عن العميل تلقائياً.</span>}
-              {phoneResolution === "INCOMPLETE" && <span className="text-[var(--sem-warn)]">أكمل الرقم العراقي الذي يبدأ بـ07.</span>}
-              {phoneResolution === "NEEDS_NAME" && <span className="text-[var(--sem-info)]">الرقم جديد — بقي اسم العميل فقط.</span>}
-              {phoneResolution === "RESOLVED" && <span className="text-money-positive">تم العثور على العميل وربطه بالطلب.</span>}
-              {phoneResolution === "ERROR" && <span className="text-destructive">{phoneResolutionError}</span>}
-            </div>
-          </section>
-
-          {/* ٣ — نتيجة واحدة: بطاقة عميل مرتبطة أو حقل الاسم للرقم الجديد. لا قوائم عائمة فوق البحث. */}
-          <section className="rounded-lg border bg-card p-2" aria-labelledby="reception-customer-title">
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">٣</span>
-                <h2 id="reception-customer-title" className="text-xs font-black">هوية العميل</h2>
-              </div>
+          {/* ٢+٣ — الهاتف مفتاح الهوية + هوية العميل: المكوّن المشترك مع كاشير التجزئة (م١ PR-B). */}
+          <CustomerByPhone
+            api={phoneCustomer}
+            canCreate={canCreateCustomer}
+            steps={{ phone: "٢", identity: "٣" }}
+            idPrefix="reception"
+            onOpenProfile={canReadCustomerContext ? (id) => setCustomerContextId(id) : undefined}
+            identityHeaderExtra={
               <div className="flex items-center gap-1">
                 <span className="text-[9px] font-semibold text-muted-foreground">فئة السعر</span>
                 <AppSelect
@@ -2556,79 +2325,8 @@ export default function Reception() {
                   <option value="GOVERNMENT">حكومي</option>
                 </AppSelect>
               </div>
-            </div>
-
-            {customer.customerId ? (
-              <div className="flex min-h-12 items-center gap-2 rounded-md border border-money-positive/40 bg-money-positive/10 px-2.5 py-1.5">
-                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-money-positive/15 text-money-positive">
-                  <UserRound aria-hidden className="size-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-xs font-black">{customer.name}</span>
-                    <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
-                  </div>
-                  <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{receptionPhone}</div>
-                  <div className={cn("text-[9px] font-bold", customerDeferredEligible ? "text-money-positive" : "text-[var(--sem-warn)]")}>
-                    {customerDeferredEligible ? "مرتبط · البيع بدون عربون متاح" : "مرتبط · نقديٌّ فقط (حدّ ائتمانه صفر)"}
-                  </div>
-                </div>
-                {canReadCustomerContext && (
-                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setCustomerContextId(customer.customerId)}>
-                    الملف
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                <div className="flex min-h-12 items-center gap-1.5">
-                  <Input
-                    value={customer.name}
-                    onChange={(event) => setCustomer((previous) => ({ ...previous, name: event.target.value, phone: receptionPhone, isNew: true }))}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && customer.name.trim().length >= 2 && phoneResolution === "NEEDS_NAME") {
-                        event.preventDefault();
-                        void resolveReceptionCustomer(customer.name, true);
-                      }
-                    }}
-                    disabled={!isValidIqMobile(receptionPhone) || phoneResolution === "CHECKING"}
-                    placeholder={isValidIqMobile(receptionPhone) ? "اسم العميل الجديد" : "أكمل الهاتف أولاً"}
-                    aria-label="اسم العميل"
-                    className="h-9 min-w-0 flex-1 text-xs font-bold"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={phoneResolution !== "NEEDS_NAME" || customer.name.trim().length < 2 || resolveReceptionCustomerM.isPending || !canCreateCustomer}
-                    onClick={() => void resolveReceptionCustomer(customer.name, true)}
-                    className="h-9 shrink-0 px-3 text-[11px] font-black"
-                  >
-                    حفظ وربط
-                  </Button>
-                </div>
-                {/* ٣٠/٨/٢٦ (بلاغ المالك المصحِّح): «حدّ الائتمان» عند الإنشاء — لكلّ من يملك
-                    صلاحية إنشاء عميل الاستقبال (كاشير + مدير). الافتراض "0" (نقديّ فقط) لا يُغيَّر
-                    إلّا إذا كتب المستعمل قيمة صراحةً. اتركه فارغاً = يبقى على الافتراض. */}
-                {phoneResolution === "NEEDS_NAME" && canCreateCustomer && (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={newCustomerCreditLimit}
-                      onChange={(e) => setNewCustomerCreditLimit(e.target.value.replace(/[^\d.]/g, ""))}
-                      disabled={!isValidIqMobile(receptionPhone)}
-                      placeholder="حدّ ائتمان اختياريّ (اتركه فارغاً للنقديّ فقط)"
-                      aria-label="حدّ الائتمان للعميل الجديد"
-                      className="h-8 min-w-0 flex-1 text-[11px] tabular-nums"
-                      dir="ltr"
-                    />
-                    <span className="shrink-0 text-[10px] text-muted-foreground">د.ع</span>
-                  </div>
-                )}
-              </div>
-            )}
-            {!canCreateCustomer && (
-              <p className="mt-1 text-[10px] font-bold text-destructive">صلاحية ربط عميل الاستقبال غير مفعّلة لهذا الدور.</p>
-            )}
-          </section>
+            }
+          />
         </div>
 
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-3">
@@ -2720,20 +2418,7 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
-        {/* ش٦ — توصيل هذا الطلب: طلبٌ هاتفيّ بخطوة واحدة (سلة + توصيل + تثبيت ⇒ إسناد تلقائيّ). */}
-        <button
-          type="button"
-          onClick={() => setDeliveryDialogOpen(true)}
-          className={cn(
-            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
-            orderDelivery
-              ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
-              : "hover:bg-muted/60",
-          )}
-        >
-          <Truck aria-hidden className="size-4" />
-          {orderDelivery ? `توصيل: ${orderDelivery.partyName}` : "توصيل هذا الطلب"}
-        </button>
+        {/* التسليم والإسناد يتمّان عبر الباركود في شاشة مستقلة — لا زرّ توصيل هنا */}
 
         </div>
 
@@ -2863,18 +2548,18 @@ export default function Reception() {
             {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
             <div className="ms-auto flex items-center gap-1.5">
               <a
-                href="/reception/orders"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="طابور التسليم والإسناد"
+                href="/reception/handover"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-green-500 bg-green-50 px-2 py-1 text-xs font-extrabold text-green-700 hover:bg-green-100"
+                title="تسليم الطلبات الجاهزة للزبون مباشرة"
               >
-                <ClipboardList aria-hidden className="size-3.5" /> طلبات محطّتي
+                <CheckCircle2 aria-hidden className="size-3.5" /> تسليم مباشر
               </a>
               <a
-                href="/reception/invoices"
+                href="/reception/workflow"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="ما عليه مبلغٌ متبقٍّ"
+                title="إسناد للمندوب والتوصيل"
               >
-                <ReceiptIcon aria-hidden className="size-3.5" /> فواتير للتحصيل
+                <Truck aria-hidden className="size-3.5" /> إسناد وتوصيل
               </a>
             </div>
           </div>
@@ -2895,6 +2580,8 @@ export default function Reception() {
               grandTotal={grandTotal}
               cartCount={cartCount}
               addTick={addTick}
+              effectiveTier={effectiveTier}
+              onUnitChange={changeLineUnit}
             />
         </div>
       </div>
@@ -2954,9 +2641,17 @@ export default function Reception() {
         onSubmit={(opts) => void handleSubmit(opts)}
       />
 
-      {/* شارة المزامنة — تُركَّب في كلّ شاشات الكاشير: تعرض حالة الاتصال وطابور الالتقاط،
-          وتُفرّغ **كلّ** الأنواع (تجزئة/طباعة/استقبال) لا نوع هذه الشاشة وحده. */}
+      {/* شارة المزامنة */}
       <OfflineSyncChip userRole={me.data?.role} />
+
+      {/* سحب نقدي من الدرج */}
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={RECEPTION_TOKENS}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
 
       {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
       {depositOpen && activeDraft && (
@@ -2976,33 +2671,6 @@ export default function Reception() {
             setPayInput("");
             void utils.reception.draftList.invalidate();
           }}
-        />
-      )}
-
-      {/* ─── ش٤: سجلّ عرابين الطلب النشط + الردّ ─── */}
-      {paymentsOpen && activeDraft && (
-        <DraftPaymentsDialog
-          draftId={activeDraft.id}
-          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
-          branchId={branchId}
-          onClose={() => setPaymentsOpen(false)}
-          onChanged={(heldNet) => {
-            setDraftHeld(heldNet);
-            void utils.reception.draftList.invalidate();
-          }}
-        />
-      )}
-
-      {/* ─── ش٦: كتلة توصيل الطلب (إسنادٌ تلقائيّ بعد التثبيت) ─── */}
-      {deliveryDialogOpen && (
-        <OrderDeliveryDialog
-          parties={(partiesQ.data ?? []) as DispatchParty[]}
-          initial={orderDelivery}
-          defaultRecipientName={customer.name || null}
-          defaultRecipientPhone={customer.phone || null}
-          onSave={setOrderDelivery}
-          onClear={() => setOrderDelivery(null)}
-          onClose={() => setDeliveryDialogOpen(false)}
         />
       )}
 
@@ -3038,21 +2706,6 @@ export default function Reception() {
         />
       )}
 
-      {/* صندوق القنوات الحقيقي داخل محطة الاستقبال؛ يعود الموظف إلى السلة من دون فقد محتواها. */}
-      {showInbox && (
-        <div className="absolute inset-0 z-40 overflow-hidden bg-background p-4">
-          <div className="mb-3 flex items-center justify-between rounded-xl border bg-card p-3">
-            <div>
-              <h1 className="inline-flex items-center gap-2 font-extrabold"><MessageCircle aria-hidden className="size-4" /> رسائل وطلبات العملاء</h1>
-              <p className="text-xs text-muted-foreground">تابع رسائل واتساب والاتصالات، واربطها بالعميل عند الحاجة.</p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => setShowInbox(false)}>
-              <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
-            </Button>
-          </div>
-          <Inbox onStartOrder={startOrderFromConversation} />
-        </div>
-      )}
       {customerContextId != null && (
         <Contact360Panel
           kind="customer"
@@ -3062,16 +2715,18 @@ export default function Reception() {
         />
       )}
 
-      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة. */}
+      {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة وانطلاق التوصيل. */}
       {showReceiptOverlay && lastSale && (
         <ReceiptOverlay
           lastSale={lastSale}
+          deliveryDeparture={deliveryDeparture}
+          onCloseDeliveryDeparture={() => setDeliveryDeparture(null)}
           onReprint={() => reprintLastRef.current?.()}
           onClose={() => setShowReceiptOverlay(false)}
         />
       )}
 
-      {/* م٦ — اعتماد المدير للخصم >١٠٪ (استباقيّ): يُتحقَّق خادمياً لحظة الالتزام. */}
+      {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && (
         <ManagerApprovalDialog
           pct={approvalAsk.pct}
@@ -3082,14 +2737,6 @@ export default function Reception() {
             setApprovalAsk(null);
             notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
           }}
-        />
-      )}
-
-      {cashDropping && shift && (
-        <CashDropDialog
-          C={RECEPTION_TOKENS}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
         />
       )}
     </div>

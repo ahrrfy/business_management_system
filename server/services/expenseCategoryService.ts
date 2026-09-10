@@ -24,6 +24,7 @@ import {
 } from "../../shared/expenseCategories";
 import { getDb, type Tx } from "../db";
 import { extractAffectedRows, extractInsertId } from "../lib/insertId";
+import { createTtlCache } from "../lib/ttlCache";
 import { withTx, type Actor } from "./tx";
 
 export interface ExpenseCategoryListRow {
@@ -38,6 +39,15 @@ export interface ExpenseCategoryListRow {
   usedExpenseCount: number;
 }
 
+const expenseCategoryCache = createTtlCache<string, ExpenseCategoryListRow[]>({
+  ttlMs: 60_000,
+  maxEntries: 10,
+});
+
+export function clearExpenseCategoriesCache(): void {
+  expenseCategoryCache.clear();
+}
+
 /** مطابقة الاسم كما في DB (UNIQUE بترتيب غير حسّاس للحالة). */
 function nameKey(name: string): string {
   return name.trim().toLocaleLowerCase("ar");
@@ -46,40 +56,43 @@ function nameKey(name: string): string {
 export async function listExpenseCategories(input?: {
   includeInactive?: boolean;
 }): Promise<ExpenseCategoryListRow[]> {
-  const db = getDb();
-  if (!db) return [];
-  const [rows, counts] = await Promise.all([
-    db
-      .select()
-      .from(expenseCategories)
-      .where(
-        input?.includeInactive
-          ? undefined
-          : eq(expenseCategories.isActive, true),
-      )
-      .orderBy(asc(expenseCategories.sortOrder), asc(expenseCategories.id)),
-    db
-      .select({
-        categoryId: expenses.expenseCategoryId,
-        count: sql<number>`COUNT(*)`,
-      })
-      .from(expenses)
-      .where(sql`${expenses.expenseCategoryId} IS NOT NULL`)
-      .groupBy(expenses.expenseCategoryId),
-  ]);
-  const countById = new Map(
-    counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
-  );
-  return rows.map((row) => ({
-    id: Number(row.id),
-    name: row.name,
-    bucket: row.bucket as ExpenseBucket,
-    description: row.description ?? null,
-    isActive: !!row.isActive,
-    isBucketDefault: !!row.isBucketDefault,
-    sortOrder: Number(row.sortOrder ?? 0),
-    usedExpenseCount: countById.get(Number(row.id)) ?? 0,
-  }));
+  const cacheKey = input?.includeInactive ? "all" : "active";
+  return expenseCategoryCache.get(cacheKey, async () => {
+    const db = getDb();
+    if (!db) return [];
+    const [rows, counts] = await Promise.all([
+      db
+        .select()
+        .from(expenseCategories)
+        .where(
+          input?.includeInactive
+            ? undefined
+            : eq(expenseCategories.isActive, true),
+        )
+        .orderBy(asc(expenseCategories.sortOrder), asc(expenseCategories.id)),
+      db
+        .select({
+          categoryId: expenses.expenseCategoryId,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(expenses)
+        .where(sql`${expenses.expenseCategoryId} IS NOT NULL`)
+        .groupBy(expenses.expenseCategoryId),
+    ]);
+    const countById = new Map(
+      counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+    );
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      bucket: row.bucket as ExpenseBucket,
+      description: row.description ?? null,
+      isActive: !!row.isActive,
+      isBucketDefault: !!row.isBucketDefault,
+      sortOrder: Number(row.sortOrder ?? 0),
+      usedExpenseCount: countById.get(Number(row.id)) ?? 0,
+    }));
+  });
 }
 
 async function assertNameFree(tx: Tx, name: string, excludeId?: number) {
@@ -152,6 +165,7 @@ export async function createExpenseCategory(
         isBucketDefault: false,
       }),
     );
+    clearExpenseCategoriesCache();
     return { id, name, bucket: input.bucket, isActive: true };
   });
 }
@@ -234,6 +248,7 @@ export async function updateExpenseCategory(
         .update(expenseCategories)
         .set(patch)
         .where(eq(expenseCategories.id, input.id));
+      clearExpenseCategoriesCache();
     }
     return { id: input.id, changed: Object.keys(patch) };
   });
@@ -273,6 +288,7 @@ export async function setExpenseCategoryActive(
       .update(expenseCategories)
       .set({ isActive: input.isActive })
       .where(eq(expenseCategories.id, input.id));
+    clearExpenseCategoriesCache();
     return { id: input.id, isActive: input.isActive };
   });
 }
@@ -357,6 +373,10 @@ export async function ensureDefaultExpenseCategoriesInTx(
       .set({ isActive: true, isBucketDefault: true })
       .where(eq(expenseCategories.id, Number(row.id)));
     result.defaultsRepaired.push(def.bucket);
+  }
+
+  if (missing.length || result.defaultsRepaired.length) {
+    clearExpenseCategoriesCache();
   }
 
   return result;
@@ -477,6 +497,9 @@ export async function backfillExpenseCategories(): Promise<{
           ),
         );
       updated += extractAffectedRows(res);
+    }
+    if (updated > 0) {
+      clearExpenseCategoriesCache();
     }
     return { updated };
   });

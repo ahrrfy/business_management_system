@@ -213,6 +213,10 @@ export async function settleDailyTx(
         await tx
           .select({
             id: deliveryRemittances.id,
+            remittanceNumber: deliveryRemittances.remittanceNumber,
+            collectedTotal: deliveryRemittances.collectedTotal,
+            feesTotal: deliveryRemittances.feesTotal,
+            netRemitted: deliveryRemittances.netRemitted,
             status: deliveryRemittances.status,
             shortfallTotal: deliveryRemittances.shortfallTotal,
             receiptInId: deliveryRemittances.receiptInId,
@@ -224,6 +228,10 @@ export async function settleDailyTx(
       if (rm) {
         return {
           remittanceId: Number(rm.id),
+          remittanceNumber: rm.remittanceNumber,
+          collectedTotal: String(rm.collectedTotal),
+          feesTotal: String(rm.feesTotal),
+          netRemitted: String(rm.netRemitted),
           status: rm.status === "SHORT" ? "SHORT" : "BALANCED",
           shortfallTotal: String(rm.shortfallTotal),
           receiptId: rm.receiptInId != null ? Number(rm.receiptInId) : null,
@@ -294,6 +302,10 @@ export async function settleDailyTx(
   }
   return {
     remittanceId: res.remittanceId,
+    remittanceNumber: res.remittanceNumber ?? null,
+    collectedTotal: String(res.collectedTotal),
+    feesTotal: String(res.feesTotal),
+    netRemitted: String(res.netRemitted),
     status: res.status === "SHORT" ? "SHORT" : "BALANCED",
     shortfallTotal: String(res.shortfallTotal),
     receiptId: "receiptInId" in res && res.receiptInId != null ? Number(res.receiptInId) : null,

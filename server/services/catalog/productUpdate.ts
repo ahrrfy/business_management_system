@@ -18,6 +18,8 @@ import {
   assertBaseUnitStableAndRevalueCost,
   assertBundleEditShape,
   assertHasVariants,
+  assertNoActiveStocktakeFactorChange,
+  assertNoActiveStocktakeUnitFreeze,
   loadProductForUpdateOrThrow,
   lockUnitsAndAssertNoActiveOnlineOrderChanges,
   lockVariantsForUpdate,
@@ -218,12 +220,20 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
 
       // Existing units for this variant.
       const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, v.id));
+      // تجميد هيكل وهوية الوحدات أثناء الجرد النشط (Codex P2)
+      await assertNoActiveStocktakeUnitFreeze(tx, v.id, existing, v.units);
       const keepIds = new Set<number>();
 
       for (const u of v.units) {
         let productUnitId: number;
         if (u.id) {
           productUnitId = u.id;
+          const existingUnit = existing.find((e) => Number(e.id) === Number(u.id));
+          if (existingUnit && !u.isBaseUnit) {
+            await assertNoActiveStocktakeFactorChange(tx, v.id, [
+              { unitName: u.unitName, oldFactor: existingUnit.conversionFactor, newFactor: u.conversionFactor },
+            ]);
+          }
           const previousPrices = await tx
             .select({ priceTier: productPrices.priceTier, price: productPrices.price })
             .from(productPrices)

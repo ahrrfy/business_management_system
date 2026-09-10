@@ -56,6 +56,9 @@ const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const MyWork = lazy(() => import("@/pages/MyWork"));
 const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReceptionWorkflowPage = lazy(() => import("@/pages/reception/ReceptionWorkflowPage"));
+const ReceptionHandoverPage = lazy(() => import("@/pages/reception/ReceptionHandoverPage"));
+
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
 
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
@@ -120,6 +123,7 @@ const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
 const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
 const Account = lazy(() => import("@/pages/Account"));
+const Announcements = lazy(() => import("@/pages/Announcements"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
@@ -331,6 +335,10 @@ export default function App() {
       <Route path="/print-pos">
         <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
+      {/* إعادة توجيه شاشة الاستقبال: /reception ⇒ /pos?mode=RECEPTION */}
+      <Route path="/reception">
+        <Redirect to="/pos?mode=RECEPTION" />
+      </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — عامة بلا دخول */}
       <Route path="/price-checker">
         <PriceChecker />
@@ -386,7 +394,7 @@ export default function App() {
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
-      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
+      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager", "cashier"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
       <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
       <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
@@ -451,6 +459,9 @@ export default function App() {
       <Route path="/my-work"><Shell><MyWork /></Shell></Route>
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
+      {/* شاشة التسليم المباشر والإسناد للمندوب — تعمل بالباركود */}
+      <Route path="/reception/workflow"><Shell><ReceptionWorkflowPage /></Shell></Route>
+      <Route path="/reception/handover"><Shell><ReceptionHandoverPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionNew /></RequireRole></Shell></Route>
       <Route path="/production/:id"><Shell><RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole></Shell></Route>
@@ -580,6 +591,7 @@ export default function App() {
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
+      <Route path="/announcements"><Shell><RequireRole roles={["admin","manager"]} module="announcements" level="READ"><Announcements /></RequireRole></Shell></Route>
       <Route path="/audit"><Shell><RequireRole roles={["admin","auditor"]}><AuditLogs /></RequireRole></Shell></Route>
       <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>

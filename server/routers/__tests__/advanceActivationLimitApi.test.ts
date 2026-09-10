@@ -40,7 +40,7 @@ beforeEach(async () => {
   ]);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values([
-    { id: 1, openId: "advance-api-owner-maker", name: "مالك منشئ", role: "admin", branchId: 1, isOwner: true },
+    { id: 1, openId: "advance-api-maker", name: "مدير منشئ", role: "admin", branchId: 1, isOwner: false },
     { id: 2, openId: "advance-api-owner-approver", name: "مالك معتمد", role: "manager", branchId: 1, isOwner: true },
   ]);
   await db().insert(s.employees).values({

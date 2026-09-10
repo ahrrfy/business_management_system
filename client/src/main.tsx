@@ -20,12 +20,7 @@ import { createRoot } from "react-dom/client";
 import { useLocation } from "wouter";
 import App from "./App";
 import { applyStoredDisplayScale } from "@/lib/displayScale";
-// خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
-import "@fontsource/cairo/400.css";
-import "@fontsource/cairo/500.css";
-import "@fontsource/cairo/600.css";
-import "@fontsource/cairo/700.css";
-import "@fontsource/cairo/800.css";
+// خط Cairo مستضاف محلياً ومباشراً عبر public/fonts في index.css (بلا اعتماد على Google Fonts CDN أو مسارات خارجية) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "./index.css";
 import "animate.css/animate.min.css";
 import "./lib/theme/tokens.css";

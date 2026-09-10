@@ -24,17 +24,19 @@ export interface PaymentActionsProps {
   method: PaymentMethod;
   externalPaymentConfirmed: boolean;
   onPay: () => void; onQuickPay: () => void;
+  /** م١ PR-B — وضع «توصيل» (COD): المتبقّي يُحصَّل عند التسليم لا آجلاً؛ يغيّر نصوص المؤشّر والزرّ فقط. */
+  codMode?: boolean;
 }
 
 /** منطقة الفعل — خارج التمرير ولا تنكمش: الباقي/المتبقي + زرّا الدفع + تلميح الاختصارات. */
-export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay }: PaymentActionsProps) {
+export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInput, isChange, isOwing, change, credit, showQuickPay, canPay, isPending, hasCustomer, method, externalPaymentConfirmed, onPay, onQuickPay, codMode = false }: PaymentActionsProps) {
   return (
     <div style={{ flexShrink: 0, background: C.card }}>
 
     {/* Change / owing indicator */}
     <div style={{ borderTop: `1px solid ${C.border}`, padding: "4px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: ultra ? 28 : 36, flexShrink: 0 }}>
       {!cartLen && <span style={{ fontSize: 13, color: C.mutedFg }}>أضف منتجات للبدء</span>}
-      {cartLen > 0 && !payInput && <span style={{ fontSize: 12.5, color: C.mutedFg }}>أدخل المبلغ أو «إتمام» للدفع الكامل</span>}
+      {cartLen > 0 && !payInput && <span style={{ fontSize: 12.5, color: C.mutedFg }}>{codMode ? `يُحصَّل عند التسليم — ${fmt(total)} د.ع (لا قبضَ الآن)` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
       {cartLen > 0 && !!payInput && isChange && (
         <>
           <span style={{ fontSize: 13.5, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span>
@@ -46,7 +48,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
       )}
       {cartLen > 0 && !!payInput && isOwing && (
         <>
-          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>المتبقي للدفع</span>
+          <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>{codMode ? "المتبقّي يُحصَّل عند التسليم" : "المتبقي للدفع"}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
             <CopyButton value={credit} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
@@ -61,7 +63,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
         عند ضيق الارتفاع يصطفّ الزرّان في **صفٍّ واحد** (نمط شاشة الطباعة نفسه) فيوفّران
         صفّاً كاملاً (~٥٨px) دون فقد ميزة «الدفع السريع» على الشاشات الصغيرة التي تحتاجها
         أكثر — والارتفاع يبقى ≥50px لكليهما. */}
-    <div style={{ padding: dense ? "4px 11px 9px" : "4px 11px 10px", flexShrink: 0, display: "flex", flexDirection: dense ? "row" : "column", gap: dense ? 7 : 0 }}>
+    <div style={{ padding: "4px 11px 8px", flexShrink: 0, display: "flex", flexDirection: "row", gap: 6 }}>
 
       {showQuickPay && (
         <button
@@ -78,17 +80,17 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
             `دفع سريع وطباعة — ${paymentMethodLabel(method)}`
           }
           style={{
-            ...(dense ? { width: 128, flexShrink: 0 } : { width: "100%", marginBottom: 7 }),
-            height: fluid(50, 6.6, 58),
+            width: dense ? 110 : 124, flexShrink: 0,
+            height: fluid(44, 5.6, 52),
             background: canPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
             color: canPay && !isPending ? "#fff" : C.mutedFg,
-            border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 13.5 : 15, fontWeight: 900,
+            border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 12.5 : 13.5, fontWeight: 900,
             cursor: canPay && !isPending ? "pointer" : "not-allowed",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: dense ? 5 : 7,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
             boxShadow: canPay && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
             transition: "background .1s, color .1s, box-shadow .1s",
           }}>
-          <Zap aria-hidden size={18} />{dense ? "دفع سريع" : `دفع سريع وطباعة — ${paymentMethodLabel(method)}`}
+          <Zap aria-hidden size={16} />دفع سريع
         </button>
       )}
 
@@ -101,16 +103,16 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           isOwing && !hasCustomer ? "الدفعة الجزئيّة (الآجل) تحتاج عميلاً مرتبطاً — أو حصّل المبلغ كاملاً" :
           method !== "CASH" && !externalPaymentConfirmed ? "أكمل مرجع الدفع الخارجي وتأكيده" :
           !canPay ? "أكمل بيانات الدفع" :
-          `إتمام الدفع — ${fmt(total)} د.ع`
+          codMode ? `تثبيت الطلب وإسناده للتوصيل — ${fmt(total)} د.ع تُحصَّل عند التسليم` : `إتمام الدفع — ${fmt(total)} د.ع`
         }
         style={{
-          ...(dense && showQuickPay ? { flex: 1, minWidth: 0 } : { width: "100%" }),
-          height: fluid(50, 6.6, 58),
+          flex: 1, minWidth: 0,
+          height: fluid(44, 5.6, 52),
           background: canPay && !isPending ? C.success : C.muted,
           color: canPay && !isPending ? "#fff" : C.mutedFg,
-          border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 15, fontWeight: 900,
+          border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 13.5 : 14.5, fontWeight: 900,
           cursor: canPay && !isPending ? "pointer" : "not-allowed",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           boxShadow: canPay && !isPending ? `0 3px 12px color-mix(in oklch, ${C.success} 30%, transparent)` : "none",
           transition: "background .1s, color .1s, box-shadow .1s",
         }}>
@@ -118,7 +120,7 @@ export function PaymentActions({ C, dense, ultra, fluid, total, cartLen, payInpu
           ? "جارٍ…"
           : !cartLen
             ? "السلة فارغة"
-            : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع — {fmt(total)} د.ع</>}
+            : <><Check aria-hidden size={18} strokeWidth={3} /> {codMode ? "تثبيت الطلب وإسناده" : "إتمام الدفع"} — {fmt(total)} د.ع</>}
       </button>
     </div>
 

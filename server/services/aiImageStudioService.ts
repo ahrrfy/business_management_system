@@ -232,8 +232,10 @@ async function generateStudioImageAttempt(
 
   const generationConfig: Record<string, unknown> = { responseModalities: ["IMAGE"] };
   if (opts.includeImageConfig !== false) {
-    // عقد Gemini 3 الرسمي عبر generateContent: صورة 1K مربعة تطابق بقية أنبوب الاستوديو.
-    generationConfig.responseFormat = { image: { aspectRatio: "1:1", imageSize: "1K" } };
+    // REST responseFormat يستقبل أسماء enum؛ اختصارات SDK (1:1 / 1K) تُرفض بـ400.
+    generationConfig.responseFormat = {
+      image: { aspectRatio: "ASPECT_RATIO_ONE_BY_ONE", imageSize: "IMAGE_SIZE_ONE_K" },
+    };
   }
 
   let res: Response;

@@ -8,6 +8,7 @@ import { and, asc, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { categories, productImages, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { withTx, type Actor } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { rejectLegacyCatalogMediaWrite } from "../catalog/mediaWriteGuard";
@@ -69,9 +70,15 @@ export async function listStoreCatalog(
   if (input.categoryId === 0 || input.categoryId === null) conds.push(isNull(products.categoryId));
   else if (input.categoryId != null) conds.push(eq(products.categoryId, input.categoryId));
   const q = input.q?.trim();
+  const qNorm = q ? normalizeSearchText(q) : "";
   // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') — اتساقٌ مع مسارات البحث (القيمة مربوطة، لا حقن).
   const qPat = q ? `%${escLike(q)}%` : null;
-  if (qPat) conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
+  const qNormPat = qNorm ? `%${escLike(qNorm)}%` : null;
+  if (qPat && qNormPat) {
+    conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!')`);
+  } else if (qPat) {
+    conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
+  }
   if (input.featuredOnly) conds.push(eq(products.isFeatured, true));
   if (input.hiddenOnly) conds.push(eq(products.showInStore, false));
   if (input.missingImageOnly) conds.push(isNull(productImages.id));
@@ -127,22 +134,33 @@ export async function listStoreCatalog(
     };
   });
 
-  const [cnt] = await db
-    .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
-    .from(products)
-    .leftJoin(productImages, and(
-      eq(productImages.productId, products.id),
-      eq(productImages.isPrimary, true),
-      isNull(productImages.variantId),
-    ))
-    .where(whereClause);
+  // مسار سريع: الصفحة الأولى ببيانات أقل من الحد الأقصى = العدد محدد سلفاً ولا حاجة لمسح الجدول ثانيةً
+  let total = 0;
+  if (offset === 0 && raw.length < limit) {
+    total = raw.length;
+  } else {
+    const [cnt] = await db
+      .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
+      .from(products)
+      .leftJoin(productImages, and(
+        eq(productImages.productId, products.id),
+        eq(productImages.isPrimary, true),
+        isNull(productImages.variantId),
+      ))
+      .where(whereClause);
+    total = Number(cnt?.n ?? 0);
+  }
 
   // العدد الحقيقي «الظاهر فعلياً» — نفس شرط sellable في storefrontService، بنفس فلترة الفئة/البحث
   // (لا فلاتر العرض featuredOnly/hiddenOnly/missingImageOnly — تلك أدوات تصفّح للمدير لا معيار بيع).
   const eligibilityConds: SQL[] = [];
   if (input.categoryId === 0 || input.categoryId === null) eligibilityConds.push(isNull(products.categoryId));
   else if (input.categoryId != null) eligibilityConds.push(eq(products.categoryId, input.categoryId));
-  if (qPat) eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
+  if (qPat && qNormPat) {
+    eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qNormPat} ESCAPE '!')`);
+  } else if (qPat) {
+    eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
+  }
   const eligibilityProducts = await db
     .selectDistinct({ productId: products.id })
     .from(products)
@@ -155,7 +173,7 @@ export async function listStoreCatalog(
 
   return {
     rows,
-    total: Number(cnt?.n ?? 0),
+    total,
     publishableTotal: eligibilityRows.filter((row) => row.publishable).length,
     sellableTotal: eligibilityRows.filter((row) => row.inStock).length,
   };

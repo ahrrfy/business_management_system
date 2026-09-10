@@ -29,7 +29,13 @@ import type {
 // -------------------------------------------------------------------
 
 function getSecret(): string {
-  return process.env.BARCODE_SECRET || process.env.JWT_SECRET || process.env.SESSION_SECRET || "ar-vision-barcode-hmac-secret-2026";
+  const s =
+    process.env.BARCODE_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.SESSION_SECRET ||
+    (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
+  if (!s) throw new Error("BARCODE_SECRET غير مُعيَّن في .env");
+  return s;
 }
 
 /** يوقّع قائمة حقول بـ HMAC-SHA256 ويُعيد أول 12 حرفاً hex */

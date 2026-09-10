@@ -1,6 +1,6 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { appErrorMessage } from "@shared/errors";
 import { branchStock, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
@@ -466,3 +466,25 @@ export async function listForPos(
   const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }
+
+/**
+ * قائمة بكافة وحدات المتغيّر النشطة المتاحة للبيع مع أسعارها ومعاملات تحويلها لفرع معيّن.
+ * تتيح لموظف الكاشير والاستقبال التبديل اللحظي بين الوحدات (قطعة/درزن/كرتون) مع رفع السعر والمخزون تلقائياً.
+ */
+export async function listUnitsForVariant(
+  variantId: number,
+  branchId: number,
+  tier: PriceTier,
+  customerId?: number | null,
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db) return [];
+  const rows = await baseSelect(db, branchId, tier)
+    .where(and(eq(productUnits.variantId, variantId), eq(productUnits.isActive, true)))
+    .orderBy(asc(productUnits.conversionFactor));
+  if (!rows.length) return [];
+  const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
+  return applyPromotions(withAvail, branchId, tier);
+}
+

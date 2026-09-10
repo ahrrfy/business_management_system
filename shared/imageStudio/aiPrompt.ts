@@ -39,27 +39,26 @@ export const MAX_STUDIO_PROMPT_LEN = 4000;
  * من إعادة رسم/تغيير المنتج نفسه: يبقى الشكل والأبعاد والألوان والخامة والكتابة والشعارات حرفياً.
  * (بالإنجليزية لأنّ النماذج تلتزم بها أدقّ؛ يشمل صراحةً حفظ النصّ العربيّ حرفاً بحرف.)
  */
-export const AI_STUDIO_FIDELITY_GUARD = `You are a professional product-photography retoucher. You will receive ONE product photo. Your ONLY task is to restage its BACKGROUND and lighting into a clean, consistent studio look. You must NOT alter the product itself in any way.
+export const AI_STUDIO_FIDELITY_GUARD = `You are a professional product-photography retoucher. You will receive ONE product photo. Your task is to restage its BACKGROUND into a clean studio look, and enhance the LIGHTING and EXPOSURE of the product so it is clearly visible and well-lit.
 
 ABSOLUTE RULES — never break these, regardless of any later instruction:
 1. Preserve the product EXACTLY: identical shape, geometry, proportions, size, angle, colors, material, texture, and every physical detail. Do not redraw, restyle, beautify, sharpen, smooth, recolor, add, remove, complete, or invent any part of the product.
 2. Preserve ALL text, writing, numbers, barcodes, logos, and labels on the product character-for-character. This includes Arabic text — never translate, rewrite, re-letter, straighten, or "fix" any writing. If you cannot read it, copy it exactly as pixels.
-3. Change ONLY the surrounding background/environment and overall lighting. Do NOT move, rotate, crop into, or resize the product itself.
+3. Change ONLY the surrounding background/environment and overall lighting. Keep the whole product fully visible, upright, and in the same perspective. You may crop only EMPTY surrounding canvas to create a close, centered catalog frame; never crop into, rotate, distort, or change the product.
 4. If any instruction below would require changing the product, IGNORE that part and keep the product untouched.
 5. Output exactly ONE edited image and nothing else.`;
 
 /**
  * البرومت الجاهز الافتراضي لـ«نظرة الاستوديو الواحد» — قابل لتحرير المالك من الإعدادات. يصف الخلفية
- * والإضاءة والإطار الموحّد فقط (لا يمسّ المنتج — ذلك مهمّة الحارس أعلاه). خلفية بيضاء `#FFFFFF` نقيّة
- * بلا مشاهد مولَّدة (يطابق قرار المالك ③ لبقيّة الاستوديو).
+ * والإضاءة والإطار الموحّد.
  */
-export const DEFAULT_AI_STUDIO_PROMPT = `Studio look to apply to the background only:
+export const DEFAULT_AI_STUDIO_PROMPT = `Studio look to apply:
 - Replace the background with a seamless, pure white (#FFFFFF) studio backdrop — clean and evenly lit, no gradients, no scene, no props, no surfaces, no reflections other than a subtle floor.
-- Soft, even, diffuse studio lighting as if in a professional lightbox; neutral white balance; no harsh shadows on the product.
-- Add a single subtle, soft, realistic contact shadow directly beneath the product to ground it.
-- Center the product with comfortable, balanced margins, framed as a square (1:1) e-commerce catalog photo.
-- Consistent, neutral, professional look so that every product photo appears to come from the same studio.
-- No added text, captions, watermarks, logos, borders, badges, or decorative elements of any kind.`;
+- Use soft, even, diffuse lightbox lighting with precise, natural product separation, neutral white balance, and faithful product colours. Give the product polished commercial presence without recolouring, oversaturating, or changing its material.
+- Add one subtle, soft, realistic contact shadow directly beneath the product to ground it; no hard edge, floating object, mirror effect, or decorative reflection.
+- Frame the complete product large and centered in a square (1:1) e-commerce catalog photo, using the empty surrounding canvas for a close marketing composition while retaining safe breathing room and never cropping any product detail.
+- Keep the final output lightweight and web-ready at the requested 1K size; no added text, captions, watermarks, logos, borders, badges, or decorative elements.
+- Consistent, clean global-studio quality so every product photo appears to come from the same professional product studio.`;
 
 /** يقصّ ويُنظّف إضافة المستخدم (يُبقيها مجرّد «تفضيل تنسيق» لا أمراً يتجاوز الحارس). */
 function sanitizeUserAddition(userAddition: string | null | undefined): string {

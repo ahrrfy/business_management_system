@@ -3,6 +3,7 @@ import { decryptJsonWithKey, encryptJsonWithKey } from "@/lib/offline/crypto";
 import {
   createStudioDraftIdentityStore,
   createStudioDraftStore,
+  STUDIO_DRAFT_RESUME_LEASE_MS,
   studioDraftWritesAllowed,
   type StudioDraftPersistence,
   type StudioDraftRecord,
@@ -190,9 +191,9 @@ describe("encrypted studio drafts", () => {
     const blocked = await create().reconcileAndClaimResume(context);
     expect(blocked).toMatchObject({
       kind: "ALREADY_RESUMED",
-      retryAt: 1_000 + 60_000,
+      retryAt: 1_000 + STUDIO_DRAFT_RESUME_LEASE_MS,
     });
-    advance(60_001);
+    advance(STUDIO_DRAFT_RESUME_LEASE_MS + 1);
     expect((await create().reconcileAndClaimResume(context)).kind).toBe(
       "RESUME",
     );
@@ -201,7 +202,7 @@ describe("encrypted studio drafts", () => {
   it("grants a resume lease to only one of two concurrent tabs", async () => {
     const { advance, create, store } = await makeHarness();
     await store.save(input);
-    advance(60_001);
+    advance(STUDIO_DRAFT_RESUME_LEASE_MS + 1);
     const context = {
       userId: input.userId,
       taskId: input.taskId,

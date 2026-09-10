@@ -19,6 +19,7 @@ import { assertPurchaseBranch } from "./internal";
 import { assertIndependentPurchaseReviewer } from "./returnGovernance";
 import { purchaseIntegrityResolutionTrigger } from "@shared/approvalTriggers";
 import { assertApprover, resolveApprovalActor } from "../approval/ownerGate";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { payloadHashMatches } from "../idempotency";
 
 export type IntegrityCode = typeof purchaseIntegrityCases.$inferInsert["code"];
@@ -119,7 +120,7 @@ export async function openPurchaseIntegrityCase(input: OpenPurchaseIntegrityCase
 export async function requestPurchaseIntegrityResolution(input: RequestIntegrityResolutionInput, actor: Actor) {
   const requestKey = required(input.requestKey, "مفتاح الطلب", 120); const reason = required(input.reason, "سبب الحل", 1000); const evidenceReference = required(input.evidenceReference, "مرجع دليل الحل", 500);
   const canonical = stableCanonical({ caseId: input.caseId, reason, evidenceReference }); const hash = sha256(canonical);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const row = (await tx.select().from(purchaseIntegrityCases).where(eq(purchaseIntegrityCases.id, input.caseId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "قضية النزاهة غير موجودة" }); assertPurchaseBranch(row, actor);
     if (row.status === "PENDING_RESOLUTION" && row.resolutionRequestKey === requestKey && row.resolutionRequestHash === hash) return { caseId: input.caseId, status: row.status, idempotent: true as const };
@@ -129,6 +130,13 @@ export async function requestPurchaseIntegrityResolution(input: RequestIntegrity
     await appendEvent(tx, { eventKey: `RESOLUTION-REQUEST:${requestKey}`, caseId: input.caseId, branchId: Number(row.branchId), eventType: "RESOLUTION_REQUESTED", previousStatus, newStatus: "PENDING_RESOLUTION", payload: { requestKey, hash, evidenceReference }, evidenceReference, reason, actorId: actor.userId });
     return { caseId: input.caseId, status: "PENDING_RESOLUTION" as const, idempotent: false as const };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "purchase.integrity.resolution",
+    id: result.caseId,
+    reason,
+    variant: "APPROVE_RESOLVED",
+  });
+  return approved ? { ...result, status: "RESOLVED" as const } : result;
 }
 
 export async function decidePurchaseIntegrityResolution(input: DecideIntegrityResolutionInput, actor: Actor) {

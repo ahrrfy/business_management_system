@@ -553,7 +553,25 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
       .select({ id: productVariants.id, productId: productVariants.productId })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(and(eq(productVariants.isActive, true), eq(products.isActive, true), scopeCond));
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)),
+      )
+      .where(
+        and(
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
+          ),
+          scopeCond,
+        ),
+      );
     variantIds = rows.map((r) => Number(r.id));
     productIds = rows.map((r) => Number(r.productId));
   } else if (input.scopeType === "MOVING") {
@@ -564,11 +582,24 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
       .from(inventoryMovements)
       .innerJoin(productVariants, eq(inventoryMovements.variantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)),
+      )
       .where(
         and(
           eq(inventoryMovements.branchId, input.branchId),
           gte(inventoryMovements.createdAt, since),
-          eq(productVariants.isActive, true),
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
+          ),
           scopeCond,
         ),
       );
@@ -592,11 +623,23 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
       .select({ id: productVariants.id, productId: productVariants.productId })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(
+        branchStock,
+        and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)),
+      )
       .where(
         and(
           inArray(products.categoryId, catIds),
-          eq(productVariants.isActive, true),
-          eq(products.isActive, true),
+          or(
+            and(eq(productVariants.isActive, true), eq(products.isActive, true)),
+            or(
+              sql`COALESCE(${branchStock.quantity}, 0) > 0`,
+              and(
+                sql`COALESCE(${branchStock.quantity}, 0) < 0`,
+                eq(products.allowBackorder, false),
+              ),
+            ),
+          ),
           scopeCond,
         ),
       );

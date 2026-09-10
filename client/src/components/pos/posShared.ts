@@ -9,6 +9,8 @@ import type { ReceiptBrowserData } from "@/lib/printing/print";
 import type { StudentSnapshot } from "@/components/pos/StudentDetailsDialog";
 import type { DigitalReceiptDetail } from "@/lib/printing/digitalReceiptLines";
 import type { RouterOutputs } from "@/lib/trpc";
+import type { DeliveryFeeCollection } from "@shared/deliveryFeeCollection";
+import type { DeliveryDraft } from "./deliveryMode";
 
 export type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -77,13 +79,17 @@ export type POSTab = {
   externalPayment: ExternalPaymentDraft | null;
   /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
   dueDate: string;
-  /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥). سلطة الكاشير مقصورة على هذا السقف؛ ما فوقه
-   *  بوّابة مدير خادمياً (`invoiceDiscountExceedsThreshold`). فارغ ⇒ لا خصم. */
+  /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥) أو كمبلغ ديناري. */
   invoiceDiscountPct: string;
+  invoiceDiscountType?: "percent" | "amount";
+  invoiceDiscountValue?: string;
+  /** وضع «توصيل» (م١ PR-B): مسوّدة الطرد لهذا التبويب؛ null/غائب = بيعٌ عاديّ. يُحفظ مع المسوّدة. */
+  delivery?: DeliveryDraft | null;
 };
 
 export type Receipt = {
   invoiceNumber: string;
+  num?: string;
   invoiceId: number;
   date: string;
   /** تاريخ/وقت/كاشير للإيصال المطبوع المُعلَّم (date يبقى للعرض على الشاشة) */
@@ -110,6 +116,10 @@ export type Receipt = {
   isCredit: boolean;
   /** ش١٠: لقطات الكروت الرقمية من الخادم (اسم الكرت/المرجع/بيانات الطالب) — بلا أرقام داخلية. */
   digitalDetails?: DigitalReceiptDetail[] | null;
+  /** م١ PR-B: كتلة التوصيل على الإيصال (إفصاحٌ للزبون: الجهة/الأجرة/مَن يقبض/العنوان). */
+  delivery?: { partyName: string; fee: string; feeCollection: DeliveryFeeCollection; address?: string | null } | null;
+  /** م١ PR-B: رقم الطرد المُنشأ في معاملة البيع (يظهر في نافذة الإيصال مع رابط إدارة التوصيل). */
+  consignmentNumber?: string | null;
 };
 
 // ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
@@ -203,11 +213,115 @@ export const createTab = (id: number, label?: string): POSTab => ({
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", externalPayment: null, dueDate: "",
   invoiceDiscountPct: "",
+  invoiceDiscountType: "percent",
+  invoiceDiscountValue: "",
+  delivery: null,
 });
 
 /** السقف الأعلى لخصم رأس الفاتورة اليدويّ عند الكاشير (قرار المالك). فوقه يستلزم اعتماد مدير
  *  خادمياً؛ الشاشة تُقصّه هنا لتجنّب رفضٍ متأخّر أمام العميل. */
 export const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
+
+export type InvoiceDiscountType = "percent" | "amount";
+
+export interface InvoiceDiscountResult {
+  discountType: InvoiceDiscountType;
+  discountValue: string;
+  discountAmountD: ReturnType<typeof D>;
+  discountAmount: number;
+  discountPctD: ReturnType<typeof D>;
+  discountPct: number;
+  maxDiscountAmountD: ReturnType<typeof D>;
+  maxDiscountAmount: number;
+}
+
+/** حساب خصم الفاتورة بمرونة: نسبة مئوية (٠–١٥٪) أو مبلغ ثابت بالدينار مقصوصاً بالسقف المالي. */
+export function computeInvoiceDiscount({
+  subtotalD,
+  effectiveHeaderCapPctD,
+  invoiceDiscountAllowed,
+  type = "percent",
+  value = "",
+}: {
+  subtotalD: ReturnType<typeof D>;
+  effectiveHeaderCapPctD: ReturnType<typeof D>;
+  invoiceDiscountAllowed: boolean;
+  type?: InvoiceDiscountType;
+  value?: string;
+}): InvoiceDiscountResult {
+  const maxDiscountAmountD = (subtotalD.gt(0) && effectiveHeaderCapPctD.gt(0))
+    ? round2(subtotalD.times(effectiveHeaderCapPctD).div(100))
+    : D(0);
+
+  if (!invoiceDiscountAllowed || !value || value.trim() === "" || subtotalD.lte(0)) {
+    return {
+      discountType: type,
+      discountValue: value,
+      discountAmountD: D(0),
+      discountAmount: 0,
+      discountPctD: D(0),
+      discountPct: 0,
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+
+  const norm = value.replace(/[،,]/g, ".");
+  const rawNum = Number(norm);
+  if (!Number.isFinite(rawNum) || rawNum <= 0) {
+    return {
+      discountType: type,
+      discountValue: value,
+      discountAmountD: D(0),
+      discountAmount: 0,
+      discountPctD: D(0),
+      discountPct: 0,
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+
+  if (type === "percent") {
+    const rawPctD = D(norm);
+    const clampedPctD = rawPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      : rawPctD;
+    const effectivePctD = clampedPctD.gt(effectiveHeaderCapPctD)
+      ? effectiveHeaderCapPctD
+      : clampedPctD;
+    const discountAmountD = round2(subtotalD.times(effectivePctD).div(100));
+    return {
+      discountType: "percent",
+      discountValue: value,
+      discountAmountD,
+      discountAmount: discountAmountD.toNumber(),
+      discountPctD: effectivePctD,
+      discountPct: effectivePctD.toNumber(),
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  } else {
+    const rawAmtD = D(norm);
+    const clampedAmtD = rawAmtD.gt(subtotalD) ? subtotalD : rawAmtD;
+    const effectiveAmtD = clampedAmtD.gt(maxDiscountAmountD)
+      ? maxDiscountAmountD
+      : clampedAmtD;
+    const discountAmountD = round2(effectiveAmtD);
+    const discountPctD = subtotalD.gt(0)
+      ? round2(discountAmountD.times(100).div(subtotalD))
+      : D(0);
+    return {
+      discountType: "amount",
+      discountValue: value,
+      discountAmountD,
+      discountAmount: discountAmountD.toNumber(),
+      discountPctD,
+      discountPct: discountPctD.toNumber(),
+      maxDiscountAmountD,
+      maxDiscountAmount: maxDiscountAmountD.toNumber(),
+    };
+  }
+}
 
 export type ShiftData = RouterOutputs["shifts"]["current"];
 
@@ -245,5 +359,7 @@ export function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     paymentMethod: r.method,
     // ش١٠: تفاصيل الكروت تأتي من الخادم بعد التثبيت (§١٢.٣) — لا من حالة React قبل الحفظ.
     digitalDetails: r.digitalDetails ?? null,
+    // م١ PR-B: كتلة التوصيل تُطبع بالراسم القائم نفسه (٨/٨) — الأجرة تمريرٌ لا إيراد.
+    delivery: r.delivery ?? null,
   };
 }

@@ -1083,13 +1083,13 @@ export async function resolveBranchCashShiftTx(
   tx: Tx,
   branchId: number,
   explicitShiftId?: number | null,
-): Promise<{ shiftId: number; openingBalance: string }> {
+): Promise<{ shiftId: number; openingBalance: string; userId: number }> {
   const open = await tx
-    .select({ id: shifts.id, openingBalance: shifts.openingBalance })
+    .select({ id: shifts.id, openingBalance: shifts.openingBalance, userId: shifts.userId })
     .from(shifts)
     .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
 
-  let chosen: { id: number | string | bigint; openingBalance: string };
+  let chosen: { id: number | string | bigint; openingBalance: string; userId: number };
   if (explicitShiftId != null) {
     const match = open.find((s) => Number(s.id) === Number(explicitShiftId));
     if (!match) {
@@ -1129,7 +1129,7 @@ export async function resolveBranchCashShiftTx(
       message: "الوردية المستهدَفة أُغلقت للتوّ — أعد المحاولة",
     });
   }
-  return { shiftId: id, openingBalance: chosen.openingBalance };
+  return { shiftId: id, openingBalance: chosen.openingBalance, userId: Number(chosen.userId) };
 }
 
 /**

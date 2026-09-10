@@ -265,21 +265,15 @@ describe("حوكمة مرتجع الشراء — فصل المهام على قا
   it("يعتمد المالكُ طلب مرتجعٍ أنشأه هو بنفسه فيُسجَّل المرتجع فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
     const source = await makeGovernedReturnSource();
     const requested = await requestPurchaseReturn(returnRequestInput(source), OWNER);
-    expect(requested.status).toBe("PENDING");
+    expect(requested.status).toBe("APPROVED");
 
-    const approved = await decidePurchaseReturn(
-      { requestId: Number(requested.requestId), decisionKey: randomUUID(), action: "APPROVE", reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦" },
-      OWNER,
-    );
-    expect(approved.status).toBe("APPROVED");
-
-    const [purchaseReturn] = await db().select().from(s.purchaseReturns).where(eq(s.purchaseReturns.id, Number(approved.purchaseReturnId)));
+    const [purchaseReturn] = await db().select().from(s.purchaseReturns).where(eq(s.purchaseReturns.id, Number(requested.purchaseReturnId)));
     expect(purchaseReturn).toMatchObject({ status: "POSTED", settlement: "CREDIT" });
 
     const [request] = await db().select().from(s.purchaseReturnRequests).where(eq(s.purchaseReturnRequests.id, Number(requested.requestId)));
     expect(request).toMatchObject({ status: "APPROVED", requestedBy: OWNER.userId, reviewedBy: OWNER.userId });
 
-    return { purchaseReturnId: Number(approved.purchaseReturnId) };
+    return { purchaseReturnId: Number(requested.purchaseReturnId) };
   });
 });
 
@@ -345,13 +339,7 @@ describe("حوكمة عكس مرتجع الشراء — فصل المهام عل
       },
       OWNER,
     );
-    expect(requested.status).toBe("PENDING");
-
-    const decided = await decidePurchaseReturnReversal(
-      { requestId: Number(requested.requestId), decisionKey: randomUUID(), action: "APPROVE", reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦" },
-      OWNER,
-    );
-    expect(decided.status).toBe("APPROVED");
+    expect(requested.status).toBe("APPROVED");
 
     const [purchaseReturn] = await db().select().from(s.purchaseReturns).where(eq(s.purchaseReturns.id, purchaseReturnId));
     expect(purchaseReturn.status).toBe("REVERSED");

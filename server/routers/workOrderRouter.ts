@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -85,11 +85,9 @@ const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   CONCAT('مستخدم #', ${workOrders.createdBy})
 )`;
 
-// سطوح نقطة البيع/الاستقبال نقدية فقط حتى يوجد مزوّد وتسوية موثوقان.
 const receptionPaymentMethod = z
   .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
-  .transform((value) => value as "CASH");
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const workOrderControlReason = z.string().trim().min(3).max(500);
@@ -1068,6 +1066,160 @@ export const workOrderRouter = router({
     }
     return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload, nextAction, nextActionReason };
   }),
+
+  getByNumber: workordersReadProcedure
+    .input(z.object({ orderNumber: z.string().trim().min(1) }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+      const raw = input.orderNumber.trim();
+      const stripped = raw.replace(/^WO-/i, "").replace(/^INV-/i, "");
+      const [row] = await db
+        .select({
+          id: workOrders.id,
+          orderNumber: workOrders.orderNumber,
+          title: workOrders.title,
+          status: workOrders.status,
+          salePrice: workOrders.salePrice,
+          deposit: workOrders.deposit,
+          customerId: workOrders.customerId,
+          customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${workOrders.deliveryPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+          deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          deliveryCost: workOrders.deliveryCost,
+          deliveryFeeCollection: workOrders.deliveryFeeCollection,
+          branchId: workOrders.branchId,
+          version: workOrders.version,
+        })
+        .from(workOrders)
+        .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .where(
+          or(
+            eq(workOrders.orderNumber, raw),
+            eq(workOrders.orderNumber, `WO-${stripped}`),
+            eq(workOrders.orderNumber, stripped),
+            like(workOrders.orderNumber, `%${stripped}%`)
+          )
+        )
+        .limit(1);
+      if (row) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.workOrderId, row.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...row,
+          kind: "workOrder" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      const [inv] = await db
+        .select({
+          id: invoices.id,
+          orderNumber: invoices.invoiceNumber,
+          title: sql<string>`CONCAT('فاتورة بيع #', ${invoices.invoiceNumber})`,
+          status: invoices.status,
+          salePrice: invoices.total,
+          deposit: invoices.paidAmount,
+          customerId: invoices.customerId,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
+          deliveryAddress: sql<string | null>`NULL`,
+          deliveryPhone: sql<string | null>`NULL`,
+          deliveryCost: sql<string | null>`'0.00'`,
+          deliveryFeeCollection: sql<string | null>`'COURIER'`,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(
+          or(
+            eq(invoices.invoiceNumber, raw),
+            eq(invoices.invoiceNumber, `INV-${stripped}`),
+            eq(invoices.invoiceNumber, stripped),
+            like(invoices.invoiceNumber, `%${stripped}%`)
+          )
+        )
+        .limit(1);
+      if (inv) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.invoiceId, inv.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...inv,
+          version: 1,
+          kind: "invoice" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      return null;
+    }),
 
   /**
    * الموظفون المتاحون للإسناد (أسماء+أدوار فقط) — لاختيار المنفّذ عند إنشاء الأمر وللوحة التفاصيل.

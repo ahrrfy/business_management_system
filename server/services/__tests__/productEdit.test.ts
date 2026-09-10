@@ -12,6 +12,7 @@ import { updateProduct } from "../catalog/productUpdate";
 import { createOnlineOrder } from "../onlineOrderService";
 import { loadProductForUpdateOrThrow } from "../catalog/productUpdateGuards";
 import { withTx } from "../tx";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -22,6 +23,9 @@ const TABLES = [
   "onlineOrders",
   "storeSettings",
   "branchStock",
+  "stocktakeItems",
+  "stocktakeAssignments",
+  "stocktakeSessions",
   "productPrices",
   "productUnits",
   "productImageJobs",
@@ -29,8 +33,8 @@ const TABLES = [
   "productVariants",
   "products",
   "customers",
-  "branches",
   "users",
+  "branches",
 ];
 
 function db() {
@@ -40,10 +44,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -265,6 +266,229 @@ describe("updateProductWithVariants — الكتابة", () => {
     );
     const base = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.id, 1), eq(s.productUnits.isBaseUnit, true))))[0];
     expect(base?.unitName).toBe("علبة"); // نفس الصفّ id=1 أُعيدت تسميته وما زال الأساس
+  });
+
+  it("⭐ إعادة تسمية وحدة فرعية مع الاحتفاظ بنفس الباركود ⇒ تحديث مكاني ناجح وبلا خطأ ER_DUP_ENTRY", async () => {
+    // الوحدة 2 اسمها «درزن» وباركودها BC-DOZEN-1
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: renamedTemplate,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1", دزينة: "BC-DOZEN-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    expect(units).toHaveLength(2);
+    const renamedUnit = units.find((u) => u.barcode === "BC-DOZEN-1");
+    expect(renamedUnit).toBeDefined();
+    expect(renamedUnit?.unitName).toBe("دزينة");
+    expect(renamedUnit?.id).toBe(2); // تم التحديث في مكان نفس الصف دون كسر مراجع المعرّف
+    expect(renamedUnit?.isActive).toBe(true);
+  });
+
+  it("⭐ إعادة تسمية وحدة مع تطبيع الباركود (أرقام عربية ومسافات) ⇒ مطابقة معيارية ناجحة وتحديث مكاني", async () => {
+    // الوحدة 2 اسمها «درزن» وباركودها في القاعدة BC-DOZEN-1
+    // إدخال باركود بأرقام مشرقية «BC-DOZEN-١ »
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة-معدلة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: renamedTemplate,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1", "دزينة-معدلة": "BC-DOZEN-١ " },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const renamedUnit = units.find((u) => u.unitName === "دزينة-معدلة");
+    expect(renamedUnit).toBeDefined();
+    expect(renamedUnit?.id).toBe(2); // تم التعرف على الوحدة وتحديثها مكانياً رغم اختلاف تمثيل الأرقام
+    expect(renamedUnit?.barcode).toBe("BC-DOZEN-1"); // تم التخزين بالباركود المعياري
+  });
+
+  it("⭐ حل ملكية الباركود قبل مطابقة الاسم: إعادة تسمية وحدة لاسم وحدة محذوفة مع الاحتفاظ بباركودها ⇒ بلا تعارض", async () => {
+    // لدينا في البذور: id=1 (قطعة، BC-PIECE-1)، id=2 (درزن، BC-DOZEN-1)
+    // السيناريو: حذف «قطعة»، وإعادة تسمية «درزن» ليصبح اسمها «قطعة» مع الاحتفاظ بباركودها «BC-DOZEN-1»
+    // وحدة الأساس تصبح «قطعة» (التي كانت درزن) بمعامل 1
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+    // ملاحظة: قاعدة استقرار وحدة الأساس تمنع تغيير الأساس في مسار المعرف إن كان مختلفاً،
+    // لكن في مسار القالب إن تم الاحتفاظ بنفس اسم وحدة الأساس
+    // نفحص أن ملكية الباركود تحدد الصف id=2 وتفرغ باركود id=1 القديم المحذوف
+    await db().update(s.productUnits).set({ barcode: "BC-OLD-BASE" }).where(eq(s.productUnits.id, 1));
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: [
+          { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+          { unitName: "باكيت", conversionFactor: "10", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "9000.00" }] },
+        ],
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            // الوحدة «باكيت» أخذت باركود الدرزن BC-DOZEN-1 القديم، بينما لم يعد هناك درزن في القالب
+            unitBarcodes: { قطعة: "BC-NEW-BASE", باكيت: "BC-DOZEN-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const packetUnit = units.find((u) => u.unitName === "باكيت");
+    expect(packetUnit).toBeDefined();
+    expect(packetUnit?.id).toBe(2); // أخذت الصف رقم 2 مباشرة بسبب ملكية الباركود
+    expect(packetUnit?.barcode).toBe("BC-DOZEN-1");
+  });
+
+  it("⭐ صيانة باركود الوحدة المعطلة عند إزالتها من القالب دون نقل باركودها ⇒ لا يُمسح الباركود بل يبقى محجوزاً", async () => {
+    // لدينا: id=1 (قطعة، BC-PIECE-1)، id=2 (درزن، BC-DOZEN-1)
+    // السيناريو: إزالة «درزن» تماماً من القالب مع عدم تخصيص باركودها لأي وحدة جديدة
+    const templateWithoutDozen = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: templateWithoutDozen,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const disabledDozen = units.find((u) => u.id === 2);
+    expect(disabledDozen).toBeDefined();
+    expect(disabledDozen?.isActive).toBe(false); // تم تعطيلها
+    expect(disabledDozen?.barcode).toBe("BC-DOZEN-1"); // باركودها محفوظ ولم يُفرغ (Codex P1)
+  });
+
+  it("⭐ محاذاة مطابقة الأساس مع حارس الهوية: تبديل الباركودات بين الأساس والفرعي لا يقلب معرّفات الصفوف", async () => {
+    // لدينا id=1 (قطعة، أساس، BC-PIECE-1) و id=2 (درزن، فرعي، BC-DOZEN-1)
+    // السيناريو: المستخدم بدل الباركودات: قطعة تأخذ BC-DOZEN-1 والدرزن يأخذ BC-PIECE-1 مع بقاء الأسماء
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: template,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-DOZEN-1", درزن: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const piece = units.find((u) => u.unitName === "قطعة");
+    const dozen = units.find((u) => u.unitName === "درزن");
+
+    // يجب أن يحافظ صف الأساس على معرّفه 1 وصف الدرزن على معرّفه 2 (لا تنقلب معاني المعرّفات الجنائية)
+    expect(piece?.id).toBe(1);
+    expect(piece?.isBaseUnit).toBe(true);
+    expect(piece?.barcode).toBe("BC-DOZEN-1");
+
+    expect(dozen?.id).toBe(2);
+    expect(dozen?.isBaseUnit).toBe(false);
+    expect(dozen?.barcode).toBe("BC-PIECE-1");
+  });
+
+  it("⭐ تفضيل الوحدة النشطة عند مطابقة الاسم لوجود صف معطل سابق بنفس الاسم", async () => {
+    // إدخال صف معطل سابق بنفس الاسم «علبة»
+    await db().insert(s.productUnits).values({
+      variantId: 1,
+      unitName: "علبة",
+      conversionFactor: "6",
+      isBaseUnit: false,
+      isActive: false,
+      barcode: "OLD-BOX-BC",
+    });
+    // وإدخال صف نشط حالي باسم «علبة»
+    const [activeBox] = await db().insert(s.productUnits).values({
+      variantId: 1,
+      unitName: "علبة",
+      conversionFactor: "6",
+      isBaseUnit: false,
+      isActive: true,
+      barcode: null,
+    });
+    const activeBoxId = Number(activeBox.insertId);
+
+    // تحديث بدون باركود للعلبة — المطابقة بالاسم يجب أن تختار الصف النشط لا المعطل
+    const templateWithBox = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "علبة", conversionFactor: "6", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "5000.00" }] },
+    ];
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة",
+        unitTemplate: templateWithBox,
+        variants: [
+          {
+            id: 1,
+            sku: "NB-100",
+            costPrice: "500",
+            unitBarcodes: { قطعة: "BC-PIECE-1" },
+          },
+        ],
+      },
+      actor,
+    );
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 1));
+    const matchedBox = units.find((u) => u.unitName === "علبة" && u.isActive);
+    expect(matchedBox?.id).toBe(activeBoxId);
   });
 
   it("#2 (المسار الحامل للمعرّف): ترقية صفٍّ آخر (id=2) إلى الأساس ⇒ يُرفض", async () => {
@@ -912,5 +1136,268 @@ describe("تطبيع معامل التحويل — تعديل متعدّد ال�
     );
     const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, 1));
     expect(rows).toHaveLength(1); // نجح الحفظ (لولا التطبيع لرُفِض بـ«معامل التحويل… عدد صحيح موجب»)
+  });
+
+  it("⭐ تعديل معامل تحويل وحدة فرعية لصنف في جلسة جرد نشطة ⇒ يُرفض بحارس حماية المعاملات", async () => {
+    // إنشاء جلسة جرد نشطة على الصنف 1
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-1",
+      name: "جلسة اختبار 1",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 1",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // محاولة تغيير معامل الدرزن من 12 إلى 24
+    const modifiedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "24", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: modifiedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ تعديل السعر أو الاسم فقط لصنف في جلسة جرد نشطة دون لمس معامل التحويل ⇒ ينجح", async () => {
+    // إنشاء جلسة جرد نشطة على الصنف 1
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-2",
+      name: "جلسة اختبار 2",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 2",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // تعديل السعر فقط والاسم مع الإبقاء على نفس المعامل (12)
+    const sameFactorTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1200.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "13000.00" }] },
+    ];
+
+    const res = await updateProductWithVariants(
+      {
+        productId: 1,
+        name: "دفتر ١٠٠ ورقة - معدل الاسم",
+        unitTemplate: sameFactorTemplate,
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+    expect(res).toBeTruthy();
+  });
+
+  it("⭐ إعادة تسمية أي وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل (Codex P2)", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-RENAME",
+      name: "جلسة اختبار إعادة تسمية",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 3",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // إعادة تسمية وحدة الدرزن إلى «دزينة» بنفس المعامل (12)
+    const renamedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "دزينة", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: renamedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", دزينة: "BC-DOZEN-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ حذف أو إضافة وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل (Codex P2)", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-DROP",
+      name: "جلسة اختبار حذف وحدة",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 4",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // محاولة حذف وحدة الدرزن والإبقاء على القطعة فقط
+    const droppedTemplate = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: droppedTemplate,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ تعديل باركود أي وحدة أثناء جلسة جرد نشطة ⇒ يُرفض بحارس تجميد الهيكل", async () => {
+    const [sessRes] = await db().insert(s.stocktakeSessions).values({
+      code: "STK-ACTIVE-BARCODE",
+      name: "جلسة اختبار تعديل باركود وحدة",
+      branchId: 1,
+      status: "COUNTING",
+      countMethod: "FREE",
+      dupPolicy: "VERIFY",
+      scopeType: "MANUAL",
+      createdBy: 1,
+    });
+    const sessionId = Number(sessRes.insertId);
+    const [assignRes] = await db().insert(s.stocktakeAssignments).values({
+      sessionId,
+      name: "عامل اختبار 5",
+      method: "PIN",
+    });
+    const assignmentId = Number(assignRes.insertId);
+    await db().insert(s.stocktakeItems).values({
+      sessionId,
+      assignmentId,
+      variantId: 1,
+      branchId: 1,
+      expectedQty: 10,
+      unitCost: "500",
+    });
+
+    // نفس الوحدات والمعاملات والأساس ولكن مع تغيير باركود وحدة الدرزن
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+    ];
+
+    await expect(
+      updateProductWithVariants(
+        {
+          productId: 1,
+          name: "دفتر ١٠٠ ورقة",
+          unitTemplate: template,
+          variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-NEW-BARCODE" } }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/جلسة جرد نشطة/);
+  });
+
+  it("⭐ تبادل باركودات بين وحدة الأساس ووحدة فرعية ⇒ كلا الباركودين يُحفظان دون فقدان أي منهما أو تحويله إلى NULL", async () => {
+    // منتج 10: متغيّر 10 بوحدة أساس (قطعة) ووحدة فرعية (درزن)
+    await db().insert(s.products).values({ id: 10, name: "قلم حبر جاف", productType: "قرطاسية" });
+    await db().insert(s.productVariants).values({ id: 10, productId: 10, sku: "PEN-10", costPrice: "100" });
+    await db().insert(s.productUnits).values([
+      { id: 101, variantId: 10, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "BC-PEN-PIECE" },
+      { id: 102, variantId: 10, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, barcode: "BC-PEN-DOZEN" },
+    ]);
+
+    // تبادل الباركودات: قطعة تأخذ BC-PEN-DOZEN ودرزن تأخذ BC-PEN-PIECE
+    const template = [
+      { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "200.00" }] },
+      { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "2200.00" }] },
+    ];
+
+    await updateProductWithVariants(
+      {
+        productId: 10,
+        name: "قلم حبر جاف",
+        unitTemplate: template,
+        variants: [{ id: 10, sku: "PEN-10", costPrice: "100", unitBarcodes: { قطعة: "BC-PEN-DOZEN", درزن: "BC-PEN-PIECE" } }],
+      },
+      actor,
+    );
+
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, 10));
+    const pieceUnit = units.find((u) => u.unitName === "قطعة");
+    const dozenUnit = units.find((u) => u.unitName === "درزن");
+
+    expect(pieceUnit?.barcode).toBe("BC-PEN-DOZEN");
+    expect(dozenUnit?.barcode).toBe("BC-PEN-PIECE");
   });
 });

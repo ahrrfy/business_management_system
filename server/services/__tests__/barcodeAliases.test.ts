@@ -27,7 +27,7 @@ import { barcodeComparisonKey } from "../../../shared/barcodeNormalize";
 
 const TABLES = [
   "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "productImages", "products",
-  "branchStock", "auditLogs", "categories", "users", "branches",
+  "branchStock", "auditLogs", "categories", "users", "branches", "stocktakeItems", "stocktakeAssignments", "stocktakeSessions",
 ];
 
 function db() {
@@ -506,6 +506,110 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await checkBarcodesTakenAcrossBoth(["١٠٠٩٥"])).toHaveLength(1);
       // والتحديث الذاتيّ لا يصطدم بنفسه.
       expect(await findBarcodeClashes(d, ["10095"], { ignorePrimaryUnitIds: [3] })).toHaveLength(0);
+    });
+  });
+
+  describe("⭐ تجميد الباركودات البديلة أثناء الجرد النشط (Freeze alternate barcodes during active stocktakes)", () => {
+    it("إضافة أو حذف باركود بديل لصنف في جلسة جرد نشطة ⇒ يُرفض بـ PRECONDITION_FAILED", async () => {
+      const d = db();
+      // إنشاء باركود بديل أولي للوحدة 1
+      await d.insert(s.productUnitBarcodes).values({
+        id: 99,
+        productUnitId: 1,
+        barcode: "9998887770001",
+        note: "بديل أولي",
+        createdBy: 1,
+      });
+
+      // إنشاء جلسة جرد نشطة على الصنف 1 (variantId = 1)
+      const [sessRes] = await d.insert(s.stocktakeSessions).values({
+        code: "STK-ALIAS-ACTIVE",
+        name: "جلسة اختبار تجميد البدائل",
+        branchId: 1,
+        status: "COUNTING",
+        countMethod: "FREE",
+        dupPolicy: "VERIFY",
+        scopeType: "MANUAL",
+        createdBy: 1,
+      });
+      const sessionId = Number(sessRes.insertId);
+
+      const [assignRes] = await d.insert(s.stocktakeAssignments).values({
+        sessionId,
+        name: "عامل اختبار 1",
+        method: "PIN",
+      });
+      const assignmentId = Number(assignRes.insertId);
+
+      await d.insert(s.stocktakeItems).values({
+        sessionId,
+        assignmentId,
+        variantId: 1,
+        branchId: 1,
+        expectedQty: 5,
+        unitCost: "100",
+      });
+
+      // 1. محاولة حذف الباركود البديل أثناء الجرد النشط ⇒ يجب أن تفشل بحارس تجميد الجرد
+      await expect(removeUnitBarcodeAlias(99)).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+      });
+
+      // 2. محاولة إضافة باركود بديل جديد لنفس الصنف أثناء الجرد النشط ⇒ تفشل بحارس تجميد الجرد
+      await expect(addUnitBarcodeAlias(1, "9998887770002", null, 1)).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+      });
+
+      // 3. إنهاء الجلسة أو إلغاؤها (APPROVED) ⇒ يُرفع التجميد وتنجح العمليات
+      await d.update(s.stocktakeSessions).set({ status: "APPROVED" }).where(eq(s.stocktakeSessions.id, sessionId));
+
+      await expect(addUnitBarcodeAlias(1, "9998887770002", null, 1)).resolves.toEqual({ ok: true });
+      await expect(removeUnitBarcodeAlias(99)).resolves.toEqual({ ok: true });
+    });
+
+    it("assignBarcode يرفض تغيير باركود الوحدة إذا كان الصنف في جلسة جرد نشطة", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "6001000000001" }).where(eq(s.productUnits.id, 1));
+
+      const [sessRes] = await d.insert(s.stocktakeSessions).values({
+        code: "STK-ASSIGN-FREEZE",
+        name: "جلسة اختبار تجميد assignBarcode",
+        branchId: 1,
+        status: "COUNTING",
+        countMethod: "FREE",
+        dupPolicy: "VERIFY",
+        scopeType: "MANUAL",
+        createdBy: 1,
+      });
+      const sessionId = Number(sessRes.insertId);
+
+      const [assignRes] = await d.insert(s.stocktakeAssignments).values({
+        sessionId,
+        name: "عامل اختبار 2",
+        method: "PIN",
+      });
+      const assignmentId = Number(assignRes.insertId);
+
+      await d.insert(s.stocktakeItems).values({
+        sessionId,
+        assignmentId,
+        variantId: 1,
+        branchId: 1,
+        expectedQty: 3,
+        unitCost: "100",
+      });
+
+      // 1. إعادة إسناد نفس الباركود لنفس الوحدة ⇒ مسموح (تحديث ذاتي لا يغيّر الباركود)
+      await expect(assignBarcode(1, "6001000000001")).resolves.toMatchObject({ barcode: "6001000000001" });
+
+      // 2. محاولة تغيير الباركود إلى باركود جديد أثناء الجرد النشط ⇒ يُرفض بـ PRECONDITION_FAILED
+      await expect(assignBarcode(1, "6001000000002")).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+      });
+
+      // 3. إنهاء الجلسة ⇒ يُرفع التجميد وتنجح العملية
+      await d.update(s.stocktakeSessions).set({ status: "APPROVED" }).where(eq(s.stocktakeSessions.id, sessionId));
+      await expect(assignBarcode(1, "6001000000002")).resolves.toMatchObject({ barcode: "6001000000002" });
     });
   });
 });

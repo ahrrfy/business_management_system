@@ -44,6 +44,35 @@ export async function qrCodeSvg(data: string, opts: QROptions = {}): Promise<str
 }
 
 /**
+ * يُولِّد SVG string متزامن ومباشر — للتضمين الفوري في قوالب الطباعة المتزامنة.
+ * مصمم خصيصاً للطباعة الحرارية بحواف حادة (crispEdges) وأسود صافٍ.
+ */
+export function qrCodeSvgSync(data: string, opts: QROptions = {}): string {
+  if (!data) return "";
+  try {
+    const qr = QRCode.create(data, {
+      errorCorrectionLevel: opts.errorCorrectionLevel ?? "M",
+    });
+    const modSize = qr.modules.size;
+    const margin = opts.margin ?? 1;
+    const total = modSize + margin * 2;
+    const displaySize = opts.size ?? 120;
+    const dark = opts.dark ?? "#000000";
+    let path = "";
+    for (let r = 0; r < modSize; r++) {
+      for (let c = 0; c < modSize; c++) {
+        if (qr.modules.get(r, c)) {
+          path += `M${c + margin},${r + margin}h1v1h-1z `;
+        }
+      }
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" width="${displaySize}" height="${displaySize}" style="display:inline-block;shape-rendering:crispEdges;"><path fill="${dark}" d="${path}"/></svg>`;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * يُولِّد PNG data URL — لرسمه على Canvas بـ ctx.drawImage (طباعة حرارية).
  * async لأن مكتبة qrcode تعمل بـ Promise.
  */
@@ -60,3 +89,27 @@ export async function qrCodeDataUrl(data: string, opts: QROptions = {}): Promise
     errorCorrectionLevel: opts.errorCorrectionLevel ?? "M",
   });
 }
+
+/**
+ * يُولِّد SVG string متزامناً بالكامل للتضمين في قوالب الطباعة المتزامنة.
+ */
+export function qrSvgSync(data: string, size = 100): string {
+  if (!data) return "";
+  try {
+    const code = QRCode.create(data, { errorCorrectionLevel: "M" });
+    const count = code.modules.size;
+    const modSize = (size / count).toFixed(2);
+    let paths = "";
+    for (let r = 0; r < count; r++) {
+      for (let c = 0; c < count; c++) {
+        if (code.modules.get(r, c)) {
+          paths += `M${(c * Number(modSize)).toFixed(1)},${(r * Number(modSize)).toFixed(1)}h${modSize}v${modSize}h-${modSize}z `;
+        }
+      }
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}"><rect width="${size}" height="${size}" fill="#ffffff"/><path d="${paths}" fill="#000000"/></svg>`;
+  } catch {
+    return "";
+  }
+}
+

@@ -470,7 +470,7 @@ function ImageStudioIntegrationCard() {
   const utils = trpc.useUtils();
   const [keyDraft, setKeyDraft] = useState("");
   const update = trpc.imageStudio.updateSettings.useMutation({
-    onSuccess: () => { notify.ok("تم الحفظ"); utils.imageStudio.settings.invalidate(); utils.imageStudio.proConfig.invalidate(); setKeyDraft(""); },
+    onSuccess: () => { notify.ok("تم الحفظ"); utils.imageStudio.settings.invalidate(); setKeyDraft(""); },
     onError: (e) => notify.err(e),
   });
   const verify = trpc.imageStudio.verifyConnection.useMutation({

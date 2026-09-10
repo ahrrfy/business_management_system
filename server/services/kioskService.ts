@@ -6,11 +6,20 @@
  * اسم المنتج، الماركة، الفئة، **سعر المفرد (RETAIL)**، الوحدة، الباركود، والصورة الرئيسية.
  * شرط التوفّر (المخزون > 0) يُطبَّق خادمياً للبنر دون كشف الكمية نفسها.
  */
-import { and, asc, desc, eq, sql } from "drizzle-orm";
-import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products, storeBanners } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { decodeDataUrl, kioskProductImageUrl } from "../imageRoute";
 import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
+
+/** شريحة ترويجية وإعلانية آمنة للزبون على شاشة الكشك. */
+export interface KioskPromo {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  imageUrl: string | null;
+  ctaLabel: string | null;
+}
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون. */
 export interface KioskProduct {
@@ -142,3 +151,42 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
     .limit(1);
   return rows.length ? toKioskProduct(rows[0]) : null;
 }
+
+/**
+ * البنرات الترويجية الفعّالة للفرع أو العامة (branchId is null) لعرضها في الكشك بالتناوب.
+ */
+export async function kioskPromotions(branchId?: number | null): Promise<KioskPromo[]> {
+  const db = getDb();
+  if (!db) return [];
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = await db
+    .select({
+      id: storeBanners.id,
+      title: storeBanners.title,
+      subtitle: storeBanners.subtitle,
+      imageUrl: storeBanners.imageUrl,
+      ctaLabel: storeBanners.ctaLabel,
+    })
+    .from(storeBanners)
+    .where(
+      and(
+        eq(storeBanners.isActive, true),
+        or(isNull(storeBanners.effectiveFrom), sql`${storeBanners.effectiveFrom} <= ${today}`),
+        or(isNull(storeBanners.effectiveTo), sql`${storeBanners.effectiveTo} >= ${today}`),
+        branchId != null
+          ? or(isNull(storeBanners.branchId), eq(storeBanners.branchId, branchId))
+          : isNull(storeBanners.branchId)
+      )
+    )
+    .orderBy(asc(storeBanners.sortOrder), desc(storeBanners.id))
+    .limit(10);
+
+  return rows.map((r) => ({
+    id: Number(r.id),
+    title: r.title,
+    subtitle: r.subtitle ?? null,
+    imageUrl: r.imageUrl ?? null,
+    ctaLabel: r.ctaLabel ?? null,
+  }));
+}
+

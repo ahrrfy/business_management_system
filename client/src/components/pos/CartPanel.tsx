@@ -5,11 +5,17 @@
 
 import { variantDisplayName } from "@shared/variantDisplay";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-react";
+import { motion } from "framer-motion";
 import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
-import { type Tier, type NumMode, type CartItem, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
+import { type Tier, type NumMode, type CartItem, type PosRow, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
 import { CartCustomerButton } from "./CartCustomerButton";
+import { CartDeliveryPanel } from "./CartDeliveryPanel";
+import { CartPanelFooter } from "./CartPanelFooter";
+import { PosUnitSelector } from "./PosUnitSelector";
+import type { DeliveryCustomerIdentity } from "./DeliveryCustomerSection";
+import { emptyDeliveryDraft, type DeliveryDraft } from "./deliveryMode";
 
 export interface CartPanelProps {
   C: C;
@@ -19,6 +25,7 @@ export interface CartPanelProps {
   selId: number | null; setSelId: (id: number | null) => void;
   changeQty: (id: number, qty: number) => void;
   removeRow: (id: number) => void;
+  onUnitChange?: (oldUnitId: number, newRow: PosRow) => void;
   numMode: NumMode; setNumMode: (m: NumMode) => void;
   customerId: number | null;
   selectedCustomer:
@@ -36,9 +43,16 @@ export interface CartPanelProps {
   /** ٢٣/٨ (Codex P2) — عدّاد إضافةٍ صريحٌ من الأب: يشغّل التمريرَ إلى السطر المُدرَج/المزاد
    *  فقط عند فعل الإضافة (لا عند حذف/تعديل كمّية/تبديل تبويب). */
   addTick: number;
+  /** م١ PR-B — وضع «توصيل» للتبويب (null = بيعٌ عاديّ). */
+  tabId: number;
+  delivery: DeliveryDraft | null;
+  onDeliveryChange: (next: DeliveryDraft | null) => void;
+  onDeliveryIdentity: (identity: DeliveryCustomerIdentity) => void;
+  deliveryDisabledReason: string | null;
+  customerBalance: string | null;
 }
 
-export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick }: CartPanelProps) {
+export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, onUnitChange, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
@@ -60,22 +74,37 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addTick]);
-  const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
-  const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
+  const TH: React.CSSProperties = { padding: "6px 8px", fontWeight: 700, fontSize: 12, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
+  const TD: React.CSSProperties = { padding: "5px 6px", textAlign: "center", fontSize: 13 };
 
   // حارس مخزون ليّن (إشارة بصرية فقط؛ الذرّية يفرضها الخادم في applyMovement). نجمع الطلب بالوحدة
   // الأساس لكل صنف (variant) عبر كل وحداته في السلّة، لأنّ رصيد الفرع (stockBase) واحدٌ للصنف
   // ويُشترَك بين وحداته (قطعة/درزن/كرتون). المقارنة بالمجموع لا بكل سطر ⇒ يُكتشف النقص حتى حين
   // يُباع الصنف نفسه بوحدات متعددة (١ درزن + ١ قطعة قد يتجاوزان المتاح رغم أنّ كلّ سطر وحده لا يتجاوزه).
-  const demandByVariant = new Map<number, number>();
-  for (const c of cart) {
-    const f = Number(c.row.conversionFactor) || 1;
-    demandByVariant.set(c.row.variantId, (demandByVariant.get(c.row.variantId) ?? 0) + c.qty * f);
-  }
-  const reservationVariantIds = Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId)));
+  const demandByVariant = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const c of cart) {
+      const f = Number(c.row.conversionFactor) || 1;
+      map.set(c.row.variantId, (map.get(c.row.variantId) ?? 0) + c.qty * f);
+    }
+    return map;
+  }, [cart]);
+  const reservationVariantIds = useMemo(
+    () => Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId))),
+    [cart],
+  );
   const allocationsQ = trpc.reservations.activeAllocations.useQuery(
     { branchId, variantIds: reservationVariantIds },
     { enabled: reservationVariantIds.length > 0, staleTime: 15_000 },
+  );
+  // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone) — إكمالُ الوصلة التي تركها PR-B صراحةً لـ#1012:
+  // أكثرُ الجهات إسناداً لمحافظة المسوّدة في هذا الفرع (٩٠ يوماً) + أجرتُها. الخادم يشتقّ الفرعَ من الفاعل،
+  // وتُطبَّق عند اختيار المحافظة عبر `suggestedPartyId` (منطقُ main في `applyGovernorateSelection`) بلا طمسِ
+  // ما يختاره الكاشير بعدها. مُعطَّلةٌ ما لم يكن وضعُ التوصيل فعّالاً بمحافظةٍ مختارة.
+  const deliveryGovernorate = delivery?.governorate ?? "";
+  const partySuggestionQ = trpc.delivery.suggestPartyForZone.useQuery(
+    { governorate: deliveryGovernorate },
+    { enabled: delivery != null && deliveryGovernorate.length > 0 && deliveryDisabledReason == null, staleTime: 60_000 },
   );
   const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
   for (const allocation of allocationsQ.data ?? []) {
@@ -144,6 +173,9 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
             setCustId={setCustId}
             showCustPicker={showCustPicker}
             setShowCustPicker={setShowCustPicker}
+            delivery={delivery != null}
+            onToggleDelivery={() => onDeliveryChange(delivery ? null : emptyDeliveryDraft())}
+            deliveryDisabledReason={deliveryDisabledReason}
           />
 
           <span style={{ fontSize: 11.5, color: C.mutedFg }}>F2 · F4 · F12</span>
@@ -170,6 +202,22 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
       {/* سلّة الكاشير: شبكةُ تحرير (‎−/+‎ وحذفٌ لكل سطر) بتصميمٍ مخصّصٍ بأنماطٍ سطرية
           (لا Tailwind) لأنّ سطحَ الكاشير مضبوطٌ لشاشة اللمس وحجم الخطّ الكبير.
           `DataTable` أداةُ عرضٍ فلا تُطبَّق هنا. */}
+      {/* م١ PR-B — وضع «توصيل»: العميل بالهاتف + حقول الطرد في نفس الشاشة فوق السلّة. */}
+      {delivery && (
+        <CartDeliveryPanel
+          C={C}
+          tabId={tabId}
+          draft={delivery}
+          onChange={onDeliveryChange}
+          onIdentityChange={onDeliveryIdentity}
+          customerBalance={customerBalance}
+          // اقتراحُ الجهة بالمنطقة (delivery.suggestPartyForZone، متابَعة #1012): الجهةُ المعتادة لمحافظة
+          // المسوّدة في هذا الفرع + أجرتُها — تُطبَّق عند اختيار المحافظة ولا تطمس اختيار الكاشير بعدها.
+          suggestedPartyId={partySuggestionQ.data?.partyId ?? null}
+          disabledReason={deliveryDisabledReason}
+        />
+      )}
+
       <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
         <table style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}>
           <thead>
@@ -209,7 +257,10 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
               const rowBg  = selected ? C.primarySoft : openingSellable ? C.amberSoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
               const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
-                <tr key={lineId}
+                <motion.tr key={lineId}
+                  initial={{ opacity: 0, x: 12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.15 }}
                   ref={selected ? selectedRowRef : undefined}
                   onClick={() => { setSelId(lineId); setNumMode("QTY"); }}
                   style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
@@ -293,7 +344,21 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                       </span>
                     )}
                   </td>
-                  <td style={{ ...TD, color: C.mutedFg, fontSize: 12.5 }}>{c.row.unitName}</td>
+                  <td style={{ ...TD, color: C.mutedFg, fontSize: 12.5 }}>
+                    {c.digital ? (
+                      c.row.unitName
+                    ) : (
+                      <PosUnitSelector
+                        branchId={branchId}
+                        variantId={c.row.variantId}
+                        currentUnitId={c.row.productUnitId}
+                        currentUnitName={c.row.unitName}
+                        tier={effectiveTier}
+                        C={C}
+                        onUnitChange={(newRow) => onUnitChange?.(c.row.productUnitId, newRow)}
+                      />
+                    )}
+                  </td>
                   <td style={{ ...TD, direction: "ltr", color: C.mutedFg }}>
                     {c.disc != null && c.disc > 0
                       ? <>
@@ -329,32 +394,21 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                       aria-label="حذف السطر"
                       style={{ width: 44, height: 44, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
                   </td>
-                </tr>
+                </motion.tr>
               );
             })}
           </tbody>
         </table>
       </div>
 
-      {/* Footer */}
-      {cart.length > 0 && (
-        <div style={{ borderTop: `2px solid ${C.border}`, padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.muted, flexShrink: 0, gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <span style={{ fontSize: 13, color: C.mutedFg, whiteSpace: "nowrap" }}>{cart.length} منتج · {itemCount} قطعة</span>
-            {flaggedCount > 0 && (
-              // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
-              <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <AlertTriangle aria-hidden size={13} /> {flaggedCount} منتج ناقص المخزون
-              </span>
-            )}
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-            <span style={{ fontSize: 13.5, color: C.mutedFg }}>المجموع:</span>
-            <span style={{ fontSize: 28, fontWeight: 900, direction: "ltr", color: C.fg }}>{fmt(total)}</span>
-            <span style={{ fontSize: 13, color: C.mutedFg }}>د.ع</span>
-          </div>
-        </div>
-      )}
+      <CartPanelFooter
+        C={C}
+        cartLength={cart.length}
+        itemCount={itemCount}
+        flaggedCount={flaggedCount}
+        anyOut={anyOut}
+        total={total}
+      />
     </div>
   );
 }

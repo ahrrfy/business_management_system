@@ -151,7 +151,7 @@ export default function Returns() {
                 disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
                 disabledReason: "الفاتورة محددة بالفعل",
                 onSelect: () => setSelectedId(id),
-                gate: { roles: ["manager"], module: "sales", level: "FULL" },
+                gate: { roles: ["manager", "cashier"], module: "sales", level: "FULL" },
               },
               {
                 key: "view",

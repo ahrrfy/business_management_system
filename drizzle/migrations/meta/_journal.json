@@ -2173,6 +2173,34 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 336,
+			"version": "5",
+			"when": 1788052409000,
+			"tag": "0336_owner_global_selfapproval_constraints",
+			"breakpoints": true
+		},
+		{
+			"idx": 337,
+			"version": "5",
+			"when": 1788052410000,
+			"tag": "0337_add_job_applicant_profile_fields",
+			"breakpoints": true
+		},
+		{
+			"idx": 338,
+			"version": "5",
+			"when": 1788052411000,
+			"tag": "0338_product_studio_barcode_gate",
+			"breakpoints": true
+		},
+		{
+			"idx": 339,
+			"version": "5",
+			"when": 1788052412000,
+			"tag": "0339_product_studio_legacy_capture_only",
+			"breakpoints": true
+		},
+		{
 			"idx": 340,
 			"version": "5",
 			"when": 1788148800000,

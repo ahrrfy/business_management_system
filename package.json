@@ -26,6 +26,7 @@
     "check:authz": "node scripts/authz-inventory.mjs --check",
     "check:authz:diff": "node scripts/authz-guard-diff.mjs",
     "check:mobile-release": "node scripts/verify-android-release-workflow-gate.mjs --selftest && node scripts/verify-mobile-release-env.mjs",
+    "check:firebase-config-security": "node scripts/check-firebase-config-security.mjs",
     "check:nginx-abuse": "node scripts/verify-nginx-abuse-controls.mjs",
     "check:compose": "node scripts/check-docker-compose-config.mjs",
     "check:fk-name": "node scripts/check-fk-name-length.mjs",
@@ -56,8 +57,9 @@
     "check:operation-attribution": "node scripts/check-operation-attribution.mjs",
     "check:page-size": "node scripts/check-page-size.mjs --selftest && node scripts/check-page-size.mjs",
     "check:vocabulary": "node scripts/check-vocabulary.mjs --selftest && node scripts/check-vocabulary.mjs",
+    "authz:inventory": "node scripts/authz-inventory.mjs",
     "authz:baseline": "node scripts/authz-inventory.mjs --write-baseline",
-    "check:guards": "pnpm check:emoji && pnpm check:tashkeel && pnpm check:money-schemas && pnpm check:form-inputs && pnpm check:branch && pnpm check:migrations && pnpm check:schema-drift && pnpm check:unique-ar && pnpm check:orphans && pnpm check:date-boundaries && pnpm check:colors && pnpm check:authz && pnpm check:nginx-abuse && pnpm check:compose && pnpm check:fk-name && pnpm check:css-vars && pnpm check:page-header && pnpm check:invoice-status-variants && pnpm check:raw-tables && pnpm check:raw-card && pnpm check:window-print && pnpm check:locale-numbers && pnpm check:raw-select && pnpm check:no-window-dialogs && pnpm check:sem-fill-contrast && pnpm check:loading-strings && pnpm check:save-shortcut-coverage && pnpm check:operation-attribution && pnpm check:filter-shell && pnpm check:row-attribution && pnpm check:duplicate-search && pnpm check:guards-registered && pnpm check:lint && pnpm check:form-parity && pnpm check:message-drift && pnpm check:error-messages && pnpm check:friction && pnpm check:automation-registry && pnpm check:vocabulary && pnpm check:page-size",
+    "check:guards": "pnpm check:emoji && pnpm check:tashkeel && pnpm check:money-schemas && pnpm check:form-inputs && pnpm check:branch && pnpm check:migrations && pnpm check:schema-drift && pnpm check:unique-ar && pnpm check:orphans && pnpm check:date-boundaries && pnpm check:colors && pnpm check:authz && pnpm check:nginx-abuse && pnpm check:compose && pnpm check:fk-name && pnpm check:css-vars && pnpm check:page-header && pnpm check:invoice-status-variants && pnpm check:raw-tables && pnpm check:raw-card && pnpm check:window-print && pnpm check:locale-numbers && pnpm check:raw-select && pnpm check:no-window-dialogs && pnpm check:sem-fill-contrast && pnpm check:loading-strings && pnpm check:save-shortcut-coverage && pnpm check:operation-attribution && pnpm check:filter-shell && pnpm check:row-attribution && pnpm check:duplicate-search && pnpm check:firebase-config-security && pnpm check:guards-registered && pnpm check:lint && pnpm check:form-parity && pnpm check:message-drift && pnpm check:error-messages && pnpm check:friction && pnpm check:automation-registry && pnpm check:vocabulary && pnpm check:page-size",
     "check:unique-ar": "node scripts/check-unique-ar.mjs",
     "prepare": "husky",
     "format": "prettier --write .",
@@ -241,7 +243,7 @@
     "typescript-eslint": "^8.69.0",
     "vite": "^7.1.7",
     "vite-plugin-pwa": "^1.3.0",
-    "vitest": "^3.2.6",
+    "vitest": "^4.1.11",
     "workbox-window": "^7.4.1"
   },
   "pnpm": {
@@ -260,6 +262,7 @@
       "nanoid@>=5.0.0 <5.1.16": "5.1.16",
       "postcss@<8.5.23": ">=8.5.23",
       "browserslist@<4.28.7": ">=4.28.7",
+      "baseline-browser-mapping@<2.11.0": "2.11.0",
       "@eslint/config-array>minimatch": "^10.2.6"
     }
   }

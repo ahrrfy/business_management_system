@@ -243,11 +243,29 @@ export async function getAiImageStudioSettings(): Promise<AiImageStudioSettingsD
   };
 }
 
-/** إعداد عام لأي مصادَق: هل مسار الذكاء الاصطناعي متاح فعلياً (لتقرّر الواجهة العرض). لا يسرّب المفتاح. */
-export async function getAiStudioConfig(): Promise<{ aiAvailable: boolean; provider: string }> {
+/**
+ * حالة عامة آمنة للمصادَق: لا تُسرّب المفتاح، لكنها تشرح للواجهة لماذا زر الذكاء غير جاهز.
+ * إخفاء الزر عند نقص إعدادٍ تشغيلي جعل المصوّر يظن أن الميزة حُذفت؛ نُظهره دائماً مع سببٍ قابلٍ للعمل.
+ */
+export async function getAiStudioConfig(): Promise<{
+  aiAvailable: boolean;
+  aiEnabled: boolean;
+  hasAiKey: boolean;
+  cryptoReady: boolean;
+  provider: string;
+}> {
   const row = await readRow();
   const key = safeDecrypt(row?.encryptedAiKey ?? null);
-  return { aiAvailable: !!row?.aiEnabled && !!key && isCryptoReady(), provider: row?.aiProvider ?? "GEMINI" };
+  const cryptoReady = isCryptoReady();
+  const aiEnabled = !!row?.aiEnabled;
+  const hasAiKey = !!key;
+  return {
+    aiAvailable: aiEnabled && hasAiKey && cryptoReady,
+    aiEnabled,
+    hasAiKey,
+    cryptoReady,
+    provider: row?.aiProvider ?? "GEMINI",
+  };
 }
 
 export interface AiStudioRuntime {

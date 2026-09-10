@@ -34,7 +34,8 @@ describe("RBAC — الكاشير ممنوع من العمليات الإدار�
   it("لا يعطّل/يفعّل منتجاً", () => expectForbidden(c.catalog.setProductActive({ productId: 1, isActive: false })));
   it("لا يُنشئ أمر شراء", () => expectForbidden(c.purchases.createOrder({ supplierId: 1, branchId: 1, items: [] as never })));
   it("لا يعتمد فاتورة شراء", () => expectForbidden(c.purchases.confirmOrder({ purchaseOrderId: 1 })));
-  it("لا يُنشئ مرتجعاً", () => expectForbidden(c.returns.create({ invoiceId: 1, lines: [] as never })));
+  // تفعيل محرك المرتجعات الفوري الذري: الكاشير ينشئ/ينفّذ المرتجع بوردية مفتوحة، لكن اعتماد طلبات المرتجع محصور بالمدير
+  it("لا يعتمد طلب مرتجع (إداري)", () => expectForbidden(c.returns.approveRequest({ requestId: 1 } as never)));
   it("لا يحوّل مخزوناً", () => expectForbidden(c.inventory.transferBatch({ fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 1 }] })));
   it("لا يسوّي مخزوناً", () => expectForbidden(c.inventory.adjust({ variantId: 1, branchId: 1, targetQuantity: 0 })));
   it("لا يسحب تقرير أعمار الذمم", () => expectForbidden(c.reports.arAging()));
@@ -57,6 +58,7 @@ describe("RBAC — أمين المخزن ممنوع من العمليات الم
     expectForbidden(
       w.vouchers.create({ voucherType: "PAYMENT", branchId: 1, amount: "1000", paymentMethod: "CASH", partyType: "OTHER", description: "x" } as never),
     ));
+  it("لا يُنشئ مرتجعاً (sales=NONE)", () => expectForbidden(w.returns.create({ invoiceId: 1, lines: [] as never })));
 });
 
 describe("RBAC — الأدمن يتجاوز كل الأدوار (لا FORBIDDEN على البوّابة)", () => {

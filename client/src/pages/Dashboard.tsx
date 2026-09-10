@@ -13,6 +13,8 @@ import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { motion } from "framer-motion";
+import { CashierHome } from "@/components/dashboard/CashierHome";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -825,7 +827,15 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
           const abd = s.isAlert ? `color-mix(in oklch, ${s.alertC} 42%, ${T.statBord})` : T.statBord;
           const card = (
-            <div key={i} className="group" style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}>
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 10, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ delay: i * 0.04, duration: 0.3, ease: "easeOut" }}
+              whileHover={{ y: -2, boxShadow: "0 4px 12px oklch(0 0 0 / 0.08)" }}
+              className="group"
+              style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}
+            >
               <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
               <div>
                 <div style={{ fontSize: "1.0625rem", fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
@@ -844,7 +854,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
               >
                 <CopyButton value={s.copyText} title={`نسخ ${s.label}`} successMessage={`نُسخت ${s.label}`} />
               </div>
-            </div>
+            </motion.div>
           );
           return s.href ? (
             <Link key={i} href={s.href} style={{ display: "block", minWidth: 0, textDecoration: "none" }}>
@@ -1399,244 +1409,23 @@ function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
   );
 }
 
-/* ═══════════ مساحة عمل الكاشير المركّزة (٢٤/٧، قرار المالك) ═══════════
-   موظف الوردية عمله: فتح وردية ← بيع ← إغلاق وتسليم. رئيسيته «محطة عمل» بأدوات منضدته فقط —
-   لا شبكة وحدات النظام (تلك تبقى للأدوار الإدارية). البنود الثانوية محكومة بصلاحيات دوره
-   الفعلية (hasModuleAccess — نفس مرآة الشريط الجانبي) فإطفاء وحدةٍ يُسقط بطاقتها فوراً.
-   العزل الحقيقي خادميّ كما هو؛ هذه طبقة تركيز UX خالصة. */
-
-function CashierHome() {
-  const T = useT();
-  const me = trpc.auth.me.useQuery();
-  const role = me.data?.role ?? "";
-  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const roleLabel = me.data?.customRoleLabel ?? "كاشير";
-  const branchId = me.data?.branchId ?? null;
-
-  const can = (mod: string, lvl: "READ" | "FULL" = "READ") =>
-    !!role && hasModuleAccess(role, override, mod, lvl);
-  // محطّة الاستقبال بوّابتها وحدة `workorders` (POS_STATION_GATES) — من لا يملكها لا يرى لوحاتها.
-  const isReception = can("workorders", "FULL");
-
-  // عدّادان فقط — وهما اللذان يغيّران ترتيب اليوم: كم طلباً ينتظر صاحبه، وكم رسالةً لم تُقرأ.
-  const woCounts = trpc.workOrders.counts.useQuery(
-    { branchId: branchId ?? 0 },
-    { enabled: isReception && branchId != null, staleTime: 30_000 },
-  );
-  const convs = trpc.conversations.list.useQuery(
-    { branchId: branchId ?? 0, limit: 50 },
-    { enabled: isReception && can("channels") && branchId != null, staleTime: 30_000 },
-  );
-  const unread = (convs.data?.rows ?? []).reduce((n, c) => n + (c.unreadCount ?? 0), 0);
-
-  /**
-   * ١٩/٨ (طلب المالك) — **مركز الإطلاق**: اللوحات الخمس خرجت من رأس شاشة الكاشير إلى هنا.
-   * كان الرأس صفّاً واحداً من ثمانية أزرارٍ متساوية الوزن يفيض أفقياً بشريط تمرير، يختلط فيه
-   * ما يُفتَح مرّةً في اليوم بما يُضغَط كل دقيقة. والتجميع هنا يحمل الفرق: مجموعةٌ لِما يفتحه
-   * الموظّف **داخل محطّته**، وأخرى لأدواته العامّة.
-   */
-  const stationTiles: Tile[] = isReception
-    ? [
-        {
-          // ⛔ **شاشةٌ حقيقية لا عودةٌ إلى الكاشير** (طلب المالك ١٩/٨): البطاقة التي تُعيدك إلى
-          // الشاشة الرئيسية ليست فصلاً — تُضيف طبقةَ تكرارٍ ثالثة فتفشل المعالجة.
-          href: "/reception/orders",
-          name: "طلبات محطّتي",
-          desc: "طابور التسليم والإسناد — ما جهُز بانتظار صاحبه",
-          badge: woCounts.data?.ready ?? 0,
-          badgeHint: "جاهز بانتظار العميل",
-        },
-        {
-          href: "/reception/invoices",
-          name: "فواتير للتحصيل",
-          desc: "ما عليه مبلغٌ متبقٍّ — اقبضه من الصفّ",
-        },
-        ...(can("channels")
-          ? [{
-              href: "/crm?tab=inbox",
-              name: "رسائل العملاء",
-              desc: "واتساب واتصالات — وافتح طلباً من المحادثة",
-              badge: unread,
-              badgeHint: "رسالة لم تُقرأ",
-            }]
-          : []),
-        ...(can("reservations")
-          ? [{
-              href: "/reservations",
-              name: "الحجوزات",
-              desc: "حجز صنف لعميل حتى موعد الاستلام",
-            }]
-          : []),
-        ...(can("store")
-          ? [{
-              href: "/store-admin?tab=orders",
-              name: "طلبات الموقع",
-              desc: "طلبات المتجر الإلكتروني — ثبّتها وأسنِدها",
-            }]
-          : []),
-      ]
-    : [];
-
-  const toolTiles: Tile[] = [
-    // ش٦: سطحُ «ما ينتظره منّي العمل» — خلفيّتُه مبنيّةٌ ومختبَرةٌ وكانت بلا مستهلكٍ ويبّ.
-    { href: "/my-work", name: "مطلوب منّي الآن", desc: "قراراتٌ تنتظر موافقتك وما يخصّك من عمل" },
-    { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي منتج بالباركود" },
-    ...(isReception ? [{ href: "/work-orders", name: "لوحة الإنتاج", desc: "كانبان الطلبات ومراحل التنفيذ" }] : []),
-    ...(can("sales") ? [{ href: "/invoices", name: "كل فواتيري", desc: "بحثٌ وفلترةٌ وإعادة طباعة" }] : []),
-    ...(can("tasks") ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات العملاء المُسنَدة إليك" }] : []),
-    { href: "/account", name: "حسابي", desc: "بياناتك وكلمة المرور وجلساتك" },
-  ];
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: T.bg,
-        direction: "rtl",
-        fontFamily: "'Cairo', sans-serif",
-        margin: "-24px",
-        // مساحاتٌ مفتوحة (طلب المالك): حشوةٌ أوسع وسقفُ عرضٍ مقروء بدل مدٍّ لا نهائيّ.
-        padding: "clamp(24px, 4vw, 44px) clamp(20px, 4vw, 48px) 56px",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 32,
-      }}
-    >
-      <div style={{ width: "100%", maxWidth: 1180, display: "flex", flexDirection: "column", gap: 32 }}>
-        <div>
-          <h1 style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "-0.01em" }}>
-            أهلاً {me.data?.name ?? ""}
-          </h1>
-          <p style={{ fontSize: "0.875rem", color: T.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
-            {roleLabel} · محطة عملك: افتح ورديتك، استقبل طلبات عملائك، أغلق وسلّم الصندوق.
-          </p>
-        </div>
-
-        <Link
-          href={isReception ? "/pos?mode=RECEPTION" : "/pos"}
-          style={{
-            display: "block",
-            background: T.featuredBg,
-            border: `2px solid ${T.featuredBd}`,
-            borderRadius: 18,
-            padding: "clamp(28px, 3.5vw, 40px) clamp(24px, 3vw, 36px)",
-            textDecoration: "none",
-          }}
-        >
-          <div style={{ fontSize: "clamp(24px, 2.6vw, 32px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
-            {isReception ? "محطة خدمة العملاء" : "نقطة البيع"}
-          </div>
-          <div style={{ fontSize: "0.875rem", color: T.sub, marginTop: 10, lineHeight: 1.7, maxWidth: "62ch" }}>
-            {isReception
-              ? "افتح الوردية واستقبل الطلب — السلّة والعميل والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
-              : "افتح الوردية وابدأ البيع — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."}
-          </div>
-        </Link>
-
-        {stationTiles.length > 0 && (
-          <TileGroup T={T} label="لوحات محطّتي" hint="تفتح داخل شاشة عملك" tiles={stationTiles} />
-        )}
-        <TileGroup T={T} label="أدوات" tiles={toolTiles} />
-      </div>
-
-      {/* طابور مهامه الشخصي (إن وُجد وسمحت صلاحيته) — نفس مكوّن اللوحة العامة */}
-      <div style={{ width: "100%", maxWidth: 1180 }}>
-        <TasksBrief branchScope={dashboardActionBranchId(me.data?.branchId)} />
-      </div>
-    </div>
-  );
-}
-
-interface Tile {
-  href: string;
-  name: string;
-  desc: string;
-  /** عدّادٌ يستحقّ نظرةً قبل فتح البطاقة (صفرٌ ⇒ لا يُعرَض — لا ضوضاءَ بلا خبر). */
-  badge?: number;
-  badgeHint?: string;
-}
-
-/** مجموعةُ بطاقاتٍ بعنوانٍ — الفاصلُ بينها هو ما يُنهي «صفَّ أزرارٍ متساوية الوزن». */
-function TileGroup({
-  T: Tk,
-  label,
-  hint,
-  tiles,
-}: {
-  T: typeof T;
-  label: string;
-  hint?: string;
-  tiles: Tile[];
-}) {
-  return (
-    <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-label={label}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-        <h2 style={{ fontSize: "0.8125rem", fontWeight: 800, color: Tk.secLabel, margin: 0, letterSpacing: "0.04em" }}>
-          {label}
-        </h2>
-        {hint && <span style={{ fontSize: "0.75rem", color: Tk.muted }}>{hint}</span>}
-        <div style={{ flex: 1, height: 1, background: Tk.secLine }} aria-hidden />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(264px, 1fr))", gap: 14 }}>
-        {tiles.map((t) => (
-          <Link
-            key={t.href}
-            href={t.href}
-            style={{
-              position: "relative",
-              background: Tk.cardBg,
-              border: `1px solid ${Tk.cardBord}`,
-              borderRadius: 14,
-              padding: "20px 18px",
-              textDecoration: "none",
-              display: "flex",
-              flexDirection: "column",
-              gap: 6,
-              minHeight: 92,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: "1rem", fontWeight: 700, color: Tk.text }}>{t.name}</span>
-              {!!t.badge && t.badge > 0 && (
-                <span
-                  title={t.badgeHint}
-                  style={{
-                    minWidth: 22,
-                    padding: "1px 7px",
-                    borderRadius: 999,
-                    background: "var(--sem-warn-bg)",
-                    color: "var(--sem-warn)",
-                    fontSize: "0.75rem",
-                    fontWeight: 800,
-                    textAlign: "center",
-                  }}
-                >
-                  {t.badge}
-                </span>
-              )}
-            </div>
-            <div style={{ fontSize: "0.8125rem", color: Tk.muted, lineHeight: 1.6 }}>{t.desc}</div>
-          </Link>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
   const me = trpc.auth.me.useQuery();
   const [adminBranchScope, setAdminBranchScope] = useState<number | undefined>(undefined);
   // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
-  if (me.data?.role === "cashier") return <CashierHome />;
+  if (me.data?.role === "cashier") {
+    return (
+      <CashierHome
+        tasksBrief={<TasksBrief branchScope={dashboardActionBranchId(me.data?.branchId)} />}
+      />
+    );
+  }
   const isAdmin = me.data?.role === "admin";
-  const branchScope = isAdmin
-    ? adminBranchScope
-    : dashboardActionBranchId(me.data?.branchId);
+  const branchScope = isAdmin ? adminBranchScope : dashboardActionBranchId(me.data?.branchId);
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }} style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
       <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
       <MetricsBar branchScope={branchScope} />
       <MorningBrief branchScope={branchScope} isAdmin={isAdmin} />
@@ -1646,10 +1435,8 @@ export default function Dashboard() {
           <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 900, color: T.text }}>وحدات النظام</h2>
           <p style={{ margin: "3px 0 0", fontSize: "0.75rem", color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
         </header>
-        {SECTIONS.map((sec) => (
-          <SectionRow key={sec.id} sec={sec} />
-        ))}
+        {SECTIONS.map((sec) => <SectionRow key={sec.id} sec={sec} />)}
       </div>
-    </div>
+    </motion.div>
   );
 }

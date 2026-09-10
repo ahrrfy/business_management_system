@@ -10,16 +10,15 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest, openCashDrawer } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, subscribeOutbox } from "@/lib/offline/outbox";
+import { getLastSyncAt, offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, OFFLINE_CACHE_MAX_AGE_MS, subscribeOutbox } from "@/lib/offline/outbox";
 import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
 import { getMeta, setMeta } from "@/lib/offline/db";
-import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
@@ -28,17 +27,18 @@ import { trpc } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Power, Globe, Check, Banknote } from "lucide-react";
+import { Printer, Check } from "lucide-react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
+import { applyCustomerIdentity, buildDeliveryPayload, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
 import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt, computeInvoiceDiscount,
 } from "@/components/pos/posShared";
 import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 import { POSHeader } from "@/components/pos/POSHeader";
@@ -48,6 +48,8 @@ import { PaymentPanel } from "@/components/pos/PaymentPanel";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
+import { POSFundingBanner } from "@/components/pos/POSFundingBanner";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -383,15 +385,6 @@ export default function POS() {
     const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
     return s.plus(refUnit.times(c.qty));
   }, D(0));
-  const rawInvoiceDiscountPctD = D(activeTab.invoiceDiscountPct || 0);
-  const clampedByFieldD = rawInvoiceDiscountPctD.lt(0)
-    ? D(0)
-    : rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : rawInvoiceDiscountPctD;
-  // **السقف الفعّال المتبقّي**: عتبةُ الخادم ١٥٪ تُقاس على المرجع، فإن كان في السلّة انحرافٌ سطريّ
-  // مسبق (`refGross − subtotal`)، فسلطةُ الكاشير على الرأس = ١٥٪ − (نسبةُ الانحراف المسبقة)،
-  // مقيسةً على الصافي الحاليّ (subtotal). قيمةٌ سالبةٌ ⇒ صفرٌ (لا سلطة).
   const priorDeviationRatioD = referenceGrossD.gt(0)
     ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
     : D(0);
@@ -404,23 +397,28 @@ export default function POS() {
     : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
       : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const invoiceDiscountPctD = invoiceDiscountAllowed
-    ? (clampedByFieldD.gt(effectiveHeaderCapPctD) ? effectiveHeaderCapPctD : clampedByFieldD)
-    : D(0);
-  const invoiceDiscountAmountD = round2(subtotalD.times(invoiceDiscountPctD).div(100));
-  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const discountCalc = computeInvoiceDiscount({
+    subtotalD, effectiveHeaderCapPctD, invoiceDiscountAllowed,
+    type: activeTab.invoiceDiscountType ?? "percent",
+    value: activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || ""),
+  });
+  const { discountAmountD: invoiceDiscountAmountD, discountAmount: invoiceDiscountAmount, discountPctD: invoiceDiscountPctD, maxDiscountAmount } = discountCalc;
   const subtotal = round2(subtotalD).toNumber();
   // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
   // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
   const netAfterHeaderD = subtotalD.minus(invoiceDiscountAmountD);
+  // م١ PR-B — وضع «توصيل» (COD): الحمولة تُبنى من مسوّدة التبويب؛ المتبقّي عهدةُ مندوب لا آجلٌ ولا تقريب نقديّ.
+  // ⛔ صفر فحص ائتمانٍ هنا وصفر تعطيلِ حارس — الخادم يشتقّ paymentMode=COD من وجود `delivery`.
+  const codMode = activeTab.delivery != null;
+  const deliveryPayload = activeTab.delivery ? buildDeliveryPayload(activeTab.delivery) : null;
   const paidD   = D(activeTab.payInput || 0);
   // §٩ IQD denomination rounding: البيع النقديّ الكامل يُقرَّب على أقرب ٢٥٠ د.ع (سياسة المالك).
   // effectiveTotalD = ما **يقبضه الكاشير فعلياً** (ما تظهره الشاشة، ما يُرسَل payment.amount).
   // الفرق `netAfterHeaderD − effectiveTotalD` قيدُ ADJUST_ROUNDING خادمياً (§ ٥ من دليل النظام).
-  const cashRoundedTotalD = activeTab.method === "CASH" && !cartHasDigital
+  const cashRoundedTotalD = activeTab.method === "CASH" && !cartHasDigital && !codMode
     ? roundCashIQD(netAfterHeaderD.toFixed(2))
     : netAfterHeaderD;
-  const cashRoundedPaidD = activeTab.method === "CASH" && !cartHasDigital ? roundCashIQD(paidD.toFixed(2)) : paidD;
+  const cashRoundedPaidD = activeTab.method === "CASH" && !cartHasDigital && !codMode ? roundCashIQD(paidD.toFixed(2)) : paidD;
   const cashRoundedTotal = cashRoundedTotalD.toNumber();
   const cashRoundedPaid = cashRoundedPaidD.toNumber();
   // isCredit يُقاس على **الإجمالي الفعّال** (المقرَّب حين النقد الكامل) — مطابقاً لحساب الخادم.
@@ -491,16 +489,41 @@ export default function POS() {
       const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === currentRow.productUnitId);
       if (i >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
+        const updated = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
+        next.splice(i, 1);
+        next.unshift(updated);
         return next;
       }
-      return [...prev, { row: currentRow, qty: 1 }];
+      return [{ row: currentRow, qty: 1 }, ...prev];
     });
     setSelId(currentRow.productUnitId);
     // ٢٣/٨ (Codex P2): اِرفع عدّاد الإضافة — يُشغّل التمرير حتى لو أُعيد مسح السطر المحدَّد نفسه.
     setAddTick((t) => t + 1);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
+  }
+
+  function changeItemUnit(oldUnitId: number, newRow: PosRow) {
+    if (receipt) setReceipt(null);
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    const currentRow = { ...newRow, branchId: newRow.branchId ?? branchId };
+    setCart((raw) => {
+      const prev = resetCouponItems(raw);
+      const i = prev.findIndex((c) => !c.digital && c.row.productUnitId === oldUnitId);
+      if (i < 0) return prev;
+      const target = prev[i];
+      const dupIdx = prev.findIndex((c, idx) => idx !== i && !c.digital && c.row.productUnitId === currentRow.productUnitId);
+      if (dupIdx >= 0) {
+        const merged = { ...prev[dupIdx], qty: prev[dupIdx].qty + target.qty, row: currentRow };
+        const next = prev.filter((_, idx) => idx !== i && idx !== dupIdx);
+        next.unshift(merged);
+        return next;
+      }
+      const next = [...prev];
+      next[i] = { ...target, row: currentRow, disc: undefined, origPrice: undefined };
+      return next;
+    });
+    setSelId(currentRow.productUnitId);
   }
 
   function changeQty(id: number, qty: number) {
@@ -598,6 +621,9 @@ export default function POS() {
   /** يبدأ مسار البيع الرقميّ: تحقّقٌ خادميّ + حجز رصيد، **قبل** لمس جهاز المزوّد. */
   function startDigitalFulfillment() {
     if (!shift || digitalCheckoutRef.current || prepareIntent.isPending || fulfillIntentId != null || finalizeSale.isPending) return;
+    // م١ PR-B (تدقيق Codex P1): نواةُ التثبيت الرقميّة لا تُنشئ إرساليّةَ توصيل — سلّةٌ رقميّة/مختلطة في
+    // وضع التوصيل تُنتج فاتورةً ماديّةً بلا إسناد. نرفضها بدل إسقاط الإسناد صامتاً.
+    if (codMode) { notify.err("التوصيل لا يشمل البطاقات الرقميّة", "أزِل البطاقات الرقميّة من السلّة، أو أوقِف وضع التوصيل لبيعها منفصلة."); return; }
     if (offline) {
       notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
       return;
@@ -722,10 +748,24 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
-      const row = offline
-        ? await offlineFindByBarcode(code, effectiveTier, branchId)
-        : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+      // ش٢ أوفلاين: أثناء الانقطاع أو تذبذب الشبكة تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
+      let row;
+      if (offline) {
+        row = await offlineFindByBarcode(code, effectiveTier, branchId);
+      } else {
+        try {
+          row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+        } catch (fetchErr) {
+          if (!activeTab.customerId) {
+            const lastSync = await getLastSyncAt();
+            const isFresh = Boolean(lastSync && Date.now() - new Date(lastSync).getTime() <= OFFLINE_CACHE_MAX_AGE_MS);
+            if (isFresh) {
+              row = await offlineFindByBarcode(code, effectiveTier, branchId);
+            }
+          }
+          if (!row) throw fetchErr;
+        }
+      }
       if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row as PosRow);
     } catch (e: unknown) {
@@ -816,6 +856,8 @@ export default function POS() {
     total: number; received: number; change: number; credit: number;
     isCredit: boolean; method: string; methodCode?: string;
     customerName?: string; cashierName?: string;
+    /** م١ PR-B: كتلة التوصيل للإيصال (تُلتقط لحظة الإرسال). */
+    delivery?: Receipt["delivery"];
   } | null>(null);
 
   const sale = trpc.sales.create.useMutation({
@@ -841,6 +883,9 @@ export default function POS() {
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,
         method: ctx.method, methodCode: ctx.methodCode,
+        // م١ PR-B: الطرد المُنشأ في معاملة البيع (يعود من الخادم) + كتلة التوصيل للإيصال.
+        delivery: ctx.delivery ?? null,
+        consignmentNumber: r.consignmentNumber ?? null,
       };
       // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
       // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
@@ -849,9 +894,14 @@ export default function POS() {
       const alignedRec: Receipt = { ...rec, total: serverTotal };
       setReceipt(alignedRec);
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
-      notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
+      notify.ok(
+        `تم البيع — فاتورة ${r.invoiceNumber}`,
+        r.consignmentNumber
+          ? `أُسند الطرد ${r.consignmentNumber} للتوصيل في المعاملة نفسها — تابعه من «إدارة التوصيل ← قيد التوصيل»`
+          : "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير",
+      );
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
 
       const printed = await printReceipt(buildBrandedReceipt(alignedRec));
       if (!printed.ok) {
@@ -890,13 +940,12 @@ export default function POS() {
       // نقداً فقط» — وهي **تعليمةٌ خاطئة وخطِرة**: البطاقة تكون قد خُصمت فعلاً قبل
       // `sales.create` (يشترطها `externalPaymentConfirmed`)، فيُدفع الكاشير إلى تحصيلٍ مكرّر
       // أو ترك عمليةٍ مخصومة معلَّقة. ما لا يُلتقَط يسقط للمسار العاديّ برسالة الخادم كما هي.
-      const offlineCapturable =
-        !!shift &&
+      const offlineCapturable = !!shift &&
         cart.length > 0 &&
         !cart.some((c) => c.digital) &&
         activeTab.method === "CASH" &&
         !isCredit &&
-        !activeTab.couponCode;
+        !activeTab.couponCode && !deliveryBlocksOfflineCapture(activeTab.delivery);
       if (!code || (errData?.httpStatus === 503 && offlineCapturable)) {
         saleCtxRef.current = null;
         void captureOfflineSale();
@@ -1034,9 +1083,11 @@ export default function POS() {
     // effectiveTotalD = ما يعرضه الكاشير للعميل. حين النقد الكامل هو المقرَّب (مطابقاً لِـcaptureSaleCtx القديم).
     const displayTotalD = effectiveTotalD;
     const displayPaidD = cashFull ? cashRoundedPaidD : paidD;
-    const finalReceivedD = isCredit ? displayPaidD : displayTotalD;
-    const finalChangeD   = isCredit ? D(0)  : displayPaidD.minus(displayTotalD);
-    const finalCreditD   = isCredit ? displayTotalD.minus(displayPaidD) : D(0);
+    // م١ PR-B (تدقيق Codex P1/P2): مبالغُ الإيصال من مصدرٍ واحدٍ نقيّ (saleReceiptAmounts). في التوصيل:
+    // المقبوضُ الآن ما يُسجَّل على الفاتورة، والفكّةُ صفرٌ لِـCOD الجزئيّ وتُحسب كبيعٍ عاديٍّ حين قُبض نقدٌ
+    // ≥ الإجماليّ (فائضٌ يُردّ)؛ وعهدةُ COD ليست ذمّةً على العميل ⇒ credit=0.
+    const { received: finalReceivedD, change: finalChangeD, credit: finalCreditD } =
+      saleReceiptAmounts({ codMode, method: activeTab.method, paidNow: displayPaidD, total: displayTotalD, isCredit });
     return {
       tabId: activeTab.id,
       lines: cart.map((c) => ({
@@ -1051,11 +1102,15 @@ export default function POS() {
       received: round2(finalReceivedD).toNumber(),
       change:   round2(finalChangeD).toNumber(),
       credit:   round2(finalCreditD).toNumber(),
-      isCredit,
+      isCredit: !codMode && isCredit,
       method: paymentMethodLabel(activeTab.method),
       methodCode: activeTab.method,
       customerName: selectedCustomer?.name,
       cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
+      // م١ PR-B: التوصيل يُطبع إفصاحاً على الإيصال بالراسم القائم (الأجرة تمريرٌ لا إيراد).
+      delivery: activeTab.delivery && deliveryPayload
+        ? { partyName: activeTab.delivery.partyName, fee: deliveryPayload.fee, feeCollection: deliveryPayload.feeCollection, address: deliveryPayload.address ?? null }
+        : null,
     };
   }
 
@@ -1065,6 +1120,9 @@ export default function POS() {
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
     if (!shift || !cart.length) return;
+    // م١ PR-B (سلامة ماليّة): الدفاعُ الأخير لكلّ مسارات الالتقاط (٥٠٣ · submitSale · quickPay) —
+    // سلّةُ توصيلٍ لا تُلتقَط نقداً صرفاً دون إسنادِ جهةٍ ولا تحصيلِ COD (الخادم يرفضها من الطابور).
+    if (deliveryBlocksOfflineCapture(activeTab.delivery)) { notify.errBig(OFFLINE_DELIVERY_BLOCK.title, OFFLINE_DELIVERY_BLOCK.body); return; }
     // البطاقات الرقمية ش٥: البيع الرقميّ **محظور أوفلاين** (مسألة مؤجَّلة صراحةً في §٢٤ من وثيقة
     // التصميم) — السعر والتنفيذ الخارجيّ واستهلاك المحفظة كلّها تحتاج الخادم لحظةَ البيع.
     if (cart.some((c) => c.digital)) {
@@ -1137,7 +1195,7 @@ export default function POS() {
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "", delivery: null });
     const printed = await printReceipt(buildBrandedReceipt(rec));
     if (!printed.ok) {
       notify.err("تعذّرت طباعة الإيصال المؤقت", "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
@@ -1160,7 +1218,7 @@ export default function POS() {
     }
     // تدقيق ١٧/٧: «0» صريح في حقل المقبوض كان يُسجّل البيع مدفوعاً نقداً بالكامل (isCredit=false ⇒
     // payAmount=total) بلا قبض فعليّ ⇒ عجز درج عند Z-report. ارفضه صراحةً بدل الإسقاط الصامت.
-    if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0)) {
+    if (!codMode && activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0)) {
       notify.err("أدخل المبلغ المقبوض، أو امسح الحقل للدفع النقدي الكامل. للبيع الآجل اختر عميلاً وأدخل المقدَّم.");
       return;
     }
@@ -1170,21 +1228,22 @@ export default function POS() {
       notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
       return;
     }
-    if (isCredit && activeTab.customerId == null) {
+    if (!codMode && isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
     // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
     // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
     // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
-    if (isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
+    if (!codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
         && selectedCustomer.creditLimit != null) {
       notify.errBig(
         "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
       );
       return;
     }
-    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
+    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل. سلّةُ التوصيل تُرفض
+    // داخل captureOfflineSale نفسها (deliveryBlocksOfflineCapture) ⇒ حارسٌ واحدٌ يغطّي هذا المسار وquickPay.
     if (offline) {
       void captureOfflineSale();
       return;
@@ -1197,7 +1256,7 @@ export default function POS() {
     const deviceId = activeTab.method === "CASH"
       ? await getDeviceCode().catch(() => undefined)
       : activeTab.externalPayment?.deviceId;
-    const cashFull = activeTab.method === "CASH" && !isCredit;
+    const cashFull = activeTab.method === "CASH" && !isCredit && !codMode;
     const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
@@ -1206,11 +1265,17 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
-      payment: {
-        amount: payAmount,
-        method: activeTab.method,
-        ...(activeTab.method !== "CASH" ? { externalPaymentAttemptId: activeTab.externalPayment!.attemptId! } : {}),
-      },
+      // م١ PR-B (تدقيق Codex P1): يُحجَب `payment` فقط لبيعٍ نقديٍّ بلا قبضٍ الآن (COD كامل)؛ غيرُ النقد
+      // مؤكَّدٌ سلفاً بمحاولةٍ خارجيّة ناجحة فيُرسَل دائماً — حجبُه كان يُهمِل قبضاً وقع ويُسنِد الطلبَ COD خطأً.
+      ...(codMode && !deliverySendsPayment(activeTab.method, paidD) ? {} : {
+        payment: {
+          amount: payAmount,
+          method: activeTab.method,
+          ...(activeTab.method !== "CASH" ? { externalPaymentAttemptId: activeTab.externalPayment!.attemptId! } : {}),
+        },
+      }),
+      // م١ PR-B: الطرد يُسند داخل معاملة البيع نفسها؛ أجرة COUNTER تُقبض الآن أمانةً وتساوي الأجرة بالضبط.
+      ...(deliveryPayload ? { delivery: deliveryPayload, ...(deliveryPayload.feeCollection === "COUNTER" ? { deliveryFeeHeld: deliveryPayload.fee } : {}) } : {}),
       // تاريخ الاستحقاق للآجل فقط — يُحفظ invoices.dueDate ويصحّح أعمار الذمم والتذكيرات.
       ...(isCredit && activeTab.dueDate ? { dueDate: activeTab.dueDate } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
@@ -1290,6 +1355,10 @@ export default function POS() {
   });
 
 
+  // مرجعٌ حيٌّ لأحدث `submitSale`: مستمعُ F4 يُثبَّت مرّةً بتبعيّاتٍ لا تشمل `activeTab.delivery`
+  // (exhaustive-deps مُعطَّل)، فنداءُ الإغلاق المُثبَّت مباشرةً كان قد يبيع سلّةَ توصيلٍ بلا رؤيتها.
+  const submitSaleRef = useRef(submitSale); submitSaleRef.current = submitSale;
+
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1304,10 +1373,11 @@ export default function POS() {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
         // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
         case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
-        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
+        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSaleRef.current(); break;
         case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
           if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
         }).catch((error) => notify.err(error)); break;
+        case "F10": e.preventDefault(); void openCashDrawer().then((res) => { if (res.ok) notify.ok("تم فتح درج النقود"); else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها"); }); break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -1431,7 +1501,9 @@ export default function POS() {
   const canPay =
     cart.length > 0 &&
     (activeTab.payInput === "" || paid >= total || (!cartHasDigital && isCredit && activeTab.customerId != null)) &&
-    externalPaymentConfirmed;
+    externalPaymentConfirmed &&
+    // م١ PR-B: وضع التوصيل يشترط طرداً مكتملاً (جهة + عنوان) وعميلاً مربوطاً بالهاتف واتصالاً حيّاً.
+    (!codMode || (deliveryPayload != null && activeTab.customerId != null && !offline));
 
   return (
     <div className="retail-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
@@ -1453,20 +1525,16 @@ export default function POS() {
         cardsDisabled={offline}
         cardsDisabledReason={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : undefined}
         branchName={activeBranchName}
+        offline={offline}
       />
 
       {headerActionsNode && createPortal(
         <RetailPosHeaderActions
-          C={C}
-          shift={shift}
-          userRole={me.data?.role}
-          onCloseShift={() => setShifting(true)}
-          onCashDrop={() => setCashDropping(true)}
-          printerReady={printerReady}
-          onConnectPrinter={connectPrinter}
-          bridgeEnabled={bridge.enabled}
-          bridgeDesc={bridge.description}
-          onTestPrint={testServerPrint}
+          placement="inline"
+          C={C} shift={shift} userRole={me.data?.role}
+          onCloseShift={() => setShifting(true)} onCashDrop={() => setCashDropping(true)}
+          printerReady={printerReady} onConnectPrinter={connectPrinter}
+          bridgeEnabled={bridge.enabled} bridgeDesc={bridge.description} onTestPrint={testServerPrint}
         />,
         headerActionsNode,
       )}
@@ -1524,73 +1592,17 @@ export default function POS() {
         }}
       />
 
-      {posFundingRequests.length > 0 && (
-        <div
-          data-testid="pos-shift-funding-banner"
-          style={{
-            margin: "6px 8px 0",
-            border: `1px solid ${C.amber}`,
-            background: C.amberSoft,
-            borderRadius: 8,
-            padding: "8px 10px",
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 900, fontSize: 13 }}>عهدة نقدية بانتظار استلامك</div>
-            <div style={{ fontSize: 12, color: C.mutedFg }}>
-              لا تُضاف إلى الدرج إلا بعد عدّ النقد فعلياً وتأكيد الاستلام.
-            </div>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {posFundingRequests.map((request) => (
-              <div key={request.requestReceiptId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontWeight: 800, fontSize: 13 }}>{fmt(Number(request.amount))} د.ع</span>
-                <button
-                  type="button"
-                  disabled={acceptFundingM.isPending}
-                  onClick={() =>
-                    acceptFundingM.mutate({
-                      requestReceiptId: request.requestReceiptId,
-                      decision: "ACCEPT",
-                    })
-                  }
-                  style={{
-                    border: 0,
-                    borderRadius: 6,
-                    padding: "6px 10px",
-                    background: C.success,
-                    color: "white",
-                    fontWeight: 900,
-                    cursor: acceptFundingM.isPending ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {acceptFundingM.isPending ? "جارٍ التثبيت…" : "استلمت النقد"}
-                </button>
-              </div>
-            ))}
-            <Link
-              href="/shifts"
-              style={{
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-                padding: "6px 10px",
-                color: C.fg,
-                fontSize: 12,
-                fontWeight: 800,
-                textDecoration: "none",
-                background: C.card,
-              }}
-            >
-              مراجعة الطلب أو رفضه
-            </Link>
-          </div>
-        </div>
-      )}
+      <POSFundingBanner
+        C={C}
+        posFundingRequests={posFundingRequests}
+        isPending={acceptFundingM.isPending}
+        onAccept={(requestReceiptId) =>
+          acceptFundingM.mutate({
+            requestReceiptId,
+            decision: "ACCEPT",
+          })
+        }
+      />
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
@@ -1602,11 +1614,16 @@ export default function POS() {
         <PaymentPanel
           C={C}
           stacked={stacked}
+          codMode={codMode}
           total={total}
           subtotal={subtotal}
           invoiceDiscountAmount={invoiceDiscountAmount}
           invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
-          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v })}
+          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v, invoiceDiscountValue: v, invoiceDiscountType: "percent" })}
+          invoiceDiscountType={activeTab.invoiceDiscountType ?? "percent"}
+          invoiceDiscountValue={activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || "")}
+          onInvoiceDiscountChange={(val, typ) => patchActive({ invoiceDiscountValue: val, invoiceDiscountType: typ, invoiceDiscountPct: typ === "percent" ? val : (discountCalc.discountPct > 0 ? String(discountCalc.discountPct) : "") })}
+          maxDiscountAmount={maxDiscountAmount}
           invoiceDiscountAllowed={invoiceDiscountAllowed}
           effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
           cashRoundingDelta={cashRoundingDelta}
@@ -1651,6 +1668,7 @@ export default function POS() {
           cart={cart} total={total}
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
+          onUnitChange={changeItemUnit}
           numMode={activeTab.numMode} setNumMode={setNumMode}
           customerId={activeTab.customerId}
           selectedCustomer={selectedCustomer}
@@ -1660,6 +1678,16 @@ export default function POS() {
           showCustPicker={showCustPicker}
           setShowCustPicker={setShowCustPicker}
           setCustId={setCustId}
+          tabId={activeTab.id}
+          delivery={activeTab.delivery ?? null}
+          onDeliveryChange={(d) => patchActive({ delivery: d })}
+          onDeliveryIdentity={(identity) => {
+            // العميل المربوط بالهاتف يصير عميلَ التبويب (⛔ بلا فحص ائتمان — COD خادمياً)، والمستلم يُملأ منه.
+            if (identity.customerId !== (activeTab.customerId ?? null)) setCustId(identity.customerId);
+            if (activeTab.delivery) patchActive({ delivery: applyCustomerIdentity(activeTab.delivery, identity, activeTab.customerId ?? null) });
+          }}
+          deliveryDisabledReason={deliveryModeUnavailableReason(offline)}
+          customerBalance={selectedCustomer?.currentBalance != null ? String(selectedCustomer.currentBalance) : null}
           onClear={() => void (async () => {
             if (!(await confirm({
               variant: "warning",
@@ -1693,23 +1721,16 @@ export default function POS() {
           C={C} shift={shift} branchId={branchId}
           onClose={() => setShifting(false)}
           onClosed={() => { setShifting(false); shiftQ.refetch(); }}
-          me={me.data}
-          branches={branches.data}
+          me={me.data} branches={branches.data}
         />
       )}
       {cashDropping && shift && (
-        <CashDropDialog
-          C={C}
-          shiftId={shift.id}
-          onClose={() => setCashDropping(false)}
-        />
+        <CashDropDialog C={C} shiftId={shift.id} onClose={() => setCashDropping(false)} />
       )}
       {creditPrompt && (
         <CreditApprovalDialog
-          C={C} message={creditPrompt}
-          mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
-          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
-          isPending={sale.isPending}
+          C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
+          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd} isPending={sale.isPending}
           onApprove={() => submitSale({ email: mgrEmail, password: mgrPwd })}
           onCancel={() => setCreditPrompt(null)}
         />
@@ -1717,86 +1738,3 @@ export default function POS() {
     </div>
   );
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── إجراءات رأس الكاشير (تُحقَن في الرأس الموحّد) ────────────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════════
-function RetailPosHeaderActions({
-  C,
-  shift,
-  userRole,
-  onCloseShift,
-  onCashDrop,
-  printerReady,
-  onConnectPrinter,
-  bridgeEnabled,
-  bridgeDesc,
-  onTestPrint,
-}: {
-  C: C;
-  shift: ShiftData;
-  userRole?: string | null;
-  onCloseShift: () => void;
-  onCashDrop: () => void;
-  printerReady: boolean;
-  onConnectPrinter: () => void;
-  bridgeEnabled: boolean;
-  bridgeDesc: string;
-  onTestPrint: () => void;
-}) {
-  return (
-    <>
-      {shift && (
-        <span className="inline-flex h-[var(--ui-control)] shrink-0 items-center rounded-lg border bg-muted/40 px-2.5 text-xs font-bold text-muted-foreground">
-          <span aria-hidden className="me-1.5 size-2 rounded-full bg-[var(--sem-pos)]" />
-          وردية #{shift.id}
-        </span>
-      )}
-      {bridgeEnabled && (
-        <button
-          type="button"
-          onClick={onTestPrint}
-          title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          aria-label="اختبار جسر الطباعة"
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border border-[var(--sem-pos)] text-[var(--sem-pos)]"
-        >
-          <Globe aria-hidden size={16} />
-        </button>
-      )}
-      {isWebUsbSupported() && (
-        <button
-          type="button"
-          onClick={onConnectPrinter}
-          title={printerReady ? "الطابعة الافتراضية مربوطة — اضغط لتبديلها" : "ربط الطابعة الحرارية"}
-          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط الطابعة الحرارية"}
-          className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border"
-          style={{ color: printerReady ? C.success : C.mutedFg, borderColor: printerReady ? C.success : C.border }}
-        >
-          <Printer aria-hidden size={16} />
-        </button>
-      )}
-      {shift && (
-        <button
-          type="button"
-          onClick={onCashDrop}
-          title="سحب نقدي من الدرج إلى الخزينة"
-          className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
-        >
-          <Banknote aria-hidden size={16} />
-          <span className="hidden 2xl:inline">سحب نقدي</span>
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={onCloseShift}
-        title="إغلاق الوردية"
-        className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold"
-      >
-        <Power aria-hidden size={16} />
-        <span className="hidden 2xl:inline">إغلاق الوردية</span>
-      </button>
-      <OfflineSyncChip userRole={userRole} placement="inline" />
-    </>
-  );
-}
-

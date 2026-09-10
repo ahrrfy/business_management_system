@@ -80,6 +80,14 @@ export type SubmitCountInput = {
   scannedBarcode?: string | null;
   /** مفتاح idempotency لمزامنة طابور الأوفلاين (uuid). */
   clientRequestId: string;
+  /** وقت الالتقاط الفعلي على جهاز العامل (لطابور الأوفلاين) لحماية مبيعات الكاشير اللاحقة. */
+  clientCapturedAt?: string | Date | null;
+  /** وقت إرسال الطلب من جهاز العميل لحساب فارق التوقيت ومعالجة انحراف ساعة العميل بدقة. */
+  clientSentAt?: string | Date | null;
+  /** وقت وصول الطلب إلى راوتر الخادم لحساب حد الوصول المحافظ والتخلص من تأخير انتظار أقفال المعاملة. */
+  requestReceivedAt?: string | Date | null;
+  /** انحراف ساعة العميل عن الخادم المحسوب مسبقاً (client - server) بالمللي ثانية إن توفر. */
+  clientClockOffsetMs?: number | null;
 };
 
 export type SubmitCountResult = {
@@ -394,6 +402,67 @@ export async function submitCount(
             "الكمية تطابق بداية باركود المنتج ويُحتمل أن الماسح كتب داخل حقل العدد. امسح الحقل وأعد العدّ يدوياً؛ وللكمية المشروعة يلزم تأكيد مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
         });
       }
+
+      if (breakdown) {
+        const userEntries = Object.entries(breakdown).filter(
+          ([k, v]) => !k.startsWith("__") && typeof v === "number" && v > 0,
+        );
+        if (userEntries.length > 0) {
+          const activeUnits = units.filter((u) => u.isActive !== false);
+          // إذا كان الصنف غير نشط ولا يملك أي وحدات نشطة (مخزون وهمي/ghost stock يراد تسويته)،
+          // تقبل البوابة تفصيل الوحدة الافتراضية طالما تطابق الكمية الإجمالية (Codex finding).
+          if (activeUnits.length === 0) {
+            const sumCounts = userEntries.reduce((acc, [, count]) => acc + count, 0);
+            if (sumCounts !== input.qty) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${sumCounts})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
+                }),
+              });
+            }
+          } else {
+            let expectedBaseQty = new Decimal(0);
+            for (const [uName, count] of userEntries) {
+              const matches = activeUnits.filter((u) => u.unitName === uName);
+              if (matches.length === 0) {
+                throw new TRPCError({
+                  code: "BAD_REQUEST",
+                  message: appErrorMessage({
+                    what: "تعذّر تسجيل تفصيل الوحدات",
+                    why: `الوحدة «${uName}» المذكورة في تفصيل الجرد غير معرّفة أو معطّلة لهذا المنتج`,
+                    doThis: "امسح الحقل وأعد إدخال الكمية بالوحدات الصحيحة المعرّفة للصنف",
+                  }),
+                });
+              }
+              if (matches.length > 1) {
+                throw new TRPCError({
+                  code: "CONFLICT",
+                  message: appErrorMessage({
+                    what: "تعارض في تعريف الوحدات",
+                    why: `توجد أكثر من وحدة نشطة بالاسم نفسه «${uName}» لهذا المنتج`,
+                    doThis: "صحّح أسماء الوحدات في بطاقة المنتج أولاً قبل تسجيل الجرد",
+                  }),
+                });
+              }
+              const unitObj = matches[0];
+              expectedBaseQty = expectedBaseQty.plus(new Decimal(count).times(String(unitObj.factor)));
+            }
+            if (expectedBaseQty.isInteger() && expectedBaseQty.toNumber() !== input.qty) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "عدم تطابق في كمية الجرد",
+                  why: `الكمية الإجمالية (${input.qty}) لا تطابق حاصل تفصيل الوحدات (${expectedBaseQty.toNumber()})`,
+                  doThis: "أعد إدخال الكمية أو تفصيل الوحدات ليتطابق المجموع الحسابي",
+                }),
+              });
+            }
+          }
+        }
+      }
       const candidateDigest = createHash("sha256")
         .update(
           JSON.stringify(
@@ -446,7 +515,45 @@ export async function submitCount(
       // العدّ الفعّال = آخر RECOUNT إن وُجد وإلا FIRST (نفس قاعدة rawCount في المراجعة).
       const effectiveRow = latestRecount ?? first;
 
-      const now = new Date();
+      const arrivalMs = input.requestReceivedAt ? new Date(input.requestReceivedAt).getTime() : Date.now();
+      const sessionCreatedMs = new Date(session.createdAt).getTime();
+      let countedAtDate = new Date(arrivalMs);
+
+      if (input.clientCapturedAt) {
+        const cap = new Date(input.clientCapturedAt);
+        const capMs = cap.getTime();
+        if (!isNaN(capMs)) {
+          let derivedMs: number;
+          if (input.clientClockOffsetMs != null && !isNaN(Number(input.clientClockOffsetMs))) {
+            const offsetCapMs = capMs + Number(input.clientClockOffsetMs);
+            if (input.clientSentAt) {
+              const sentMs = new Date(input.clientSentAt).getTime();
+              if (!isNaN(sentMs)) {
+                const delayMs = Math.max(0, sentMs - capMs);
+                const arrivalBoundMs = arrivalMs - delayMs;
+                derivedMs = Math.min(offsetCapMs, arrivalBoundMs);
+              } else {
+                derivedMs = Math.min(offsetCapMs, arrivalMs);
+              }
+            } else {
+              derivedMs = Math.min(offsetCapMs, arrivalMs);
+            }
+          } else if (input.clientSentAt) {
+            const sent = new Date(input.clientSentAt);
+            const sentMs = sent.getTime();
+            if (!isNaN(sentMs)) {
+              const delayMs = Math.max(0, sentMs - capMs);
+              derivedMs = arrivalMs - delayMs;
+            } else {
+              derivedMs = capMs;
+            }
+          } else {
+            derivedMs = Math.max(arrivalMs - 60_000, capMs);
+          }
+          const clampedMs = Math.max(sessionCreatedMs, Math.min(arrivalMs, derivedMs));
+          countedAtDate = new Date(clampedMs);
+        }
+      }
 
       let kind: "FIRST" | "RECOUNT" | "VERIFY";
       let verifyMatch: boolean | null = null;
@@ -465,7 +572,7 @@ export async function submitCount(
           scannedBarcode: storedScannedBarcode,
           countedByName: identity.countedByName,
           countedByUserId: identity.countedByUserId,
-          countedAt: now,
+          countedAt: countedAtDate,
           clientRequestId: input.clientRequestId,
         });
         await tx
@@ -512,7 +619,7 @@ export async function submitCount(
               unitBreakdown: guardedUnitBreakdown,
               entryMethod: storedEntryMethod,
               scannedBarcode: storedScannedBarcode,
-              countedAt: now,
+              countedAt: countedAtDate,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
 
@@ -546,7 +653,7 @@ export async function submitCount(
             scannedBarcode: storedScannedBarcode,
             countedByName: identity.countedByName,
             countedByUserId: identity.countedByUserId,
-            countedAt: now,
+            countedAt: countedAtDate,
             clientRequestId: input.clientRequestId,
           });
         } else {
@@ -572,7 +679,7 @@ export async function submitCount(
                 unitBreakdown: guardedUnitBreakdown,
                 entryMethod: storedEntryMethod,
                 scannedBarcode: storedScannedBarcode,
-                countedAt: now,
+                countedAt: countedAtDate,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
                 resolvedBy: null,
@@ -592,7 +699,7 @@ export async function submitCount(
               scannedBarcode: storedScannedBarcode,
               countedByName: identity.countedByName,
               countedByUserId: identity.countedByUserId,
-              countedAt: now,
+              countedAt: countedAtDate,
               isConflict: !match,
               clientRequestId: input.clientRequestId,
             });
@@ -628,7 +735,7 @@ export async function submitCount(
       // (٥) آخر نشاط للتكليف — يغذّي شاشة المتابعة الحية.
       await tx
         .update(stocktakeAssignments)
-        .set({ lastActivityAt: now })
+        .set({ lastActivityAt: new Date() })
         .where(eq(stocktakeAssignments.id, asg.id));
 
       return { ok: true as const, kind, verifyMatch, idempotent: false };

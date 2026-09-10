@@ -1,13 +1,27 @@
+import Decimal from "decimal.js";
 import { Link } from "wouter";
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { allocateLineTax } from "@/components/invoice";
 import { PurchaseIntegrityPanel } from "@/components/purchases/PurchaseIntegrityPanel";
 import { PurchaseCancellationDialog } from "@/components/purchases/PurchaseCancellationDialog";
+import { PurchaseDetailDrawer } from "@/components/purchases/PurchaseDetailDrawer";
 import { CopyInline } from "@/components/CopyButton";
 import { ActorCell } from "@/components/data-table/ActorCell";
+import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/SubmitButton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Input } from "@/components/ui/input";
+import { QuickSupplierPaymentDialog } from "@/components/purchases/QuickSupplierPaymentDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -24,6 +38,7 @@ import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { qrCodeSvg } from "@/lib/printing/qr";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   moduleAccessAllowed,
@@ -84,6 +99,7 @@ export default function Purchases() {
     version: number;
   } | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [drawerPoId, setDrawerPoId] = useState<number | null>(null);
   function controlKey(kind: "SUBMIT" | "CANCEL", id: number, version: number) {
     const key = `${kind}:${id}:${version}`;
     const existing = controlKeysRef.current.get(key);
@@ -145,6 +161,46 @@ export default function Purchases() {
       ),
     [pendingControls.data],
   );
+  const pendingOrderControlMap = useMemo(() => {
+    const map = new Map<
+      number,
+      Extract<
+        NonNullable<typeof pendingControls.data>["rows"][number],
+        { documentType: "PURCHASE_ORDER" }
+      >
+    >();
+    for (const row of pendingControls.data?.rows ?? []) {
+      if (row.documentType === "PURCHASE_ORDER") {
+        map.set(Number(row.purchaseOrderId), row);
+      }
+    }
+    return map;
+  }, [pendingControls.data?.rows]);
+
+  const [quickPaymentTarget, setQuickPaymentTarget] = useState<PurchaseRow | null>(null);
+  const [quickApprovalTarget, setQuickApprovalTarget] = useState<{
+    id: number;
+    poNumber: string;
+    controlRequestId?: number;
+    version: number;
+  } | null>(null);
+  const [quickApprovalReason, setQuickApprovalReason] = useState("اعتماد واستلام البضاعة كاملة");
+
+  const decideControlMut = trpc.purchases.decideControl.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.status === "APPROVED"
+          ? "تم اعتماد أمر الشراء واستلام البضاعة بالكامل وترحيل الفاتورة بنجاح"
+          : "تم تحديث حالة طلب الاعتماد",
+      );
+      setQuickApprovalTarget(null);
+      await Promise.all([
+        utils.purchases.list.invalidate(),
+        utils.purchases.pendingControls.invalidate(),
+      ]);
+    },
+    onError: (err) => notify.err(err),
+  });
   const controlStateUnavailable =
     canManagePurchases &&
     (pendingControls.isLoading || pendingControls.isError);
@@ -523,12 +579,22 @@ export default function Purchases() {
           <DataTable<PurchaseRow>
             data={rows}
             loading={query.isLoading}
-            errorState={{ isError: query.isError, message: query.error?.message, onRetry: () => void query.refetch() }}
+            errorState={{
+              isError: query.isError,
+              message: query.error?.message,
+              onRetry: () => void query.refetch(),
+            }}
             /* البحث والفلاتر في ListToolbar أعلاه (تغذّي الاستعلام) — بلا هذا يظهر حقلا بحثٍ متجاوران. */
             searchable={false}
             externalFiltersActive={activeFilterCount > 0 || f.q.trim() !== ""}
             /* الترقيم خادميّ (limit/offset + listCount) ⇒ شريطٌ واحد داخل الجدول بدل TablePager منفصل. */
-            serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total, isFetching: query.isFetching }}
+            serverPagination={{
+              page,
+              onPageChange: setPage,
+              pageSize: PAGE_SIZE,
+              total,
+              isFetching: query.isFetching,
+            }}
             getRowClassName={(p) => {
               const focus = rowProps(p.id).className;
               return focus ? `${focus} ${FOCUS_ANCHOR_CLASS}` : undefined;
@@ -540,7 +606,19 @@ export default function Purchases() {
                 header: "رقم الأمر",
                 accessorFn: (p) => p.poNumber,
                 meta: { kind: "code" },
-                cell: ({ row }) => <CopyInline value={row.original.poNumber} />,
+                cell: ({ row }) => (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDrawerPoId(row.original.id)}
+                      className="font-mono font-medium text-primary hover:underline cursor-pointer text-right"
+                      title="معاينة تفاصيل وبنود أمر الشراء"
+                    >
+                      {row.original.poNumber}
+                    </button>
+                    <CopyInline value={row.original.poNumber} />
+                  </div>
+                ),
               },
               {
                 id: "supplier",
@@ -549,7 +627,9 @@ export default function Purchases() {
                 meta: { width: "wide" },
                 cell: ({ row }) =>
                   /* ٢٤/٨ (تدقيق): اسم المورّد رابطٌ لكشف حسابه — بلا حاجةٍ لفتح ⋯. */
-                  row.original.supplierName && row.original.supplierId && canOpenSupplierStatement ? (
+                  row.original.supplierName &&
+                  row.original.supplierId &&
+                  canOpenSupplierStatement ? (
                     <Link
                       href={`/suppliers-statement?id=${row.original.supplierId}`}
                       className="text-primary hover:underline"
@@ -567,8 +647,10 @@ export default function Purchases() {
                     {
                       id: "branch",
                       header: "الفرع",
-                      accessorFn: (p) => branchNames.get(p.branchId ?? -1) ?? "—",
-                      cell: ({ row }) => branchNames.get(row.original.branchId ?? -1) ?? "—",
+                      accessorFn: (p) =>
+                        branchNames.get(p.branchId ?? -1) ?? "—",
+                      cell: ({ row }) =>
+                        branchNames.get(row.original.branchId ?? -1) ?? "—",
                     },
                   ] as ColumnDef<PurchaseRow, unknown>[])
                 : []),
@@ -589,7 +671,10 @@ export default function Purchases() {
               {
                 id: "supplierInvoice",
                 header: "فاتورة المورد",
-                accessorFn: (p) => (p.agreedCurrency === "USD" ? `${fmt(p.usdTotal)} $` : `${fmt(p.total)} د.ع`),
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD"
+                    ? `${fmt(p.usdTotal)} $`
+                    : `${fmt(p.total)} د.ع`,
                 meta: { kind: "money" },
                 cell: ({ row }) =>
                   row.original.agreedCurrency === "USD"
@@ -599,9 +684,13 @@ export default function Purchases() {
               {
                 id: "agreedRate",
                 header: "سعر التثبيت",
-                accessorFn: (p) => (p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"),
+                accessorFn: (p) =>
+                  p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—",
                 meta: { kind: "money" },
-                cell: ({ row }) => (row.original.agreedCurrency === "USD" ? fmt(row.original.agreedRate) : "—"),
+                cell: ({ row }) =>
+                  row.original.agreedCurrency === "USD"
+                    ? fmt(row.original.agreedRate)
+                    : "—",
               },
               {
                 id: "remaining",
@@ -609,31 +698,84 @@ export default function Purchases() {
                 // ⚠️ كانت هذه الخلية الوحيدة في الجدول تعرض الرقم بلا فواصل آلاف (positiveDiff(...).toFixed(2)
                 // مباشرةً) بينما كل عمود مالٍ مجاورٍ (الإجمالي/فاتورة المورد) يمرّ عبر fmt() — تناقضٌ بصريّ
                 // يكسر إيقاع الجدول (جولة بصرية ٣/٩). fmt() يلفّ نفس Decimal بتنسيق en-US الموحَّد.
-                accessorFn: (p) =>
-                  p.agreedCurrency === "USD"
-                    ? `${fmt(D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2))} $`
-                    : `${fmt(positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2))} د.ع`,
+                accessorFn: (p) => {
+                  const effectivePaid = Decimal.max(
+                    D(p.paidAmount ?? 0),
+                    D(p.linkedCashPaidAmount ?? 0),
+                  );
+                  return p.agreedCurrency === "USD"
+                    ? `${fmt(
+                        D(p.usdTotal ?? 0)
+                          .minus(D(p.paidUsd ?? 0))
+                          .toFixed(2),
+                      )} $`
+                    : `${fmt(positiveDiff(p.total ?? 0, effectivePaid.toString()).toFixed(2))} د.ع`;
+                },
                 meta: { kind: "money" },
                 // ٢٤/٨ (تدقيق): `title` يشرح صيغة الرقم — «المتبقّي = الإجمالي − المدفوع».
-                cell: ({ row }) => (
-                  <span className="font-bold" title="المتبقّي = الإجمالي − المدفوع">
-                    {row.original.agreedCurrency === "USD"
-                      ? `${fmt(D(row.original.usdTotal ?? 0).minus(D(row.original.paidUsd ?? 0)).toFixed(2))} $`
-                      : `${fmt(positiveDiff(row.original.total ?? 0, row.original.paidAmount ?? 0).toFixed(2))} د.ع`}
-                  </span>
-                ),
+                cell: ({ row }) => {
+                  const isUsd = row.original.agreedCurrency === "USD";
+                  const effectivePaid = Decimal.max(
+                    D(row.original.paidAmount ?? 0),
+                    D(row.original.linkedCashPaidAmount ?? 0),
+                  );
+                  const rem = isUsd
+                    ? D(row.original.usdTotal ?? 0).minus(
+                        D(row.original.paidUsd ?? 0),
+                      )
+                    : positiveDiff(
+                        row.original.total ?? 0,
+                        effectivePaid.toString(),
+                      );
+                  const isSettled = rem.lte(0);
+                  return (
+                    <span
+                      className={`font-bold ${isSettled ? "text-money-positive" : ""}`}
+                      title="المتبقّي = الإجمالي − المدفوع"
+                    >
+                      {isUsd
+                        ? `${fmt(rem.toFixed(2))} $`
+                        : `${fmt(rem.toFixed(2))} د.ع`}
+                      {isSettled ? " (مسدد)" : ""}
+                    </span>
+                  );
+                },
               },
               {
                 id: "settlementType",
                 header: "التسوية",
-                accessorFn: (p) => SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
+                accessorFn: (p) =>
+                  SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType,
                 meta: { kind: "status" },
-                // ٢٤/٨ (تدقيق): شارةُ لون بدل نصٍّ خام.
-                cell: ({ row }) => (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}>
-                    {SETTLEMENT_TYPE[row.original.settlementType] ?? row.original.settlementType}
-                  </span>
-                ),
+                cell: ({ row }) => {
+                  const total = D(row.original.total ?? 0);
+                  const paid = D(row.original.paidAmount ?? 0);
+                  const linkedPaid = D(row.original.linkedCashPaidAmount ?? 0);
+                  const effectivePaid = Decimal.max(paid, linkedPaid);
+                  const isFullyPaid =
+                    row.original.status === "RECEIVED" &&
+                    total.gt(0) &&
+                    effectivePaid.gte(total);
+                  return (
+                    <div className="space-y-1">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${SETTLEMENT_CLASS[row.original.settlementType] ?? "badge-status-pending"}`}
+                      >
+                        {SETTLEMENT_TYPE[row.original.settlementType] ??
+                          row.original.settlementType}
+                      </span>
+                      {isFullyPaid ? (
+                        <div
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-money-positive"
+                          title="مسدد بالكامل — لا توجد ذمة متبقية على هذا الأمر"
+                        >
+                          <CheckCircle2 aria-hidden className="size-3" />
+                          مسدد بالكامل
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                },
               },
               {
                 id: "status",
@@ -641,7 +783,9 @@ export default function Purchases() {
                 accessorFn: (p) => PO_STATUS[p.status] ?? p.status,
                 meta: { kind: "status" },
                 cell: ({ row }) => (
-                  <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}>
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLASS[row.original.status] ?? "badge-status-pending"}`}
+                  >
                     {PO_STATUS[row.original.status] ?? row.original.status}
                   </span>
                 ),
@@ -656,7 +800,8 @@ export default function Purchases() {
                     actor={{
                       userId: row.original.createdBy,
                       name: row.original.createdByName,
-                      source: row.original.createdBy == null ? "legacy" : "user",
+                      source:
+                        row.original.createdBy == null ? "legacy" : "user",
                     }}
                   />
                 ),
@@ -668,16 +813,49 @@ export default function Purchases() {
                 meta: { kind: "actions" },
                 cell: ({ row }) => {
                   const p = row.original;
-                  const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
+                  const terminal =
+                    p.status === "RECEIVED" || p.status === "CANCELLED";
                   const needsConfirmation = p.status === "DRAFT";
                   const awaitingApproval = p.status === "SENT";
                   const hasPendingControl = pendingOrderIds.has(Number(p.id));
+                  const isUsd = p.agreedCurrency === "USD";
+                  const effectivePaid = Decimal.max(
+                    D(p.paidAmount ?? 0),
+                    D(p.linkedCashPaidAmount ?? 0),
+                  );
+                  const rem = isUsd
+                    ? positiveDiff(p.usdTotal, D(p.paidUsd ?? 0).plus(D(p.returnedUsd ?? 0)).toString())
+                    : positiveDiff(p.total ?? 0, effectivePaid.toString());
+                  const isSettled = rem.lte(0);
+                  const activeControl = pendingOrderControlMap.get(Number(p.id));
+                  const currentUserId = me.data?.id;
+                  const isOwner = me.data?.isOwner === true;
+                  const violatesSod =
+                    !isOwner &&
+                    (currentUserId == null ||
+                      (activeControl != null &&
+                        [
+                          activeControl.requestedBy,
+                          activeControl.creatorId,
+                          activeControl.lastEditedBy,
+                          p.createdBy,
+                          (p as { lastEditedBy?: number | null }).lastEditedBy,
+                          (p as { submittedBy?: number | null }).submittedBy,
+                        ].some((id) => id != null && Number(id) === Number(currentUserId))));
+                  const canDirectApprove =
+                    p.status === "SENT" &&
+                    activeControl != null &&
+                    activeControl.kind === "APPROVE_REVISION" &&
+                    !violatesSod;
+
                   return (
                     <RowActions
                       mode="auto"
                       contact={{
-                        whatsapp: supplierContacts.get(Number(p.supplierId))?.whatsapp,
-                        phone: supplierContacts.get(Number(p.supplierId))?.phone,
+                        whatsapp: supplierContacts.get(Number(p.supplierId))
+                          ?.whatsapp,
+                        phone: supplierContacts.get(Number(p.supplierId))
+                          ?.phone,
                         label: `واتساب ${p.supplierName ?? "المورّد"}`,
                         message: buildOperationalContactMessage({
                           entityLabel: "أمر شراء",
@@ -695,12 +873,54 @@ export default function Purchases() {
                       }}
                       actions={[
                         {
+                          key: "direct-approve",
+                          kind: "approve",
+                          label: "اعتماد واستلام البضاعة",
+                          hidden: !canDirectApprove,
+                          disabled:
+                            decideControlMut.isPending ||
+                            controlStateUnavailable,
+                          disabledReason: controlStateUnavailable
+                            ? "تعذّر التحقق من طلبات التحكم"
+                            : undefined,
+                          onSelect: () => {
+                            if (!activeControl) return;
+                            setQuickApprovalTarget({
+                              id: p.id,
+                              poNumber: p.poNumber,
+                              controlRequestId: Number(activeControl.id),
+                              version: Number(p.version),
+                            });
+                            setQuickApprovalReason("اعتماد واستلام البضاعة كاملة");
+                          },
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
+                          key: "quick-pay",
+                          kind: "edit",
+                          label: "سداد فوري للمورد",
+                          hidden: p.status !== "RECEIVED" || isSettled,
+                          onSelect: () => setQuickPaymentTarget(p),
+                          gate: {
+                            roles: ["manager", "purchasing"],
+                            module: "purchases",
+                            level: "FULL",
+                          },
+                        },
+                        {
                           key: "confirm",
                           kind: "approve",
                           label: "إرسال للاعتماد",
                           // الإرسال لا يعني الاعتماد؛ يبقى SENT حتى يحسمه مراجع مستقل.
                           hidden: !needsConfirmation,
-                          disabled: confirmMut.isPending || hasPendingControl || controlStateUnavailable,
+                          disabled:
+                            confirmMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
                           disabledReason: controlStateUnavailable
                             ? "تعذّر التحقق من طلبات التحكم"
                             : hasPendingControl
@@ -725,12 +945,22 @@ export default function Purchases() {
                           href: `/purchases/${p.id}/edit`,
                           // الأهليّة الكاملة خادمية (لا استلام/لا دفعة)؛ هنا نُخفيه عن النهائيّ
                           // فقط — والشاشة نفسها تشرح سبب المنع لو تعذّر التعديل.
-                          hidden: terminal || awaitingApproval || p.status === "CONFIRMED",
+                          hidden:
+                            terminal ||
+                            awaitingApproval ||
+                            p.status === "CONFIRMED",
                           gate: {
                             roles: ["manager", "purchasing"],
                             module: "purchases",
                             level: "FULL",
                           },
+                        },
+                        {
+                          key: "preview",
+                          kind: "view",
+                          label: "معاينة التفاصيل",
+                          onSelect: () => setDrawerPoId(p.id),
+                          gate: { module: "purchases", level: "READ" },
                         },
                         {
                           key: "receive",
@@ -773,8 +1003,12 @@ export default function Purchases() {
                           label: "إلغاء الأمر",
                           variant: "destructive",
                           // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
-                          hidden: p.status === "RECEIVED" || p.status === "CANCELLED",
-                          disabled: cancelMut.isPending || hasPendingControl || controlStateUnavailable,
+                          hidden:
+                            p.status === "RECEIVED" || p.status === "CANCELLED",
+                          disabled:
+                            cancelMut.isPending ||
+                            hasPendingControl ||
+                            controlStateUnavailable,
                           disabledReason: controlStateUnavailable
                             ? "تعذّر التحقق من طلبات التحكم"
                             : hasPendingControl
@@ -827,6 +1061,95 @@ export default function Purchases() {
         }}
         onSubmit={submitCancellation}
       />
+      <PurchaseDetailDrawer
+        purchaseOrderId={drawerPoId}
+        onClose={() => setDrawerPoId(null)}
+        onPrint={(id) => void printOrder(id)}
+      />
+      {quickPaymentTarget && quickPaymentTarget.supplierId ? (
+        <QuickSupplierPaymentDialog
+          open={quickPaymentTarget != null}
+          onClose={() => setQuickPaymentTarget(null)}
+          purchaseOrderId={quickPaymentTarget.id}
+          poNumber={quickPaymentTarget.poNumber}
+          supplierId={quickPaymentTarget.supplierId}
+          supplierName={quickPaymentTarget.supplierName ?? ""}
+          branchId={Number(quickPaymentTarget.branchId)}
+          currency={quickPaymentTarget.agreedCurrency === "USD" ? "USD" : "IQD"}
+          exchangeRate={quickPaymentTarget.agreedRate}
+          remainingAmount={
+            quickPaymentTarget.agreedCurrency === "USD"
+              ? D(quickPaymentTarget.usdTotal ?? 0)
+                  .minus(D(quickPaymentTarget.paidUsd ?? 0))
+                  .toFixed(2)
+              : positiveDiff(
+                  quickPaymentTarget.total ?? 0,
+                  Decimal.max(
+                    D(quickPaymentTarget.paidAmount ?? 0),
+                    D(quickPaymentTarget.linkedCashPaidAmount ?? 0),
+                  ).toString(),
+                ).toFixed(2)
+          }
+          onSuccess={() => void utils.purchases.list.invalidate()}
+        />
+      ) : null}
+      <Dialog
+        open={quickApprovalTarget != null}
+        onOpenChange={(open) => !open && setQuickApprovalTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <CheckCircle2 aria-hidden className="size-5 text-primary" />
+              <span>اعتماد واستلام أمر الشراء {quickApprovalTarget?.poNumber}</span>
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              اعتماد هذا الأمر يعني تأكيد استلام كامل الأصناف في المستودع وترحيل فاتورة المورد في قيد متوازن وإتاحتها للبيع فوراً.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="row-approve-reason" className="text-xs">
+                بيان الاعتماد / السبب
+              </Label>
+              <Input
+                id="row-approve-reason"
+                value={quickApprovalReason}
+                onChange={(e) => setQuickApprovalReason(e.target.value)}
+                className="text-xs"
+                placeholder="اعتماد واستلام البضاعة كاملة"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setQuickApprovalTarget(null)}
+              disabled={decideControlMut.isPending}
+            >
+              إلغاء
+            </Button>
+            <SubmitButton
+              size="sm"
+              pending={decideControlMut.isPending}
+              onClick={() => {
+                if (!quickApprovalTarget?.controlRequestId) return;
+                decideControlMut.mutate({
+                  requestId: quickApprovalTarget.controlRequestId,
+                  decisionKey: `decide-row-${quickApprovalTarget.controlRequestId}-${crypto.randomUUID()}`,
+                  approve: true,
+                  reason: quickApprovalReason.trim() || "اعتماد واستلام البضاعة كاملة",
+                  confirmedFullReceipt: true,
+                });
+              }}
+              disabled={quickApprovalReason.trim().length < 3}
+            >
+              تأكيد الاعتماد والاستلام
+            </SubmitButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
