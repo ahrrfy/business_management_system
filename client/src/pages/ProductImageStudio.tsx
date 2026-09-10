@@ -891,7 +891,9 @@ export default function ProductImageStudio() {
         originalDataUrl: originalDataUrl || null,
         processedDataUrl: images[0].dataUrl,
         thumbnailDataUrl,
-        mode: studioMode === "AI" ? "FLATTEN" : studioMode,
+        // لا نُنزِل نتيجة الذكاء إلى FLATTEN: يربط الخادم وضع AI بإيصال المعالجة وبايتات
+        // المرشّح، فيبقى مصدر الصورة واضحاً وصحيحاً حتى شاشة الاعتماد.
+        mode: studioMode,
         processingReceipt,
         adminOverrideReason: editOverrideValue,
         ...(canEditProductContent ? { proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy } : {}),

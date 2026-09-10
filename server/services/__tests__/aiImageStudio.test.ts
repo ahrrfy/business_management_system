@@ -363,6 +363,9 @@ describe("buildAiStudioPrompt", () => {
     expect(p.startsWith(AI_STUDIO_FIDELITY_GUARD)).toBe(true);
     expect(p).toContain(DEFAULT_AI_STUDIO_PROMPT);
     expect(p).toContain("Arabic text");
+    expect(p).toContain("pure white (#FFFFFF)");
+    expect(p).toContain("close marketing composition");
+    expect(p).toContain("lightweight and web-ready");
   });
 
   it("إضافة المستخدم تُلحَق كتفضيل، والحفظ يُعاد تأكيده أخيراً (لا تتجاوزه)", () => {
@@ -435,12 +438,19 @@ describe("imageStudioSettingsService — AI (DB)", () => {
   it("تفعيل بلا مفتاح ⇒ يُرفَض", async () => {
     await expect(updateAiImageStudioSettings({ aiEnabled: true }, 1)).rejects.toThrow();
     expect((await getAiStudioConfig()).aiAvailable).toBe(false);
+    expect((await getAiStudioConfig()).aiEnabled).toBe(false);
+    expect((await getAiStudioConfig()).hasAiKey).toBe(false);
   });
 
   it("مفتاح ثمّ تفعيل ⇒ يرقّي النموذج القديم تلقائياً إلى الافتراضي المستقر", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456", aiModel: "gemini-2.5-flash-image" }, 1);
     await updateAiImageStudioSettings({ aiEnabled: true }, 1);
-    expect((await getAiStudioConfig()).aiAvailable).toBe(true);
+    expect(await getAiStudioConfig()).toMatchObject({
+      aiAvailable: true,
+      aiEnabled: true,
+      hasAiKey: true,
+      cryptoReady: true,
+    });
     const rt = await getAiStudioRuntime();
     expect(rt?.apiKey).toBe("MYKEY123456");
     expect(rt?.model).toBe("gemini-3.1-flash-lite-image");

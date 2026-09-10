@@ -313,7 +313,7 @@ export const productStudioRouter = router({
         originalDataUrl: z.string().max(1_300_000).nullable().optional(),
         processedDataUrl: z.string().max(1_300_000),
         thumbnailDataUrl: z.string().max(180_000),
-        mode: z.enum(["FLATTEN", "CUT"]),
+        mode: z.enum(["FLATTEN", "CUT", "AI"]),
         processingReceipt: z.string().uuid().nullable().optional(),
         proposedName: nullableText(255),
         proposedDescription: nullableText(5_000),

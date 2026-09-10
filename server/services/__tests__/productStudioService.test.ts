@@ -3204,7 +3204,8 @@ describe("product studio governed workflow", () => {
       taskId,
       originalDataUrl: PNG_1X1_ALT,
       processedDataUrl: PNG_1X1,
-      mode: "FLATTEN",
+      // يمرّر العميل وضع AI كما هو؛ الخادم يتحقق من الإيصال والبايتات ثم يحفظ المصدر الحقيقي.
+      mode: "AI",
       processingReceipt: accepted,
     })).resolves.toBeDefined();
     const [job] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));

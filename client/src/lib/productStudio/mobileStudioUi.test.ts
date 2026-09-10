@@ -43,6 +43,7 @@ describe("mobile studio workflow", () => {
   it("markup regression net: key mobile tokens still present in source", () => {
     const page = readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8");
     const uploader = readFileSync(new URL("../../components/form/ImageUploader.tsx", import.meta.url), "utf8");
+    const studioUploader = readFileSync(new URL("../../components/product/ImageStudioUploader.tsx", import.meta.url), "utf8");
     const picker = readFileSync(new URL("../../components/product-studio/StudioProductPicker.tsx", import.meta.url), "utf8");
     const preview = readFileSync(new URL("../../components/product-studio/StudioPreviewPair.tsx", import.meta.url), "utf8");
 
@@ -65,9 +66,15 @@ describe("mobile studio workflow", () => {
     expect(uploader).toContain("التقاط بالكاميرا الخلفية");
     expect(uploader).toContain("اختيار من المعرض");
     expect(uploader).toContain("إعادة الالتقاط");
-    expect(uploader).toContain("معالجة في الاستوديو");
+    expect(uploader).toContain("معالجة بالذكاء الاصطناعي");
     expect(uploader).toContain("min-h-11");
     expect(uploader).not.toContain("group-hover:opacity-100");
+    expect(studioUploader).toContain("عالج بالذكاء الاصطناعي");
+    expect(studioUploader).toContain("مقارنة قبل الاعتماد — الأصل الملتقط مقابل نتيجة الذكاء الاصطناعي");
+    expect(studioUploader).not.toContain("قصّ الخلفية (استوديو احترافي)");
+    expect(studioUploader).not.toContain("توسيط على خلفية بيضاء");
+    expect(page).toContain("mode: studioMode,");
+    expect(page).not.toContain('mode: studioMode === "AI" ? "FLATTEN"');
     expect(picker).toContain("const CameraScanner = lazy");
     expect(picker).not.toContain('import { CameraScanner }');
   });
