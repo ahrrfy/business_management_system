@@ -308,141 +308,202 @@ export function PaymentPanel({
       {/* صفّ الإجراءات: مبلغ مدفوع + رقائق سريعة | طريقة الدفع | عربون/كوبون | زرّا الإتمام.
           pe-28 يحجز حافّة الشريط اليسرى فارغةً — شارة مزامنة الأوفلاين (fixed bottom-3 left-3
           مشتركة بكل شاشات الكاشير) تطفو فوق تلك الزاوية بالضبط في أي شاشةٍ بشريطٍ سفليّ حافّة-لحافّة. */}
-      {/* صفّ الإجراءات: مخصّص (حجز مؤقت للتنفيذ) مقابل مبيعات مباشرة (إتمام البيع المباشر) */}
+      {/* صفّ الإجراءات: مبلغ مدفوع + رقائق سريعة | طريقة الدفع | عربون/كوبون | زرّا الإتمام */}
       <div className="flex flex-wrap items-center justify-between gap-3 pe-28">
-        {hasCustom ? (
-          <>
-            <div className="flex items-center gap-2 rounded-lg border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-warn)]">
-              <ShieldCheck aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)]" />
-              <span>حجز مؤقت للتنفيذ · الدفع والتسوية يتمان عند التسليم (مباشر أو مندوب)</span>
-            </div>
-
-            <div className="ms-auto flex items-center gap-2">
-              <button
-                type="button"
-                disabled={cartEmpty || submitting || !hasShift}
-                onClick={() => onSubmit({ quickFullPay: false })}
-                title={
-                  submitting ? "جارٍ الإرسال…" :
-                  cartEmpty ? "أضف منتجاً أوّلاً" :
-                  !hasShift ? "افتح وردية استقبال أوّلاً" :
-                  "حفظ وتأكيد الطلب وإرساله للتنفيذ بالمطبعة"
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center rounded-lg border bg-card p-1">
+            <span className="px-2 text-xs font-bold text-muted-foreground">المدفوع:</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={displayPay}
+              onChange={(e) => {
+                const val = e.target.value;
+                setDisplayPay(val);
+                try {
+                  const norm = normalizeNumberInput(val).normalized;
+                  setPayInput(norm);
+                } catch {
+                  setPayInput(val);
                 }
-                className="inline-flex h-11 min-w-56 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
-              >
-                {submitting ? (
-                  "جارٍ الإرسال…"
-                ) : (
-                  <>
-                    <Check aria-hidden className="size-4" />
-                    <span>{sumDirect > 0 ? "حفظ وتأكيد الطلب (إرسال التخصيص للتنفيذ)" : "حفظ وتأكيد الطلب (إرسال للتنفيذ)"}</span>
-                  </>
+              }}
+              className="h-8 w-24 rounded bg-transparent px-2 text-sm font-black tabular-nums outline-none focus:bg-accent/50"
+              dir="ltr"
+              placeholder="0"
+            />
+            <button
+              type="button"
+              onClick={payAll}
+              className="rounded bg-muted px-2 py-1 text-xs font-bold text-muted-foreground hover:bg-primary/20 hover:text-primary"
+            >
+              = الكل
+            </button>
+          </div>
+
+          <div className="flex rounded-lg border bg-card p-0.5">
+            {POS_METHODS.map((p) => (
+              <button
+                key={p.v}
+                type="button"
+                disabled={!isPosPaymentMethodEnabled(p.v)}
+                onClick={() => setMethod(p.v)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-xs font-bold transition-colors",
+                  method === p.v ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted",
                 )}
+              >
+                {p.label}
               </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center rounded-lg border bg-card p-1">
-                <span className="px-2 text-xs font-bold text-muted-foreground">المدفوع:</span>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={displayPay}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setDisplayPay(val);
-                    try {
-                      const norm = normalizeNumberInput(val).normalized;
-                      setPayInput(norm);
-                    } catch {
-                      setPayInput(val);
-                    }
-                  }}
-                  className="h-8 w-24 rounded bg-transparent px-2 text-sm font-black tabular-nums outline-none focus:bg-accent/50"
-                  dir="ltr"
-                  placeholder="0"
-                />
+            ))}
+          </div>
+
+          {method !== "CASH" && (
+            <div
+              className={cn(
+                "flex items-center rounded-lg border bg-card p-1 shadow-xs transition-colors",
+                needPaymentRef && !paymentReference.trim()
+                  ? "border-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]/30"
+                  : "border-primary/40",
+              )}
+            >
+              <CreditCard aria-hidden className="size-4 text-primary ms-1" />
+              <span className="px-1.5 text-xs font-bold text-muted-foreground whitespace-nowrap">
+                {method === "CARD" ? "رقم العملية:" : "رقم المرجع:"}
+              </span>
+              <input
+                type="text"
+                value={paymentReference}
+                onChange={(e) => setPaymentReference(e.target.value)}
+                placeholder={
+                  method === "CARD"
+                    ? "رقم إيصال الـ POS"
+                    : method === "WALLET"
+                      ? "رقم عملية المحفظة"
+                      : "رقم العملية"
+                }
+                className="h-8 w-36 rounded bg-transparent px-2 text-xs font-bold outline-none focus:bg-accent/50 text-foreground placeholder:text-muted-foreground/60"
+                dir="ltr"
+                autoFocus
+              />
+              {paymentReference && (
                 <button
                   type="button"
-                  onClick={payAll}
-                  className="rounded bg-muted px-2 py-1 text-xs font-bold text-muted-foreground hover:bg-primary/20 hover:text-primary"
+                  onClick={() => setPaymentReference("")}
+                  className="p-1 text-muted-foreground hover:text-foreground"
+                  title="مسح"
                 >
-                  = الكل
+                  <X aria-hidden className="size-3.5" />
                 </button>
-              </div>
+              )}
+            </div>
+          )}
 
-              <div className="flex rounded-lg border bg-card p-0.5">
-                {POS_METHODS.map((p) => (
+          {deferredAvailable && (
+            <button
+              type="button"
+              onClick={() => setDeferred(!deferred)}
+              className={cn("rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors", deferred ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "text-muted-foreground hover:bg-muted")}
+            >
+              آجل (ذمّة)
+            </button>
+          )}
+
+          {hasCustom && (
+            <span className={cn(
+              "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-bold",
+              paid > 0
+                ? "border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                : "border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]",
+            )}>
+              <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0" />
+              <span>
+                {paid > 0
+                  ? (paid >= expectedNow
+                      ? "دفع كامل للطلب وإرسال للتنفيذ"
+                      : `عربون مقبوض: ${fmt(paid)} د.ع · متبقٍّ للتسليم: ${fmt(remaining)} د.ع`)
+                  : "حجز مؤقت للتنفيذ · الدفع عند الاستلام"}
+              </span>
+            </span>
+          )}
+        </div>
+
+        <div className="ms-auto flex items-center gap-2">
+          {hasCustom ? (
+            <>
+              {paid > 0 ? (
+                <>
                   <button
-                    key={p.v}
                     type="button"
-                    disabled={!isPosPaymentMethodEnabled(p.v)}
-                    onClick={() => setMethod(p.v)}
-                    className={cn(
-                      "rounded-md px-2.5 py-1 text-xs font-bold transition-colors",
-                      method === p.v ? "bg-primary text-primary-foreground shadow-xs" : "text-muted-foreground hover:bg-muted",
-                    )}
+                    disabled={cartEmpty || submitting || !hasShift}
+                    onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
+                    title="حفظ بدون دفعة وتأجيل كامل المبلغ للدفع عند الاستلام"
+                    className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border-2 border-primary/80 bg-primary/5 px-3 text-xs font-black text-primary shadow-xs transition-colors hover:bg-primary/15 disabled:bg-muted disabled:text-muted-foreground disabled:border-transparent disabled:shadow-none"
                   >
-                    {p.label}
+                    <BookmarkCheck aria-hidden className="size-4" />
+                    <span>حجز مؤقت (بلا دفعة)</span>
                   </button>
-                ))}
-              </div>
-
-              {method !== "CASH" && (
-                <div
-                  className={cn(
-                    "flex items-center rounded-lg border bg-card p-1 shadow-xs transition-colors",
-                    needPaymentRef && !paymentReference.trim()
-                      ? "border-[var(--sem-warn)] ring-1 ring-[var(--sem-warn)]/30"
-                      : "border-primary/40",
-                  )}
-                >
-                  <CreditCard aria-hidden className="size-4 text-primary ms-1" />
-                  <span className="px-1.5 text-xs font-bold text-muted-foreground whitespace-nowrap">
-                    {method === "CARD" ? "رقم العملية:" : "رقم المرجع:"}
-                  </span>
-                  <input
-                    type="text"
-                    value={paymentReference}
-                    onChange={(e) => setPaymentReference(e.target.value)}
-                    placeholder={
-                      method === "CARD"
-                        ? "رقم إيصال الـ POS"
-                        : method === "WALLET"
-                          ? "رقم عملية المحفظة"
-                          : "رقم العملية"
-                    }
-                    className="h-8 w-36 rounded bg-transparent px-2 text-xs font-bold outline-none focus:bg-accent/50 text-foreground placeholder:text-muted-foreground/60"
-                    dir="ltr"
-                    autoFocus
-                  />
-                  {paymentReference && (
+                  {paid < expectedNow && (
                     <button
                       type="button"
-                      onClick={() => setPaymentReference("")}
-                      className="p-1 text-muted-foreground hover:text-foreground"
-                      title="مسح"
+                      disabled={cartEmpty || submitting || !hasShift}
+                      onClick={() => onSubmit({ quickFullPay: true })}
+                      title="تحصيل الإجمالي كاملاً وطباعة"
+                      className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-3 text-xs font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
                     >
-                      <X aria-hidden className="size-3.5" />
+                      <Zap aria-hidden className="size-4" />
+                      <span>تحصيل الإجمالي وطباعة</span>
                     </button>
                   )}
-                </div>
+                  <button
+                    type="button"
+                    disabled={cartEmpty || submitting || !hasShift}
+                    onClick={() => onSubmit({ quickFullPay: false })}
+                    title={paid >= expectedNow ? "قبض المبلغ كاملاً وإرسال للتنفيذ" : "قبض الدفعة/العربون وإرسال للتنفيذ"}
+                    className="inline-flex h-11 min-w-44 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+                  >
+                    {submitting ? (
+                      "جارٍ الإرسال…"
+                    ) : (
+                      <>
+                        <Check aria-hidden className="size-4" />
+                        <span>{paid >= expectedNow ? "قبض المبلغ كاملاً وإرسال للتنفيذ" : "قبض الدفعة وإرسال للتنفيذ"}</span>
+                      </>
+                    )}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={cartEmpty || submitting || !hasShift}
+                    onClick={() => onSubmit({ quickFullPay: true })}
+                    title="تحصيل الإجمالي كاملاً وطباعة (F4)"
+                    className="inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 text-sm font-black text-background shadow-md transition-colors hover:bg-[var(--sem-warn)]/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+                  >
+                    <Zap aria-hidden className="size-4" />
+                    <span>تحصيل الإجمالي وطباعة</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cartEmpty || submitting || !hasShift}
+                    onClick={() => onSubmit({ quickFullPay: false, isReservation: true })}
+                    title="حفظ وحجز الطلب للتنفيذ والدفع عند الاستلام"
+                    className="inline-flex h-11 min-w-48 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-black text-primary-foreground shadow-md transition-colors hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+                  >
+                    {submitting ? (
+                      "جارٍ الإرسال…"
+                    ) : (
+                      <>
+                        <BookmarkCheck aria-hidden className="size-4" />
+                        <span>حجز مؤقت وإرسال للتنفيذ</span>
+                      </>
+                    )}
+                  </button>
+                </>
               )}
-
-              {deferredAvailable && (
-                <button
-                  type="button"
-                  onClick={() => setDeferred(!deferred)}
-                  className={cn("rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors", deferred ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "text-muted-foreground hover:bg-muted")}
-                >
-                  آجل (ذمّة)
-                </button>
-              )}
-            </div>
-
-            <div className="ms-auto flex items-center gap-2">
+            </>
+          ) : (
+            <>
               <button
                 type="button"
                 disabled={cartEmpty || submitting || !hasShift}
@@ -481,9 +542,9 @@ export function PaymentPanel({
                   </>
                 )}
               </button>
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

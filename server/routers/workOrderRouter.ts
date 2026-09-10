@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { failOpaque } from "../lib/opaqueFailure";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { workOrderRefundPreflight } from "../services/workOrder/refundPreflight";
@@ -1092,6 +1092,7 @@ export const workOrderRouter = router({
           deliveryCost: workOrders.deliveryCost,
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
           branchId: workOrders.branchId,
+          version: workOrders.version,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -1105,7 +1106,46 @@ export const workOrderRouter = router({
         )
         .limit(1);
       if (row) {
-        return { ...row, kind: "workOrder" as const };
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.workOrderId, row.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...row,
+          kind: "workOrder" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
       }
 
       const [inv] = await db
@@ -1137,7 +1177,47 @@ export const workOrderRouter = router({
         )
         .limit(1);
       if (inv) {
-        return { ...inv, kind: "invoice" as const };
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              eq(deliveryConsignments.invoiceId, inv.id),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            )
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...inv,
+          version: 1,
+          kind: "invoice" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
       }
 
       return null;
