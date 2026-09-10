@@ -4,6 +4,8 @@
   "procedures": [
     "storefront.cancelOrderByToken",
     "storefront.cancelOrderPrivate",
+    "storefront.acceptQuoteRequestByToken",
+    "storefront.acceptQuoteRequestPrivate",
     "storefront.claimFirebaseCustomer",
     "storefront.createQuoteRequest",
     "storefront.customerBenefits",

@@ -9,7 +9,11 @@ describe("official quotation tracking contract", () => {
   it("shows the formal quote reference and expiry without exposing a price in the tracking model", () => {
     expect(api).toContain("officialQuotation:");
     expect(api).not.toContain("officialQuotation: {\n    quoteNumber: string;\n    total:");
+    expect(api).toContain('status: "DRAFT" | "SENT" | "ACCEPTED"');
+    expect(api).toContain("acceptStorefrontOfficialQuotation");
     expect(orders).toContain("صدر العرض الرسمي رقم {quoteTracking.officialQuotation.quoteNumber}");
     expect(orders).toContain("quoteTracking.officialQuotation.validUntil");
+    expect(orders).toContain("الموافقة على العرض");
+    expect(orders).toContain("لا تُنشئ الموافقة فاتورة أو حجز مخزون");
   });
 });

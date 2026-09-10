@@ -8,6 +8,8 @@ describe("storefront public sensitive batch guard", () => {
     "storefront.trackOrderByToken",
     "storefront.trackQuoteRequestPrivate",
     "storefront.trackQuoteRequestByToken",
+    "storefront.acceptQuoteRequestPrivate",
+    "storefront.acceptQuoteRequestByToken",
     "storefront.cancelOrderPrivate",
     "storefront.cancelOrderByToken",
   ])("counts repeated %s operations against the per-request limit", (procedure) => {

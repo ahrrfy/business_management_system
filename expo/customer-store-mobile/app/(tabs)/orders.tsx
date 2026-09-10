@@ -18,6 +18,7 @@ import { loadVerifiedCustomerSession } from "@/lib/customer-session";
 import { loadRecentOrders, type RecentStorefrontOrder } from "@/lib/recent-orders";
 import { loadRecentQuoteRequests, type RecentStorefrontQuoteRequest } from "@/lib/recent-quote-requests";
 import {
+  acceptStorefrontOfficialQuotation,
   formatIqd,
   formatLatinNumber,
   cancelStorefrontOrder,
@@ -77,6 +78,7 @@ export default function OrdersScreen() {
   const [quoteTrackingLoading, setQuoteTrackingLoading] = useState(false);
   const [cancelPrompt, setCancelPrompt] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [acceptingQuote, setAcceptingQuote] = useState(false);
 
   useEffect(() => {
     void loadRecentOrders()
@@ -195,6 +197,70 @@ export default function OrdersScreen() {
     } finally {
       setQuoteTrackingLoading(false);
     }
+  };
+
+  const acceptOfficialQuotation = async () => {
+    if (
+      !quoteTracking?.officialQuotation ||
+      quoteTracking.officialQuotation.status !== "SENT" ||
+      acceptingQuote
+    ) return;
+    setAcceptingQuote(true);
+    setQuoteTrackingError(null);
+    try {
+      const normalizedRequestNumber = quoteTracking.requestNumber.trim().toUpperCase();
+      const recent = recentQuoteRequests.find(
+        (candidate) => candidate.requestNumber === normalizedRequestNumber,
+      );
+      const session = await loadVerifiedCustomerSession();
+      const guestTrackingToken = recent?.guestTrackingToken &&
+        (!recent.guestTrackingExpiresAt || Date.parse(recent.guestTrackingExpiresAt) > Date.now())
+        ? recent.guestTrackingToken
+        : null;
+      const result = await acceptStorefrontOfficialQuotation({
+        requestNumber: normalizedRequestNumber,
+        customerSessionToken: session?.token,
+        guestTrackingToken,
+      });
+      if (result.outcome === "ACCEPTED") {
+        setQuoteTracking((current) => current?.requestNumber === normalizedRequestNumber && current.officialQuotation
+          ? { ...current, officialQuotation: { ...current.officialQuotation, status: "ACCEPTED" } }
+          : current);
+        Alert.alert(
+          "تم تسجيل موافقتك",
+          "سيكمل فريق المبيعات مراجعة الطلب قبل التجهيز. لا تنشئ هذه الموافقة فاتورة أو حجز مخزون.",
+        );
+        return;
+      }
+      setQuoteTracking((current) => current?.requestNumber === normalizedRequestNumber && current.officialQuotation
+        ? { ...current, officialQuotation: { ...current.officialQuotation, status: result.quoteStatus } }
+        : current);
+      const details = [
+        result.reasons.includes("EXPIRED") ? "انتهت صلاحية العرض." : null,
+        result.reasons.includes("PRICE_CHANGED") ? "تغيّر السعر الحالي." : null,
+        result.reasons.includes("UNAVAILABLE") ? "تغيّر توفر أحد الأصناف أو كمياتها." : null,
+      ].filter(Boolean).join(" ");
+      Alert.alert(
+        "يلزم إصدار عرض جديد",
+        `${details} تواصل مع فريق المبيعات ليعيد المراجعة ويرسل عرضاً رسمياً محدثاً.`,
+      );
+    } catch (reason) {
+      setQuoteTrackingError(classifyNetworkError(reason).message);
+    } finally {
+      setAcceptingQuote(false);
+    }
+  };
+
+  const confirmOfficialQuotationAcceptance = () => {
+    if (acceptingQuote || quoteTracking?.officialQuotation?.status !== "SENT") return;
+    Alert.alert(
+      "تأكيد الموافقة على العرض",
+      "سيُعاد فحص صلاحية العرض والسعر والتوفر قبل تسجيل موافقتك. لا تُنشئ الموافقة فاتورة أو حجز مخزون.",
+      [
+        { text: "ليس الآن", style: "cancel" },
+        { text: "أوافق على العرض", onPress: () => void acceptOfficialQuotation() },
+      ],
+    );
   };
 
   const openOrderSupport = async () => {
@@ -518,6 +584,34 @@ export default function OrdersScreen() {
                     ? ` صالح حتى ${new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium" }).format(new Date(quoteTracking.officialQuotation.validUntil))}.`
                     : " راجع وسيلة التواصل التي اخترتها لاستلامه."}
                 </Text>
+                {quoteTracking.officialQuotation.status === "DRAFT" && (
+                  <Text style={styles.quoteStateHint}>العرض قيد إرساله من فريق المبيعات.</Text>
+                )}
+                {quoteTracking.officialQuotation.status === "SENT" && (
+                  <>
+                    <Text style={styles.quoteStateHint}>
+                      وافق بعد مراجعة النسخة الرسمية التي وصلتك؛ نعيد فحص السعر والتوفر عند التسجيل.
+                    </Text>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      activeOpacity={0.85}
+                      disabled={acceptingQuote}
+                      onPress={confirmOfficialQuotationAcceptance}
+                      style={[styles.quoteAcceptButton, acceptingQuote && styles.quoteAcceptButtonDisabled]}
+                    >
+                      {acceptingQuote ? <ActivityIndicator color="#FFFFFF" size="small" /> : <MaterialIcons color="#FFFFFF" name="task-alt" size={18} />}
+                      <Text style={styles.quoteAcceptButtonText}>الموافقة على العرض</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+                {quoteTracking.officialQuotation.status === "ACCEPTED" && (
+                  <Text style={styles.quoteAcceptedHint}>
+                    تم تسجيل موافقتك. سيكمل فريق المبيعات التأكيد قبل التجهيز، من دون حجز أو فاتورة تلقائية.
+                  </Text>
+                )}
+                {quoteTracking.officialQuotation.status === "EXPIRED" && (
+                  <Text style={styles.quoteStateHint}>انتهت صلاحية العرض؛ اطلب من فريق المبيعات إصدار عرض جديد.</Text>
+                )}
               </View>
             )}
             <View style={styles.itemsList}>
@@ -703,6 +797,11 @@ const styles = StyleSheet.create({
   supportHint: { color: "#395B50", fontSize: 11, fontWeight: "700", lineHeight: 18, textAlign: "right" },
   supportButton: { alignItems: "center", backgroundColor: "#FFFFFF", borderColor: "#9DC5B2", borderRadius: 10, borderWidth: 1, flexDirection: "row-reverse", gap: 6, justifyContent: "center", marginTop: 9, minHeight: 42, paddingHorizontal: 12 },
   supportButtonText: { color: "#0C5A4B", fontSize: 12, fontWeight: "900" },
+  quoteStateHint: { color: "#476158", fontSize: 12, lineHeight: 19, marginTop: 8, textAlign: "right" },
+  quoteAcceptedHint: { color: "#0C5A4B", fontSize: 12, fontWeight: "700", lineHeight: 19, marginTop: 8, textAlign: "right" },
+  quoteAcceptButton: { alignItems: "center", backgroundColor: "#0C5A4B", borderRadius: 12, flexDirection: "row", gap: 8, justifyContent: "center", marginTop: 10, minHeight: 42, paddingHorizontal: 14 },
+  quoteAcceptButtonDisabled: { opacity: 0.62 },
+  quoteAcceptButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
   note: {
     alignItems: "flex-start",
     backgroundColor: "#F1F4F1",

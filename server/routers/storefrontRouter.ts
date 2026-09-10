@@ -30,6 +30,8 @@ import {
   trackOnlineOrderForCustomer,
 } from "../services/onlineOrderService";
 import {
+  acceptStorefrontOfficialQuotationByGuestToken,
+  acceptStorefrontOfficialQuotationForCustomer,
   createStorefrontQuoteRequest,
   trackStorefrontQuoteRequestByGuestToken,
   trackStorefrontQuoteRequestForCustomer,
@@ -389,6 +391,25 @@ export const storefrontRouter = router({
   trackQuoteRequestByToken: storefrontPublicWriteProcedure
     .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
     .mutation(({ input }) => trackStorefrontQuoteRequestByGuestToken(input.trackingToken)),
+
+  /** قبول المالك للعرض الرسمي: الجلسة تثبت العميل، ورقم SRQ مرجع فقط لا يصلح للتخمين. */
+  acceptQuoteRequestPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      requestNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return acceptStorefrontOfficialQuotationForCustomer(
+        input.requestNumber,
+        customer.customerId,
+      );
+    }),
+
+  /** الضيف لا يرسل رقم SRQ أو رقم العرض: رمز التتبع opaque هو التفويض الوحيد للقبول. */
+  acceptQuoteRequestByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => acceptStorefrontOfficialQuotationByGuestToken(input.trackingToken)),
 
   /** تتبّع مالك موثّق؛ رقم الطلب selector فقط وcustomerId يأتي من جلسة Firebase الموقعة. */
   trackOrderPrivate: storefrontPublicWriteProcedure

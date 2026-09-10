@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  acceptStorefrontOfficialQuotationByGuestToken,
+  acceptStorefrontOfficialQuotationForCustomer,
   createStorefrontQuoteRequest,
   trackStorefrontQuoteRequestByGuestToken,
   trackStorefrontQuoteRequestForCustomer,
@@ -13,7 +15,7 @@ import {
   listStorefrontQuoteRequests,
   updateStorefrontQuoteRequestStatus,
 } from "../storeAdmin/storefrontQuoteRequestAdminService";
-import { createQuotation } from "../quotationService";
+import { createQuotation, setQuotationStatus } from "../quotationService";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -85,6 +87,33 @@ async function seedCatalog() {
     fulfillmentBranchId: 1,
     isOpen: false,
   });
+}
+
+async function issueSentOfficialQuotation(input: {
+  requestId: number;
+  customerId: number;
+  clientRequestId: string;
+  validUntil?: string | null;
+}) {
+  await updateStorefrontQuoteRequestStatus({
+    requestId: input.requestId,
+    status: "CONTACTED",
+    scopedBranchId: 1,
+  });
+  const official = await createQuotation({
+    branchId: 1,
+    customerId: input.customerId,
+    storefrontQuoteRequestId: input.requestId,
+    clientRequestId: input.clientRequestId,
+    validUntil: input.validUntil ?? null,
+    lines: [{ variantId: 1, productUnitId: 1, quantity: "4" }],
+  }, { userId: 1, branchId: 1, role: "manager" });
+  await setQuotationStatus(
+    official.quotationId,
+    "SENT",
+    { userId: 1, branchId: 1, role: "manager" },
+  );
+  return official;
 }
 
 beforeEach(async () => {
@@ -298,6 +327,7 @@ describe("storefront quote requests", () => {
       officialQuotation: {
         quoteNumber: official.quoteNumber,
         validUntil: null,
+        status: "DRAFT",
       },
     });
     expect(ownerTracking.officialQuotation).not.toHaveProperty("total");
@@ -309,5 +339,176 @@ describe("storefront quote requests", () => {
       clientRequestId: "quote-official-link-duplicate",
       lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "2300.00" }],
     }, { userId: 1, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يسجّل قبول المالك للعرض المرسل بعد فحصه من دون فاتورة أو حجز مخزون", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة الندى",
+      customerPhone: "07701234567",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج عرضاً رسمياً لأربع رزم ورق مع تسليم لاحق بعد تأكيد فريق المبيعات.",
+      clientRequestId: "quote-customer-acceptance-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const requestRow = (await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId)))[0]!;
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow.customerId),
+      clientRequestId: "quote-customer-acceptance-official",
+      validUntil: "2099-12-31",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+
+    const accepted = await acceptStorefrontOfficialQuotationByGuestToken(
+      request.guestTrackingToken!,
+    );
+    expect(accepted).toEqual({
+      outcome: "ACCEPTED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "ACCEPTED",
+      alreadyAccepted: false,
+      nextStep: "STAFF_CONFIRMATION",
+    });
+    const quote = (await db()
+      .select({ status: s.quotations.status })
+      .from(s.quotations)
+      .where(eq(s.quotations.id, official.quotationId)))[0]!;
+    expect(quote.status).toBe("ACCEPTED");
+    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.reservationStock)).toHaveLength(0);
+    expect((await db().select().from(s.branchStock))[0]?.quantity).toBe(3_000);
+
+    const replay = await acceptStorefrontOfficialQuotationForCustomer(
+      request.requestNumber,
+      Number(requestRow.customerId),
+    );
+    expect(replay).toMatchObject({ outcome: "ACCEPTED", alreadyAccepted: true });
+    expect((await trackStorefrontQuoteRequestForCustomer(
+      request.requestNumber,
+      Number(requestRow.customerId),
+    )).officialQuotation).toMatchObject({ status: "ACCEPTED" });
+  });
+
+  it("يعيد العرض للمراجعة عند تغيّر السعر أو التوفر ولا يثبّت بيعاً", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "مكتب البيان",
+      customerPhone: "07801234567",
+      contactPreference: "PHONE",
+      requestType: "BULK",
+      note: "نحتاج عرضاً لكمية رزم ورق مع مراجعة السعر المتفق عليه قبل القبول.",
+      clientRequestId: "quote-requote-check-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const requestRow = (await db()
+      .select({ customerId: s.storefrontQuoteRequests.customerId })
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId)))[0]!;
+    const official = await issueSentOfficialQuotation({
+      requestId: request.requestId,
+      customerId: Number(requestRow.customerId),
+      clientRequestId: "quote-requote-check-official",
+      validUntil: "2099-12-31",
+    });
+    await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
+    await db().update(s.productPrices)
+      .set({ price: "2600.00" })
+      .where(eq(s.productPrices.productUnitId, 1));
+
+    const priceChanged = await acceptStorefrontOfficialQuotationByGuestToken(
+      request.guestTrackingToken!,
+    );
+    expect(priceChanged).toMatchObject({
+      outcome: "REQUOTE_REQUIRED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "SENT",
+      reasons: ["PRICE_CHANGED"],
+      nextStep: "CONTACT_STAFF",
+    });
+
+    await db().update(s.productPrices)
+      .set({ price: "2500.00" })
+      .where(eq(s.productPrices.productUnitId, 1));
+    await db().update(s.branchStock)
+      .set({ quantity: 1_999 })
+      .where(eq(s.branchStock.variantId, 1));
+    const unavailable = await acceptStorefrontOfficialQuotationByGuestToken(
+      request.guestTrackingToken!,
+    );
+    expect(unavailable).toMatchObject({
+      outcome: "REQUOTE_REQUIRED",
+      quoteStatus: "SENT",
+      reasons: ["UNAVAILABLE"],
+    });
+    expect((await db()
+      .select({ status: s.quotations.status })
+      .from(s.quotations)
+      .where(eq(s.quotations.id, official.quotationId)))[0]?.status).toBe("SENT");
+    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.reservationStock)).toHaveLength(0);
+  });
+
+  it("لا يقبل التخمين بين العملاء أو رمز الضيف المزور ويحوّل العرض المنتهي إلى إعادة تسعير", async () => {
+    const owner = await createStorefrontQuoteRequest({
+      customerName: "شركة الصفا",
+      customerPhone: "07701234567",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نحتاج متابعة طلب عرض منفصل باسم الشركة مع موافقة المشتريات لاحقاً.",
+      clientRequestId: "quote-accept-owner-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const target = await createStorefrontQuoteRequest({
+      customerName: "مكتب زاد",
+      customerPhone: "07801234567",
+      contactPreference: "PHONE",
+      requestType: "BULK",
+      note: "نحتاج عرضاً منتهياً للتحقق من أن القبول لا يتجاوز تاريخ الصلاحية.",
+      clientRequestId: "quote-accept-expired-request",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    const [ownerRow, targetRow] = await Promise.all([owner.requestId, target.requestId].map(async (requestId) => (
+      (await db()
+        .select({ customerId: s.storefrontQuoteRequests.customerId })
+        .from(s.storefrontQuoteRequests)
+        .where(eq(s.storefrontQuoteRequests.id, requestId)))[0]!
+    )));
+    const official = await issueSentOfficialQuotation({
+      requestId: target.requestId,
+      customerId: Number(targetRow.customerId),
+      clientRequestId: "quote-accept-expired-official",
+      validUntil: "2000-01-01",
+    });
+
+    await expect(acceptStorefrontOfficialQuotationForCustomer(
+      target.requestNumber,
+      Number(ownerRow.customerId),
+    )).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const forged = `${target.guestTrackingToken!.slice(0, -1)}${target.guestTrackingToken!.endsWith("A") ? "B" : "A"}`;
+    await expect(acceptStorefrontOfficialQuotationByGuestToken(forged)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    const expired = await acceptStorefrontOfficialQuotationByGuestToken(
+      target.guestTrackingToken!,
+    );
+    expect(expired).toEqual({
+      outcome: "REQUOTE_REQUIRED",
+      quoteNumber: official.quoteNumber,
+      quoteStatus: "EXPIRED",
+      reasons: ["EXPIRED"],
+      nextStep: "CONTACT_STAFF",
+    });
+    expect((await db()
+      .select({ status: s.quotations.status })
+      .from(s.quotations)
+      .where(eq(s.quotations.id, official.quotationId)))[0]?.status).toBe("EXPIRED");
+    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
 });

@@ -6,9 +6,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  bundleComponents,
   productUnits,
   productVariants,
+  productPrices,
   products,
+  quotationItems,
   storefrontQuoteRequestItems,
   storefrontQuoteRequests,
   quotations,
@@ -22,7 +25,8 @@ import {
   hashStorefrontGuestTrackingToken,
   parseAndVerifyStorefrontGuestTrackingToken,
 } from "../lib/storefrontGuestTracking";
-import { money } from "./money";
+import { money, toDateStr } from "./money";
+import { loadVariantAvailability } from "./catalog/variantAvailability";
 import {
   lockOrCreateOnlineCustomer,
   normalizeStorePhone,
@@ -64,6 +68,8 @@ export interface StorefrontQuoteRequestTracking {
   officialQuotation: {
     quoteNumber: string;
     validUntil: Date | null;
+    /** حالة العرض الرسمي فقط؛ يبقى السعر وبنود التسعير خارج مسار التتبع. */
+    status: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
   } | null;
   createdAt: Date;
   updatedAt: Date;
@@ -245,6 +251,7 @@ type QuoteRequestTrackingHeader = {
   officialQuotationId: number | null;
   officialQuoteNumber: string | null;
   officialQuoteValidUntil: Date | null;
+  officialQuoteStatus: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED" | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -261,6 +268,7 @@ function quoteRequestTrackingHeaderSelection() {
     officialQuotationId: storefrontQuoteRequests.officialQuotationId,
     officialQuoteNumber: quotations.quoteNumber,
     officialQuoteValidUntil: quotations.validUntil,
+    officialQuoteStatus: quotations.status,
     createdAt: storefrontQuoteRequests.createdAt,
     updatedAt: storefrontQuoteRequests.updatedAt,
   };
@@ -290,6 +298,7 @@ async function buildStorefrontQuoteRequestTracking(
       ? {
           quoteNumber: request.officialQuoteNumber,
           validUntil: request.officialQuoteValidUntil,
+          status: request.officialQuoteStatus ?? "DRAFT",
         }
       : null,
     createdAt: request.createdAt,
@@ -384,6 +393,406 @@ export async function trackStorefrontQuoteRequestByGuestToken(
     throw quoteRequestTrackingNotFoundError();
   }
   return buildStorefrontQuoteRequestTracking(db, request);
+}
+
+type OfficialQuotationStatus =
+  | "DRAFT"
+  | "SENT"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "CONVERTED"
+  | "EXPIRED";
+
+export type StorefrontOfficialQuotationAcceptance =
+  | {
+      outcome: "ACCEPTED";
+      quoteNumber: string;
+      quoteStatus: "ACCEPTED";
+      alreadyAccepted: boolean;
+      /** القبول ليس بيعاً: يبقى التجهيز والتحويل قراراً لاحقاً للموظف. */
+      nextStep: "STAFF_CONFIRMATION";
+    }
+  | {
+      outcome: "REQUOTE_REQUIRED";
+      quoteNumber: string;
+      quoteStatus: "SENT" | "EXPIRED";
+      reasons: Array<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">;
+      nextStep: "CONTACT_STAFF";
+    };
+
+function officialQuotationNotReadyError(): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: appErrorMessage({
+      what: "لا يمكن تسجيل الموافقة على العرض الآن",
+      why: "العرض الرسمي لم يُرسل بعد، أو أن حالته لم تعد تقبل موافقة جديدة",
+      doThis: "حدّث طلب العرض، وانتظر إرسال العرض الرسمي أو تواصل مع فريق المبيعات",
+    }),
+  });
+}
+
+function officialQuotationDataIntegrityError(): TRPCError {
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: appErrorMessage({
+      what: "تعذّر تسجيل الموافقة على العرض",
+      why: "بيانات العرض الرسمي لا تطابق طلب العرض المرتبط به، لذلك أوقفنا العملية لحماية العميل",
+      doThis: "تواصل مع فريق المبيعات برقم طلب العرض ليعيدوا مراجعته وإصدار عرض صحيح",
+    }),
+  });
+}
+
+function reQuoteRequired(
+  quoteNumber: string,
+  quoteStatus: "SENT" | "EXPIRED",
+  reasons: Iterable<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">,
+): StorefrontOfficialQuotationAcceptance {
+  return {
+    outcome: "REQUOTE_REQUIRED",
+    quoteNumber,
+    quoteStatus,
+    reasons: Array.from(new Set(reasons)),
+    nextStep: "CONTACT_STAFF",
+  };
+}
+
+type LockedQuoteRequestForAcceptance = {
+  id: number;
+  status: StorefrontQuoteRequestTracking["status"];
+  customerId: number | null;
+  officialQuotationId: number | null;
+};
+
+/**
+ * يعيد فحص العرض في نفس المعاملة التي تثبت قبوله. لا ينشئ فاتورة أو طلب متجر أو حجزاً؛
+ * القبول إقرار العميل فقط، ثم يقرر الموظف لاحقاً إن كان يحوّله إلى بيع بعد مراجعته النهائية.
+ */
+async function acceptLockedOfficialQuotation(
+  tx: Tx,
+  request: LockedQuoteRequestForAcceptance,
+): Promise<StorefrontOfficialQuotationAcceptance> {
+  if (request.status !== "QUOTED" || request.officialQuotationId == null) {
+    throw officialQuotationNotReadyError();
+  }
+
+  const quote = (
+    await tx
+      .select({
+        id: quotations.id,
+        quoteNumber: quotations.quoteNumber,
+        branchId: quotations.branchId,
+        customerId: quotations.customerId,
+        priceTier: quotations.priceTier,
+        validUntil: quotations.validUntil,
+        status: quotations.status,
+      })
+      .from(quotations)
+      .where(eq(quotations.id, request.officialQuotationId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!quote) throw officialQuotationDataIntegrityError();
+
+  const quoteStatus = quote.status as OfficialQuotationStatus;
+  if (
+    request.customerId == null ||
+    quote.customerId == null ||
+    Number(request.customerId) !== Number(quote.customerId)
+  ) {
+    throw officialQuotationDataIntegrityError();
+  }
+  if (quoteStatus === "ACCEPTED") {
+    return {
+      outcome: "ACCEPTED",
+      quoteNumber: quote.quoteNumber,
+      quoteStatus: "ACCEPTED",
+      alreadyAccepted: true,
+      nextStep: "STAFF_CONFIRMATION",
+    };
+  }
+  if (quoteStatus === "EXPIRED") {
+    return reQuoteRequired(quote.quoteNumber, "EXPIRED", ["EXPIRED"] as const);
+  }
+  if (quoteStatus !== "SENT") throw officialQuotationNotReadyError();
+
+  if (
+    quote.validUntil &&
+    toDateStr(new Date(quote.validUntil as unknown as string)) < toDateStr()
+  ) {
+    // وسم الانتهاء ليس بيعاً ولا حجزاً؛ يمنع تكرار محاولة قبول عرض فات موعده ويعطي الموظف
+    // طابوراً صادقاً لإعادة التسعير.
+    await tx
+      .update(quotations)
+      .set({ status: "EXPIRED" })
+      .where(eq(quotations.id, Number(quote.id)));
+    return reQuoteRequired(quote.quoteNumber, "EXPIRED", ["EXPIRED"] as const);
+  }
+
+  const lines = await tx
+    .select({
+      id: quotationItems.id,
+      variantId: quotationItems.variantId,
+      productUnitId: quotationItems.productUnitId,
+      baseQuantity: quotationItems.baseQuantity,
+      unitPrice: quotationItems.unitPrice,
+    })
+    .from(quotationItems)
+    .where(eq(quotationItems.quotationId, Number(quote.id)))
+    .orderBy(quotationItems.id)
+    .for("update");
+  if (!lines.length) {
+    return reQuoteRequired(quote.quoteNumber, "SENT", ["UNAVAILABLE"] as const);
+  }
+
+  const unitIds = Array.from(
+    new Set(lines.map((line) => Number(line.productUnitId))),
+  ).sort((a, b) => a - b);
+  // السعر وحالة الكتالوج يُقرآن تحت قفل قبل ATP. لا نثق بلقطة العرض عند لحظة القبول:
+  // أي تغيير في السعر أو تعطيل وحدة/منتج يعيد العميل للموظف لإصدار عرض جديد واضح.
+  const currentCatalogLines = await tx
+    .select({
+      productUnitId: productUnits.id,
+      variantId: productVariants.id,
+      unitActive: productUnits.isActive,
+      variantActive: productVariants.isActive,
+      productActive: products.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
+      currentUnitPrice: productPrices.price,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, quote.priceTier),
+      ),
+    )
+    .where(inArray(productUnits.id, unitIds))
+    .orderBy(productUnits.id)
+    .for("update");
+  const catalogByUnit = new Map(
+    currentCatalogLines.map((line) => [Number(line.productUnitId), line]),
+  );
+
+  const reasons = new Set<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">();
+  const stockRequirements = new Map<number, number>();
+  const requirementMeta = new Map<number, { isService: boolean }>();
+  const bundleDemand = new Map<number, number>();
+
+  for (const line of lines) {
+    const catalog = catalogByUnit.get(Number(line.productUnitId));
+    if (
+      !catalog ||
+      Number(catalog.variantId) !== Number(line.variantId) ||
+      !catalog.productActive ||
+      !catalog.variantActive ||
+      !catalog.unitActive
+    ) {
+      reasons.add("UNAVAILABLE");
+      continue;
+    }
+    if (
+      catalog.currentUnitPrice == null ||
+      !money(catalog.currentUnitPrice).eq(money(line.unitPrice))
+    ) {
+      reasons.add("PRICE_CHANGED");
+    }
+    const baseQuantity = Number(line.baseQuantity);
+    if (!Number.isSafeInteger(baseQuantity) || baseQuantity <= 0) {
+      reasons.add("UNAVAILABLE");
+      continue;
+    }
+    const variantId = Number(line.variantId);
+    if (catalog.isBundle) {
+      bundleDemand.set(variantId, (bundleDemand.get(variantId) ?? 0) + baseQuantity);
+      continue;
+    }
+    stockRequirements.set(
+      variantId,
+      (stockRequirements.get(variantId) ?? 0) + baseQuantity,
+    );
+    requirementMeta.set(variantId, { isService: catalog.isService === true });
+  }
+
+  const bundleIds = Array.from(bundleDemand.keys()).sort((a, b) => a - b);
+  if (bundleIds.length) {
+    const components = await tx
+      .select({
+        bundleVariantId: bundleComponents.bundleVariantId,
+        componentVariantId: bundleComponents.componentVariantId,
+        componentBaseQuantity: bundleComponents.componentBaseQuantity,
+        componentVariantActive: productVariants.isActive,
+        componentProductActive: products.isActive,
+        componentIsService: products.isService,
+      })
+      .from(bundleComponents)
+      .innerJoin(productVariants, eq(bundleComponents.componentVariantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(bundleComponents.bundleVariantId, bundleIds))
+      .orderBy(bundleComponents.bundleVariantId, bundleComponents.componentVariantId)
+      .for("update");
+    const componentsByBundle = new Map<number, typeof components>();
+    for (const component of components) {
+      const bundleId = Number(component.bundleVariantId);
+      componentsByBundle.set(bundleId, [
+        ...(componentsByBundle.get(bundleId) ?? []),
+        component,
+      ]);
+    }
+    for (const bundleId of bundleIds) {
+      const demand = bundleDemand.get(bundleId) ?? 0;
+      const bundleComponentsNow = componentsByBundle.get(bundleId) ?? [];
+      if (!bundleComponentsNow.length) {
+        reasons.add("UNAVAILABLE");
+        continue;
+      }
+      for (const component of bundleComponentsNow) {
+        const requiredPerBundle = Number(component.componentBaseQuantity);
+        if (
+          !component.componentProductActive ||
+          !component.componentVariantActive ||
+          !Number.isSafeInteger(requiredPerBundle) ||
+          requiredPerBundle <= 0
+        ) {
+          reasons.add("UNAVAILABLE");
+          continue;
+        }
+        const componentVariantId = Number(component.componentVariantId);
+        stockRequirements.set(
+          componentVariantId,
+          (stockRequirements.get(componentVariantId) ?? 0) + demand * requiredPerBundle,
+        );
+        requirementMeta.set(componentVariantId, {
+          isService: component.componentIsService === true,
+        });
+      }
+    }
+  }
+
+  if (stockRequirements.size) {
+    const availability = await loadVariantAvailability(
+      tx,
+      Number(quote.branchId),
+      Array.from(stockRequirements.keys()).sort((a, b) => a - b),
+      { lock: true },
+    );
+    for (const [variantId, requiredBase] of Array.from(stockRequirements.entries())) {
+      const current = availability.get(variantId);
+      const meta = requirementMeta.get(variantId);
+      if (
+        !current ||
+        !meta ||
+        current.isBundle ||
+        (!meta.isService && requiredBase > current.availableBase)
+      ) {
+        reasons.add("UNAVAILABLE");
+      }
+    }
+  }
+
+  if (reasons.size) {
+    return reQuoteRequired(quote.quoteNumber, "SENT", reasons);
+  }
+
+  await tx
+    .update(quotations)
+    .set({ status: "ACCEPTED" })
+    .where(eq(quotations.id, Number(quote.id)));
+  return {
+    outcome: "ACCEPTED",
+    quoteNumber: quote.quoteNumber,
+    quoteStatus: "ACCEPTED",
+    alreadyAccepted: false,
+    nextStep: "STAFF_CONFIRMATION",
+  };
+}
+
+/** جلسة العميل تحصر طلب SRQ بمعرّف العميل الموقّع؛ الرقم مرجع فقط وليس صلاحية. */
+export async function acceptStorefrontOfficialQuotationForCustomer(
+  requestNumber: string,
+  customerId: number,
+): Promise<StorefrontOfficialQuotationAcceptance> {
+  return withTx(async (tx) => {
+    const request = (
+      await tx
+        .select({
+          id: storefrontQuoteRequests.id,
+          status: storefrontQuoteRequests.status,
+          customerId: storefrontQuoteRequests.customerId,
+          officialQuotationId: storefrontQuoteRequests.officialQuotationId,
+        })
+        .from(storefrontQuoteRequests)
+        .where(
+          and(
+            eq(storefrontQuoteRequests.requestNumber, requestNumber.trim().toUpperCase()),
+            eq(storefrontQuoteRequests.customerId, customerId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!request) throw quoteRequestTrackingNotFoundError();
+    return acceptLockedOfficialQuotation(tx, {
+      id: Number(request.id),
+      status: request.status as StorefrontQuoteRequestTracking["status"],
+      customerId: request.customerId == null ? null : Number(request.customerId),
+      officialQuotationId:
+        request.officialQuotationId == null
+          ? null
+          : Number(request.officialQuotationId),
+    });
+  });
+}
+
+/** رمز الضيف opaque والمنتهي هو صلاحيته الوحيدة لقبول العرض؛ لا يُقبل رقم SRQ هنا. */
+export async function acceptStorefrontOfficialQuotationByGuestToken(
+  token: string,
+): Promise<StorefrontOfficialQuotationAcceptance> {
+  const verified = parseAndVerifyStorefrontGuestTrackingToken(
+    QUOTE_REQUEST_GUEST_TRACKING_DOMAIN,
+    token,
+  );
+  if (!verified) throw quoteRequestTrackingNotFoundError();
+  return withTx(async (tx) => {
+    const request = (
+      await tx
+        .select({
+          id: storefrontQuoteRequests.id,
+          status: storefrontQuoteRequests.status,
+          customerId: storefrontQuoteRequests.customerId,
+          officialQuotationId: storefrontQuoteRequests.officialQuotationId,
+          guestTrackingExpiresAt: storefrontQuoteRequests.guestTrackingExpiresAt,
+        })
+        .from(storefrontQuoteRequests)
+        .where(
+          and(
+            eq(storefrontQuoteRequests.guestTrackingPublicId, verified.publicId),
+            eq(storefrontQuoteRequests.guestTrackingTokenHash, verified.tokenHash),
+            sql`${storefrontQuoteRequests.guestTrackingExpiresAt} > CURRENT_TIMESTAMP(3)`,
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    const storedExpirySeconds = request?.guestTrackingExpiresAt
+      ? Math.floor(request.guestTrackingExpiresAt.getTime() / 1000)
+      : null;
+    if (!request || storedExpirySeconds !== verified.expiresAtSeconds) {
+      throw quoteRequestTrackingNotFoundError();
+    }
+    return acceptLockedOfficialQuotation(tx, {
+      id: Number(request.id),
+      status: request.status as StorefrontQuoteRequestTracking["status"],
+      customerId: request.customerId == null ? null : Number(request.customerId),
+      officialQuotationId:
+        request.officialQuotationId == null
+          ? null
+          : Number(request.officialQuotationId),
+    });
+  });
 }
 
 export async function createStorefrontQuoteRequest(

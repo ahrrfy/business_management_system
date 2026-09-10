@@ -21,6 +21,8 @@ const PUBLIC_SENSITIVE_PROCEDURES: ReadonlySet<string> = new Set([
   "storefront.trackOrderByToken",
   "storefront.trackQuoteRequestPrivate",
   "storefront.trackQuoteRequestByToken",
+  "storefront.acceptQuoteRequestPrivate",
+  "storefront.acceptQuoteRequestByToken",
   "storefront.cancelOrderPrivate",
   "storefront.cancelOrderByToken",
 ]);

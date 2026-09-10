@@ -113,6 +113,8 @@ export type StorefrontOrderQuote = {
   total: string;
   deliveryFree?: boolean;
   deliveryWaivedAmount?: string;
+  freeShippingThreshold?: string | null;
+  freeShippingRemaining?: string | null;
 };
 export type StorefrontOrderResult = {
   orderId: number;
@@ -227,6 +229,8 @@ export type StorefrontQuoteRequestTracking = {
   officialQuotation: {
     quoteNumber: string;
     validUntil: string | null;
+    /** لا يكشف التتبع سعر العرض؛ الحالة تكفي لعرض إجراء القبول الآمن. */
+    status: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
   } | null;
   createdAt: string;
   updatedAt: string;
@@ -857,6 +861,22 @@ export type SecureQuoteRequestTrackingInput = {
   guestTrackingToken?: string | null;
 };
 
+export type StorefrontOfficialQuotationAcceptance =
+  | {
+      outcome: "ACCEPTED";
+      quoteNumber: string;
+      quoteStatus: "ACCEPTED";
+      alreadyAccepted: boolean;
+      nextStep: "STAFF_CONFIRMATION";
+    }
+  | {
+      outcome: "REQUOTE_REQUIRED";
+      quoteNumber: string;
+      quoteStatus: "SENT" | "EXPIRED";
+      reasons: Array<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">;
+      nextStep: "CONTACT_STAFF";
+    };
+
 /** رقم SRQ ليس دليلاً للضيف؛ يستعمل الرمز المحفوظ أو جلسة الهاتف الموثقة فقط. */
 export function secureQuoteRequestTrackingRequest(input: SecureQuoteRequestTrackingInput) {
   const requestNumber = input.requestNumber.trim().toUpperCase();
@@ -878,6 +898,24 @@ export function secureQuoteRequestTrackingRequest(input: SecureQuoteRequestTrack
 export function trackStorefrontQuoteRequest(input: SecureQuoteRequestTrackingInput) {
   const request = secureQuoteRequestTrackingRequest(input);
   return storefrontMutation<StorefrontQuoteRequestTracking>(request.procedure, request.input);
+}
+
+/** القبول يعيد استعمال صلاحية التتبع نفسها؛ رقم SRQ وحده لا يصلح أبداً لقبول عرض. */
+export function acceptStorefrontOfficialQuotation(input: SecureQuoteRequestTrackingInput) {
+  const requestNumber = input.requestNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return storefrontMutation<StorefrontOfficialQuotationAcceptance>(
+      "storefront.acceptQuoteRequestByToken",
+      { trackingToken: input.guestTrackingToken },
+    );
+  }
+  if (input.customerSessionToken) {
+    return storefrontMutation<StorefrontOfficialQuotationAcceptance>(
+      "storefront.acceptQuoteRequestPrivate",
+      { customerSessionToken: input.customerSessionToken, requestNumber },
+    );
+  }
+  throw new Error("لا توجد صلاحية محفوظة لقبول عرض السعر. افتحه من جهاز الإرسال أو سجّل الدخول بالحساب المرتبط به.");
 }
 
 /** يسجّل رمز Expo Push؛ جلسة الهاتف الاختيارية تُحل إلى هوية العميل على الخادم ولا تُرسل customerId خاماً. */
