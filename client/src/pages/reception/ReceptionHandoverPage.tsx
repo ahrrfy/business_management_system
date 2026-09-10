@@ -6,11 +6,15 @@
 import { useCallback, useRef, useState } from "react";
 
 import {
+  ArrowLeftRight,
   BadgeDollarSign,
+  Banknote,
   CheckCircle2,
+  CreditCard,
   Package,
   ScanLine,
   User,
+  Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +28,19 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { parseScan } from "@/lib/scanRouter";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { getDeviceCode } from "@/lib/offline/outbox";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
+import { cn } from "@/lib/utils";
+
+const PAYMENT_METHODS = [
+  { v: "CASH", label: "نقدي", icon: Banknote },
+  { v: "CARD", label: "بطاقة", icon: CreditCard },
+  { v: "TRANSFER", label: "تحويل", icon: ArrowLeftRight },
+  { v: "WALLET", label: "محفظة", icon: Wallet },
+] as const;
+type ReceptionHandoverMethod = (typeof PAYMENT_METHODS)[number]["v"];
 
 interface ScannedOrder {
   id: number;
@@ -39,6 +56,15 @@ interface ScannedOrder {
 export default function ReceptionHandoverPage() {
   const [scanned, setScanned] = useState<ScannedOrder | null>(null);
   const [manualInput, setManualInput] = useState("");
+  const [method, setMethod] = useState<ReceptionHandoverMethod>("CASH");
+  const [reference, setReference] = useState("");
+  const [externalAttempt, setExternalAttempt] = useState<{
+    attemptId: number | null;
+    requestId: string;
+    deviceId: string;
+    fingerprint: string;
+    confirmed: boolean;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
 
@@ -50,6 +76,9 @@ export default function ReceptionHandoverPage() {
     { enabled: !!branchId },
   );
   const shift = shiftQ.data ?? null;
+
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
 
   // ─── مسح الباركود ────────────────────────────────────────────────────────
 
@@ -68,8 +97,12 @@ export default function ReceptionHandoverPage() {
             return;
           }
         } else if (wo.kind === "invoice") {
-          if (wo.status === "CANCELLED" || wo.status === "RETURNED") {
-            notify.err("هذه الفاتورة ملغاة أو مرتجعة");
+          if (wo.status === "CANCELLED") {
+            notify.err("هذه الفاتورة ملغاة ولا يمكن تسليمها");
+            return;
+          }
+          if (wo.status === "RETURNED") {
+            notify.err("هذه الفاتورة مرتجعة بالكامل ولا يمكن تسليمها");
             return;
           }
           if (wo.status === "PAID") {
@@ -91,6 +124,9 @@ export default function ReceptionHandoverPage() {
           deposit: wo.deposit,
         });
         setManualInput("");
+        setMethod("CASH");
+        setReference("");
+        setExternalAttempt(null);
       } catch (e) {
         notify.err(e, "تعذّر جلب الطلب");
       }
@@ -113,6 +149,9 @@ export default function ReceptionHandoverPage() {
     onSuccess: () => {
       notify.ok("تمّ تسليم طلب #" + (scanned?.orderNumber ?? ""));
       setScanned(null);
+      setMethod("CASH");
+      setReference("");
+      setExternalAttempt(null);
       void utils.workOrders.invalidate();
       void shiftQ.refetch();
       inputRef.current?.focus();
@@ -124,6 +163,9 @@ export default function ReceptionHandoverPage() {
     onSuccess: () => {
       notify.ok("تمّ تحصيل الفاتورة #" + (scanned?.orderNumber ?? "") + " وتسليمها بنجاح");
       setScanned(null);
+      setMethod("CASH");
+      setReference("");
+      setExternalAttempt(null);
       void utils.workOrders.invalidate();
       void shiftQ.refetch();
       inputRef.current?.focus();
@@ -131,36 +173,128 @@ export default function ReceptionHandoverPage() {
     onError: (e) => notify.err(e, "تعذّر تحصيل الفاتورة"),
   });
 
+  const remaining = scanned
+    ? round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")))
+    : null;
+  const remainingDue = remaining && remaining.gt(0) ? remaining : null;
+  const needRef = method !== "CASH";
+  const normalizedAmount = remainingDue ? remainingDue.toFixed(2) : "0.00";
+  const effectiveBranchId = shift?.branchId ?? branchId ?? null;
+  const externalFingerprint = effectiveBranchId
+    ? `SALES_COLLECTION|${effectiveBranchId}|${method}|${normalizedAmount}|${reference.trim()}`
+    : "";
+  const externalConfirmed =
+    method === "CASH" ||
+    (externalAttempt?.confirmed === true &&
+      Boolean(externalFingerprint) &&
+      externalAttempt.fingerprint === externalFingerprint);
+
+  async function confirmReceptionExternalPayment() {
+    const normalizedRef = reference.trim();
+    if (!normalizedRef || !remainingDue || method === "CASH" || !effectiveBranchId) return;
+    try {
+      const prior =
+        externalAttempt?.fingerprint === externalFingerprint
+          ? externalAttempt
+          : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: effectiveBranchId,
+          channel: "SALES_COLLECTION",
+          method,
+          amount: normalizedAmount,
+          reference: normalizedRef,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        setExternalAttempt({
+          attemptId,
+          requestId,
+          deviceId,
+          fingerprint: externalFingerprint,
+          confirmed: false,
+        });
+      }
+      await confirmExternal.mutateAsync({
+        branchId: effectiveBranchId,
+        channel: "SALES_COLLECTION",
+        attemptId,
+        deviceId,
+      });
+      setExternalAttempt({
+        attemptId,
+        requestId,
+        deviceId,
+        fingerprint: externalFingerprint,
+        confirmed: true,
+      });
+      notify.ok(
+        "تأكّد الدفع الخارجي",
+        `ثُبّت المرجع ${normalizedRef} وأصبح جاهزاً للاستهلاك.`,
+      );
+    } catch (error) {
+      notify.err(error, "تعذّر تأكيد الدفع الخارجي");
+    }
+  }
+
   async function handleHandover() {
     if (!scanned || !shift) return;
-    const remaining = round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")));
+    const remainingVal = round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")));
     const docLabel = scanned.kind === "invoice" ? "الفاتورة" : "الطلب";
+    const payLabel = method === "CASH" ? "نقداً" : `بـ${paymentMethodLabel(method)}`;
+
+    if (remainingVal.gt(0) && method !== "CASH") {
+      if (!reference.trim()) {
+        notify.err("مرجع العملية مطلوب لدفعة غير نقدية");
+        return;
+      }
+      if (scanned.kind === "invoice" && !externalConfirmed) {
+        notify.err("يجب تأكيد الدفع الخارجي أولاً قبل التسليم");
+        return;
+      }
+    }
+
     const ok = await confirm({
       title: "تأكيد التسليم المباشر",
       description: [
         `${docLabel}: #${scanned.orderNumber}`,
         "العميل: " + (scanned.customerName ?? scanned.customerPhone ?? "غير محدد"),
-        remaining.gt(0)
-          ? "يُحصَّل الآن: " + fmt(remaining.toFixed(2)) + " د.ع نقداً"
+        remainingVal.gt(0)
+          ? `يُحصَّل الآن: ${fmt(remainingVal.toFixed(2))} د.ع ${payLabel}`
           : "مدفوع بالكامل مسبقاً",
-      ].join("\n"),
-      confirmText: remaining.gt(0)
-        ? "سلّم وحصّل " + fmt(remaining.toFixed(2)) + " د.ع"
+        method !== "CASH" && reference.trim() ? `المرجع: ${reference.trim()}` : "",
+      ].filter(Boolean).join("\n"),
+      confirmText: remainingVal.gt(0)
+        ? `سلّم وحصّل ${fmt(remainingVal.toFixed(2))} د.ع`
         : "تسليم",
     });
     if (!ok) return;
 
     if (scanned.kind === "invoice") {
-      if (remaining.gt(0)) {
+      if (remainingVal.gt(0)) {
         collectInvoiceMut.mutate({
           invoiceId: scanned.id,
-          amount: remaining.toFixed(2),
-          method: "CASH",
+          amount: remainingVal.toFixed(2),
+          method,
+          reference: method !== "CASH" ? reference.trim() : undefined,
+          ...(method === "CASH"
+            ? {}
+            : {
+                externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
+                externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
+              }),
           clientRequestId: crypto.randomUUID(),
         });
       } else {
         notify.ok("الفاتورة مدفوعة مسبقاً — تم التسليم بنجاح");
         setScanned(null);
+        setMethod("CASH");
+        setReference("");
+        setExternalAttempt(null);
         void utils.workOrders.invalidate();
         void shiftQ.refetch();
         inputRef.current?.focus();
@@ -168,17 +302,17 @@ export default function ReceptionHandoverPage() {
     } else {
       deliverMut.mutate({
         workOrderId: scanned.id,
-        payment: remaining.gt(0)
-          ? { amount: remaining.toFixed(2), method: "CASH" as const }
+        payment: remainingVal.gt(0)
+          ? {
+              amount: remainingVal.toFixed(2),
+              method,
+              reference: method !== "CASH" ? reference.trim() : undefined,
+            }
           : undefined,
         clientRequestId: crypto.randomUUID(),
       });
     }
   }
-
-  const remaining = scanned
-    ? round2(D(scanned.salePrice).minus(D(scanned.deposit ?? "0")))
-    : null;
 
   // ─── JSX ──────────────────────────────────────────────────────────────────
 
@@ -273,7 +407,7 @@ export default function ReceptionHandoverPage() {
                         variant="outline"
                         className="border-green-500 bg-green-50 text-green-700"
                       >
-                        جاهز للتسليم
+                        {scanned.kind === "invoice" ? "فاتورة جاهزة للتسليم" : "جاهز للتسليم"}
                       </Badge>
                     </div>
                     {scanned.title && (
@@ -284,7 +418,13 @@ export default function ReceptionHandoverPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => { setScanned(null); setManualInput(""); }}
+                  onClick={() => {
+                    setScanned(null);
+                    setManualInput("");
+                    setMethod("CASH");
+                    setReference("");
+                    setExternalAttempt(null);
+                  }}
                 >
                   مسح آخر
                 </Button>
@@ -323,6 +463,92 @@ export default function ReceptionHandoverPage() {
                   </div>
                 </div>
 
+                {/* اختيار طريقة الدفع عند وجود مبلغ متبقٍ */}
+                {remaining && remaining.gt(0) && (
+                  <div className="space-y-3 rounded-xl border bg-background p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-muted-foreground">
+                        طريقة تحصيل المتبقي:
+                      </span>
+                      <span className="text-xs font-extrabold text-foreground">
+                        {paymentMethodLabel(method)}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      {PAYMENT_METHODS.map((p) => {
+                        const enabled = isPosPaymentMethodEnabled(p.v);
+                        const isSelected = method === p.v;
+                        const Icon = p.icon;
+                        return (
+                          <button
+                            key={p.v}
+                            type="button"
+                            disabled={!enabled}
+                            onClick={() => {
+                              if (!enabled) return;
+                              setMethod(p.v);
+                              setReference("");
+                              setExternalAttempt(null);
+                            }}
+                            title={enabled ? p.label : posPaymentRejectionMessage(p.v)}
+                            className={cn(
+                              "flex flex-col items-center justify-center gap-1.5 rounded-xl border-2 py-3 px-2 text-xs font-extrabold transition-all",
+                              isSelected
+                                ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                                : enabled
+                                  ? "border-border bg-card hover:bg-muted text-foreground"
+                                  : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
+                            )}
+                          >
+                            <Icon aria-hidden className="size-5" />
+                            <span>{p.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {needRef && (
+                      <div className="border-t pt-3">
+                        <PaymentReferenceField
+                          value={reference}
+                          onChange={(v) => {
+                            setReference(v);
+                            setExternalAttempt(null);
+                          }}
+                          method={method}
+                          confirmed={externalConfirmed}
+                          confirming={initiateExternal.isPending || confirmExternal.isPending}
+                          onConfirm={() => void confirmReceptionExternalPayment()}
+                          inputId="reception-handover-reference"
+                          colors={{
+                            border: "var(--border)",
+                            muted: "var(--muted)",
+                            mutedFg: "var(--muted-foreground)",
+                            fg: "var(--foreground)",
+                            amber: "var(--sem-warn)",
+                            success: "var(--sem-pos)",
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      {method === "CASH" ? (
+                        <>
+                          <Banknote aria-hidden className="me-1 inline size-3.5" />
+                          يدخل المبلغ <span className="font-bold underline">درجك في الوردية #{shift?.id}</span> نقداً.
+                        </>
+                      ) : (
+                        <>
+                          <CreditCard aria-hidden className="me-1 inline size-3.5" />
+                          يُسجَّل على <span className="font-bold">وردية #{shift?.id}</span> للمحاسبة والمطابقة — لا يدخل درج النقد.
+                        </>
+                      )}
+                    </p>
+                  </div>
+                )}
+
                 {/* مؤشر المبلغ المتبقي */}
                 <div
                   className={
@@ -334,7 +560,7 @@ export default function ReceptionHandoverPage() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-bold">
                       {remaining && remaining.gt(0)
-                        ? "يُحصَّل الآن نقداً:"
+                        ? `يُحصَّل الآن (${paymentMethodLabel(method)}):`
                         : "مدفوع بالكامل مسبقاً"}
                     </span>
                     {remaining && remaining.gt(0) && (
@@ -349,14 +575,20 @@ export default function ReceptionHandoverPage() {
                 <Button
                   className="w-full py-7 text-lg font-extrabold bg-green-600 hover:bg-green-700 text-white"
                   onClick={() => void handleHandover()}
-                  disabled={deliverMut.isPending || !shift}
+                  disabled={
+                    deliverMut.isPending ||
+                    collectInvoiceMut.isPending ||
+                    !shift ||
+                    Boolean(remaining?.gt(0) && method !== "CASH" && scanned.kind === "invoice" && !externalConfirmed) ||
+                    Boolean(remaining?.gt(0) && method !== "CASH" && !reference.trim())
+                  }
                 >
-                  {deliverMut.isPending
-                    ? "جارٍ التسليم…"
+                  {deliverMut.isPending || collectInvoiceMut.isPending
+                    ? "جارٍ التسليم والتحصيل…"
                     : !shift
                     ? "افتح وردية استقبال أولاً"
                     : remaining && remaining.gt(0)
-                    ? "سلّم وحصّل " + fmt(remaining.toFixed(2)) + " د.ع"
+                    ? `سلّم وحصّل ${fmt(remaining.toFixed(2))} د.ع (${paymentMethodLabel(method)})`
                     : "تسليم (مدفوع كاملاً)"}
                 </Button>
               </div>
