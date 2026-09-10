@@ -48,7 +48,7 @@ export default function StoreQuoteRequests() {
     <div className="mx-auto max-w-6xl space-y-4 pb-8">
       <PageHeader
         title="طلبات عروض الأسعار"
-        description="وارد الشركات والكميات والطباعة. لا يحجز هذا الوارد المخزون ولا يثبت سعراً؛ أنشئ العرض الرسمي بعد المراجعة."
+        description="مسار العمل: استفسار العميل ← مراجعة الموظف ← عرض رسمي ← قبول أو إعادة تسعير. لا يحجز الاستفسار مخزوناً ولا يثبت سعراً."
         icon={<FileText aria-hidden className="size-5" />}
       />
       <div className="flex flex-wrap gap-2">
@@ -81,6 +81,11 @@ export default function StoreQuoteRequests() {
                 <div className="mt-3 rounded-lg bg-muted/40 p-3 text-sm">
                   {request.items.map((item, index) => <div key={`${item.productName}-${index}`} className="py-0.5">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} · {item.quantity} {item.unitName}</div>)}
                 </div>
+                {request.status === "QUOTED" && (
+                  <p className="mt-3 rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                    العرض الرسمي هو مسار قبول العميل أو طلب إعادة التسعير. عند القبول يعيد النظام التحقق من السعر والتوفر التشغيلي (ATP)؛ إذا تغيّرا يعود العرض لمراجعة الموظف وإعادة التسعير، ولا ينشئ القبول فاتورة أو طلب بيع.
+                  </p>
+                )}
                 {request.staffNote && <p className="mt-3 text-xs leading-5 text-muted-foreground">ملاحظة الفريق: {request.staffNote}</p>}
                 <div className="mt-4 flex flex-wrap justify-end gap-2">
                   {request.status === "CONTACTED" && !request.officialQuotationId && (
