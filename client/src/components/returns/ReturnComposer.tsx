@@ -451,6 +451,17 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   }
 
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بنود الفاتورة…" />;
+  if (detail.isError) {
+    return (
+      <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-destructive space-y-1">
+        <div className="flex items-center gap-2 font-bold text-sm">
+          <AlertTriangle aria-hidden className="size-4 shrink-0 text-destructive" />
+          <span>تعذّر تحميل تفاصيل الفاتورة للمرتجع</span>
+        </div>
+        <p className="text-xs text-muted-foreground">{detail.error.message}</p>
+      </div>
+    );
+  }
   if (!inv) {
     return (
       <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
@@ -484,6 +495,24 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
                   : pending.isMine
                     ? "لا تعتمد طلبك بنفسك (فصل المهام) — يعتمده مديرٌ آخر لم يُنشئ الفاتورة."
                     : "أنت منشئ هذه الفاتورة فلا تراجع إرجاعها — يعتمده مديرٌ آخر."}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {isLocked && (
+        <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
+          <CardContent className="flex items-start gap-2.5 p-4 text-sm">
+            <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0 text-[var(--sem-warn)]" />
+            <div className="space-y-1">
+              <p className="font-bold text-[var(--sem-warn)]">
+                {inv.status === "RETURNED"
+                  ? "هذه الفاتورة تم استرجاعها بالكامل مسبقاً — لا يمكن تسجيل أي مرتجع جديد عليها."
+                  : "هذه الفاتورة ملغاة مسبقاً — لا يمكن تسجيل أي مرتجع جديد عليها."}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                إجمالي ما أُرجع: {fmt(inv.returnedTotal ?? "0")} د.ع من أصل {fmt(inv.total)} د.ع.
               </p>
             </div>
           </CardContent>
