@@ -8,12 +8,12 @@
 // (تقليم + طيّ أرقام عربية-هندية). والمطابقة بهوية الباركود تقرأ العمود المولّد المُطبَّع
 // والمفهرس، فيبقى الإرث الملوَّث قابلاً للمسح بلا full scan ولا هجرة بيانات.
 import { TRPCError } from "@trpc/server";
-import { asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { ProductBarcodeMatchKind } from "@shared/productScan";
 import { barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type DB, type Tx } from "../../db";
-import { productUnits, productUnitBarcodes, productVariants, products } from "../../../drizzle/schema";
+import { productUnits, productUnitBarcodes, productVariants, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
 import { foldDigitsSql } from "../../lib/similarMatch";
 
 type DbOrTx = DB | Tx;
@@ -475,7 +475,43 @@ export async function listUnitBarcodesMany(
   return out;
 }
 
-/** يضيف باركوداً بديلاً — يفحص التفرّد العالميّ قبل الإدراج. */
+/**
+ * حارس حماية الباركودات البديلة أثناء الجرد النشط:
+ * يمنع تعديل أو حذف أي باركود بديل لمتغيّر مشمول في جلسة جرد حالتها COUNTING أو REVIEW.
+ * تعديل أو حذف الباركود أثناء الجرد يؤدي إلى رفض عدّات العاملين الميدانية وتضارب التسوية الدفترية (Codex finding).
+ */
+export async function assertNoActiveStocktakeForVariant(
+  dbOrTx: DbOrTx,
+  variantId: number,
+  actionDescription: string,
+): Promise<void> {
+  const active = await dbOrTx
+    .select({ code: stocktakeSessions.code, status: stocktakeSessions.status })
+    .from(stocktakeSessions)
+    .innerJoin(stocktakeItems, eq(stocktakeSessions.id, stocktakeItems.sessionId))
+    .where(
+      and(
+        eq(stocktakeItems.variantId, variantId),
+        inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"]),
+      ),
+    )
+    .limit(1);
+
+  if (active.length > 0) {
+    const s = active[0];
+    const phase = s.status === "COUNTING" ? "مرحلة العدّ" : "مرحلة المراجعة";
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: `تعذّر ${actionDescription} أثناء الجرد النشط`,
+        why: `هذا الصنف مدرج في جلسة جرد نشطة (${s.code}) في ${phase}، وتعديل أو حذف باركوداته البديلة أثناء الجرد يؤدي إلى رفض عدّات العاملين الميدانية وتضارب التسوية الدفترية`,
+        doThis: "أكمل اعتماد جلسة الجرد أو ألغِها أولاً قبل تعديل أو حذف الباركودات البديلة في الكتالوج",
+      }),
+    });
+  }
+}
+
+/** يضيف باركوداً بديلاً — يفحص التفرّد العالميّ وتجميد الجرد النشط قبل الإدراج. */
 export async function addUnitBarcodeAlias(
   productUnitId: number,
   barcode: string,
@@ -486,9 +522,16 @@ export async function addUnitBarcodeAlias(
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مُهيّأة." });
   const clean = canonicalizeBarcodeInput(barcode);
   await assertBarcodeFree(clean, { ignoreUnitId: productUnitId });
-  // تحقّق أنّ الوحدة نفسها موجودة (تجنّب FK error غامضاً للمستخدم).
-  const [unit] = await db.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.id, productUnitId)).limit(1);
+  // تحقّق أنّ الوحدة نفسها موجودة (تجنّب FK error غامضاً للمستخدم) وافحص عدم ارتباطها بجرد نشط.
+  const [unit] = await db
+    .select({ id: productUnits.id, variantId: productUnits.variantId })
+    .from(productUnits)
+    .where(eq(productUnits.id, productUnitId))
+    .limit(1);
   if (!unit) throw new TRPCError({ code: "NOT_FOUND", message: "وحدة المنتج غير موجودة." });
+  if (unit.variantId) {
+    await assertNoActiveStocktakeForVariant(db, unit.variantId, "إضافة باركود بديل");
+  }
   await db.insert(productUnitBarcodes).values({
     productUnitId,
     barcode: clean,
@@ -498,16 +541,26 @@ export async function addUnitBarcodeAlias(
   return { ok: true };
 }
 
-/** يحذف باركوداً بديلاً بمعرّفه. الأساسيّ لا يُحذَف من هنا (يبقى في `productUnits.barcode`). */
+/** يحذف باركوداً بديلاً بمعرّفه — مجمّد أثناء الجرد النشط. */
 export async function removeUnitBarcodeAlias(id: number) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مُهيّأة." });
   const [row] = await db
-    .select({ id: productUnitBarcodes.id })
+    .select({ id: productUnitBarcodes.id, productUnitId: productUnitBarcodes.productUnitId })
     .from(productUnitBarcodes)
     .where(eq(productUnitBarcodes.id, id))
     .limit(1);
   if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الباركود البديل غير موجود." });
+
+  const [unit] = await db
+    .select({ variantId: productUnits.variantId })
+    .from(productUnits)
+    .where(eq(productUnits.id, row.productUnitId))
+    .limit(1);
+  if (unit?.variantId) {
+    await assertNoActiveStocktakeForVariant(db, unit.variantId, "حذف باركود بديل");
+  }
+
   await db.delete(productUnitBarcodes).where(eq(productUnitBarcodes.id, id));
   return { ok: true };
 }

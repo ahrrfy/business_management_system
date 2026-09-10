@@ -175,12 +175,6 @@ describe("حوكمة مصروف الشراء — فصل المهام على قا
   it("يعتمد المالكُ طلب ترحيلٍ أنشأه هو بنفسه فيُرحَّل المصروف فعلياً (لا خطأ DB خامّ بعد الهجرة 0333)", async () => {
     const { requestId, purchaseChargeId } = await createChargeAndRequestPost(owner);
 
-    const decided = await decidePurchaseChargeControl(
-      { requestId, decisionKey: randomUUID(), action: "APPROVE", reviewReason: "اعتماد ذاتي — قرار المالك ٣/٩/٢٦" },
-      owner,
-    );
-    expect(decided.status).toBe("APPROVED");
-
     const [charge] = await db().select().from(schema.purchaseCharges).where(eq(schema.purchaseCharges.id, purchaseChargeId));
     expect(charge.status).toBe("POSTED");
 

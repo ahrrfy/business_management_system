@@ -1,18 +1,20 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { z } from "zod";
 import { appErrorMessage } from "@shared/errors";
-import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, users } from "../../drizzle/schema";
+import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { z } from "zod";
+import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, users, workOrders } from "../../drizzle/schema";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSaleAsOwner, returnSaleInTx } from "../services/returnService";
+import { returnSaleAsOwner, returnSaleDirect, returnSaleInTx } from "../services/returnService";
 import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
 import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesManagerProcedure, salesReadProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import { router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import { forensicTraceInvoices, universalBarcodeScan } from "../services/returns/forensicTraceService";
 import { applyMovement } from "../services/inventoryService";
 import { assertPeriodOpen } from "../services/periodLockService";
@@ -48,9 +50,20 @@ const walkInResolution = z.object({
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
-// المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
+/**
+ * نطاق ملكية الكاشير (نظير `scopedOwnerId` في `branchScopedProcedure` و`sales.get`).
+ * المدير والمسؤول والمالك = null (يرون ويعكسون كل فواتير الفرع).
+ * الكاشير = معرفه الشخصي (لا يرى ولا يعكس إلا فواتيره وفواتير أوامر الشغل التي استقبلها).
+ */
+function getScopedOwnerId(user?: { id?: number | string; role?: string; isOwner?: boolean } | null): number | null {
+  if (!user) return null;
+  if (canCrossBranches(user) || user.role === "manager") return null;
+  return Number(user.id);
+}
+
+// المرتجعات تعكس مخزوناً ونقداً ⇒ كاشير بوردية مفتوحة أو مدير فأعلى.
 export const returnRouter = router({
-  create: salesManagerProcedure
+  create: salesCashierProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -70,6 +83,8 @@ export const returnRouter = router({
         reason: z.string().trim().min(3).max(500).optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
+        /** تنفيذ مباشر ذري (إلغاء التعليق البيروقراطي للمالك والإدارة والكاشير). */
+        directExecution: z.boolean().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -86,68 +101,125 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 0);
       const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
-      const reason = explicitReason ?? input.resolution?.reason ?? "";
+      const rawReason = explicitReason || input.resolution?.reason;
 
       /**
-       * ⭐ **مسارُ المالك الفوريّ** (قرار المالك ١/٩/٢٦).
+       * ⭐ **مسارُ التنفيذ الفوريّ الذريّ** (مالك، إداريّ، أو كاشير بوردية مفتوحة).
        *
-       * الحوكمةُ تفترض مراجعاً مستقلاً؛ وفي مكتبةٍ يديرها صاحبُها لا وجود له، فكان كلّ مرتجعٍ
-       * يعلق ويُسلَّم النقدُ والبضاعةُ خارج النظام. المالكُ ينفّذ مرتجعَه مباشرةً — والخدمة
-       * تُعيد قراءة `isOwner`/`isActive` **داخل معاملتها** فلا تكفي رايةُ الجلسة، والأثرُ يمرّ
-       * بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
+       * المالكُ ينفّذ مرتجعه مباشرةً، ومسؤولو النظام والمدراء والكاشير ينفّذون مباشرةً عبر
+       * `returnSaleDirect` افتراضياً (أو عند صراحة directExecution !== false).
+       * الأثرُ يمرّ بنفس `returnSaleInTx` بكلّ قيودها وحرّاسها. الاختصارُ في الحوكمة لا في المحاسبة.
        *
-       * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كان الراوتر يُرجع شكلاً واحداً فاختلط «طلبٌ
-       * أُرسل» بـ«مرتجعٌ نُفِّذ» على المستهلكين — وهو جذرُ عرضِ تطبيق أندرويد «تم تسجيل
-       * المرتجع بقيمة 0». كلّ مستهلكٍ يتفرّع على `mode` صراحةً بعد اليوم.
+       * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      if (ctx.user.isOwner === true) {
+      const shouldExecuteDirect = ctx.user.isOwner === true || input.directExecution === true;
+
+      if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
+        });
+      }
+      const reason = (rawReason ?? "").trim();
+
+      const [invRow] = await withTx(async (tx) => tx
+        .select({
+          sourceType: invoices.sourceType,
+          branchId: invoices.branchId,
+          createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
+        })
+        .from(invoices)
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .where(eq(invoices.id, invoiceId))
+        .limit(1), { gate: "NONE" });
+
+      if (!invRow) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: `الفاتورة #${invoiceId} غير موجودة`,
+            doThis: "تحقّق من رقم الفاتورة ثم أعد المحاولة",
+          }),
+        });
+      }
+      if (ctx.user.role !== "admin" && Number(invRow.branchId) !== actorBranchId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+            doThis: "سجّل المرتجع من الفرع المصدر أو اطلب من الإدارة إتمامه",
+          }),
+        });
+      }
+
+      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يرجع فاتورة زميله في الفرع نفسه،
+      // لكنه يرجع فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
+      const scopedOwnerId = getScopedOwnerId(ctx.user);
+      if (
+        scopedOwnerId != null
+        && Number(invRow.createdBy) !== scopedOwnerId
+        && Number(invRow.workOrderCreatedBy) !== scopedOwnerId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تسجيل المرتجع",
+            why: "لا يملك الكاشير صلاحية إرجاع فاتورة أنشأها موظف آخر",
+            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع تنفيذ المرتجع",
+          }),
+        });
+      }
+
+      if (shouldExecuteDirect) {
         /**
          * ⛔ **فاتورةُ أمر الشغل خارج هذا المسار** (أمسكه Codex على PR #932، P1).
          *
-         * `requestSalesControl` يرفضها صراحةً، لكنّ فرعَ المالك يسبقه فيصل إلى `returnSaleInTx`
-         * مباشرةً — فيعكس الإيرادَ والذمّة ويَسِم الفاتورة RETURNED بينما `workOrders.status`
-         * يبقى DELIVERED وWIP/COGS بلا عكسٍ وعربونُ الأمانة مقفلاً، ثمّ يُقفَل
-         * `reverseDelivery` على مستندٍ صار ميتاً. المخرجُ الوحيد لأمرٍ مُسلَّم هو عكسُ التسليم.
-         * الحارسُ هنا في الراوتر لا في النواة: النواةُ تخدم مسارَي التوصيل الشرعيَّين
-         * (`failCourierDelivery` و`reverseDispatchedInvoice`) على فواتير WORKORDER.
+         * فواتير WORKORDER تُعالَج من شاشة أمر الشغل (عكس التسليم) لا من مسار المرتجع.
          */
-        const [invRow] = await withTx(async (tx) => tx
-          .select({ sourceType: invoices.sourceType })
-          .from(invoices)
-          .where(eq(invoices.id, invoiceId))
-          .limit(1), { gate: "NONE" });
-        if (invRow?.sourceType === "WORKORDER") {
+        if (invRow.sourceType === "WORKORDER") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
             message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
           });
         }
-        if (reason.trim().length < 3) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
+        const executed = ctx.user.isOwner === true
+          ? await returnSaleAsOwner({
+              ...payload,
+              invoiceId,
+              ownerReason: reason,
+              clientRequestId: clientRequestId ?? randomUUID(),
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role })
+          : await retryOnDeadlock(() => returnSaleDirect({
+              ...payload,
+              invoiceId,
+              operatorReason: reason,
+              clientRequestId: clientRequestId ?? randomUUID(),
+            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: ctx.user.isOwner }));
+
+        const executionMode: ReturnExecutionMode = ctx.user.isOwner === true
+          ? "OWNER_IMMEDIATE"
+          : "DIRECT_EXECUTION";
+
+        const isReplay = "idempotentReplay" in executed && executed.idempotentReplay === true;
+        if (!isReplay) {
+          await logAudit(ctx, {
+            action: RETURN_EXECUTED_AUDIT_ACTION,
+            entityType: "invoice",
+            entityId: invoiceId,
+            newValue: {
+              mode: executionMode satisfies ReturnExecutionMode,
+              reason,
+              lines: input.lines.length,
+              returnedTotal: String(executed.returnedTotal ?? "0"),
+              fullyReturned: !!executed.fullyReturned,
+              refund: input.refund?.amount ?? input.resolution?.amount ?? null,
+              restock: input.restock ?? input.resolution?.disposition ?? null,
+            },
           });
         }
-        const executed = await returnSaleAsOwner({
-          ...payload,
-          invoiceId,
-          ownerReason: reason,
-          clientRequestId: clientRequestId ?? randomUUID(),
-        }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
-        await logAudit(ctx, {
-          action: RETURN_EXECUTED_AUDIT_ACTION,
-          entityType: "invoice",
-          entityId: invoiceId,
-          newValue: {
-            mode: "OWNER_IMMEDIATE" satisfies ReturnExecutionMode,
-            reason,
-            lines: input.lines.length,
-            returnedTotal: String(executed.returnedTotal ?? "0"),
-            fullyReturned: !!executed.fullyReturned,
-            refund: input.refund?.amount ?? input.resolution?.amount ?? null,
-            restock: input.restock ?? input.resolution?.disposition ?? null,
-          },
-        });
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
       }
 
@@ -169,7 +241,13 @@ export const returnRouter = router({
           reason,
         },
       });
-      return { mode: "REQUESTED" as const, requestId: res.id, status: res.status, replayed: res.replayed };
+      const isApproved = res.status === "APPROVED";
+      return {
+        mode: isApproved ? ("EXECUTED" as const) : ("REQUESTED" as const),
+        requestId: res.id,
+        status: res.status,
+        replayed: res.replayed,
+      };
     }),
 
   // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════
@@ -425,13 +503,20 @@ export const returnRouter = router({
         .limit(limit)
         .offset(offset);
 
-      const totalRow = await db
-        .select({ c: sql<number>`COUNT(*)` })
-        .from(accountingEntries)
-        .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
-        .where(and(...where));
+      let total: number;
+      if (offset === 0 && rows.length < limit) {
+        // إذا كانت نتائج الصفحة الأولى أقل من الحد الأقصى، فالإجمالي هو عدد الصفوف نفسه دون حاجة لاستعلام COUNT(*) إضافي
+        total = rows.length;
+      } else {
+        const totalRow = await db
+          .select({ c: sql<number>`COUNT(*)` })
+          .from(accountingEntries)
+          .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
+          .where(and(...where));
+        total = Number(totalRow[0]?.c ?? 0);
+      }
 
-      return { rows, total: Number(totalRow[0]?.c ?? 0) };
+      return { rows, total };
     }),
 
   /** منفّذو المرتجعات (createdBy مميّز على قيود RETURN المطابقة لنطاق الفرع) — يغذّي فلتر
@@ -472,7 +557,7 @@ export const returnRouter = router({
       return rows.map((r) => ({ id: Number(r.id), name: r.name }));
     }),
 
-  getInvoice: salesManagerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  getInvoice: salesCashierProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (
@@ -484,6 +569,7 @@ export const returnRouter = router({
           branchId: invoices.branchId,
           /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
           createdBy: invoices.createdBy,
+          workOrderCreatedBy: workOrders.createdBy,
           customerId: invoices.customerId,
           customerName: customers.name,
           subtotal: invoices.subtotal,
@@ -496,6 +582,7 @@ export const returnRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];
@@ -503,7 +590,32 @@ export const returnRouter = router({
     // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
     // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
     if (ctx.user.role !== "admin" && Number(inv.branchId) !== Number(ctx.user.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر قراءة تفاصيل الفاتورة",
+          why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+          doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
+        }),
+      });
+    }
+
+    // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
+    // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
+    const scopedOwnerId = getScopedOwnerId(ctx.user);
+    if (
+      scopedOwnerId != null
+      && Number(inv.createdBy) !== scopedOwnerId
+      && Number(inv.workOrderCreatedBy) !== scopedOwnerId
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
+          why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
+          doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
+        }),
+      });
     }
 
     const rows = await db
@@ -636,6 +748,14 @@ export const returnRouter = router({
       ))
       .limit(1);
 
+    const canReviewRole = ctx.user.role === "admin" || moduleAccessAllowed(
+      ctx.user.role as RoleKey,
+      (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
+
     return {
       /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
       refundPool: caps.pool.toFixed(2),
@@ -643,8 +763,8 @@ export const returnRouter = router({
       refundShifts,
       /**
        * طلبٌ معلّقٌ على هذه الفاتورة — الشاشة تُظهره وتمنع إرسالاً ثانياً. `canReviewIt`
-       * تُشتقّ خادمياً بنفس حارس `assertReviewerSeparation` كي لا تدعو الشاشةُ مستخدماً إلى
-       * زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
+       * تُشتقّ خادمياً بسلطة الدور (salesManagerProcedure) وحارس `assertReviewerSeparation`
+       * كي لا تدعو الشاشةُ مستخدماً إلى زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
        */
       pendingRequest: governedPending
         ? {
@@ -657,7 +777,8 @@ export const returnRouter = router({
             createdAt: governedPending.createdAt,
             isMine: Number(governedPending.requestedBy) === Number(ctx.user.id),
             canReviewIt:
-              Number(governedPending.requestedBy) !== Number(ctx.user.id)
+              canReviewRole
+              && Number(governedPending.requestedBy) !== Number(ctx.user.id)
               && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
           }
         : legacyPending
@@ -671,7 +792,8 @@ export const returnRouter = router({
               createdAt: legacyPending.createdAt,
               isMine: Number(legacyPending.createdBy) === Number(ctx.user.id),
               canReviewIt:
-                Number(legacyPending.createdBy) !== Number(ctx.user.id)
+                canReviewRole
+                && Number(legacyPending.createdBy) !== Number(ctx.user.id)
                 && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
             }
           : null,

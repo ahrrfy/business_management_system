@@ -12,11 +12,8 @@ interface CashCounterProps {
 }
 
 export function CashCounter({ value, onChange, disabled }: CashCounterProps) {
-  const [counts, setCounts] = useState<Record<number, number>>(value ?? {});
-
-  useEffect(() => {
-    if (value) setCounts(value);
-  }, [value]);
+  const [internalCounts, setInternalCounts] = useState<Record<number, number>>({});
+  const counts = value ?? internalCounts;
 
   const total = useMemo(() => {
     let t = D(0);
@@ -27,14 +24,19 @@ export function CashCounter({ value, onChange, disabled }: CashCounterProps) {
     return t.toDecimalPlaces(2).toFixed(2);
   }, [counts]);
 
-  useEffect(() => {
-    onChange(counts, total);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [total]);
-
   const handleSet = (denom: number, raw: string) => {
     const num = raw === "" ? 0 : Math.max(0, Math.min(PER_BILL_CAP, Math.floor(Number(raw) || 0)));
-    setCounts((prev) => ({ ...prev, [denom]: num }));
+    const nextCounts = { ...counts, [denom]: num };
+    if (!value) {
+      setInternalCounts(nextCounts);
+    }
+    let t = D(0);
+    for (const d of IQD_DENOMINATIONS) {
+      const n = Math.max(0, Math.floor(nextCounts[d] ?? 0));
+      t = t.plus(D(d).times(n));
+    }
+    const nextTotal = t.toDecimalPlaces(2).toFixed(2);
+    onChange(nextCounts, nextTotal);
   };
 
   return (

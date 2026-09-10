@@ -59,7 +59,7 @@ describe("final operational UI cutover", () => {
       "<RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole>",
     );
     expect(app).toContain(
-      '<RequireRole roles={["manager"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole>',
+      '<RequireRole roles={["manager", "cashier"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole>',
     );
     expect(app).toContain(
       "<RequireRole gate={WORK_ORDERS_HUB_GATE}><PrintHub /></RequireRole>",

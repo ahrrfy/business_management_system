@@ -56,7 +56,7 @@ type EditUnit = { id: number; name: string; factor: string; isBase: boolean; sel
  * السلعة البسيطة لها متغيّرٌ واحد ⇒ زرّ آخر شراء ذو معنى مباشر (يملأ الحقل بنقرة).
  */
 function SimpleEditCostCoach({
-  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase,
+  costPrice, baseRetail, categoryId, brand, productType, productId, variantId, onUseLastPurchase, disabled,
 }: {
   costPrice: string;
   baseRetail: string;
@@ -66,6 +66,7 @@ function SimpleEditCostCoach({
   productId: number;
   variantId: number | null;
   onUseLastPurchase: (cost: string) => void;
+  disabled?: boolean;
 }) {
   const statsQ = trpc.catalog.categoryStats.useQuery(
     { categoryId, brand: brand.trim() || null, productType: productType.trim() || null, excludeProductId: productId },
@@ -73,7 +74,7 @@ function SimpleEditCostCoach({
   );
   const lastPurchaseQ = trpc.catalog.lastPurchaseCost.useQuery(
     { variantId: variantId ?? 0 },
-    { enabled: variantId != null && variantId > 0, staleTime: 60 * 1000 }
+    { enabled: variantId != null && variantId > 0 && !disabled, staleTime: 60 * 1000 }
   );
   const daysAgo = lastPurchaseQ.data?.receivedAt
     ? Math.floor((Date.now() - new Date(lastPurchaseQ.data.receivedAt).getTime()) / (1000 * 60 * 60 * 24))
@@ -90,7 +91,7 @@ function SimpleEditCostCoach({
           n: statsQ.data.n ?? 0,
         } : undefined}
       />
-      {lastPurchaseQ.data && (
+      {!disabled && lastPurchaseQ.data && (
         <button
           type="button"
           onClick={() => onUseLastPurchase(lastPurchaseQ.data!.unitCost)}
@@ -148,6 +149,8 @@ export default function SimpleProductEditForm({
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
   const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
+  const hasStock = useMemo(() => Object.values(currentStock).some((q) => Number(q) !== 0), [currentStock]);
+  const isCostLocked = hasStock && !consignment.isConsignment;
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
 
@@ -624,17 +627,31 @@ export default function SimpleProductEditForm({
             required
             hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "سعر الشراء الموحّد."}
           >
-            <MoneyInput id="simpleedit-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
-            <SimpleEditCostCoach
-              costPrice={costPrice}
-              baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
-              categoryId={categoryId === "" ? null : Number(categoryId)}
-              brand={brand}
-              productType={productType}
-              productId={productId}
-              variantId={variantId.current}
-              onUseLastPurchase={(cost) => setCostPrice(cost)}
+            <MoneyInput
+              id="simpleedit-cost"
+              value={costPrice}
+              onChange={setCostPrice}
+              placeholder="150"
+              disabled={isCostLocked}
             />
+            {isCostLocked && (
+              <p className="text-[11px] text-[var(--sem-warn)] mt-1 font-medium leading-normal">
+                مقفل لوجود رصيد مخزني فعلي. لتعديل التكلفة مع إثبات القيود المحاسبية، استعمل «إعادة تقييم التكلفة» من شاشة المخزون أو عبر أذون الاستلام.
+              </p>
+            )}
+            {!isCostLocked && (
+              <SimpleEditCostCoach
+                costPrice={costPrice}
+                baseRetail={units.find((u) => u.isBase)?.retail ?? ""}
+                categoryId={categoryId === "" ? null : Number(categoryId)}
+                brand={brand}
+                productType={productType}
+                productId={productId}
+                variantId={variantId.current}
+                onUseLastPurchase={(cost) => setCostPrice(cost)}
+                disabled={isCostLocked}
+              />
+            )}
           </Field>
           <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
             <NumberInput value={minStock} onChange={setMinStock} className="text-center" ariaLabel="الحد الأدنى" />

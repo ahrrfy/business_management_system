@@ -19,6 +19,7 @@ import { assertPeriodOpen } from "../periodLockService";
 import type { ReturnSaleInput } from "../returnService";
 import { returnSaleInTx } from "../returnService";
 import { requireDb, type Actor, withTx } from "../tx";
+import { autoDecideForActiveOwner } from "../approval/ownerAutoDecision";
 import { cancelSaleInTx, type CancelSaleInput } from "./cancel";
 import {
   correctSaleInTx,
@@ -117,6 +118,7 @@ function assertReviewerSeparation(
   invoiceCreatedBy: number | null,
   actor: Actor,
 ): void {
+  if (actor.isOwner) return;
   if (Number(request.requestedBy) === Number(actor.userId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا تراجع طلبك بنفسك — يلزم مراجع مستقل" });
   }
@@ -161,7 +163,7 @@ export async function requestSalesControl(
   const requestKey = normalizeRequestKey(input.requestKey);
   const reason = normalizeReason(input.reason);
   const payloadHash = idempotencyHash(input.payload);
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = await loadByKey(tx, requestKey);
     if (replay) {
       assertBranch(Number(replay.branchId), actor);
@@ -250,6 +252,12 @@ export async function requestSalesControl(
       replayed: false as const,
     };
   }, { gate: "NONE" });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "sales.control.approve",
+    id: Number(result.id),
+    reason,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 async function markStaleTx(

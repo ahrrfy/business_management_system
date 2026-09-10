@@ -106,7 +106,7 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   if (bridgeEnabled || isPaired()) {
     const raster = await receiptToRaster(d);
     if (raster) {
-      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
+      const bytes = new EscPos().init().raster(raster).feed(3).cut().openDrawer().bytes();
       if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);
@@ -129,6 +129,30 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   return printBrowserReceipt(d)
     ? { via: "browser", ok: true }
     : { via: "browser", ok: false, reason: "popup-blocked" };
+}
+
+/**
+ * فتح درج النقود يدوياً عبر إرسال نبضة ESC/POS لطابعة الإيصالات الحرارية.
+ */
+export async function openCashDrawer(): Promise<{ ok: boolean; via?: "thermal" | "server" }> {
+  const bytes = new EscPos().init().openDrawer().bytes();
+  if (await isServerBridgeEnabled()) {
+    try {
+      await sendRawToServer(bytes);
+      return { ok: true, via: "server" };
+    } catch (e) {
+      console.warn("[drawer] فشل فتح الدرج عبر جسر الخادم:", e);
+    }
+  }
+  if (isPaired()) {
+    try {
+      await sendBytes(bytes);
+      return { ok: true, via: "thermal" };
+    } catch (e) {
+      console.warn("[drawer] فشل فتح الدرج عبر WebUSB:", e);
+    }
+  }
+  return { ok: false };
 }
 
 /**

@@ -1,19 +1,5 @@
-import {
-  type WorkOrderStatus,
-  WO_NEXT_STATUS,
-  WO_STAGE_INDEX,
-  workOrderStatusHue,
-  workOrderStatusLabel,
-  workOrderTimelineLabel,
-} from "@shared/workOrderStatus";
-import {
-  isKanbanStateApplicable,
-  isWorkOrderKanbanState,
-  nextKanbanStateInCycle,
-  workOrderKanbanDotCls,
-  workOrderKanbanStateLabel,
-  type WorkOrderKanbanState,
-} from "@shared/workOrderKanban";
+import { type WorkOrderStatus, WO_NEXT_STATUS, WO_STAGE_INDEX, workOrderStatusHue, workOrderStatusLabel, workOrderTimelineLabel } from "@shared/workOrderStatus";
+import { isKanbanStateApplicable, isWorkOrderKanbanState, nextKanbanStateInCycle, workOrderKanbanDotCls, workOrderKanbanStateLabel, type WorkOrderKanbanState } from "@shared/workOrderKanban";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -55,17 +41,11 @@ import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefun
 import { WorkOrderControlApprovals } from "@/components/workOrders/WorkOrderControlApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder } from "@/lib/workOrderRefundPolicy";
+import { EditWorkOrderDialog } from "@/components/workOrders/EditWorkOrderDialog";
 import { mayRequestWorkOrderControl } from "@shared/workOrderControlAuthority";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { ErrorState, LoadingState } from "@/components/PageState";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type WO = RouterOutputs["workOrders"]["list"][number];
 type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
@@ -101,15 +81,12 @@ const ADV_LABEL: Record<string, React.ReactNode> = {
 // أعمدة اللوحة (٥) — «مسحوب» ليست حالة DB بل عرضٌ لـRECEIVED المُسنَد (assignedTo != null).
 // لا هجرة: التسلسل الحقيقي يبقى RECEIVED→IN_PROGRESS→READY→DELIVERED؛ السحب يضبط assignedTo فقط.
 // السحب/الإسناد ينقل البطاقة بين «طابور وارد» و«مسحوب» (نفس الحالة)؛ والسحب يقدّم الحالة.
-type ColKey = "INBOX" | "CLAIMED" | "IN_PROGRESS" | "READY" | "DELIVERED";
+type ColKey = "INBOX" | "CLAIMED" | "IN_PROGRESS" | "READY";
 const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: Status; match: (o: WO) => boolean }[] = [
   { key: "INBOX", label: "طابور وارد", hint: "غير مسحوب — بانتظار فنّي", hue: 72, status: "RECEIVED", match: (o) => o.status === "RECEIVED" && !o.assignedTo },
   { key: "CLAIMED", label: "مسحوب", hint: "مُسنَد لفنّي — لم يبدأ", hue: 235, status: "RECEIVED", match: (o) => o.status === "RECEIVED" && !!o.assignedTo },
   { key: "IN_PROGRESS", label: "قيد التنفيذ", hint: "تحت الإنتاج الآن", hue: 250, status: "IN_PROGRESS", match: (o) => o.status === "IN_PROGRESS" },
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293, status: "READY", match: (o) => o.status === "READY" },
-  // «مُسلَّم» تُجلب باستعلام منفصل محدود بالأحدث (DELIVERED_LIMIT) — التاريخ يتراكم بلا سقف،
-  // والعدّاد الحقيقي يأتي من workOrders.counts لا من طول القائمة.
-  { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "استلام مباشر أو خرج للتوصيل — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
 ];
 
 const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> = {
@@ -390,6 +367,14 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
         <div className="wob-card-delivery">
           <Package aria-hidden className="size-3.5 shrink-0" />
           <span className="truncate">{o.deliveryAddress ?? "توصيل للعميل"}</span>
+          {(() => {
+            const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+            return st !== "NONE" ? (
+              <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] px-1.5 py-0.5 text-2xs font-bold shrink-0 ms-auto" title={o.deliveryPartyName ? `مع ${o.deliveryPartyName}` : undefined}>
+                <Truck aria-hidden className="size-3" /> {woDeliveryStateLabel(st)}
+              </span>
+            ) : null;
+          })()}
         </div>
       )}
       <div className="wob-meta">
@@ -624,203 +609,6 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
   );
 }
 
-// ─────────────── تعديل تفاصيل الطلب (مديرٌ فأعلى — يقفل بعد DELIVERED/CANCELLED) ───────────────
-type EditForm = {
-  title: string;
-  customizationText: string;
-  salePrice: string;
-  dueDate: string;
-  priority: "LOW" | "NORMAL" | "URGENT";
-  customerId: number | null;
-  contactName: string;
-  contactPhone: string;
-  receptionChannel: "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | "OTHER";
-  channelHandle: string;
-};
-
-function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: number | null; onClose: () => void; onSaved: () => void }) {
-  const detail = trpc.workOrders.get.useQuery({ workOrderId: workOrderId ?? 0 }, { enabled: workOrderId != null });
-  const preflight = trpc.workOrders.controlPreflight.useQuery(
-    { workOrderId: workOrderId ?? 0 },
-    { enabled: workOrderId != null },
-  );
-  const me = trpc.auth.me.useQuery();
-  const [form, setForm] = useState<EditForm | null>(null);
-  const [reason, setReason] = useState("");
-  const requestKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
-  const hasDirectAuthority = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
-
-  // يعبّئ النموذج من بيانات الخادم عند فتح طلبٍ جديد — لا يُعيد الكتابة فوق تعديلات المستخدم
-  // الجارية إن أُعيد جلب نفس الطلب (invalidate) أثناء الفتح.
-  useEffect(() => {
-    const d = detail.data;
-    setForm(
-      d
-        ? {
-            title: d.title,
-            customizationText: d.customizationText ?? "",
-            salePrice: d.salePrice,
-            dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : "",
-            priority: (d.priority as EditForm["priority"]) ?? "NORMAL",
-            customerId: d.customerId ?? null,
-            contactName: d.contactName ?? "",
-            contactPhone: d.contactPhone ?? "",
-            receptionChannel: d.receptionChannel ?? "WALK_IN",
-            channelHandle: d.channelHandle ?? "",
-          }
-        : null,
-    );
-  }, [detail.data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const update = trpc.workOrders.update.useMutation({
-    onSuccess: () => { notify.ok("حُفظ التعديل"); onSaved(); },
-    onError: (e) => notify.err(e),
-  });
-  const requestControl = trpc.workOrders.requestControl.useMutation({
-    onSuccess: (result) => {
-      notify.ok(result.replayed
-        ? "أُعيد تحميل طلب التعديل السابق — ما زال بانتظار مراجع مستقل."
-        : "أُرسل طلب التعديل بلا تغيير فوري؛ ينتظر اعتماد مدير مستقل.");
-      requestKeyRef.current = null;
-      onSaved();
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  if (workOrderId == null) return null;
-  const d = detail.data;
-  const locked = !!d && (d.status === "DELIVERED" || d.status === "CANCELLED");
-  const deposit = D(d?.deposit ?? 0);
-  const canDirect =
-    hasDirectAuthority &&
-    preflight.data?.controlRequired.commercial === false;
-
-  function submit() {
-    if (!form) return;
-    const title = form.title.trim();
-    if (!title) { notify.err("عنوان الطلب مطلوب"); return; }
-    const priceD = D(form.salePrice);
-    if (priceD.lte(0)) { notify.err("السعر يجب أن يكون أكبر من صفر"); return; }
-    if (priceD.lt(deposit)) { notify.err(`السعر أقلّ من العربون المقبوض سلفاً (${fmtAr(deposit.toFixed(2))} د.ع)`); return; }
-    const normalizedReason = reason.trim();
-    if (normalizedReason.length < 3) { notify.err("سبب التعديل مطلوب من 3 محارف على الأقل"); return; }
-    const payload = {
-      title,
-      customizationText: form.customizationText.trim() || null,
-      salePrice: round2(priceD).toFixed(2),
-      dueDate: form.dueDate || null,
-      priority: form.priority,
-      customerId: form.customerId,
-      contactName: form.contactName.trim() || null,
-      contactPhone: form.contactPhone.trim() || null,
-      receptionChannel: form.receptionChannel,
-      channelHandle: form.channelHandle.trim() || null,
-    };
-    if (canDirect) {
-      update.mutate({ workOrderId: workOrderId!, expectedVersion: Number(d?.version), reason: normalizedReason, ...payload });
-      return;
-    }
-    const fingerprint = JSON.stringify({ workOrderId, version: d?.version, normalizedReason, payload });
-    const existing = requestKeyRef.current;
-    const requestKey = existing?.fingerprint === fingerprint ? existing.key : newClientRequestId();
-    requestKeyRef.current = { fingerprint, key: requestKey };
-    requestControl.mutate({
-      requestType: "COMMERCIAL_EDIT",
-      requestKey,
-      workOrderId: workOrderId!,
-      baseVersion: Number(d?.version),
-      reason: normalizedReason,
-      payload,
-    });
-  }
-
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>تعديل طلب الخدمة{d ? ` — ${d.orderNumber}` : ""}</DialogTitle>
-          <DialogDescription>
-            {locked
-              ? "هذا الطلب مُسلَّم أو مُلغى — لا يمكن تعديله بعد الآن."
-              : canDirect
-                ? "يسري التعديل فوراً لأن الأمر لم يبدأ ولم يُقبض عليه شيء. الكمية والمواد لا تُعدَّلان من هنا."
-                : "سيُرسل التعديل بلا أثر فوري إلى مراجع مستقل لأن الأمر بدأ أو قُبض عليه مبلغ."}
-          </DialogDescription>
-        </DialogHeader>
-        {!d || !form ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">{detail.isLoading ? ACTION_LABELS.loading : "تعذّر العثور على الطلب."}</div>
-        ) : locked ? (
-          <DialogFooter><button className="wob-btn wob-btn-ghost" onClick={onClose}>إغلاق</button></DialogFooter>
-        ) : (
-          <>
-            <div className="grid gap-3 py-1 max-h-[65vh] overflow-y-auto pe-1">
-              <div className="space-y-1">
-                <Label>عنوان الطلب</Label>
-                <input className={dlgInput} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-              </div>
-              <div className="space-y-1">
-                <Label>التخصيص/الملاحظات</Label>
-                <Textarea value={form.customizationText} onChange={(e) => setForm({ ...form, customizationText: e.target.value })} rows={3} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label>سعر البيع</Label>
-                  <MoneyInput value={form.salePrice} onChange={(v) => setForm({ ...form, salePrice: v })} className={dlgInput} />
-                  {deposit.gt(0) && <p className="text-xs text-muted-foreground">لا يقلّ عن العربون المقبوض: {fmtAr(deposit.toFixed(2))} د.ع</p>}
-                </div>
-                <div className="space-y-1">
-                  <Label>موعد الاستحقاق</Label>
-                  <input type="date" className={dlgInput} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="wo-edit-priority">الأولوية</Label>
-                  <AppSelect id="wo-edit-priority" value={form.priority} onValueChange={(value) => setForm({ ...form, priority: value as EditForm["priority"] })}>
-                    {Object.entries(PRIORITIES).map(([k, p]) => <option key={k} value={k}>{p.label}</option>)}
-                  </AppSelect>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="wo-edit-channel">قناة الاستلام</Label>
-                  <AppSelect id="wo-edit-channel" value={form.receptionChannel} onValueChange={(value) => setForm({ ...form, receptionChannel: value as EditForm["receptionChannel"] })}>
-                    {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-                  </AppSelect>
-                </div>
-              </div>
-              {form.receptionChannel !== "WALK_IN" && (
-                <div className="space-y-1">
-                  <Label>معرّف القناة (رقم/حساب)</Label>
-                  <input className={dlgInput} value={form.channelHandle} onChange={(e) => setForm({ ...form, channelHandle: e.target.value })} />
-                </div>
-              )}
-              <CustomerPicker customerId={form.customerId} onCustomerChange={(id) => setForm({ ...form, customerId: id })} />
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label>اسم مرجعي (زبون عابر بلا سجلّ)</Label>
-                  <input className={dlgInput} value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
-                </div>
-                <div className="space-y-1">
-                  <Label>هاتف مرجعي</Label>
-                  <IntlPhoneInput value={form.contactPhone} onChange={(v) => setForm({ ...form, contactPhone: v })} />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label>سبب التعديل</Label>
-                <Textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={2} placeholder="ما الذي تغيّر ولماذا؟" />
-              </div>
-            </div>
-            <DialogFooter>
-              <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={update.isPending || requestControl.isPending}>إلغاء</button>
-              <button className="wob-btn wob-btn-primary" disabled={update.isPending || requestControl.isPending || reason.trim().length < 3} onClick={submit}>
-                {update.isPending || requestControl.isPending ? ACTION_LABELS.saving : canDirect ? "حفظ التعديل" : "إرسال طلب التعديل"}
-              </button>
-            </DialogFooter>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
@@ -1067,13 +855,13 @@ function Drawer({
                 appearance="solid"
                 className="wob-wa-lg"
               />
-              {next === "DELIVERED" && d.hasDelivery && canDeliver ? (
+              {next === ("DELIVERED" as ColKey) && d.hasDelivery && canDeliver ? (
                 <Link href="/delivery" className="wob-btn wob-btn-primary" style={{ flex: 1 }}>
                   <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> إسناد للتوصيل
                 </Link>
               ) : next ? (next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
-                  onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
+                  onClick={() => (next === ("DELIVERED" as ColKey) ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (
                 <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
               )}
@@ -1246,10 +1034,10 @@ function OrdersTable({
           { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
           { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
         ];
-        if (next === "DELIVERED" && o.hasDelivery && canDeliver) {
+        if (next === ("DELIVERED" as ColKey) && o.hasDelivery && canDeliver) {
           actions.push({ key: "dispatch", kind: "approve", label: "إسناد للتوصيل", icon: Truck, href: "/delivery" });
         } else if (next && (next !== "DELIVERED" || canDeliver)) {
-          actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
+          actions.push({ key: "advance", kind: next === ("DELIVERED" as ColKey) ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
         if (canRequestCancel && !isFinal) {
           actions.push({ key: "cancel", kind: "cancel", label: isManager ? "إلغاء الأمر" : "طلب إلغاء الأمر", variant: "destructive", onSelect: () => onCancel(o) });
@@ -1324,7 +1112,7 @@ function OrdersTable({
               next && (next !== "DELIVERED" || canDeliver)
                 ? {
                     label: next === "IN_PROGRESS" ? "بدء التنفيذ" : next === "READY" ? "جاهز" : "تسليم",
-                    icon: next === "READY" ? CheckCircle2 : next === "DELIVERED" ? Package : ChevronRight,
+                    icon: next === "READY" ? CheckCircle2 : next === ("DELIVERED" as ColKey) ? Package : ChevronRight,
                     onClick: () => onAdvance(o, next),
                   }
                 : undefined
@@ -1389,7 +1177,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "", gb: "stage", late: "", unassigned: "", dueToday: "", blocked: "", d: "normal", deliv: "" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1530,13 +1318,18 @@ export default function WorkOrders() {
         const ks = (o as unknown as { kanbanState?: string | null }).kanbanState;
         if (ks !== "BLOCKED") return false;
       }
+      if (f.deliv === "1") {
+        if (o.status === "DELIVERED" || o.status === "CANCELLED") return false;
+        const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+        if (!o.hasDelivery && st === "NONE") return false;
+      }
       if (needle) {
         const hay = [o.orderNumber, o.title, o.customerName ?? ""].join(" ").toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     };
-  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked]);
+  }, [f.q, f.pri, f.ch, f.late, f.unassigned, f.dueToday, f.blocked, f.deliv]);
 
   const filtered = useMemo(() => all.filter(clientFilterPredicate), [all, clientFilterPredicate]);
 
@@ -1725,7 +1518,7 @@ export default function WorkOrders() {
     navigate(`/work-orders/${d.id}?cancel=1`);
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch" || f.late === "1" || f.unassigned === "1" || f.dueToday === "1" || f.blocked === "1" || f.deliv === "1";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
   const boardError = activeQ.isError || deliveredQ.isError || countsQ.isError;
@@ -1856,35 +1649,17 @@ export default function WorkOrders() {
             </button>
           );
         })()}
-        <button
-          type="button"
-          aria-pressed={f.dueToday === "1"}
-          onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })}
-          className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`}
-          title="أوامرُ تستحقّ التسليم اليوم"
-        >
-          <Calendar aria-hidden className="size-3.5" />
-          يستحقّ اليوم
+        <button type="button" aria-pressed={f.dueToday === "1"} onClick={() => setF({ dueToday: f.dueToday === "1" ? "" : "1" })} className={`wob-qf${f.dueToday === "1" ? " wob-qf-on wob-qf-today" : ""}`} title="أوامرُ تستحقّ التسليم اليوم">
+          <Calendar aria-hidden className="size-3.5" /> يستحقّ اليوم
         </button>
-        <button
-          type="button"
-          aria-pressed={f.unassigned === "1"}
-          onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })}
-          className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`}
-          title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد"
-        >
-          <Wrench aria-hidden className="size-3.5" />
-          بلا فنّيّ
+        <button type="button" aria-pressed={f.unassigned === "1"} onClick={() => setF({ unassigned: f.unassigned === "1" ? "" : "1" })} className={`wob-qf${f.unassigned === "1" ? " wob-qf-on wob-qf-unassigned" : ""}`} title="طابورٌ مشترك — أوامرُ لم تُسنَد لفنّيّ بعد">
+          <Wrench aria-hidden className="size-3.5" /> بلا فنّيّ
         </button>
-        <button
-          type="button"
-          aria-pressed={f.blocked === "1"}
-          onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })}
-          className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`}
-          title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة"
-        >
-          <AlertTriangle aria-hidden className="size-3.5" />
-          معطَّل
+        <button type="button" aria-pressed={f.blocked === "1"} onClick={() => setF({ blocked: f.blocked === "1" ? "" : "1" })} className={`wob-qf${f.blocked === "1" ? " wob-qf-on wob-qf-blocked" : ""}`} title="أوامرٌ أشار الفنّيّ إلى تعطّلها — سببها في تلميح البطاقة">
+          <AlertTriangle aria-hidden className="size-3.5" /> معطَّل
+        </button>
+        <button type="button" aria-pressed={f.deliv === "1"} onClick={() => setF({ deliv: f.deliv === "1" ? "" : "1" })} className={`wob-qf${f.deliv === "1" ? " wob-qf-on wob-qf-deliv" : ""}`} title="أوامرُ مسندة للتوصيل أو قيد التوصيل">
+          <Truck aria-hidden className="size-3.5" /> قيد التوصيل
         </button>
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>

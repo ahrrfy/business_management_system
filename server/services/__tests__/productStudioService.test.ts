@@ -7,7 +7,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
 import { createAppNotification } from "../appNotificationService";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, reconcileStudioCampaignTransitionNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, getStudioTaskPreviousImages, getStudioProductUnits, linkStudioBarcode, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 import { reserveStudioImageTasks, bulkReassignStudioTasks } from "../productStudioService";
 import { discoverImageGaps, getImageHealthCounts, getTopGapCategories } from "../productStudioDiscovery";
@@ -886,6 +886,15 @@ describe("product studio governed workflow", () => {
     expect(stored?.dueAt?.toISOString()).toBe("2026-08-20T09:00:00.000Z");
   });
 
+  it("limits a barcode-gated photographer to image work without clearing catalog content", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await db().update(s.productImageJobs).set({ barcodeVerifiedBy: worker.userId, barcodeVerifiedAt: new Date(), proposedDescription: "محتوى المدير محفوظ" }).where(eq(s.productImageJobs.id, taskId));
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true, proposedDescription: "تعديل مصوّر غير مسموح" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("لا يحرّر المصوّر") });
+    await expect(saveStudioDraft(worker, { taskId, requireBarcodeVerification: true })).resolves.toMatchObject({ ok: true });
+    const [stored] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(stored?.proposedDescription).toBe("محتوى المدير محفوظ");
+  });
+
   it("rolls back an entire bulk assignment when any product already has an active task", async () => {
     await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
     await assignStudioTask(manager, {
@@ -928,6 +937,43 @@ describe("product studio governed workflow", () => {
         dueAt: new Date("2026-08-20T10:00:00.000Z"),
       }),
     ).resolves.toEqual({ ok: true, revision: 2 });
+  });
+
+  it("opens a scanned owned task outside the first fifty without widening task access", async () => {
+    const ids = Array.from({ length: 51 }, (_, index) => 100 + index);
+    await db().insert(s.products).values(ids.map((id) => ({ id, name: `منتج المسح ${id}` })));
+    await db().insert(s.productVariants).values({ id: 100, productId: 100, sku: "SCAN-OLD-SKU", variantName: "الأزرق", costPrice: "0" });
+    await db().insert(s.productUnits).values({ id: 100, variantId: 100, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "SCAN-OLD-100" });
+    await db().insert(s.productImageJobs).values(ids.map((id) => ({
+      id,
+      productId: id,
+      variantId: id === 100 ? 100 : null,
+      branchId: 1,
+      mode: "FLATTEN" as const,
+      status: "ASSIGNED" as const,
+      assignedTo: worker.userId,
+      assignedBy: manager.userId,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+      updatedAt: new Date(Date.UTC(2026, 7, 1, 0, 0, id - 100)),
+    })));
+
+    const firstPage = await listStudioTasks(worker, { scope: "MINE", limit: 50 });
+    expect(firstPage.items).toHaveLength(50);
+    expect(firstPage.items.some((task) => Number(task.id) === 100)).toBe(false);
+    const claimed = await claimStudioProductByBarcode(worker, "SCAN-OLD-100");
+    // المسح يثبت أن المصوّر الذي فُتحت له المهمة هو من يملك الباركود فعلاً؛
+    // لهذا يرفع revision مرةً واحدة حتى للمهمة المسندة له مسبقاً.
+    expect(claimed).toMatchObject({ taskId: 100, claimed: false, revision: 2 });
+    const exact = await listStudioTasks(worker, { scope: "MINE", taskId: claimed.taskId, limit: 1 });
+    expect(exact.items).toMatchObject([{ id: 100, productId: 100, variantId: 100, assignedTo: worker.userId, revision: 2 }]);
+    expect(exact.nextCursor).toBeNull();
+    expect((await listStudioTasks(otherWorker, { scope: "MINE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(managerTwo, { scope: "QUEUE", taskId: 100 })).items).toEqual([]);
+    expect((await listStudioTasks(worker, { scope: "REVIEW", taskId: 100 })).items).toEqual([]);
+    await expect(listStudioTasks(worker, { scope: "MINE", taskId: 100, cursor: firstPage.nextCursor })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("paginates task filters and reports exception-focused SLA metrics", async () => {
@@ -1663,11 +1709,12 @@ describe("product studio governed workflow", () => {
       productId: 1,
       assigneeId: worker.userId,
     });
-    await saveStudioDraft(worker, {
+    await saveStudioDraft(admin, {
       taskId,
-      proposedName: "قلم ألوان عملي",
-      proposedDescription: "أربعة ألوان في قلم واحد.",
-      proposedMarketingCopy: "اختيار واضح للاستخدام اليومي.",
+      proposedName: "قلم ألوان موثوق",
+      proposedDescription: "وصف أُرسل ذرياً مع الصورة.",
+      proposedMarketingCopy: "نص ترويجي صادق.",
+      adminOverrideReason: "إعداد محتوى الكتالوج قبل التقاط صورة المهمة المخصصة للمصور",
     });
     const aiReceipt = await attestStudioProcessing(worker, taskId, "AI");
     await bindStudioProcessingCandidate(worker, {
@@ -1690,13 +1737,12 @@ describe("product studio governed workflow", () => {
       processedDataUrl: PNG_1X1,
       mode: "FLATTEN",
       processingReceipt: aiReceipt,
-      proposedName: "قلم ألوان موثوق",
-      proposedDescription: "وصف أُرسل ذرياً مع الصورة.",
-      proposedMarketingCopy: "نص ترويجي صادق.",
     });
 
     const [pending] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
     expect(pending?.status).toBe("PENDING_REVIEW");
+    expect(pending?.contentPreparedBy).toBe(admin.userId);
+    expect(pending?.contentPreparedByManager).toBe(true);
     expect(pending?.originalObjectKey).toMatch(/^single\/studio\/original\//);
     expect(pending?.processedObjectKey).toMatch(/^single\/studio\/candidate\//);
     expect(pending?.processedUrl).toBe(WEBP_1X1);
@@ -1903,13 +1949,13 @@ describe("product studio governed workflow", () => {
     });
   });
 
-  it("rejects approval when product content or the source image changed after assignment", async () => {
+  it("rejects approval when manager-authored product content or the source image changed after assignment", async () => {
     const { taskId } = await assignStudioTask(manager, {
       productId: 1,
-      assigneeId: worker.userId,
+      assigneeId: manager.userId,
       sourceImageId: null,
     });
-    await submitStudioCandidate(worker, {
+    await submitStudioCandidate(manager, {
       taskId,
       originalDataUrl: PNG_1X1,
       processedDataUrl: PNG_1X1_ALT,
@@ -1917,7 +1963,7 @@ describe("product studio governed workflow", () => {
       proposedDescription: "وصف مقترح",
     });
     await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
-    await expect(approveStudioTask(manager, taskId)).rejects.toMatchObject({
+    await expect(approveStudioTask(admin, taskId)).rejects.toMatchObject({
       code: "CONFLICT",
     });
 
@@ -1955,6 +2001,56 @@ describe("product studio governed workflow", () => {
       .set({ contentHash: "f".repeat(64) })
       .where(eq(s.productImages.id, Number(image.id)));
     await expect(approveStudioTask(manager, second.taskId)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("keeps manager-authored content authoritative after its author's role changes", async () => {
+    const { taskId } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: manager.userId,
+      sourceImageId: null,
+    });
+    await submitStudioCandidate(manager, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+      proposedDescription: "وصف مدير موثوق",
+    });
+    await db().update(s.users).set({ role: "print_operator" }).where(eq(s.users.id, manager.userId));
+    await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
+
+    await expect(approveStudioTask(admin, taskId)).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("approves a legacy photographer task after catalog content changes without restoring its stale copy", async () => {
+    const { taskId } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: null,
+    });
+    // مهمةٌ من قبل بوابة الباركود: كانت واجهة المصوّر تحفظ اقتراح المحتوى معها.
+    await submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+      proposedDescription: "وصف قديم من مهمة المصوّر",
+    });
+    // بعض المهام القديمة مُسح باركودها بعد إطلاق البوابة؛ لا يجعل ذلك نص المصوّر موثوقاً.
+    await db().update(s.productImageJobs).set({ barcodeVerifiedBy: worker.userId, barcodeVerifiedAt: new Date() }).where(eq(s.productImageJobs.id, taskId));
+    await db().update(s.products).set({ description: "تعديل أحدث من شاشة المنتج" }).where(eq(s.products.id, 1));
+
+    await expect(approveStudioTask(manager, taskId)).resolves.toMatchObject({ imageId: expect.any(Number) });
+
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
+    expect(product?.description).toBe("تعديل أحدث من شاشة المنتج");
+    const [task] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(task).toMatchObject({
+      status: "APPROVED",
+      proposedName: null,
+      proposedDescription: null,
+      proposedMarketingCopy: null,
+    });
   });
 
   it("fails closed on incomplete R2 credentials and truncated image data without leaving an upload lease", async () => {
@@ -3108,7 +3204,8 @@ describe("product studio governed workflow", () => {
       taskId,
       originalDataUrl: PNG_1X1_ALT,
       processedDataUrl: PNG_1X1,
-      mode: "FLATTEN",
+      // يمرّر العميل وضع AI كما هو؛ الخادم يتحقق من الإيصال والبايتات ثم يحفظ المصدر الحقيقي.
+      mode: "AI",
       processingReceipt: accepted,
     })).resolves.toBeDefined();
     const [job] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
@@ -3200,4 +3297,93 @@ describe("product studio governed workflow", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("getStudioTaskPreviousImages يعيد صور المنتج المعتمدة السابقة بترتيب الأسبقية والأمر للمصوّر المخوّل", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    // إدخال صورتين معتمدتين للمنتج 1: واحدة رئيسية وواحدة ثانوية
+    await db().insert(s.productImages).values([
+      {
+        id: 901,
+        productId: 1,
+        url: "https://example.com/img901.png",
+        isPrimary: 0,
+        sortOrder: 2,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-secondary",
+      },
+      {
+        id: 902,
+        productId: 1,
+        url: "https://example.com/img902.png",
+        isPrimary: 1,
+        sortOrder: 1,
+        reviewStatus: "APPROVED",
+        thumbDataUrl: PNG_1X1_ALT,
+        storageKey: "p1-primary",
+      },
+      {
+        id: 903,
+        productId: 1,
+        url: "https://example.com/img903.png",
+        isPrimary: 0,
+        sortOrder: 3,
+        reviewStatus: "PENDING_REVIEW", // غير معتمدة، لا يجب أن تظهر
+        thumbDataUrl: PNG_1X1,
+        storageKey: "p1-pending",
+      },
+    ]);
+
+    const prev = await getStudioTaskPreviousImages(worker, task.taskId);
+    expect(prev).toHaveLength(2);
+    expect(prev[0]).toMatchObject({ id: 902, isPrimary: true, sortOrder: 1 });
+    expect(prev[1]).toMatchObject({ id: 901, isPrimary: false, sortOrder: 2 });
+
+    // مصوّر لا يملك المهمة ولا الفرع يُرفض
+    const stranger: ProductStudioActor = { userId: 99, branchId: 2, role: "print_operator" };
+    await expect(getStudioTaskPreviousImages(stranger, task.taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("getStudioProductUnits يعيد فقط المتغيّرات والوحدات النشطة ويرفض المنتجات المعطلة أو الخدمية", async () => {
+    const worker: ProductStudioActor = { userId: 1, branchId: 1, role: "print_operator" };
+    // منتج عادي بنشاط
+    await db().insert(s.products).values([
+      { id: 950, name: "منتج استوديو للاختبار", isActive: true, isService: false },
+      { id: 951, name: "خدمة معطلة", isActive: false, isService: true },
+    ]);
+    await db().insert(s.productVariants).values([
+      { id: 950, productId: 950, sku: "SKU-950", variantName: "لون أحمر", isActive: true, costPrice: "1" },
+      { id: 951, productId: 950, sku: "SKU-951", variantName: "لون قديم", isActive: false, costPrice: "1" },
+    ]);
+    await db().insert(s.productUnits).values([
+      { id: 950, variantId: 950, unitName: "حبة", barcode: "1110002223334", isActive: true, conversionFactor: "1", isBaseUnit: true },
+      { id: 951, variantId: 950, unitName: "كرتون معطل", barcode: "1110002223335", isActive: false, conversionFactor: "1", isBaseUnit: false },
+      { id: 952, variantId: 951, unitName: "وحدة متغيّر معطل", barcode: "1110002223336", isActive: true, conversionFactor: "1", isBaseUnit: false },
+    ]);
+
+    const res = await getStudioProductUnits(worker, 950);
+    expect(res.variants).toHaveLength(1);
+    expect(res.variants[0]).toMatchObject({ id: 950, variantName: "لون أحمر" });
+    expect(res.variants[0].unitBarcodes).toEqual({ "حبة": "1110002223334" });
+    expect(res.unitTemplate).toEqual([{ unitName: "حبة" }]);
+
+    // منتج غير نشط أو خدمة يرفض بـ NOT_FOUND
+    await expect(getStudioProductUnits(worker, 951)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(getStudioProductUnits(worker, 99999)).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // linkStudioBarcode يربط باركوداً جديداً بالوحدة النشطة
+    const linkRes = await linkStudioBarcode(worker, {
+      productUnitId: 950,
+      barcode: "7778889990001",
+      note: "ربط اختبار",
+    });
+    expect(linkRes).toBeDefined();
+
+    // يرفض الربط بوحدة معطلة
+    await expect(linkStudioBarcode(worker, {
+      productUnitId: 951,
+      barcode: "7778889990002",
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
 });
+

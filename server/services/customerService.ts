@@ -80,6 +80,7 @@ export interface ListCustomersInput {
   includeInactive?: boolean;
   limit?: number;
   offset?: number;
+  skipTotal?: boolean;
 }
 
 /**
@@ -107,9 +108,10 @@ function normPhone(s: string | null | undefined): string | null {
 function normalizeCreditLimit(input: string | null | undefined): string | null {
   if (input === null) return null; // صريح: بلا حدّ.
   const c = input?.trim();
-  if (c && !/^\d+(\.\d{1,2})?$/.test(c))
+  if (!c) return null; // فارغ أو غير مُحدّد ⇒ الافتراضي بلا حدّ (يقبل الفواتير بدون ائتمان).
+  if (!/^\d+(\.\d{1,2})?$/.test(c))
     throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الائتمان غير صالح" });
-  return c || "0"; // غير محدّد/فارغ ⇒ حظر آجل تحفّظياً.
+  return c;
 }
 
 async function assertUniquePhone(db: any, phone: string | null, excludeId?: number) {
@@ -323,8 +325,8 @@ export async function resolveReceptionCustomerByPhone(
     // كاشير الاستقبال هو الذي يستقبل الاتصالات ويعرف العميل، فيلزمه ضبطُ الحدّ عند الإنشاء
     // كي يبيع بلا الحاجة للحيلة (Slice O أعطاه COD، وهذا يُكمِله لبيعٍ آجل حقيقيّ لو أراد).
     // القيد أُلغي — كلّ من يملك بوابة إنشاء عميل الاستقبال يستطيع تمرير الحدّ الآن.
-    // undefined = الافتراض "0" · قيمة = يُخزَّن كما هو · null = بلا حدّ.
-    const creditLimit = input.creditLimit !== undefined ? input.creditLimit : "0";
+    // undefined = الافتراض null (بلا حدّ — يقبل الفواتير بدون ائتمان) · قيمة = يُخزَّن كما هو.
+    const creditLimit = input.creditLimit !== undefined ? input.creditLimit : null;
     const created = await createCustomer({
       name,
       phone,
@@ -755,6 +757,10 @@ export async function listCustomers(input: ListCustomersInput = {}) {
     .orderBy(asc(customers.name), desc(customers.id))
     .limit(limit)
     .offset(offset);
+
+  if (input.skipTotal || (offset === 0 && rows.length < limit)) {
+    return { rows, total: rows.length };
+  }
 
   const totalRow = (
     await db.select({ n: sql<number>`COUNT(*)` }).from(customers).where(where as any)

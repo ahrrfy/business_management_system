@@ -103,9 +103,10 @@ export async function approveStocktake(
         });
       }
     }
-    // (ب) SOD-04: منشئ الجلسة لا يعتمدها — لكل الجلسات (admin مُستثنى للتصحيح الإداري).
+    // (ب) SOD-04: منشئ الجلسة لا يعتمدها — لكل الجلسات (admin والمالك isOwner مُستثنى للتصحيح الإداري والسيادي).
+    const isElevated = actor.role === "admin" || actor.isOwner === true;
     if (
-      actor.role !== "admin" &&
+      !isElevated &&
       s.createdBy != null &&
       Number(s.createdBy) === actor.userId
     ) {
@@ -115,7 +116,7 @@ export async function approveStocktake(
       });
     }
     // (ج) من كُلّف بالعدّ (تكليف USER) لا يعتمد — لكل الجلسات (تركّز العدّ والاعتماد بيدٍ واحدة يفرغ الرقابة).
-    if (actor.role !== "admin") {
+    if (!isElevated) {
       const myAssignment = await tx
         .select({ id: stocktakeAssignments.id })
         .from(stocktakeAssignments)

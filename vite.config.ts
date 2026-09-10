@@ -228,6 +228,12 @@ export default defineConfig(({ mode }) => {
           if (id.includes("node_modules/recharts")) return "charts";
           // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
           if (id.includes("node_modules/exceljs")) return EXCEL_CHUNK_NAME;
+          // حزم الحركة والتأثيرات البصرية المستقلة (framer-motion)
+          if (
+            id.includes("/node_modules/framer-motion/") ||
+            id.includes("/node_modules/motion-dom/") ||
+            id.includes("/node_modules/motion-utils/")
+          ) return "motion";
           // مكتبات البنية المشتركة تتغير بوتيرة أبطأ من شيفرة النظام. فصلها يقلل
           // حجم الحزمة الأساسية ويحافظ على كاش المتصفح عند نشر تعديلات الشاشات.
           if (
@@ -239,13 +245,19 @@ export default defineConfig(({ mode }) => {
           if (
             id.includes("/node_modules/@tanstack/") ||
             id.includes("/node_modules/@trpc/") ||
-            id.includes("/node_modules/superjson/")
+            id.includes("/node_modules/superjson/") ||
+            id.includes("/node_modules/decimal.js/")
           ) return "data-client";
           if (
             id.includes("/node_modules/@radix-ui/") ||
             id.includes("/node_modules/@floating-ui/") ||
             id.includes("/node_modules/cmdk/") ||
-            id.includes("/node_modules/vaul/")
+            id.includes("/node_modules/vaul/") ||
+            id.includes("/node_modules/tailwind-merge/") ||
+            id.includes("/node_modules/clsx/") ||
+            id.includes("/node_modules/sonner/") ||
+            id.includes("/node_modules/input-otp/") ||
+            id.includes("/node_modules/qrcode/")
           ) return "ui-vendor";
           if (id.includes("/node_modules/@sentry/")) return "observability";
           if (id.includes("/node_modules/dexie/")) return "offline-store";

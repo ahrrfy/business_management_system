@@ -28,30 +28,31 @@ describe("العلَم مطفأ — السلوك القائم يُعاد حرف�
     delete process.env[FLAG];
   });
 
-  it("planApproval لا تُنفّذ شيئاً فوراً — أي «أنشئ الطلب كما اليوم»", () => {
-    for (const actor of [OWNER, STAFF]) {
-      for (const trigger of [null, "MONEY_OUT", "ERASE_EFFECT"] as const) {
-        const plan = planApproval({ actor, trigger });
-        expect(plan.executeNow, `${actor.userId}/${trigger}`).toBe(false);
-        expect(plan.underNewPolicy).toBe(false);
-      }
+  it("إطفاء العلم يبقي الموظف على المسار القديم ولا يعيد اعتمادا ثانيا على المالك", () => {
+    for (const trigger of [null, "MONEY_OUT", "ERASE_EFFECT"] as const) {
+      const ownerPlan = planApproval({ actor: OWNER, trigger });
+      expect(ownerPlan.executeNow, `owner/${trigger}`).toBe(true);
+      expect(ownerPlan.underNewPolicy).toBe(true);
+
+      const staffPlan = planApproval({ actor: STAFF, trigger });
+      expect(staffPlan.executeNow, `staff/${trigger}`).toBe(false);
+      expect(staffPlan.underNewPolicy).toBe(false);
     }
   });
 
-  it("assertApprover تُنفّذ الفحص القديم ولا تستبدله — حتى للمالك", () => {
+  it("assertApprover تبقي الفحص القديم للموظف وتتجاوزه للمالك", () => {
     const legacy = vi.fn();
     assertApprover({ actor: OWNER, trigger: "MONEY_OUT", subject: "س", legacy });
     assertApprover({ actor: STAFF, trigger: "MONEY_OUT", subject: "س", legacy });
-    expect(legacy).toHaveBeenCalledTimes(2);
+    expect(legacy).toHaveBeenCalledTimes(1);
   });
 
   it("ورميُ الفحص القديم يمرّ كما هو — لا تبتلعه البوّابة", () => {
     const boom = () => {
       throw new Error("فصل المهام القديم");
     };
-    expect(() =>
-      assertApprover({ actor: OWNER, trigger: "MONEY_OUT", subject: "س", legacy: boom }),
-    ).toThrow("فصل المهام القديم");
+    expect(() => assertApprover({ actor: OWNER, trigger: "MONEY_OUT", subject: "س", legacy: boom })).not.toThrow();
+    expect(() => assertApprover({ actor: STAFF, trigger: "MONEY_OUT", subject: "س", legacy: boom })).toThrow("فصل المهام القديم");
   });
 });
 
@@ -181,12 +182,10 @@ describe("الضابطُ المُستبقى بقرار مالك — retainLegacy
     ).toThrow(/أنشأته بنفسك/);
   });
 
-  it("ولا يُستثنى منه المالك — الضابطُ القائم يقيس ما كان يقيسه", () => {
-    // المالكُ يتجاوز **البوّابة الجديدة** لا الضابطَ الذي قرّر إبقاءه؛ وإلّا صار الاستبقاء
-    // اسماً بلا أثرٍ على الفاعل الوحيد الذي يعتمد.
+  it("المالك مستثنى منه لأن فعله نفسه هو الموافقة النهائية", () => {
     const legacy = vi.fn();
     assertApprover({ actor: OWNER, trigger: null, subject: "سند V-1", legacy, retainLegacy: true });
-    expect(legacy).toHaveBeenCalledTimes(1);
+    expect(legacy).not.toHaveBeenCalled();
   });
 
   it("وبلا العلَم لا فرق — الضابطُ يعمل في الوضعين", () => {

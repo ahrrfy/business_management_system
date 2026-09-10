@@ -168,7 +168,7 @@ export const countPortalRouter = router({
 
       // ① لا شيء تبدّل ⇒ ردٌّ بعشرات البايتات (الحالة الغالبة، ~٨٩٪).
       if (input.knownVersion && input.knownVersion === v) {
-        return { v, cv, changed: false as const, catalog: null, dynamic: null };
+        return { v, cv, changed: false as const, catalog: null, dynamic: null, serverTime: new Date().toISOString() };
       }
 
       // ② تبدّل شيء ⇒ المتغيّر دائماً، والكتالوج **فقط** إن كان لدى العميل قديماً.
@@ -180,7 +180,7 @@ export const countPortalRouter = router({
         getPortalDynamic(identity),
         catalogFresh ? Promise.resolve(null) : getPortalCatalog(identity),
       ]);
-      return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
+      return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic, serverTime: new Date().toISOString() };
     }),
 
   /**
@@ -212,9 +212,13 @@ export const countPortalRouter = router({
         // مسار الباركود المجهول: باركودٌ مُسِح ولم يُحلّ داخل الجلسة (يُلتقط للمشرف، لا يُعدّ).
         unknownBarcode: z.string().trim().min(1).max(64).optional(),
         clientRequestId: z.string().uuid(),
+        clientCapturedAt: z.string().max(64).optional(),
+        clientSentAt: z.string().max(64).optional(),
+        clientClockOffsetMs: z.number().int().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
+      const requestReceivedAt = new Date();
       const identity = await resolvePortalIdentity(ctx, input.sessionCode);
 
       // مسار الباركود المجهول (ب-٤): يُلتقط بدل أن يضيع، ولا يُعدّ.
@@ -259,6 +263,10 @@ export const countPortalRouter = router({
         entryMethod: input.entryMethod,
         scannedBarcode: input.scannedBarcode ?? null,
         clientRequestId: input.clientRequestId,
+        clientCapturedAt: input.clientCapturedAt ?? null,
+        clientSentAt: input.clientSentAt ?? null,
+        clientClockOffsetMs: input.clientClockOffsetMs ?? null,
+        requestReceivedAt,
       });
       // لا نكرّر سطر التدقيق عند إعادة مزامنة نفس العدّة (idempotent replay).
       if (!res.idempotent) {

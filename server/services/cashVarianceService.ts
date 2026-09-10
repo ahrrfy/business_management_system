@@ -53,6 +53,7 @@ import {
   cashVarianceApprovalRetainsLegacy,
   cashVarianceApprovalTrigger,
 } from "@shared/approvalTriggers";
+import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 
 export interface RegisterCashVarianceEvidenceInput {
   branchId: number;
@@ -375,6 +376,9 @@ function cashVarianceDecisionPolicy(
   if (status !== "PROPOSED") {
     return { canDecide: false, blockedReason: "حُسمت حالة فرق النقد بالفعل." } as const;
   }
+  if (actor.isOwner) {
+    return { canDecide: true, blockedReason: null } as const;
+  }
   if (Number(row.proposedByUserId) === actor.userId) {
     return { canDecide: false, blockedReason: "لا يمكنك اعتماد تسوية اقترحتها أنت." } as const;
   }
@@ -615,7 +619,7 @@ export async function proposeCashVarianceCase(
     proposedByUserId: actor.userId,
   });
 
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const replay = await loadIdempotentProposal(tx, input, actor, requestHash);
     if (replay) return replay;
 
@@ -780,6 +784,12 @@ export async function proposeCashVarianceCase(
       idempotent: false,
     };
   });
+  const approved = await autoDecideForActiveOwner(actor, {
+    kind: "cash.variance.approve",
+    id: result.caseId,
+    expectedVersion: result.version,
+  });
+  return approved ? { ...result, status: "APPROVED" as const } : result;
 }
 
 async function assertCustodySourceStillOpenTx(tx: Tx, row: typeof cashVarianceCases.$inferSelect) {

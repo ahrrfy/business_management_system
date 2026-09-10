@@ -54,7 +54,8 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
   const [state, setState] = useState<CustomerByPhoneState>(() => initialCustomerByPhoneState(opts.initialPhone ?? ""));
   const [creditLimit, setCreditLimitRaw] = useState("");
   const mutation = trpc.customers.receptionResolveByPhone.useMutation();
-  const mutateAsync = mutation.mutateAsync;
+  const mutateRef = useRef(mutation.mutateAsync);
+  mutateRef.current = mutation.mutateAsync;
   const sequence = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -70,7 +71,7 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
     setState((prev) => onResolveStart(prev));
     try {
       const limit = creditLimitPayload(creditLimitRef.current);
-      const result = (await mutateAsync({
+      const result = (await mutateRef.current({
         phone,
         ...(name?.trim() ? { name: name.trim() } : {}),
         // الخادم يميّز "" (غير مقصود) عن "0" (نقديٌّ فقط) — لا نُرسل الفارغ.
@@ -89,7 +90,7 @@ export function useCustomerByPhone(opts: UseCustomerByPhoneOptions = {}): Custom
       if (announce) notify.err(message);
       return null;
     }
-  }, [mutateAsync]);
+  }, []);
 
   // لا نبحث قبل اكتمال الخانات الإحدى عشرة. بعد الاكتمال يتحوّل الهاتف إلى مفتاح هوية واحد:
   // عميلٌ موجود يُربط فوراً، ورقمٌ جديد يفتح الاسم فقط.

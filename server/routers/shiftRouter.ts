@@ -118,11 +118,15 @@ export const shiftRouter = router({
           .limit(lim)
           .offset(off),
       });
-      const total = await countIfOffset(usingCursor, async () => {
-        const baseWhere = conds.length ? and(...conds) : undefined;
-        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
-        return Number(totalRow?.n ?? 0);
-      });
+      const total = await countIfOffset(
+        usingCursor,
+        async () => {
+          const baseWhere = conds.length ? and(...conds) : undefined;
+          const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
+          return Number(totalRow?.n ?? 0);
+        },
+        { rowsLength: rows.length, limit: i.limit ?? 50, offset: i.offset },
+      );
       return { rows, total, hasMore, nextCursor };
     }),
 

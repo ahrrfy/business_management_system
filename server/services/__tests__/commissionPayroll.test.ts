@@ -59,7 +59,7 @@ async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "t-admin", name: "محتسِب", role: "admin", branchId: 1, isOwner: true, isActive: true },
+    { id: 1, openId: "t-admin", name: "محتسِب", role: "admin", branchId: 1, isOwner: false, isActive: true },
     { id: 2, openId: "t-manager", name: "معتمِد", role: "manager", branchId: 1, isOwner: true },
     { id: 3, openId: "t-seller", name: "بائع", role: "cashier", branchId: 1 },
   ]);

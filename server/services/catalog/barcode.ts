@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { productUnits } from "../../../drizzle/schema";
 import { withTx } from "../tx";
-import { findBarcodeClashes } from "./barcodeAliases";
+import { findBarcodeClashes, assertNoActiveStocktakeForVariant } from "./barcodeAliases";
 
 /** يسند باركوداً لوحدة بلا باركود (أو يحدّثه)، مع ضمان التفرّد عبر كل الوحدات — أساسيّاً وبديلاً. */
 export async function assignBarcode(productUnitId: number, barcode: string) {
@@ -13,6 +13,13 @@ export async function assignBarcode(productUnitId: number, barcode: string) {
     if (!code) throw new TRPCError({ code: "BAD_REQUEST", message: "الباركود فارغ" });
     const unit = (await tx.select().from(productUnits).where(eq(productUnits.id, productUnitId)).limit(1))[0];
     if (!unit) throw new TRPCError({ code: "NOT_FOUND", message: "الوحدة غير موجودة" });
+
+    // تجميد الباركود الأساسي أثناء الجرد النشط (Codex finding):
+    // يمنع استبدال باركود الوحدة إذا كان الصنف مشمولاً في جلسة جرد نشطة تجنباً لرفض عدّات العاملين
+    if ((unit.barcode ?? "").trim() !== code && unit.variantId) {
+      await assertNoActiveStocktakeForVariant(tx, unit.variantId, "تعديل باركود الوحدة الأساسي");
+    }
+
     // تفرّد الباركود: أساسيّ (يتجاهل نفس الوحدة) + بديل (لا استثناء — يمنع باركود أساسيّ يطابق بديلاً لسلعة أخرى).
     const clashes = await findBarcodeClashes(tx, [code], { ignorePrimaryUnitIds: [productUnitId] });
     if (clashes[0]) {

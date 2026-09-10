@@ -62,7 +62,7 @@ const GUEST_TRACKING_TTL_SECONDS = 60 * 60 * 24 * 30;
 const GUEST_TRACKING_DOMAIN = "STORE_GUEST_TRACKING_V1";
 
 function guestTrackingSecret(): string {
-  const secret = process.env.BARCODE_SECRET;
+  const secret = process.env.BARCODE_SECRET || (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
   if (!secret)
     throw new Error("BARCODE_SECRET غير مُعيَّن لتوقيع تتبّع طلب الضيف");
   return secret;

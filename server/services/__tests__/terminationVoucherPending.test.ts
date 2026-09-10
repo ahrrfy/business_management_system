@@ -157,7 +157,40 @@ async function paymentOutEntries(receiptId: number) {
 beforeEach(resetAndSeed);
 
 describe("termination settlement voucher pending lifecycle", () => {
-  it("stays zero-effect until funded, and materializes exactly once under concurrent approval", async () => {
+  it("owner completion fails atomically when unfunded, then auto-approves once funded", async () => {
+    await seedTermination({ terminationId: 104, employeeId: 14, settlement: "750000.00" });
+
+    await expect(completeTermination(104, MAKER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(await db().select().from(schema.accountingEntries)).toHaveLength(0);
+
+    await db().insert(schema.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TERMINATION-OWNER-AUTO-FUNDING",
+      createdBy: 3,
+    });
+    const completed = await completeTermination(104, MAKER);
+    const receiptId = completed.settlementVoucher!.receiptId;
+    const [receipt] = await db().select().from(schema.receipts)
+      .where(eq(schema.receipts.id, receiptId));
+    expect(receipt).toMatchObject({
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      approvedBy: MAKER.userId,
+      cashBucket: "TREASURY",
+    });
+    expect(await paymentOutEntries(receiptId)).toHaveLength(1);
+  });
+
+  // المساران القديمان يفترضان بقاء سند المالك معلقاً، وهو عقد أُلغي بقرار الاعتماد الذاتي الشامل.
+  it.skip("legacy pending: stays zero-effect until funded, and materializes exactly once under concurrent approval", async () => {
     await seedTermination({
       terminationId: 101,
       employeeId: 11,
@@ -266,7 +299,7 @@ describe("termination settlement voucher pending lifecycle", () => {
     expect(await paymentOutEntries(receiptId)).toHaveLength(1);
   });
 
-  it("keeps rejected history and resubmits the same unpaid settlement exactly once", async () => {
+  it.skip("legacy pending: keeps rejected history and resubmits the same unpaid settlement exactly once", async () => {
     await seedTermination({
       terminationId: 102,
       employeeId: 12,
@@ -423,7 +456,6 @@ describe("termination settlement voucher pending lifecycle", () => {
     });
     const completed = await completeTermination(103, MAKER);
     const firstVoucherId = completed.settlementVoucher!.receiptId;
-    await approveVoucher(firstVoucherId, REVERSER);
 
     const firstReturnInput = {
       reason: "Returned transfer from employee",
@@ -432,7 +464,7 @@ describe("termination settlement voucher pending lifecycle", () => {
       reversalDate: baghdadToday(),
     };
     await expect(
-      reverseTerminationPayment(103, REVERSER, firstReturnInput),
+      reverseTerminationPayment(103, MAKER, firstReturnInput),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const firstReturn = await reverseTerminationPayment(
@@ -441,7 +473,7 @@ describe("termination settlement voucher pending lifecycle", () => {
       firstReturnInput,
     );
     expect(firstReturn.replayed).toBe(false);
-    expect(firstReturn.replacementVoucher).not.toBeNull();
+    expect(firstReturn.replacementVoucher).toBeNull();
     const firstReplay = await reverseTerminationPayment(
       103,
       RETURNER,
@@ -458,7 +490,12 @@ describe("termination settlement voucher pending lifecycle", () => {
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
-    const replacementId = firstReturn.replacementVoucher!.receiptId;
+    const replacement = await reissueTerminationPayment(
+      103,
+      RETURNER,
+      "Repay returned transfer after bank confirmation",
+    );
+    const replacementId = replacement.receiptId;
     const [replacementReceipt] = await db()
       .select()
       .from(schema.receipts)
@@ -473,7 +510,7 @@ describe("termination settlement voucher pending lifecycle", () => {
       originReturnEventId: firstReturn.eventId,
       paymentEvidenceReference: "BANK-SETTLEMENT-103",
     });
-    await approveVoucher(replacementId, REVERSER);
+    expect(replacementReceipt.approvalStatus).toBe("APPROVED");
 
     const secondReturnInput = {
       reason: "Second returned transfer from employee",
@@ -483,13 +520,13 @@ describe("termination settlement voucher pending lifecycle", () => {
     };
     const secondReturn = await reverseTerminationPayment(
       103,
-      RETURNER,
+      REVERSER,
       secondReturnInput,
     );
     expect(secondReturn.replayed).toBe(false);
     const secondReplay = await reverseTerminationPayment(
       103,
-      RETURNER,
+      REVERSER,
       secondReturnInput,
     );
     expect(secondReplay).toMatchObject({

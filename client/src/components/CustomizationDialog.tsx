@@ -556,7 +556,7 @@ export function CustomizationDialog({ open, productName, price, quantity = 1, in
               </div>
             )}
             <p className="border-t pt-2 text-[11px] text-muted-foreground">
-              أدخل العربون أو المبلغ المقبوض مرة واحدة في مرحلة الدفع؛ سيُوزّعه النظام على كامل الطلب تلقائياً.
+              حجز مؤقت للتنفيذ · الدفع والتسوية المالية تتمان عند استلام الطلب (تسليم مباشر أو إسناد لمندوب).
             </p>
           </div>
         </div>

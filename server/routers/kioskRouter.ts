@@ -18,7 +18,7 @@ import { getDb } from "../db";
 import { getSessionCookieOptions } from "../cookies";
 import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth/kioskSession";
 import { logAudit } from "../services/auditService";
-import { kioskBanner, kioskLookup } from "../services/kioskService";
+import { kioskBanner, kioskLookup, kioskPromotions } from "../services/kioskService";
 import { barcodeString } from "../lib/schemas";
 import {
   createKioskDevice,
@@ -81,6 +81,11 @@ export const kioskRouter = router({
   lookup: kioskReadProcedure
     .input(z.object({ branchId: z.number().int().positive().optional(), barcode: barcodeString }))
     .query(({ input, ctx }) => kioskLookup(input.barcode, effectiveBranchId(ctx.deviceBranchId, input.branchId))),
+
+  /** البنرات الإعلانية والترويجية الفعّالة لشاشة الكشك. */
+  promotions: kioskReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(({ input, ctx }) => kioskPromotions(ctx.deviceBranchId ?? input?.branchId ?? null)),
 
   // ───────────────────────── مصادقة الجهاز الخارجي ─────────────────────────
 

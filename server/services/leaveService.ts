@@ -20,10 +20,11 @@ import {
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
 import { employees, leaveRequests, payrollRuns } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { requireDb, withTx } from "./tx";
+import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { assertPeriodOpen } from "./periodLockService";
 import { createAppNotification } from "./appNotificationService";
+import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
 
 /** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
 function daysInclusive(from: string, to: string): number {
@@ -93,7 +94,7 @@ export interface LeaveInput {
 /** إنشاء طلب إجازة جديد بحالة pending. paid مشتقّ من نوع الإجازة (مصدر الحقيقة @shared/hr).
  *  ذرّي: قفل صفّ الموظف ضمن withTx يُسلسل الطلبات المتزامنة فيُرفض الثاني عبر فحص التداخل
  *  ⇒ يسدّ سباق TOCTOU الذي كان يولّد ازدواج طلب وخصم رصيد مرّتين بعد الموافقة على كليهما. */
-export async function createLeave(input: LeaveInput) {
+export async function createLeave(input: LeaveInput, actor?: Actor) {
   if (input.toDate < input.fromDate)
     throw new Error("تاريخ النهاية يجب ألا يسبق تاريخ البداية");
   const days = daysInclusive(input.fromDate, input.toDate);
@@ -145,6 +146,9 @@ export async function createLeave(input: LeaveInput) {
     });
     return extractInsertId(res);
   });
+  if (actor) {
+    await autoDecideForActiveOwner(actor, { kind: "hr.leave.decide", id });
+  }
   const [created] = await listLeavesByIds(id);
   return created;
 }
@@ -212,7 +216,7 @@ async function assertNoLockedPayroll(
 export async function decideLeave(
   id: number,
   decision: "approved" | "rejected",
-  actor: { userId: number; scopedBranchId?: number | null },
+  actor: { userId: number; scopedBranchId?: number | null; isOwner?: boolean },
 ) {
   return withTx(async (tx) => {
     const [lv] = await tx
@@ -242,7 +246,7 @@ export async function decideLeave(
     if (actor.scopedBranchId != null && Number(reqEmp?.branchId) !== Number(actor.scopedBranchId)) {
       throw new Error("طلب الإجازة يخصّ موظفاً من فرعٍ آخر — لا صلاحية لك عليه");
     }
-    if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
+    if (!actor.isOwner && reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
       throw new Error(
         "لا يجوز البتّ في إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).",
       );
@@ -303,7 +307,7 @@ export async function decideLeave(
 export async function decideLeaveAndNotify(
   id: number,
   decision: "approved" | "rejected",
-  actor: { userId: number; scopedBranchId?: number | null },
+  actor: { userId: number; scopedBranchId?: number | null; isOwner?: boolean },
 ) {
   const lv = await decideLeave(id, decision, actor);
   if (lv?.employeeId) {

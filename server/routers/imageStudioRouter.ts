@@ -1,21 +1,18 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { AI_STUDIO_PROVIDERS, buildAiStudioPrompt, MAX_STUDIO_PROMPT_LEN, MAX_USER_PROMPT_LEN } from "@shared/imageStudio/aiPrompt";
+import { AI_STUDIO_PROVIDERS, buildAiStudioPrompt, MAX_STUDIO_PROMPT_LEN } from "@shared/imageStudio/aiPrompt";
 import { adminProcedure, productStudioWriteProcedure, protectedProcedure, router } from "../trpc";
 import {
   getAiImageStudioSettings,
   getAiStudioConfig,
   getAiStudioRuntime,
-  getDecryptedRemovebgKey,
   getImageStudioSettings,
-  getProConfig,
   updateAiImageStudioSettings,
   updateImageStudioSettings,
   verifyAiConnection,
   verifyRemovebgConnection,
 } from "../services/imageStudioSettingsService";
 import { AiImageError, aiImageErrorMessageAr, generateStudioImage } from "../services/aiImageStudioService";
-import { callRemovebg, RemovebgError, removebgErrorMessageAr } from "../services/removebgService";
 import {
   ImageStudioGuardError,
   imageStudioGuardErrorMessageAr,
@@ -40,13 +37,13 @@ function studioActor(ctx: { user: { id: number; branchId?: number | null; role: 
 }
 
 /**
- * استوديو صور المنتجات — مسار Pro (remove.bg). شريحة ٥.
+ * استوديو صور المنتجات.
  *
  * - الإعدادات (settings/updateSettings/verifyConnection): adminProcedure — مفتاح مدفوع = قرار مالك.
  *   لا يُسجَّل المفتاح في auditLogs أبداً (يُكشَف لمن يرى السجلّ) — فقط أيّ الحقول تغيّرت.
- * - proConfig: protectedProcedure — بوليان «هل Pro متاح» لتقرّر الواجهة المحاولة (لا يسرّب المفتاح).
- * - proCutout: productStudioWriteProcedure + taskId إلزامي — يقصّ عبر remove.bg داخل مهمة مسندة فقط.
- *   أمانة صارمة: remove.bg قصٌّ لا توليد (بكسلات المنتج تبقى).
+ * - تكامل remove.bg يبقى قابلاً للإدارة والفحص من الإعدادات، لكنه ليس مسار مهمة المصوّر.
+ * - مسار المهمة الوحيد هو الذكاء الاصطناعي التعديلي، كي لا تختلط النتيجة الاحترافية بخيارات يدوية
+ *   أو توليد من نصّ قد يغيّر هوية المنتج.
  */
 export const imageStudioRouter = router({
   settings: adminProcedure.query(() => getImageStudioSettings()),
@@ -82,75 +79,11 @@ export const imageStudioRouter = router({
     return result;
   }),
 
-  proConfig: protectedProcedure.query(() => getProConfig()),
-
-  proCutout: productStudioWriteProcedure
-    .input(z.object({
-      imageDataUrl: z.string().min(1).max(6_000_000),
-      taskId: z.number().int().positive(),
-      adminOverrideReason: z.string().trim().min(5).max(500).optional(),
-    }))
-    .mutation(async ({ input, ctx }) => {
-      const actor = studioActor(ctx);
-      const processingAuthorization = await authorizeStudioProcessing(
-        actor, input.taskId, "PRO", input.adminOverrideReason,
-      );
-      let attested = false;
-      try {
-        // تحقّق أمني: data URL صورة صالحة (سحر البايتات) حتى ٢م.ب — نفس كتّاب صور المنتج.
-        assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
-        const key = await getDecryptedRemovebgKey();
-        if (!key) {
-          // Pro مطفأ/بلا مفتاح (سباق بعد فحص proConfig) ⇒ الواجهة تتدهور لـFLATTEN.
-          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مسار Pro غير مُفعَّل." });
-        }
-        const m = /^data:([^;]+);base64,(.+)$/.exec(input.imageDataUrl);
-        if (!m) throw new TRPCError({ code: "BAD_REQUEST", message: "صيغة الصورة غير مدعومة." });
-        const base64 = m[2];
-        const result = await runGuardedImageStudioCall({
-          service: "REMOVEBG",
-          userId: Number(ctx.user.id),
-          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
-          run: () => callRemovebg(key, base64),
-        });
-        const processingReceipt = await attestStudioProcessing(
-          actor, input.taskId, "PRO", processingAuthorization, input.adminOverrideReason,
-        );
-        attested = true;
-        return {
-          cutoutDataUrl: `data:image/png;base64,${result.cutout.toString("base64")}`,
-          creditsCharged: result.creditsCharged,
-          isPreview: result.isPreview ?? false,
-          processingReceipt,
-        };
-      } catch (e) {
-        if (e instanceof ImageStudioGuardError) {
-          throw new TRPCError({
-            code: "TOO_MANY_REQUESTS",
-            message: imageStudioGuardErrorMessageAr(e.kind),
-          });
-        }
-        if (e instanceof RemovebgError) {
-          // تصنيف يقود العرض: AUTH/نفاد الرصيد = خلل إعداد (PRECONDITION)؛ الباقي مؤقّت.
-          throw new TRPCError({
-            code: e.kind === "AUTH" || e.kind === "OUT_OF_CREDITS" ? "PRECONDITION_FAILED" : "INTERNAL_SERVER_ERROR",
-            message: removebgErrorMessageAr(e.kind),
-          });
-        }
-        throw e;
-      } finally {
-        if (!attested) {
-          await releaseStudioProcessingAuthorization(input.taskId, "PRO", processingAuthorization).catch(() => undefined);
-        }
-      }
-    }),
-
   // ── مسار الذكاء الاصطناعي (استوديو موحّد بإعادة تصميم من برومت جاهز) ──
   // aiSettings/updateAiSettings/verifyAiConnection: adminProcedure — مفتاح مزوّد = قرار مالك.
   //   لا يُسجَّل المفتاح ولا نصّ البرومت في auditLogs — فقط أيّ الحقول تغيّرت.
-  // aiConfig: protectedProcedure — بوليان «هل AI متاح» لتقرّر الواجهة العرض (لا يسرّب المفتاح).
-  // aiStudioTransform: productStudioWriteProcedure + taskId إلزامي — لا مزوّد خارج مهمةٍ مسندة.
-  //   الواجهة تعرض قبل/بعد وتطلب اعتماداً بشرياً؛ الأصل لا يُستبدَل إلا بموافقة. البرومت يحمل حارس الحفظ.
+  // aiConfig: protectedProcedure — حالة آمنة للواجهة، تفسّر العطل من دون كشف مفتاح.
+  // aiStudioTransform: productStudioWriteProcedure + taskId إلزامي — تعديل صورة ملتقطة فقط.
 
   aiSettings: adminProcedure.query(() => getAiImageStudioSettings()),
 
@@ -201,12 +134,8 @@ export const imageStudioRouter = router({
   aiStudioTransform: productStudioWriteProcedure
     .input(
       z.object({
-        /** صورة المنتج (وضع EDIT). data URL حتى ٦م.ب نصّاً (~٢م.ب خام). */
-        imageDataUrl: z.string().min(1).max(6_000_000).optional(),
-        /** إضافة اختيارية للبرومت الجاهز (تفضيل تنسيق فقط — لا تتجاوز حارس الحفظ). */
-        userPrompt: z.string().max(MAX_USER_PROMPT_LEN).optional(),
-        /** EDIT (الافتراضي): يُعيد تصميم صورة مرفوعة. GENERATE: يولّد من نصّ (يلزم userPrompt). */
-        mode: z.enum(["EDIT", "GENERATE"]).default("EDIT"),
+        /** صورة المنتج الملتقطة. data URL حتى ٦م.ب نصّاً (~٢م.ب خام). */
+        imageDataUrl: z.string().min(1).max(6_000_000),
         taskId: z.number().int().positive(),
         adminOverrideReason: z.string().trim().min(5).max(500).optional(),
       }),
@@ -214,38 +143,25 @@ export const imageStudioRouter = router({
     .mutation(async ({ input, ctx }) => {
       const actor = studioActor(ctx);
       const processingAuthorization = await authorizeStudioProcessing(
-        actor, input.taskId, "AI", input.adminOverrideReason,
+        actor, input.taskId, "AI", input.adminOverrideReason, true,
       );
       let attested = false;
       try {
-        const mode = input.mode;
-        let imageBase64: string | undefined;
-        let mimeType: string | undefined;
-        if (mode === "EDIT") {
-          if (!input.imageDataUrl) {
-            throw new TRPCError({ code: "BAD_REQUEST", message: "وضع التعديل يحتاج صورة." });
-          }
-          // تحقّق أمني: data URL صورة صالحة (سحر البايتات) حتى ٢م.ب — نفس كتّاب صور المنتج.
-          assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
-          const m = /^data:([^;]+);base64,(.+)$/.exec(input.imageDataUrl);
-          if (!m) throw new TRPCError({ code: "BAD_REQUEST", message: "صيغة الصورة غير مدعومة." });
-          mimeType = m[1];
-          imageBase64 = m[2];
-        } else if (!input.userPrompt || !input.userPrompt.trim()) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "وضع التوليد يحتاج وصفاً نصّياً." });
+        assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
+        const match = /^data:([^;]+);base64,(.+)$/.exec(input.imageDataUrl);
+        if (!match) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "صيغة الصورة غير مدعومة." });
         }
         const runtime = await getAiStudioRuntime();
         if (!runtime) {
-          // AI مطفأ/بلا مفتاح (سباق بعد فحص aiConfig).
           throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مسار الذكاء الاصطناعي غير مُفعَّل." });
         }
-        const prompt = buildAiStudioPrompt(runtime.basePrompt, input.userPrompt);
         const result = await generateStudioImage({
           apiKey: runtime.apiKey,
           model: runtime.model,
-          prompt,
-          imageBase64,
-          mimeType,
+          prompt: buildAiStudioPrompt(runtime.basePrompt),
+          imageBase64: match[2],
+          mimeType: match[1],
         }, {
           runAttempt: (run) => runGuardedImageStudioCall({
             service: "AI",
@@ -272,18 +188,12 @@ export const imageStudioRouter = router({
           });
         }
         if (e instanceof AiImageError) {
-          // AUTH/QUOTA = خلل إعداد/خطّة (PRECONDITION)؛ BLOCKED/BAD_INPUT/NO_IMAGE = مدخل يُعدَّل (BAD_REQUEST)؛
-          // SERVICE/NETWORK = مؤقّت (INTERNAL).
           const code =
             e.kind === "AUTH" || e.kind === "QUOTA"
               ? "PRECONDITION_FAILED"
               : e.kind === "BLOCKED" || e.kind === "BAD_INPUT" || e.kind === "NO_IMAGE"
                 ? "BAD_REQUEST"
                 : "INTERNAL_SERVER_ERROR";
-          // ⭐ جذر بلاغ المالك (٢٤/٨): NO_IMAGE و BLOCKED يحملان نصَّ رفض المزوّد وسببه في `e.message`
-          // بعد fix استخراج التشخيص. نمرّرهما للمستخدم كي يعرف السبب فعلاً (نموذج خاطئ؟ صورة رُفضت؟)،
-          // بدل رسالة عامّة «جرّب مجدّداً» كانت تُبقيه أعمى. AUTH/QUOTA رسالتها العامّة تكفي ولا نُسرّب
-          // تفاصيل الشبكة/المفتاح؛ SERVICE/NETWORK غير مفيدة للمستخدم.
           const showDetail = e.kind === "NO_IMAGE" || e.kind === "BLOCKED";
           const message =
             showDetail && e.message && !e.message.startsWith("HTTP ")

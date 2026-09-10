@@ -6,7 +6,7 @@ import {
   fixedAssets,
   suppliers,
 } from "../../../drizzle/schema";
-import { createSystemPaymentRequestTx } from "../voucher/create";
+import { createSystemPaymentRequestTx, finalizeOwnerSystemVoucherTx } from "../voucher/create";
 import {
   lockAccrualObligationTx,
   transitionAccrualObligationTx,
@@ -119,7 +119,13 @@ export async function requestSupplierAssetSettlement(
       if (Number(linked?.receiptId) !== receipt.receiptId) {
         throw new TRPCError({ code: "CONFLICT", message: "إعادة الطلب لا تطابق سند السداد المعلق" });
       }
-      return { obligationId: Number(obligation.id), receiptId: receipt.receiptId, replayed: true as const, status: "PAYMENT_PENDING" as const };
+      const ownerApproved = await finalizeOwnerSystemVoucherTx(tx, receipt.receiptId, actor);
+      return {
+        obligationId: Number(obligation.id),
+        receiptId: receipt.receiptId,
+        replayed: true as const,
+        status: ownerApproved ? "PAID" as const : "PAYMENT_PENDING" as const,
+      };
     }
     await transitionAccrualObligationTx(tx, {
       obligationId: Number(obligation.id),
@@ -131,6 +137,12 @@ export async function requestSupplierAssetSettlement(
       evidenceReference: obligation.evidenceReference,
       dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${receipt.receiptId}`,
     });
-    return { obligationId: Number(obligation.id), receiptId: receipt.receiptId, replayed: false as const, status: "PAYMENT_PENDING" as const };
+    const ownerApproved = await finalizeOwnerSystemVoucherTx(tx, receipt.receiptId, actor);
+    return {
+      obligationId: Number(obligation.id),
+      receiptId: receipt.receiptId,
+      replayed: false as const,
+      status: ownerApproved ? "PAID" as const : "PAYMENT_PENDING" as const,
+    };
   });
 }

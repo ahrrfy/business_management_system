@@ -50,11 +50,16 @@ function storedZip(parts: ZipPart[]): Buffer {
   return Buffer.concat([...localParts, centralBytes, eocd]);
 }
 
-function docx(contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml", extras: ZipPart[] = []) {
+function docx(
+  contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+  extras: ZipPart[] = [],
+) {
   return storedZip([
     {
       name: "[Content_Types].xml",
-      bytes: Buffer.from(`<Types><Override PartName="/word/document.xml" ContentType="${contentType}"/></Types>`),
+      bytes: Buffer.from(
+        `<Types><Override PartName="/word/document.xml" ContentType="${contentType}"/></Types>`,
+      ),
     },
     { name: "_rels/.rels", bytes: Buffer.from("<Relationships/>") },
     { name: "word/document.xml", bytes: Buffer.from("<document/>") },
@@ -88,45 +93,94 @@ describe("job applicant CV validation", () => {
   });
 
   it("rejects non-canonical base64 instead of letting Buffer silently ignore junk", () => {
-    expect(() => prepareJobApplicantCv({
-      fileName: "cv.pdf",
-      mimeType: PDF_MIME,
-      base64: `${Buffer.from("%PDF-x").toString("base64")}\n`,
-    })).toThrow(/غير صالحة/);
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.pdf",
+        mimeType: PDF_MIME,
+        base64: `${Buffer.from("%PDF-x").toString("base64")}\n`,
+      }),
+    ).toThrow(/غير صالحة/);
   });
 
   it("rejects a decoded payload larger than 2MB", () => {
     const tooLarge = Buffer.alloc(MAX_CV_BYTES + 1, 0x41).toString("base64");
-    expect(() => prepareJobApplicantCv({ fileName: "cv.pdf", mimeType: PDF_MIME, base64: tooLarge })).toThrow(/2MB|غير صالحة/);
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.pdf",
+        mimeType: PDF_MIME,
+        base64: tooLarge,
+      }),
+    ).toThrow(/2MB|غير صالحة/);
   });
 
   it("rejects extension/MIME/magic spoofing and an arbitrary ZIP renamed to DOCX", () => {
     const pdf = Buffer.from("%PDF-1.7");
-    expect(() => prepareJobApplicantCv({ fileName: "cv.docx", mimeType: DOCX_MIME, base64: pdf.toString("base64") })).toThrow();
-    expect(() => prepareJobApplicantCv({ fileName: "cv.pdf", mimeType: DOCX_MIME, base64: pdf.toString("base64") })).toThrow(/PDF/);
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.docx",
+        mimeType: DOCX_MIME,
+        base64: pdf.toString("base64"),
+      }),
+    ).toThrow();
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.pdf",
+        mimeType: DOCX_MIME,
+        base64: pdf.toString("base64"),
+      }),
+    ).toThrow(/PDF/);
     const zip = storedZip([
       { name: "a.txt", bytes: Buffer.from("a") },
       { name: "b.txt", bytes: Buffer.from("b") },
       { name: "c.txt", bytes: Buffer.from("c") },
     ]);
-    expect(() => prepareJobApplicantCv({ fileName: "cv.docx", mimeType: DOCX_MIME, base64: zip.toString("base64") })).toThrow(/DOCX/);
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.docx",
+        mimeType: DOCX_MIME,
+        base64: zip.toString("base64"),
+      }),
+    ).toThrow(/DOCX/);
+  });
+
+  it("rejects PDFs that declare active actions", () => {
+    const activePdf = Buffer.from(
+      "%PDF-1.7\n1 0 obj << /OpenAction 2 0 R /JS (app.alert('x')) >>\nendobj",
+      "ascii",
+    );
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "active.pdf",
+        mimeType: PDF_MIME,
+        base64: activePdf.toString("base64"),
+      }),
+    ).toThrow(/عناصر تفاعلية/);
   });
 
   it("rejects DOCM content types and embedded VBA even with a .docx name", () => {
-    const macroContentType = "application/vnd.ms-word.document.macroEnabled.main+xml";
-    expect(() => prepareJobApplicantCv({
-      fileName: "cv.docx",
-      mimeType: DOCX_MIME,
-      base64: docx(macroContentType).toString("base64"),
-    })).toThrow(/DOCM|ماكرو/);
-    expect(() => prepareJobApplicantCv({
-      fileName: "cv.docx",
-      mimeType: DOCX_MIME,
-      base64: docx(undefined, [{ name: "word/vbaProject.bin", bytes: Buffer.from("macro") }]).toString("base64"),
-    })).toThrow(/DOCM|ماكرو/);
+    const macroContentType =
+      "application/vnd.ms-word.document.macroEnabled.main+xml";
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.docx",
+        mimeType: DOCX_MIME,
+        base64: docx(macroContentType).toString("base64"),
+      }),
+    ).toThrow(/DOCM|ماكرو/);
+    expect(() =>
+      prepareJobApplicantCv({
+        fileName: "cv.docx",
+        mimeType: DOCX_MIME,
+        base64: docx(undefined, [
+          { name: "word/vbaProject.bin", bytes: Buffer.from("macro") },
+        ]).toString("base64"),
+      }),
+    ).toThrow(/DOCM|ماكرو/);
   });
 
   it("sanitizes path and header-control characters for display only", () => {
-    expect(sanitizeCvFileName("../../bad\r\n\u202ename;\".pdf")).toBe("badname__.pdf");
+    expect(sanitizeCvFileName('../../bad\r\n\u202ename;".pdf')).toBe(
+      "badname__.pdf",
+    );
   });
 });

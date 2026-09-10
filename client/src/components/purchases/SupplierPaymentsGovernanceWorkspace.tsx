@@ -45,6 +45,7 @@ export type SupplierPaymentSource = {
   exchangeRate: string | null;
   remainingAmount: string;
   remainingCurrencyAmount: string;
+  purchaseOrderIds?: number[];
 };
 
 export type SupplierRefundSource = {

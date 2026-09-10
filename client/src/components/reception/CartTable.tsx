@@ -46,6 +46,57 @@ export interface CartTableProps {
   /** ٢٣/٨ (Codex P2) — عدّادُ إضافةٍ صريحٌ من الأب يزيد فقط عند `addRow` (لا عند حذف/تعديل كمّية
    *  ولا عند تحميل مسوّدة). يشغّل التمريرَ إلى السطر المُدرَج/المزاد، بلا اعتماد على تغيّر الطول. */
   addTick: number;
+  effectiveTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+  onUnitChange?: (lineKey: string, newRow: PosRow) => void;
+}
+
+function UnitSelector({
+  branchId,
+  variantId,
+  currentUnitId,
+  currentUnitName,
+  tier = "RETAIL",
+  disabled,
+  onUnitChange,
+}: {
+  branchId: number;
+  variantId: number;
+  currentUnitId: number;
+  currentUnitName: string;
+  tier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+  disabled?: boolean;
+  onUnitChange?: (newRow: PosRow) => void;
+}) {
+  const unitsQ = trpc.catalog.variantUnits.useQuery(
+    { variantId, branchId, tier },
+    { enabled: variantId > 0 && !!onUnitChange, staleTime: 60_000 }
+  );
+
+  const units = unitsQ.data ?? [];
+  if (!onUnitChange || units.length <= 1) {
+    return <span className="text-xs font-semibold text-muted-foreground">{currentUnitName}</span>;
+  }
+
+  return (
+    <select
+      value={currentUnitId}
+      disabled={disabled}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        const id = Number(e.target.value);
+        const match = units.find((u) => u.productUnitId === id);
+        if (match) onUnitChange(match);
+      }}
+      className="h-6 max-w-[90px] rounded border border-border bg-card px-1 text-[11px] font-extrabold text-foreground outline-none transition-colors hover:border-primary focus:border-primary"
+      title="تبديل وحدة القياس للصنف مع رفع السعر والمخزون تلقائياً"
+    >
+      {units.map((u) => (
+        <option key={u.productUnitId} value={u.productUnitId}>
+          {u.unitName} ({u.conversionFactor}x)
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export function CartTable({
@@ -58,6 +109,8 @@ export function CartTable({
   onEditCustomization,
   grandTotal, cartCount,
   addTick,
+  effectiveTier = "RETAIL",
+  onUnitChange,
 }: CartTableProps) {
   // ٢٣/٨ — تمريرٌ تلقائيّ للسطر المُدرَج/المزاد كمّياً (بلاغ المالك «لا يظهر آخر منتجٍ مضاف»):
   // كاشير الاستقبال يضبط `selKey` على السطر الفعّال في `addRow`/المسح؛ يكفي أن يتّبع الجدولُ
@@ -138,8 +191,8 @@ export function CartTable({
                       selected && "bg-primary/5",
                     )}
                   >
-                    <td className="px-2 py-2.5 text-center text-xs font-bold text-muted-foreground">{idx + 1}</td>
-                    <td className="px-2 py-2.5">
+                    <td className="px-2 py-1.5 text-center text-xs font-bold text-muted-foreground">{idx + 1}</td>
+                    <td className="px-2 py-1.5">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span
                           className={cn(
@@ -149,7 +202,7 @@ export function CartTable({
                         >
                           {isCustom ? "تخصيص" : "جاهز"}
                         </span>
-                        <span className="text-lg font-extrabold">
+                        <span className="text-sm font-extrabold">
                           {isCustom ? l.custom!.title : l.row.productName}
                         </span>
                         <span className="text-xs text-muted-foreground" dir="ltr">{l.row.sku}</span>
@@ -254,8 +307,21 @@ export function CartTable({
                         </div>
                       )}
                     </td>
-                    <td className="px-1 py-2.5 text-center text-xs text-muted-foreground">{l.row.unitName}</td>
-                    <td className="px-1 py-2.5 text-center text-xs tabular-nums" dir="ltr">
+                    <td className="px-1 py-1.5 text-center text-xs text-muted-foreground">
+                      {isCustom ? (
+                        <span>{l.row.unitName}</span>
+                      ) : (
+                        <UnitSelector
+                          branchId={branchId}
+                          variantId={l.row.variantId}
+                          currentUnitId={l.row.productUnitId}
+                          currentUnitName={l.row.unitName}
+                          tier={effectiveTier}
+                          onUnitChange={onUnitChange ? (newRow) => onUnitChange(l.key, newRow) : undefined}
+                        />
+                      )}
+                    </td>
+                    <td className="px-1 py-1.5 text-center text-xs tabular-nums" dir="ltr">
                       {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً.
                           ٢٣/٨: كان الزرّ بلا حدودٍ (border-transparent) فيبدو للكاشير نصّاً غير قابلٍ للنقر
                           — بلاغ المالك «الخصم غير ظاهر». صار له حدٌّ متقطّعٌ خفيف + أيقونةُ % صغيرة يعرف
@@ -269,7 +335,7 @@ export function CartTable({
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setDiscountFor(discountFor === l.key ? null : l.key); }}
                             className={cn(
-                              "inline-flex min-h-[32px] items-center gap-1 rounded-md border px-1.5 tabular-nums transition-colors hover:bg-muted",
+                              "inline-flex min-h-[28px] items-center gap-1 rounded-md border px-1.5 tabular-nums transition-colors hover:bg-muted",
                               l.disc
                                 ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] font-bold text-[var(--sem-warn)]"
                                 : "border-dashed border-primary/40 text-foreground hover:border-primary",
@@ -300,14 +366,14 @@ export function CartTable({
                     </td>
                     <td
                       className={cn(
-                        "px-1 py-2.5 text-center text-xs font-bold tabular-nums",
+                        "px-1 py-1.5 text-center text-xs font-bold tabular-nums",
                         isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-[var(--sem-warn)]" : "text-muted-foreground",
                       )}
                       dir="ltr"
                     >
                       {isCustom ? "—" : l.row.isService ? "∞" : stock.availInUnit}
                     </td>
-                    <td className="px-1 py-1.5">
+                    <td className="px-1 py-1">
                       <div className="flex items-center justify-center gap-1">
                         <button
                           type="button"
@@ -315,12 +381,12 @@ export function CartTable({
                             e.stopPropagation();
                             changeQty(l.key, -1);
                           }}
-                          className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="grid size-7 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
                           disabled={isCustom && l.qty <= 1}
                           title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
                           aria-label="تقليل الكمية"
                         >
-                          <Minus aria-hidden className="size-3.5" />
+                          <Minus aria-hidden className="size-3" />
                         </button>
                         {/* م٤: الكمية مُدخلٌ مباشر داخل الصفّ (لوحة الأرقام لم تعد تعدّلها). */}
                         <input
@@ -334,7 +400,7 @@ export function CartTable({
                           inputMode="numeric"
                           dir="ltr"
                           aria-label={`كمية ${isCustom ? l.custom!.title : l.row.productName}`}
-                          className="h-8 w-12 rounded-md border bg-card text-center text-sm font-extrabold tabular-nums outline-none focus:border-primary"
+                          className="h-7 w-11 rounded-md border bg-card text-center text-xs font-extrabold tabular-nums outline-none focus:border-primary"
                         />
                         <button
                           type="button"
@@ -342,15 +408,15 @@ export function CartTable({
                             e.stopPropagation();
                             changeQty(l.key, +1);
                           }}
-                          className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted"
+                          className="grid size-7 place-items-center rounded-md border bg-card hover:bg-muted"
                           aria-label="زيادة الكمية"
                         >
-                          <Plus aria-hidden className="size-3.5" />
+                          <Plus aria-hidden className="size-3" />
                         </button>
                       </div>
                     </td>
-                    <td className="px-1 py-2.5 text-center text-sm font-extrabold tabular-nums" dir="ltr">{fmt(total)}</td>
-                    <td className="px-1 py-2.5 text-center">
+                    <td className="px-1 py-1.5 text-center text-sm font-extrabold tabular-nums" dir="ltr">{fmt(total)}</td>
+                    <td className="px-1 py-1.5 text-center">
                       <button
                         type="button"
                         onClick={(e) => {
@@ -360,7 +426,7 @@ export function CartTable({
                         className="text-muted-foreground hover:text-destructive"
                         aria-label="حذف المنتج"
                       >
-                        <Trash2 aria-hidden className="size-4" />
+                        <Trash2 aria-hidden className="size-3.5" />
                       </button>
                     </td>
                   </tr>

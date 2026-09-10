@@ -614,26 +614,66 @@ export default function Products() {
                 header: "الرصيد الفعلي",
                 accessorFn: (r) => r.stockBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => row.original.stockBase,
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const unitQty = isBase ? row.original.stockBase : Math.trunc(row.original.stockBase / factor) || 0;
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">{unitQty} {row.original.unitName}</span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.stockBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "reservedBase",
                 header: "المحجوز والمخصص",
                 accessorFn: (r) => r.reservedBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => row.original.reservedBase,
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const resQty = isBase ? row.original.reservedBase : Math.trunc(row.original.reservedBase / factor) || 0;
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">{resQty} {row.original.unitName}</span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.reservedBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "availableBase",
                 header: "المتاح للبيع",
                 accessorFn: (r) => r.availableBase,
                 meta: { kind: "number" },
-                cell: ({ row }) => (
-                  <span className="font-medium">
-                    {row.original.availableBase}
-                    {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
-                  </span>
-                ),
+                cell: ({ row }) => {
+                  const factor = parseFloat(row.original.conversionFactor ?? "1") || 1;
+                  const isBase = row.original.isBaseUnit || factor === 1;
+                  const availQty = isBase ? row.original.availableBase : Math.trunc(row.original.availableBase / factor) || 0;
+                  return (
+                    <div className="flex flex-col items-end">
+                      <span className="font-medium tabular-nums">
+                        {availQty} {row.original.unitName}
+                        {row.original.bundleCapacity && <BundleCapacityNote capacity={row.original.bundleCapacity} />}
+                      </span>
+                      {!isBase && (
+                        <span className="text-[10px] text-muted-foreground tabular-nums">
+                          ({row.original.availableBase} بالأساس)
+                        </span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 id: "status",

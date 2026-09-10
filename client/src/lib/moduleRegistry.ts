@@ -3,7 +3,7 @@ import {
   BarChart3, Boxes, Briefcase, Building2, ClipboardCheck, CreditCard, DollarSign,
   FileCheck2, Gift, Images, Landmark, ListChecks, Lock, Package, PackageCheck, Printer,
   Receipt, RotateCcw, ScanLine, Server, Settings, ShoppingCart, Sparkles, Store, Truck, Users, Wallet,
-  WalletCards,
+  WalletCards, BellRing,
 } from "lucide-react";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE, type RoleGate } from "@/lib/navVisibility";
 
@@ -65,6 +65,7 @@ export const APPLICATION_MODULES: readonly ApplicationModule[] = [
   { id: "statutoryAccounting", href: "/statutory-accounting", label: "الدليل المحاسبي النظامي", description: "تقارير وخرائط الامتثال المحاسبي", section: 3, icon: FileCheck2, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "exchange", href: "/exchange", label: "الصيرفة", description: "صرف وتسوية العملات", section: 3, icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
   { id: "assets", href: "/assets", label: "الأصول الثابتة", description: "سجلّ وإهلاك وعهدة", section: 5, icon: Server, managerOnly: true },
+  { id: "announcements", href: "/announcements", label: "إعلانات وتوجيهات الشركة", description: "بث السبتلايت وتوجيهات الكادر والإقرارات", section: 5, icon: BellRing, roles: ["admin", "manager"], module: "announcements" },
   { id: "hr", href: "/hr", label: "الموارد البشرية", description: "موظفون وحضور ورواتب", section: 5, icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
   { id: "closing", href: "/closing", label: "الإقفال والرَقابة", description: "فترات واعتمادات وتوافق", section: 5, icon: Lock, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { id: "settings", href: "/settings", label: "الإدارة والإعدادات", description: "فروع وأدوار وتكاملات", section: 5, icon: Settings, managerOnly: true },

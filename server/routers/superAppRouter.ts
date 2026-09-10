@@ -2349,7 +2349,7 @@ export const superAppRouter = router({
       const leave = await createLeave({
         ...input,
         employeeId: employee.id,
-      });
+      }, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role, isOwner: ctx.user.isOwner });
       await logAudit(ctx, {
         action: "leave.selfRequest",
         entityType: "leaveRequest",

@@ -12,6 +12,7 @@ import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../deposits";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
+import Decimal from "decimal.js";
 import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -236,13 +237,8 @@ export async function cancelWorkOrderInTx(
             : "استعمل «استرجاع التسليم» من صفحة أمر الشغل — هو المسار الذي يعكس التسليم والفاتورة والذمّة معاً",
         }),
       });
-    // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
-    // الإلغاء يعيد المواد للمخزون ويردّ العربون بينما الفاتورة وقيد البيع وعهدة COD حيّة.
     await assertNoLiveConsignment(tx, workOrderId, "cancel");
-    // ش٤ (١٩/٨): `workOrders.invoiceId` **يُكتَب** عند الإرسال (`delivery/dispatch.ts`) ولا
-    // **يُقرأ** في أيّ حارس. فأمرٌ أُرسِلت فاتورتُه ثمّ أُلغيت إرساليّتُه (⇒ `assertNoLiveConsignment`
-    // تمرّ) كان يُلغى هنا فتعود المواد ويُردّ العربون **وفاتورتُه وقيدُ بيعها قائمان**: إيرادٌ بلا
-    // بضاعة وذمّةٌ على عميلٍ لطلبٍ ملغى. المخرجُ الصحيح استرجاعٌ لا إلغاء.
+
     if (wo.invoiceId != null) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
@@ -264,6 +260,7 @@ export async function cancelWorkOrderInTx(
      * تخفيفَها كان سيوسّع سلطةً قائمةً بلا طلب.
      */
     const riskyCancellation = wo.status !== "RECEIVED"
+      || wo.invoiceId != null
       || money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
       || existingMaterials.length > 0
@@ -279,7 +276,8 @@ export async function cancelWorkOrderInTx(
      */
     const moneyAtStake = money(wo.deposit ?? "0").gt(0)
       || appliedDepositsBeforeCancel.length > 0
-      || heldFeeBeforeCancel.gt(0);
+      || heldFeeBeforeCancel.gt(0)
+      || wo.invoiceId != null;
     const directCancelAllowed = mayCancelWorkOrderWithoutApproval({
       role: actor.role ?? "",
       override: (actor.permissionsOverride ?? null) as never,
@@ -534,7 +532,7 @@ export async function cancelWorkOrderInTx(
                 eq(receipts.direction, "IN"),
                 eq(receipts.status, "COMPLETED"),
                 eq(receipts.approvalStatus, "APPROVED"),
-                isNull(receipts.invoiceId),
+                or(isNull(receipts.invoiceId), eq(receipts.invoiceId, Number(wo.invoiceId))),
                 or(isNull(receipts.referenceNumber), notLike(receipts.referenceNumber, "DLV-FEE-%")),
               ))
               .for("update")

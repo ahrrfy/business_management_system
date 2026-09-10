@@ -90,8 +90,21 @@ class SalesViewModel(
     fun paymentMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(paymentMethod = value, error = null) }
     fun returnRefundAmount(value: String) { if (!state.locked) state = state.copy(returnRefundAmount = value.take(20), error = null) }
     fun returnMethod(value: PaymentMethod) { if (!state.locked) state = state.copy(returnMethod = value, error = null) }
-    fun returnShift(value: Long?) { if (!state.locked) state = state.copy(returnShiftId = value, error = null) }
+    fun returnShift(value: Long?) {
+        if (state.locked) return
+        val availableShifts = state.returnInvoice?.refundShifts ?: emptyList()
+        val returnShifts = capabilities.filterReturnShifts(availableShifts)
+        if (capabilities.role == "cashier") {
+            if (value == null || returnShifts.none { it.id == value }) return
+        } else {
+            if (value == null && returnShifts.isNotEmpty()) return
+            if (value != null && returnShifts.none { it.id == value }) return
+        }
+        state = state.copy(returnShiftId = value, error = null)
+    }
     fun returnRestock(value: Boolean) { if (!state.locked) state = state.copy(returnRestock = value, error = null) }
+    fun returnReason(value: String) { if (!state.locked) state = state.copy(returnReason = value.take(500), error = null) }
+    fun returnRefundReference(value: String) { if (!state.locked) state = state.copy(returnRefundReference = value.take(100), error = null) }
 
     fun searchCatalog() {
         if (state.locked) return
@@ -184,12 +197,23 @@ class SalesViewModel(
     fun beginReturn(invoiceId: Long) {
         if (!capabilities.canCreateReturn) return
         launch(SalesBusy.RETURN_LOAD) {
+            val invoice = source.returnableInvoice(invoiceId)
+            val availableShifts = invoice.refundShifts
+            val validShifts = capabilities.filterReturnShifts(availableShifts)
+            val defaultShiftId = if (capabilities.role == "cashier") {
+                validShifts.firstOrNull { it.userId == capabilities.userId }?.id
+            } else {
+                validShifts.firstOrNull { it.userId == capabilities.userId }?.id
+                    ?: validShifts.firstOrNull()?.id
+            }
             state = state.copy(
                 section = SalesSection.RETURNS,
-                returnInvoice = source.returnableInvoice(invoiceId),
+                returnInvoice = invoice,
                 returnQuantities = emptyMap(),
                 returnRefundAmount = "",
-                returnShiftId = null,
+                returnRefundReference = "",
+                returnShiftId = defaultShiftId,
+                returnReason = "",
             )
         }
     }
@@ -212,8 +236,10 @@ class SalesViewModel(
             refundShiftId = state.returnShiftId,
             restock = state.returnRestock,
             clientRequestId = state.returnRequestId,
+            reason = state.returnReason,
+            refundReference = state.returnRefundReference.trim().takeIf(String::isNotEmpty),
         )
-        SalesValidation.salesReturn(submission, invoice)?.let { return fail(it) }
+        SalesValidation.salesReturn(submission, invoice, capabilities)?.let { return fail(it) }
         val started = state.start(SalesBusy.RETURN_SUBMIT) ?: return
         state = started
         viewModelScope.launch {

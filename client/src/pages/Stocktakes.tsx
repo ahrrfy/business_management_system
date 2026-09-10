@@ -23,6 +23,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SplitCandidatesPanel } from "@/components/stocktake/SplitCandidatesPanel";
 import { AlternativeStockReportPanel } from "@/components/stocktake/AlternativeStockBreakdown";
+import { StocktakeDetailDrawer } from "@/components/stocktake/StocktakeDetailDrawer";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -194,6 +195,7 @@ export default function Stocktakes() {
   const [status, setStatus] = useState<"" | StStatus>("");
   const [branchId, setBranchId] = useState<number>(0);
   const [page, setPage] = useState(0);
+  const [previewSessionId, setPreviewSessionId] = useState<number | null>(null);
   const limit = 50;
 
   const me = trpc.auth.me.useQuery();
@@ -245,7 +247,21 @@ export default function Stocktakes() {
    * وبوّابته تتبع دور المستخدم: `isManagerPlus` يقرّر «مراجعة واعتماد» أم «متابعة/عرض».
    */
   const sessionColumns = useMemo<ColumnDef<SessionRow, unknown>[]>(() => [
-    { id: "code", header: "الرقم", accessorFn: (s) => s.code, meta: { kind: "code", width: "id" }, cell: ({ row }) => <span className="text-xs">{row.original.code}</span> },
+    {
+      id: "code",
+      header: "الرقم",
+      accessorFn: (s) => s.code,
+      meta: { kind: "code", width: "id" },
+      cell: ({ row }) => (
+        <button
+          type="button"
+          onClick={() => setPreviewSessionId(row.original.id)}
+          className="text-xs font-mono text-primary hover:underline"
+        >
+          {row.original.code}
+        </button>
+      ),
+    },
     {
       id: "name",
       header: "الجلسة",
@@ -255,8 +271,14 @@ export default function Stocktakes() {
         const s = row.original;
         return (
           <div>
-            <p className="font-bold">
-              {s.name}
+            <p>
+              <button
+                type="button"
+                onClick={() => setPreviewSessionId(s.id)}
+                className="font-bold hover:underline text-right text-foreground hover:text-primary transition-colors"
+              >
+                {s.name}
+              </button>
               {s.sessionType === "OPENING" && (
                 <span className="mr-2 inline-block rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-warn)]">
                   افتتاحي
@@ -349,20 +371,29 @@ export default function Stocktakes() {
         return (
           <RowActions
             mode="inline"
-            actions={[{
-              key: "open",
-              kind: action.primary ? "approve" : "view",
-              label: action.label,
-              href: action.href,
-              gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
-                ? { roles: ["manager"] }
-                : { roles: ["warehouse", "manager"] },
-            }]}
+            actions={[
+              {
+                key: "preview",
+                kind: "view",
+                label: "معاينة سريعة",
+                gate: { roles: ["warehouse", "manager"] },
+                onSelect: () => setPreviewSessionId(s.id),
+              },
+              {
+                key: "open",
+                kind: action.primary ? "approve" : "view",
+                label: action.label,
+                href: action.href,
+                gate: action.primary || (s.status === "APPROVED" && isManagerPlus)
+                  ? { roles: ["manager"] }
+                  : { roles: ["warehouse", "manager"] },
+              },
+            ]}
           />
         );
       },
     },
-  ], [isManagerPlus]);
+  ], [isManagerPlus, setPreviewSessionId]);
 
   /* غير مخوَّل (كاشير/مستخدم عام): الخادم يرفض أصلاً — نعرض توجيهاً واضحاً بدل أخطاء. */
   if (me.data && !canCreate) {
@@ -385,11 +416,21 @@ export default function Stocktakes() {
         title="الجرد والتسوية"
         description="جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي."
         actions={
-          canCreate ? (
-            <Button asChild size="lg">
-              <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild variant="outline">
+              <Link href="/my-stocktake">فضاء عملي (العد الميداني)</Link>
             </Button>
-          ) : undefined
+            {isAdmin && (
+              <Button asChild variant="outline">
+                <Link href="/reconcile">مطابقة الأرصدة</Link>
+              </Button>
+            )}
+            {canCreate ? (
+              <Button asChild size="lg">
+                <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
+              </Button>
+            ) : null}
+          </div>
         }
       />
 
@@ -592,6 +633,12 @@ export default function Stocktakes() {
           />
         </CardContent>
       </Card>
+
+      <StocktakeDetailDrawer
+        sessionId={previewSessionId}
+        onClose={() => setPreviewSessionId(null)}
+        isManagerPlus={isManagerPlus}
+      />
     </div>
   );
 }

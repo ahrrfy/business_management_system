@@ -250,7 +250,7 @@ async function startServer() {
           // `blob:` هنا لا يُوسّع `script-src`: العمّال معزولون ولا يصلون DOM.
           workerSrc: ["'self'", "blob:"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", "data:", "blob:"],
+          imgSrc: ["'self'", "data:", "blob:", "https:"],
           connectSrc: isDev
             ? [
                 "'self'",
@@ -270,6 +270,7 @@ async function startServer() {
             ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
             : ["'none'"],
           fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
+          mediaSrc: ["'self'", "blob:", "https://*.mp3quran.net", "https://*.everyayah.com"],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
         },
