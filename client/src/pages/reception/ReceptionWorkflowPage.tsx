@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
+import { AlertTriangle, BadgeDollarSign, Ban, BarChart3, Building2, CheckCircle2, CheckSquare, Clock, FileText, Info, Package, Printer, RefreshCcw, ScanLine, Square, Truck, User, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card } from "@/components/ui/card";
 import { ACTION_LABELS as L } from "@shared/actionLabels";
@@ -27,6 +27,8 @@ import { parseScan } from "@/lib/scanRouter";
 import { printDeliveryDispatchSlip, type DispatchSlipData } from "@/lib/printing/printDeliveryDispatchSlip";
 import { printRemittanceReceipt } from "@/components/delivery/printRemittanceReceipt";
 import { printCompanyStatementReceipt } from "@/lib/printing/printCompanyStatementReceipt";
+import { invoiceStatusBadgeVariant, invoiceStatusLabel } from "@shared/invoiceStatus";
+import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 
 type Section = "dispatch" | "collect" | "return";
 type PartyObligation = RouterOutputs["delivery"]["obligations"][number];
@@ -36,6 +38,8 @@ interface ScannedOrder {
   kind?: "workOrder" | "invoice";
   orderNumber: string;
   title: string | null;
+  status?: string | null;
+  branchId?: number | null;
   customerName: string | null;
   customerPhone: string | null;
   salePrice: string;
@@ -86,28 +90,31 @@ export default function DeliveryWorkflowPage() {
         if (wo.kind === "workOrder") {
           if (wo.status === "DELIVERED") { notify.info(`الطلب ${wo.orderNumber} مُسلَّم`); return; }
           if (wo.status !== "READY") { notify.warn(`الطلب غير جاهز (حالته: ${wo.status})`); return; }
-        } else if (wo.kind === "invoice") {
-          if (wo.status === "CANCELLED" || wo.status === "RETURNED") { notify.warn(`الفاتورة ملغاة أو مرتجعة`); return; }
+        } else if (wo.kind === "invoice" && (wo.status === "CANCELLED" || wo.status === "RETURNED")) {
+          notify.warn("الفاتورة ملغاة أو مرتجعة"); return;
         }
       }
       const activeCn = (wo as { activeConsignment?: ScannedOrder["activeConsignment"] }).activeConsignment;
       const order: ScannedOrder = {
         id: wo.id, kind: wo.kind ?? "workOrder", orderNumber: wo.orderNumber, title: wo.title,
+        status: wo.status ?? null, branchId: wo.branchId ? Number(wo.branchId) : null,
         customerName: wo.customerName, customerPhone: wo.customerPhone,
         salePrice: wo.salePrice, deposit: wo.deposit,
-        deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone,
-        deliveryCost: wo.deliveryCost,
+        deliveryAddress: wo.deliveryAddress, deliveryPhone: wo.deliveryPhone, deliveryCost: wo.deliveryCost,
         version: (wo as { version?: number }).version ?? 1,
         activeConsignment: activeCn ?? null,
       };
       if (target === "dispatch") {
-        if (activeCn) {
-          notify.warn(`الطلب مسند حالياً لـ ${activeCn.partyName ?? "جهة أخرى"} بالإرسالية ${activeCn.consignmentNumber}`);
-        }
+        if (activeCn) notify.warn(`الطلب مسند حالياً لـ ${activeCn.partyName ?? "جهة أخرى"} بالإرسالية ${activeCn.consignmentNumber}`);
         setDispatchScanned(order); setDispatchBarcodeInput("");
         setRecipientPhone(wo.deliveryPhone ?? wo.customerPhone ?? "");
         setRecipientName(wo.customerName ?? ""); setDispatchFee(wo.deliveryCost ?? "");
-      } else { setReturnScanned(order); setReturnBarcodeInput(""); setReturnReason(""); }
+      } else {
+        if (order.status === "RETURNED") notify.warn(`الفاتورة #${order.orderNumber} مسترجعة بالكامل مسبقاً`);
+        else if (order.status === "CANCELLED") notify.warn(`الطلب / الفاتورة #${order.orderNumber} ملغاة مسبقاً`);
+        else if (order.status === "SUPERSEDED") notify.warn(`الفاتورة #${order.orderNumber} تم استبدالها بتصحيح`);
+        setReturnScanned(order); setReturnBarcodeInput(""); setReturnReason("");
+      }
     } catch (e) { notify.err(e, "تعذّر جلب الطلب"); }
   }, [utils]);
 
@@ -131,65 +138,40 @@ export default function DeliveryWorkflowPage() {
     else if (returnEnabled) returnRef.current?.focus();
   }, [dispatchEnabled, returnEnabled]);
 
-  const dispatchMut = trpc.delivery.dispatch.useMutation({
-    onSuccess: (data) => {
-      notify.ok("أُسند #" + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
-      const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
-      const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
-      const slip: DispatchSlipData = {
-        consignmentNumber: data.consignmentNumber,
-        orderNumber: dispatchScanned?.orderNumber ?? "",
-        orderKind: dispatchScanned?.kind ?? "workOrder",
-        partyName: chosenParty?.name ?? "المندوب",
-        recipientName: recipientName || dispatchScanned?.customerName || "",
-        recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
-        deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
-        salePrice: dispatchScanned?.salePrice ?? "0",
-        deposit: dispatchScanned?.deposit ?? "0",
-        codAmount: cod,
-        deliveryFee: dispatchFee || "0",
-        feeCollection: "COURIER",
-        title: dispatchScanned?.title,
-        dispatchedAt: new Date(),
-      };
-      setLastDispatchedSlip(slip);
-      printDeliveryDispatchSlip(slip);
+  function onDispatchSuccess(data: { consignmentNumber: string }, kind: "workOrder" | "invoice") {
+    notify.ok((kind === "invoice" ? "أُسندت الفاتورة #" : "أُسند #") + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
+    const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
+    const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
+    const slip: DispatchSlipData = {
+      consignmentNumber: data.consignmentNumber,
+      orderNumber: dispatchScanned?.orderNumber ?? "",
+      orderKind: kind,
+      partyName: chosenParty?.name ?? "المندوب",
+      recipientName: recipientName || dispatchScanned?.customerName || "",
+      recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
+      deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
+      salePrice: dispatchScanned?.salePrice ?? "0",
+      deposit: dispatchScanned?.deposit ?? "0",
+      codAmount: cod,
+      deliveryFee: dispatchFee || "0",
+      feeCollection: "COURIER",
+      title: dispatchScanned?.title,
+      dispatchedAt: new Date(),
+    };
+    setLastDispatchedSlip(slip);
+    printDeliveryDispatchSlip(slip);
+    setDispatchScanned(null); setDispatchBarcodeInput("");
+    setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
+    void utils.workOrders.invalidate(); void utils.delivery.invalidate();
+  }
 
-      setDispatchScanned(null); setDispatchBarcodeInput("");
-      setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
-      void utils.workOrders.invalidate(); void utils.delivery.invalidate();
-    },
+  const dispatchMut = trpc.delivery.dispatch.useMutation({
+    onSuccess: (data) => onDispatchSuccess(data, dispatchScanned?.kind ?? "workOrder"),
     onError: (e) => notify.err(e, "تعذّر الإسناد"),
   });
 
   const dispatchInvoiceMut = trpc.delivery.dispatchInvoice.useMutation({
-    onSuccess: (data) => {
-      notify.ok("أُسندت الفاتورة #" + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
-      const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
-      const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
-      const slip: DispatchSlipData = {
-        consignmentNumber: data.consignmentNumber,
-        orderNumber: dispatchScanned?.orderNumber ?? "",
-        orderKind: "invoice",
-        partyName: chosenParty?.name ?? "المندوب",
-        recipientName: recipientName || dispatchScanned?.customerName || "",
-        recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
-        deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
-        salePrice: dispatchScanned?.salePrice ?? "0",
-        deposit: dispatchScanned?.deposit ?? "0",
-        codAmount: cod,
-        deliveryFee: dispatchFee || "0",
-        feeCollection: "COURIER",
-        title: dispatchScanned?.title,
-        dispatchedAt: new Date(),
-      };
-      setLastDispatchedSlip(slip);
-      printDeliveryDispatchSlip(slip);
-
-      setDispatchScanned(null); setDispatchBarcodeInput("");
-      setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
-      void utils.workOrders.invalidate(); void utils.delivery.invalidate();
-    },
+    onSuccess: (data) => onDispatchSuccess(data, "invoice"),
     onError: (e) => notify.err(e, "تعذّر إسناد الفاتورة للتوصيل"),
   });
 
@@ -215,32 +197,22 @@ export default function DeliveryWorkflowPage() {
     const docLabel = dispatchScanned.kind === "invoice" ? "الفاتورة" : "الطلب";
     const ok = await confirm({
       title: "تأكيد الإسناد",
-      description: [
-        `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}`,
-        `العميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}`,
-        `العنوان: ${dispatchScanned.deliveryAddress ?? "غير محدد"}`,
-        fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة",
-      ].join("\n"),
+      description: `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}\nالعميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}\nالعنوان: ${dispatchScanned.deliveryAddress ?? "غير محدد"}\n` +
+        (fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة"),
       confirmText: "أسند للمندوب",
     });
     if (!ok) return;
 
     if (dispatchScanned.kind === "invoice") {
       dispatchInvoiceMut.mutate({
-        invoiceId: dispatchScanned.id,
-        partyId: selectedPartyId,
-        deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
-        recipientName: recipientName || undefined,
-        recipientPhone: recipientPhone || undefined,
-        deliveryAddress: dispatchScanned.deliveryAddress || undefined,
+        invoiceId: dispatchScanned.id, partyId: selectedPartyId, deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
+        recipientName: recipientName || undefined, recipientPhone: recipientPhone || undefined, deliveryAddress: dispatchScanned.deliveryAddress || undefined,
         clientRequestId: crypto.randomUUID(),
       });
     } else {
       dispatchMut.mutate({
-        workOrderId: dispatchScanned.id, partyId: selectedPartyId,
-        deliveryFee: fee.toFixed(2),
-        recipientName: recipientName || undefined,
-        recipientPhone: recipientPhone || undefined,
+        workOrderId: dispatchScanned.id, partyId: selectedPartyId, deliveryFee: fee.toFixed(2),
+        recipientName: recipientName || undefined, recipientPhone: recipientPhone || undefined,
         clientRequestId: crypto.randomUUID(),
       });
     }
@@ -252,12 +224,8 @@ export default function DeliveryWorkflowPage() {
     }
     const ok = await confirm({
       variant: "warning", title: "إلغاء الطلب",
-      description: [
-        `#${returnScanned.orderNumber} — ${returnScanned.customerName ?? ""}`,
-        D(returnScanned.deposit ?? "0").gt(0)
-          ? `سيُردّ عربون ${fmt(returnScanned.deposit!)} د.ع من الدرج`
-          : "لا عربون — إلغاء مباشر",
-      ].join("\n"),
+      description: `#${returnScanned.orderNumber} — ${returnScanned.customerName ?? ""}\n` +
+        (D(returnScanned.deposit ?? "0").gt(0) ? `سيُردّ عربون ${fmt(returnScanned.deposit!)} د.ع من الدرج` : "لا عربون — إلغاء مباشر"),
       confirmText: "إلغاء الطلب",
     });
     if (!ok) return;
@@ -427,9 +395,7 @@ export default function DeliveryWorkflowPage() {
                         <p className="text-xs text-muted-foreground">القيمة</p>
                         <p className="font-bold">{fmt(dispatchScanned.salePrice)} د.ع</p>
                         {D(dispatchScanned.deposit ?? "0").gt(0) && (
-                          <p className="text-xs text-green-600">
-                            عربون {fmt(dispatchScanned.deposit!)} · متبقٍّ {fmt(round2(D(dispatchScanned.salePrice).minus(D(dispatchScanned.deposit!))).toFixed(2))} على المندوب
-                          </p>
+                          <p className="text-xs text-green-600">عربون {fmt(dispatchScanned.deposit!)} · متبقٍّ {fmt(round2(D(dispatchScanned.salePrice).minus(D(dispatchScanned.deposit!))).toFixed(2))} على المندوب</p>
                         )}
                       </div>
                     </div>
@@ -437,10 +403,7 @@ export default function DeliveryWorkflowPage() {
                   {dispatchScanned.deliveryAddress && (
                     <div className="flex items-start gap-2 rounded-xl border bg-background p-3">
                       <Truck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                      <div>
-                        <p className="text-xs text-muted-foreground">عنوان التوصيل</p>
-                        <p className="font-bold">{dispatchScanned.deliveryAddress}</p>
-                      </div>
+                      <div><p className="text-xs text-muted-foreground">عنوان التوصيل</p><p className="font-bold">{dispatchScanned.deliveryAddress}</p></div>
                     </div>
                   )}
                   <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-3">
@@ -448,30 +411,15 @@ export default function DeliveryWorkflowPage() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs font-bold">هاتف المستلم</label>
-                        <IntlPhoneInput
-                          value={recipientPhone}
-                          onChange={setRecipientPhone}
-                          placeholder="770 123 4567"
-                          className="h-10"
-                        />
+                        <IntlPhoneInput value={recipientPhone} onChange={setRecipientPhone} placeholder="770 123 4567" className="h-10" />
                       </div>
                       <div>
                         <label className="mb-1 block text-xs font-bold">أجرة التوصيل (د.ع)</label>
-                        <MoneyInput
-                          value={dispatchFee}
-                          onChange={setDispatchFee}
-                          placeholder="0"
-                          className="h-10"
-                          ariaLabel="أجرة التوصيل"
-                        />
+                        <MoneyInput value={dispatchFee} onChange={setDispatchFee} placeholder="0" className="h-10" ariaLabel="أجرة التوصيل" />
                       </div>
                     </div>
                   </div>
-                  <Button
-                    className="w-full py-6 text-base font-extrabold"
-                    onClick={() => void handleDispatch()}
-                    disabled={dispatchMut.isPending || !!dispatchScanned.activeConsignment}
-                  >
+                  <Button className="w-full py-6 text-base font-extrabold" onClick={() => void handleDispatch()} disabled={dispatchMut.isPending || !!dispatchScanned.activeConsignment}>
                     {dispatchScanned.activeConsignment
                       ? "مسند مسبقاً للإرسالية " + dispatchScanned.activeConsignment.consignmentNumber
                       : dispatchMut.isPending
@@ -527,12 +475,49 @@ export default function DeliveryWorkflowPage() {
                   <div className="flex items-center gap-2">
                     <Package aria-hidden className="size-5 text-primary" />
                     <div>
-                      <span className="font-extrabold text-base">فاتورة بيع #{returnScanned.orderNumber}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-base">فاتورة بيع #{returnScanned.orderNumber}</span>
+                        {returnScanned.status && (
+                          <Badge variant={invoiceStatusBadgeVariant(returnScanned.status)} className="font-bold">
+                            {invoiceStatusLabel(returnScanned.status)}
+                          </Badge>
+                        )}
+                        {returnScanned.branchId && branchId && returnScanned.branchId !== branchId && (
+                          <Badge variant="outline" className="border-primary text-primary font-bold">فرع #{returnScanned.branchId}</Badge>
+                        )}
+                      </div>
                       <p className="text-xs text-muted-foreground">العميل: {returnScanned.customerName || "زبون نقدي"}</p>
                     </div>
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح فاتورة أخرى</Button>
                 </div>
+                {returnScanned.status === "RETURNED" && (
+                  <div className="rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/30 p-3 flex items-start gap-2.5">
+                    <AlertTriangle aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)] mt-0.5" />
+                    <div>
+                      <p className="text-xs font-bold text-[var(--sem-warn)]">هذه الفاتورة تم استرجاعها بالكامل مسبقاً</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">تم استرجاع جميع بنود ومبالغ هذه الفاتورة في سجل المرتجعات ولا يمكن تكرار استرجاعها.</p>
+                    </div>
+                  </div>
+                )}
+                {returnScanned.status === "CANCELLED" && (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
+                    <Ban aria-hidden className="size-4 shrink-0 text-destructive mt-0.5" />
+                    <div>
+                      <p className="text-xs font-bold text-destructive">هذه الفاتورة ملغاة مسبقاً</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">تم إلغاء هذه الفاتورة مسبقاً ولا يمكن تسجيل مرتجع عليها.</p>
+                    </div>
+                  </div>
+                )}
+                {returnScanned.branchId && branchId && returnScanned.branchId !== branchId && (
+                  <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/20 p-3 flex items-start gap-2.5">
+                    <Info aria-hidden className="size-4 shrink-0 text-[var(--sem-info)] mt-0.5" />
+                    <div>
+                      <p className="text-xs font-bold text-[var(--sem-info)]">الفاتورة تنتمي لفرع آخر (فرع #{returnScanned.branchId})</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">أنت تعمل حالياً في فرع #{branchId}. يتطلب إرجاعها التواجد في فرعها الأصلي أو صلاحيات إدارية.</p>
+                    </div>
+                  </div>
+                )}
                 <ReturnComposer
                   invoiceId={returnScanned.id}
                   onDone={() => {
@@ -550,15 +535,29 @@ export default function DeliveryWorkflowPage() {
               <Card className="overflow-hidden gap-0 py-0 shadow-sm">
                 <div className="flex items-start justify-between border-b bg-destructive/10 p-4">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <Package aria-hidden className="size-5 text-destructive" />
                       <span className="text-lg font-extrabold">#{returnScanned.orderNumber}</span>
+                      {returnScanned.status && (
+                        <span className={cn("inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold", workOrderStatusBadgeCls(returnScanned.status))}>
+                          {workOrderStatusLabel(returnScanned.status)}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-0.5 text-sm font-bold">{returnScanned.customerName}</p>
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => { setReturnScanned(null); setReturnBarcodeInput(""); }}>مسح طلب آخر</Button>
                 </div>
                 <div className="space-y-3 p-4">
+                  {returnScanned.status === "CANCELLED" && (
+                    <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 flex items-start gap-2.5">
+                      <Ban aria-hidden className="size-4 shrink-0 text-destructive mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold text-destructive">هذا الطلب ملغي مسبقاً</p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">تم إلغاء هذا الطلب مسبقاً ولا يمكن تكرار إلغائه.</p>
+                      </div>
+                    </div>
+                  )}
                   <div className="rounded-xl border bg-background p-3 space-y-1">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">قيمة الطلب</span>
@@ -588,8 +587,8 @@ export default function DeliveryWorkflowPage() {
                     </ul>
                   </div>
                   <Button variant="destructive" className="w-full py-6 text-base font-extrabold"
-                    onClick={() => void handleFullReturn()} disabled={cancelMut.isPending || returnReason.trim().length < 3}>
-                    {cancelMut.isPending ? L.cancelling : "إلغاء الطلب بالكامل"}
+                    onClick={() => void handleFullReturn()} disabled={cancelMut.isPending || returnScanned.status === "CANCELLED" || returnReason.trim().length < 3}>
+                    {cancelMut.isPending ? L.cancelling : returnScanned.status === "CANCELLED" ? "الطلب ملغي مسبقاً" : "إلغاء الطلب بالكامل"}
                   </Button>
                 </div>
               </Card>
