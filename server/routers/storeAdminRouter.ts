@@ -64,6 +64,7 @@ import {
 } from "../services/storeAdmin/storefrontPushCampaignService";
 import { listStorefrontProductReviewsForAdmin, moderateStorefrontProductReview } from "../services/storeAdmin/storefrontProductReviewAdminService";
 import {
+  getStorefrontQuoteRequestForOfficialQuotation,
   listStorefrontQuoteRequests,
   updateStorefrontQuoteRequestStatus,
 } from "../services/storeAdmin/storefrontQuoteRequestAdminService";
@@ -542,10 +543,18 @@ const quoteRequestsRouter = router({
         limit: input?.limit ?? undefined,
       }),
     ),
+  prepareOfficialQuotation: storeManagerProcedure
+    .input(z.object({ requestId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      getStorefrontQuoteRequestForOfficialQuotation({
+        requestId: input.requestId,
+        scopedBranchId: actorScopedBranch(ctx.user),
+      }),
+    ),
   setStatus: storeFulfillProcedure
     .input(z.object({
       requestId: z.number().int().positive(),
-      status: z.enum(["PENDING", "CONTACTED", "QUOTED", "CLOSED", "CANCELLED"]),
+      status: z.enum(["PENDING", "CONTACTED", "CLOSED", "CANCELLED"]),
       staffNote: z.string().trim().max(2_000).nullish(),
     }))
     .mutation(async ({ input, ctx }) => {

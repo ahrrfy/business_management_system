@@ -1,5 +1,6 @@
 import { Building2, FileText, Phone, Send } from "lucide-react";
 import { useState } from "react";
+import { Link } from "wouter";
 
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +10,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 
 type Status = "PENDING" | "CONTACTED" | "QUOTED" | "CLOSED" | "CANCELLED";
+type ManualStatus = Exclude<Status, "QUOTED">;
 
 const STATUS_LABEL: Record<Status, string> = {
   PENDING: "وارد جديد",
@@ -23,9 +25,8 @@ const TYPE_LABEL: Record<string, string> = {
   BUSINESS: "شركة أو مكتب",
   GENERAL: "طلب مبيعات",
 };
-const NEXT_STATUS: Partial<Record<Status, Status>> = {
+const NEXT_STATUS: Partial<Record<Status, ManualStatus>> = {
   PENDING: "CONTACTED",
-  CONTACTED: "QUOTED",
   QUOTED: "CLOSED",
 };
 
@@ -81,7 +82,23 @@ export default function StoreQuoteRequests() {
                   {request.items.map((item, index) => <div key={`${item.productName}-${index}`} className="py-0.5">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} · {item.quantity} {item.unitName}</div>)}
                 </div>
                 {request.staffNote && <p className="mt-3 text-xs leading-5 text-muted-foreground">ملاحظة الفريق: {request.staffNote}</p>}
-                {next && <div className="mt-4 flex justify-end"><Button disabled={update.isPending} onClick={() => update.mutate({ requestId: request.id, status: next })} size="sm"><Send className="size-4" />{next === "CONTACTED" ? "تسجيل التواصل" : next === "QUOTED" ? "تسجيل إرسال العرض الرسمي" : "إغلاق الطلب"}</Button></div>}
+                <div className="mt-4 flex flex-wrap justify-end gap-2">
+                  {request.status === "CONTACTED" && !request.officialQuotationId && (
+                    <Button asChild size="sm">
+                      <Link href={`/quotations/new?storeQuoteRequestId=${request.id}`}>
+                        <FileText className="size-4" />إنشاء عرض رسمي
+                      </Link>
+                    </Button>
+                  )}
+                  {request.officialQuotationId && request.officialQuoteNumber && (
+                    <Button asChild size="sm" variant="outline">
+                      <Link href={`/quotations/${request.officialQuotationId}`}>
+                        فتح العرض {request.officialQuoteNumber}
+                      </Link>
+                    </Button>
+                  )}
+                  {next && <Button disabled={update.isPending} onClick={() => update.mutate({ requestId: request.id, status: next })} size="sm"><Send className="size-4" />{next === "CONTACTED" ? "تسجيل التواصل" : "إغلاق الطلب"}</Button>}
+                </div>
                 </CardContent>
               </Card>
             );

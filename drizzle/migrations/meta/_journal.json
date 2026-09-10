@@ -2234,6 +2234,13 @@
 			"when": 1788052415000,
 			"tag": "0342_storefront_quote_request_tracking",
 			"breakpoints": true
+		},
+		{
+			"idx": 344,
+			"version": "5",
+			"when": 1788052417000,
+			"tag": "0344_storefront_quote_request_official_quotation_link",
+			"breakpoints": true
 		}
 	]
 }

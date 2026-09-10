@@ -7960,6 +7960,10 @@ export const storefrontQuoteRequests = mysqlTable(
       .notNull(),
     customerNote: text("customerNote").notNull(),
     staffNote: text("staffNote"),
+    /** العرض الرسمي الصادر بعد مراجعة الموظف؛ الطلب نفسه لا يحمل سعراً أو أثراً مالياً. */
+    officialQuotationId: bigint("officialQuotationId", { mode: "number" }).references(
+      () => quotations.id,
+    ),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
     // صلاحية ضيف قصيرة العمر لتتبع طلب العرض من دون جعل رقم SRQ قابلاً للاستكشاف.
     guestTrackingPublicId: char("guestTrackingPublicId", { length: 32 }),
@@ -7980,6 +7984,9 @@ export const storefrontQuoteRequests = mysqlTable(
     customerCreatedIdx: index("idx_store_quote_request_customer_created").on(
       table.customerId,
       table.createdAt,
+    ),
+    officialQuotationUq: unique("uq_store_quote_request_official_quotation").on(
+      table.officialQuotationId,
     ),
     clientRequestUq: unique("uq_store_quote_request_client_request").on(
       table.clientRequestId,

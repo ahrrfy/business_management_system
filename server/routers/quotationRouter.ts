@@ -131,6 +131,7 @@ export const quotationRouter = router({
         invoiceDiscount: nonNegMoneyString.nullish(),
         taxRatePercent: percentString.nullish(),
         notes: z.string().nullish(),
+        storefrontQuoteRequestId: z.number().int().positive().nullish(),
         // idempotency (F3): مفتاح ثابت من الواجهة يمنع إنشاء عرضين عند النقر المزدوج/إعادة الشبكة.
         clientRequestId: z.string().min(1).max(80).optional(),
         lines: z
@@ -165,7 +166,7 @@ export const quotationRouter = router({
       );
       // لا نُسجّل تدقيقاً على إعادة idempotent (لا إنشاء فعليّاً حدث).
       if (!(res as { idempotentReplay?: boolean }).idempotentReplay) {
-        await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId },
+        await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId, storefrontQuoteRequestId: input.storefrontQuoteRequestId ?? null },
         });
       }
       return res;

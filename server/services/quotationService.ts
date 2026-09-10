@@ -10,6 +10,7 @@ import {
   products,
   quotationItems,
   quotations,
+  storefrontQuoteRequests,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { getDb } from "../db";
@@ -55,6 +56,8 @@ export interface CreateQuotationInput {
   invoiceDiscount?: string | null;
   taxRatePercent?: string | null;
   notes?: string | null;
+  /** طلب متجر مراجع يُربط بعرض رسمي واحد فقط؛ لا ينسخ سعراً أو حجزاً منه. */
+  storefrontQuoteRequestId?: number | null;
   /** idempotency (F3): نفس المفتاح يُعيد عرض الإنشاء الأول (النقر المزدوج لا يُنشئ عرضين). */
   clientRequestId?: string | null;
 }
@@ -113,6 +116,79 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
           total: prev?.total ?? "0",
           idempotentReplay: true as const,
         };
+      }
+    }
+
+    let sourceRequest: {
+      id: number;
+      branchId: number;
+      customerId: number | null;
+      status: string;
+      officialQuotationId: number | null;
+    } | null = null;
+    if (input.storefrontQuoteRequestId != null) {
+      const source = (
+        await tx
+          .select({
+            id: storefrontQuoteRequests.id,
+            branchId: storefrontQuoteRequests.branchId,
+            customerId: storefrontQuoteRequests.customerId,
+            status: storefrontQuoteRequests.status,
+            officialQuotationId: storefrontQuoteRequests.officialQuotationId,
+          })
+          .from(storefrontQuoteRequests)
+          .where(eq(storefrontQuoteRequests.id, input.storefrontQuoteRequestId))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (!source) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء العرض الرسمي",
+            why: "طلب عرض السعر المصدر غير موجود أو لم يعد متاحاً",
+            doThis: "ارجع إلى طابور طلبات عروض الأسعار وافتح طلباً مراجعاً",
+          }),
+        });
+      }
+      sourceRequest = {
+        id: Number(source.id),
+        branchId: Number(source.branchId),
+        customerId: source.customerId ? Number(source.customerId) : null,
+        status: source.status,
+        officialQuotationId: source.officialQuotationId ? Number(source.officialQuotationId) : null,
+      };
+      if (sourceRequest.branchId !== input.branchId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء العرض الرسمي",
+            why: "طلب العرض يتبع فرعاً مختلفاً عن فرع العرض الرسمي",
+            doThis: "افتح الطلب من الفرع الصحيح ولا تغيّر فرع العرض أثناء التحويل",
+          }),
+        });
+      }
+      if (sourceRequest.status !== "CONTACTED" || sourceRequest.officialQuotationId != null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء العرض الرسمي",
+            why: sourceRequest.officialQuotationId != null
+              ? "صدر للطلب عرض رسمي بالفعل"
+              : "الطلب لم يصل إلى مرحلة المراجعة والتواصل بعد",
+            doThis: "حدّث طابور الطلبات ثم افتح العرض الرسمي المرتبط إن كان موجوداً",
+          }),
+        });
+      }
+      if (sourceRequest.customerId != null && input.customerId !== sourceRequest.customerId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذّر إنشاء العرض الرسمي",
+            why: "العميل المختار لا يطابق عميل طلب عرض السعر",
+            doThis: "أبقِ العميل المرتبط بالطلب أو حدّث بيانات العميل من ملفه أولاً",
+          }),
+        });
       }
     }
 
@@ -194,6 +270,12 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         discountAmount: c.discountAmount,
         total: c.total,
       });
+    }
+    if (sourceRequest) {
+      await tx
+        .update(storefrontQuoteRequests)
+        .set({ status: "QUOTED", officialQuotationId: quotationId })
+        .where(eq(storefrontQuoteRequests.id, sourceRequest.id));
     }
     // سجّل مفتاح الـidempotency بعد نجاح الكتابة (refId = معرّف العرض).
     if (input.clientRequestId) {

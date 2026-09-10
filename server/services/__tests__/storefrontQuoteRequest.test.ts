@@ -9,9 +9,11 @@ import {
   trackStorefrontQuoteRequestForCustomer,
 } from "../storefrontQuoteRequestService";
 import {
+  getStorefrontQuoteRequestForOfficialQuotation,
   listStorefrontQuoteRequests,
   updateStorefrontQuoteRequestStatus,
 } from "../storeAdmin/storefrontQuoteRequestAdminService";
+import { createQuotation } from "../quotationService";
 import { truncateAllTables } from "./__testUtils__";
 
 function db() {
@@ -27,6 +29,14 @@ async function seedCatalog() {
     name: "الفرع الرئيسي",
     code: "MAIN",
     type: "MAIN",
+  });
+  await d.insert(s.users).values({
+    id: 1,
+    openId: "storefront_quote_test_manager",
+    name: "مدير عروض المتجر",
+    role: "manager",
+    loginMethod: "local",
+    branchId: 1,
   });
   await d.insert(s.products).values({
     id: 1,
@@ -64,6 +74,10 @@ async function seedCatalog() {
       conversionFactor: "500",
       isStoreSaleUnit: true,
     },
+  ]);
+  await d.insert(s.productPrices).values([
+    { productUnitId: 1, priceTier: "RETAIL", price: "2500.00" },
+    { productUnitId: 2, priceTier: "RETAIL", price: "2500.00" },
   ]);
   // طلب العرض يبقى متاحاً للعميل حتى لو أوقف المدير الشراء المباشر مؤقتاً.
   await d.insert(s.storeSettings).values({
@@ -174,6 +188,11 @@ describe("storefront quote requests", () => {
       status: "PENDING",
       scopedBranchId: 1,
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(updateStorefrontQuoteRequestStatus({
+      requestId: first.requestId,
+      status: "QUOTED",
+      scopedBranchId: 1,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("يرفض رمز الضيف المزور ولا يسمح لجلسة عميل آخر بتخمين رقم SRQ", async () => {
@@ -214,5 +233,70 @@ describe("storefront quote requests", () => {
         Number(firstRequest.customerId),
       ),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("يربط العرض الرسمي الوحيد بطلب مراجع في معاملة واحدة ولا ينقل السعر من لقطة الطلب", async () => {
+    const request = await createStorefrontQuoteRequest({
+      customerName: "شركة دجلة للتجهيز",
+      customerPhone: "07701234567",
+      companyName: "شركة دجلة للتجهيز",
+      contactPreference: "WHATSAPP",
+      requestType: "BUSINESS",
+      note: "نريد تسعيراً رسمياً لورق الطباعة مع إمكانية مراجعة السعر النهائي.",
+      clientRequestId: "quote-official-link-source",
+      lines: [{ productUnitId: 1, quantity: 4 }],
+    });
+    await updateStorefrontQuoteRequestStatus({
+      requestId: request.requestId,
+      status: "CONTACTED",
+      scopedBranchId: 1,
+    });
+    const source = await getStorefrontQuoteRequestForOfficialQuotation({
+      requestId: request.requestId,
+      scopedBranchId: 1,
+    });
+    expect(source).toMatchObject({
+      requestNumber: request.requestNumber,
+      customerPriceTier: "RETAIL",
+      items: [expect.objectContaining({
+        productUnitId: 1,
+        variantId: 1,
+        quantity: 4,
+        suggestedUnitPrice: "2500.00",
+        isCurrentCatalogLine: true,
+      })],
+    });
+
+    const official = await createQuotation({
+      branchId: 1,
+      customerId: source.customerId!,
+      storefrontQuoteRequestId: request.requestId,
+      clientRequestId: "quote-official-link-created",
+      lines: [{
+        variantId: 1,
+        productUnitId: 1,
+        quantity: "4",
+        // سعر الموظف هنا مختلف عمداً عن السعر المقترح للكتالوج: المصدر ليس سعراً ملزماً.
+        unitPriceOverride: "2300.00",
+      }],
+    }, { userId: 1, branchId: 1, role: "manager" });
+    expect(official.total).toBe("9200.00");
+
+    const linked = (await db()
+      .select()
+      .from(s.storefrontQuoteRequests)
+      .where(eq(s.storefrontQuoteRequests.id, request.requestId)))[0]!;
+    expect(linked).toMatchObject({
+      status: "QUOTED",
+      officialQuotationId: official.quotationId,
+    });
+    expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
+    await expect(createQuotation({
+      branchId: 1,
+      customerId: source.customerId!,
+      storefrontQuoteRequestId: request.requestId,
+      clientRequestId: "quote-official-link-duplicate",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "2300.00" }],
+    }, { userId: 1, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });
