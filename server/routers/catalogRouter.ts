@@ -17,6 +17,7 @@ import {
   listProductImages,
   listProductsAdmin,
   listStockByUnitIds,
+  listUnitsForVariant,
   lookupByBarcode,
   setProductActive,
   updateProduct,
@@ -533,6 +534,25 @@ export const catalogRouter = router({
         input.customerId ?? undefined,
       );
       return redactPosCostOne(row, ctx.user);
+    }),
+
+  variantUnits: productsReadProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        tier,
+        customerId: z.number().int().positive().nullish(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const rows = await listUnitsForVariant(
+        input.variantId,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+        input.customerId ?? undefined,
+      );
+      return redactPosCost(rows, ctx.user);
     }),
 
   // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)

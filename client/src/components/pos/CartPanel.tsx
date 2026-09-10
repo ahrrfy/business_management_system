@@ -9,10 +9,11 @@ import { useEffect, useMemo, useRef } from "react";
 import { ShoppingCart, X, AlertTriangle, CreditCard, PackagePlus } from "lucide-react";
 import { motion } from "framer-motion";
 import { digitalOfferingDescription, digitalOfferingTypeLabel } from "@shared/digitalSale";
-import { type Tier, type NumMode, type CartItem, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
+import { type Tier, type NumMode, type CartItem, type PosRow, lineIdOf, fmt, effectivePrice, itemTotal, type PosColors as C } from "./posShared";
 import { CartCustomerButton } from "./CartCustomerButton";
 import { CartDeliveryPanel } from "./CartDeliveryPanel";
 import { CartPanelFooter } from "./CartPanelFooter";
+import { PosUnitSelector } from "./PosUnitSelector";
 import type { DeliveryCustomerIdentity } from "./DeliveryCustomerSection";
 import { emptyDeliveryDraft, type DeliveryDraft } from "./deliveryMode";
 
@@ -24,6 +25,7 @@ export interface CartPanelProps {
   selId: number | null; setSelId: (id: number | null) => void;
   changeQty: (id: number, qty: number) => void;
   removeRow: (id: number) => void;
+  onUnitChange?: (oldUnitId: number, newRow: PosRow) => void;
   numMode: NumMode; setNumMode: (m: NumMode) => void;
   customerId: number | null;
   selectedCustomer:
@@ -50,7 +52,7 @@ export interface CartPanelProps {
   customerBalance: string | null;
 }
 
-export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
+export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, onUnitChange, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd, addTick, tabId, delivery, onDeliveryChange, onDeliveryIdentity, deliveryDisabledReason, customerBalance }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
   // ٢٣/٨ — تمريرٌ تلقائيّ لآخر منتجٍ مُضاف (بلاغ المالك «لا يظهر المنتج المضاف حتى أنزل يدوياً»):
@@ -72,8 +74,8 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addTick]);
-  const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
-  const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
+  const TH: React.CSSProperties = { padding: "6px 8px", fontWeight: 700, fontSize: 12, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
+  const TD: React.CSSProperties = { padding: "5px 6px", textAlign: "center", fontSize: 13 };
 
   // حارس مخزون ليّن (إشارة بصرية فقط؛ الذرّية يفرضها الخادم في applyMovement). نجمع الطلب بالوحدة
   // الأساس لكل صنف (variant) عبر كل وحداته في السلّة، لأنّ رصيد الفرع (stockBase) واحدٌ للصنف
@@ -342,7 +344,21 @@ export function CartPanel({ C, branchId, branchName, cart, total, selId, setSelI
                       </span>
                     )}
                   </td>
-                  <td style={{ ...TD, color: C.mutedFg, fontSize: 12.5 }}>{c.row.unitName}</td>
+                  <td style={{ ...TD, color: C.mutedFg, fontSize: 12.5 }}>
+                    {c.digital ? (
+                      c.row.unitName
+                    ) : (
+                      <PosUnitSelector
+                        branchId={branchId}
+                        variantId={c.row.variantId}
+                        currentUnitId={c.row.productUnitId}
+                        currentUnitName={c.row.unitName}
+                        tier={effectiveTier}
+                        C={C}
+                        onUnitChange={(newRow) => onUnitChange?.(c.row.productUnitId, newRow)}
+                      />
+                    )}
+                  </td>
                   <td style={{ ...TD, direction: "ltr", color: C.mutedFg }}>
                     {c.disc != null && c.disc > 0
                       ? <>
