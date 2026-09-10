@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   AlertTriangle,
+  BookOpen,
   Building2,
   Clock,
   CreditCard,
@@ -34,6 +35,7 @@ import { ReturnComposer } from "@/components/returns/ReturnComposer";
 import PurchaseReturnsGovernance from "@/pages/PurchaseReturnsGovernance";
 import { ReturnConsignmentDialog, type ReturnConsignmentTarget } from "@/components/delivery/ReturnConsignmentDialog";
 import { NoReceiptReturnDialog, type NoReceiptItem } from "@/components/returns/NoReceiptReturnDialog";
+import { ReturnsLedgerView } from "@/components/returns/ReturnsLedgerView";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -49,7 +51,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
-export type ReturnsTabKey = "sales" | "print" | "delivery" | "purchases" | "forensic";
+export type ReturnsTabKey = "sales" | "print" | "delivery" | "purchases" | "forensic" | "ledger";
 
 type TracedRow = RouterOutputs["returns"]["forensicTrace"]["results"][number];
 type InvoicePickRow = RouterOutputs["sales"]["listPage"]["rows"][number];
@@ -378,6 +380,7 @@ export default function ReturnsHub() {
               {activeTab === "delivery" && "التوصيل والاستقبال"}
               {activeTab === "purchases" && "المشتريات والموردين"}
               {activeTab === "forensic" && "التقصي الجنائي"}
+              {activeTab === "ledger" && "سجل قيود المرتجعات"}
             </div>
           </Card>
         </div>
@@ -433,6 +436,15 @@ export default function ReturnsHub() {
         >
           <FileSearch className="size-4" aria-hidden />
           التحري الجنائي (فواتير مفقودة)
+        </Button>
+
+        <Button
+          variant={activeTab === "ledger" ? "default" : "outline"}
+          onClick={() => switchTab("ledger")}
+          className="gap-2 font-bold"
+        >
+          <BookOpen className="size-4" aria-hidden />
+          سجل المرتجعات والتدقيق
         </Button>
       </div>
 
@@ -851,6 +863,11 @@ export default function ReturnsHub() {
           </Card>
         </div>
       )}
+
+      {/* ═════════════════════════════════════════════════════════════════════ */}
+      {/* ٦) تبويب سجل المرتجعات والتدقيق المحاسبي (Returns Ledger Tab)         */}
+      {/* ═════════════════════════════════════════════════════════════════════ */}
+      {activeTab === "ledger" && <ReturnsLedgerView />}
 
       {/* نافذة بروتوكول الإرجاع بدون فاتورة */}
       <NoReceiptReturnDialog
