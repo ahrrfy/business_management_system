@@ -30,7 +30,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import {
   expenseApprovalExecutionText,
   expenseExecutionMode,
-} from "./expenseUiPolicy";
+} from "@/lib/expenseUiPolicy";
 
 /**
  * مصروف جديد — v3 add-screens.

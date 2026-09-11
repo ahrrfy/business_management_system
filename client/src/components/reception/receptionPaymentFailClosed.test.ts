@@ -43,7 +43,7 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     const reservations = readClient("../../pages/ReservationsHub.tsx");
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
-    expect(workOrderNew).toContain('onClick={() => setPaymentMethod("CARD")}');
+    expect(workOrderNew).toContain('<Redirect to="/pos?mode=RECEPTION" />');
     expect(workOrderDetail).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}",
     );
     expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}',

@@ -21,7 +21,10 @@ describe("سياسة القبض خارج نقاط البيع", () => {
   });
 
   it("سند القبض يعرض الطرق المدعومة كلّها بلا قائمة موازية مُقفلة", () => {
-    const source = readPage("_VoucherFormShared.tsx");
+    const source = readFileSync(
+      new URL("../../components/vouchers/VoucherFormShared.tsx", import.meta.url),
+      "utf8",
+    );
     expect(source).toContain("disabled={!isInboundPaymentMethodEnabled(m.value)}");
     expect(source).not.toContain("CASH_METHODS");
     expect(source).not.toContain('if (isReceipt && method !== "CASH")');
