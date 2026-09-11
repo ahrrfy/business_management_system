@@ -12,7 +12,7 @@
  * `price = costBase × conversionFactor` (بالدينار) أو نفسه مقسوماً على سعر التثبيت (بالدولار).
  * الاختبار يفشل قبل الإصلاح ويمرّ بعده.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -124,19 +124,28 @@ describe("derivePurchaseLinePriceFromRequisition — Codex #980 Finding 4", () =
 /**
  * حزامٌ نصّيٌّ يمنع انحدارَ Finding 3: طباعةُ أمر الشراء المُحرَّر لا يجوز أن تحسب السعرَ بـ
  * `l.costBase || l.price` (كان يُخرِج الأصل بدل ما حرّره المستخدم). هذا حارسٌ صغير — لا يفحص
- * جودة الحساب، بل وجودَ النمط المُدان في `printOrder` بالتحديد.
+ * جودة الحساب، بل وجودَ النمط المُدان في `printOrder` أو مساعد الطباعة `purchaseOrderPrint.ts` بالتحديد.
  */
 describe("PurchaseEdit.printOrder — Codex #980 Finding 3 source guard", () => {
   it("لا يستعمل `l.costBase || l.price` — طباعةٌ توافق ما حفظه المستخدم", () => {
-    const filePath = path.resolve(__dirname, "../../../pages/PurchaseEdit.tsx");
-    const source = readFileSync(filePath, "utf8");
-    // نطاق البحث: كتلة `printOrder` وحدها — قبل أوّل `function ` تالية.
-    const start = source.indexOf("function printOrder");
+    const editFilePath = path.resolve(__dirname, "../../../pages/PurchaseEdit.tsx");
+    const printHelperPath = path.resolve(__dirname, "../../purchases/purchaseOrderPrint.ts");
+    const editSource = readFileSync(editFilePath, "utf8");
+    const printSource = existsSync(printHelperPath) ? readFileSync(printHelperPath, "utf8") : "";
+
+    // نطاق البحث في PurchaseEdit: كتلة `printOrder` وحدها — قبل أوّل `function ` تالية.
+    const start = editSource.indexOf("function printOrder");
     expect(start).toBeGreaterThan(-1);
-    const rest = source.slice(start);
+    const rest = editSource.slice(start);
     const nextFn = rest.indexOf("\n  function ", 1);
     const block = nextFn > 0 ? rest.slice(0, nextFn) : rest;
-    expect(block).toMatch(/l\.price/);
+
+    // كلا الموضعين محميّ: لا costBase || price، والسعر الفعلي يعتمد l.price
+    expect(`${block}\n${printSource}`).toMatch(/l\.price/);
     expect(block).not.toMatch(/l\.costBase\s*\|\|/);
+    if (printSource) {
+      expect(printSource).not.toMatch(/l\.costBase\s*\|\|/);
+      expect(printSource).toMatch(/l\.price/);
+    }
   });
 });
