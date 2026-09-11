@@ -11,8 +11,10 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  Coins,
   CreditCard,
   Minus,
   Plus,
@@ -60,11 +62,16 @@ interface SalesReturnPortalProps {
   onReturnSuccess: (data: PrintSalesReturnData) => void;
 }
 
-export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesReturnPortalProps) {
+export function SalesReturnPortal({
+  initialInvoiceNo,
+  onReturnSuccess,
+}: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
-  const activeBranchId = me.data?.branchId ? Number(me.data.branchId) : Number(branches.data?.[0]?.id || 1);
+  const activeBranchId = me.data?.branchId
+    ? Number(me.data.branchId)
+    : Number(branches.data?.[0]?.id || 1);
 
   const [salesInvoiceNo, setSalesInvoiceNo] = useState(initialInvoiceNo ?? "");
   const [salesCustomerName, setSalesCustomerName] = useState("");
@@ -72,35 +79,75 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
   const [salesCustomerId, setSalesCustomerId] = useState<number | null>(null);
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
   const [salesCustomerSearch, setSalesCustomerSearch] = useState("");
-  const debouncedCustomerSearch = useDebouncedValue(salesCustomerSearch.trim(), 300);
+  const debouncedCustomerSearch = useDebouncedValue(
+    salesCustomerSearch.trim(),
+    300,
+  );
 
   const customersQuery = trpc.customers.smartSearch.useQuery(
     { q: debouncedCustomerSearch, limit: 6 },
-    { enabled: debouncedCustomerSearch.length >= 2 }
+    { enabled: debouncedCustomerSearch.length >= 2 },
   );
 
-  const [salesDisposition, setSalesDisposition] = useState<"RESTOCK" | "DAMAGED">("RESTOCK");
+  const [salesDisposition, setSalesDisposition] = useState<
+    "RESTOCK" | "DAMAGED"
+  >("RESTOCK");
   const [salesBarcode, setSalesBarcode] = useState("");
   const [salesCart, setSalesCart] = useState<SalesCartItem[]>([]);
-  const [salesRefundMethod, setSalesRefundMethod] = useState<"CASH" | "CARD" | "STORE_CREDIT">("CASH");
+  const [salesRefundMethod, setSalesRefundMethod] = useState<
+    "CASH" | "CARD" | "STORE_CREDIT"
+  >("CASH");
   const [salesCardRef, setSalesCardRef] = useState("");
   const [salesReason, setSalesReason] = useState("");
+
+  const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
+    refetchInterval: 30_000,
+  });
+  const openDrawers = openDrawersQ.data ?? [];
+  const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (openDrawers.length > 0 && selectedShiftId == null) {
+      const mine = openDrawers.find((d) => d.isMine);
+      if (mine) {
+        setSelectedShiftId(mine.shiftId);
+      } else {
+        setSelectedShiftId(openDrawers[0].shiftId);
+      }
+    }
+  }, [openDrawers, selectedShiftId]);
 
   const salesBarcodeRef = useRef<HTMLInputElement>(null);
 
   const salesTotal = useMemo(() => {
-    return salesCart.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice || 0), 0);
+    return salesCart.reduce(
+      (sum, item) => sum + item.quantity * Number(item.unitPrice || 0),
+      0,
+    );
   }, [salesCart]);
 
   const salesTotalPieces = useMemo(() => {
     return salesCart.reduce((sum, item) => sum + item.quantity, 0);
   }, [salesCart]);
 
+  const selectedDrawer = useMemo(() => {
+    return openDrawers.find((d) => d.shiftId === selectedShiftId) ?? null;
+  }, [openDrawers, selectedShiftId]);
+
+  const isInsufficientCash = useMemo(() => {
+    return (
+      selectedDrawer != null &&
+      Number(selectedDrawer.expectedCash || 0) < salesTotal
+    );
+  }, [selectedDrawer, salesTotal]);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "F2") return;
       e.preventDefault();
-      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      const el = document.querySelector<HTMLInputElement>(
+        "input[data-product-search='1']",
+      );
       el?.focus();
       el?.select();
     }
@@ -151,13 +198,17 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
     if (!raw) return;
     setSalesScanPending(true);
     try {
-      const res = await utils.returns.lookupItemForReturn.fetch({ barcode: raw });
+      const res = await utils.returns.lookupItemForReturn.fetch({
+        barcode: raw,
+      });
       if (!res) {
         notify.warn(`لم يتم العثور على منتج بالباركود: ${raw}`);
         return;
       }
       const variantId = res.variantId;
-      const priceStr = String(res.retailPrice || res.lowestHistoricalPrice || "0");
+      const priceStr = String(
+        res.retailPrice || res.lowestHistoricalPrice || "0",
+      );
 
       setSalesCart((prev) => {
         const existingIdx = prev.findIndex((i) => i.variantId === variantId);
@@ -203,7 +254,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
     try {
       // ١) تجربة المسح الكوني الذكي لمعرفة ما إذا كان الرمز فاتورة أو مستنداً
       try {
-        const scanRes = await utils.returns.universalScan.fetch({ barcode: raw });
+        const scanRes = await utils.returns.universalScan.fetch({
+          barcode: raw,
+        });
         if (scanRes.recognized && scanRes.kind === "INVOICE" && scanRes.id) {
           const inv = await utils.sales.get.fetch({ invoiceId: scanRes.id });
           if (inv) {
@@ -239,21 +292,28 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
       try {
         const trace = await utils.returns.forensicTrace.fetch({
           query: raw,
-          mode: /^\d+$/.test(raw) && raw.length >= 7 ? "CUSTOMER_PHONE" : "ITEM_BARCODE",
+          mode:
+            /^\d+$/.test(raw) && raw.length >= 7
+              ? "CUSTOMER_PHONE"
+              : "ITEM_BARCODE",
           days: 90,
         });
         if (trace?.results && trace.results.length > 0) {
           const first = trace.results[0];
           setSalesCustomerName(first.customerName ?? "عميل نقدي");
           setSalesInvoiceNo(first.invoiceNumber);
-          notify.ok(`تم العثور على الفاتورة #${first.invoiceNumber} عبر التحري الذكي`);
+          notify.ok(
+            `تم العثور على الفاتورة #${first.invoiceNumber} عبر التحري الذكي`,
+          );
           return;
         }
       } catch {
         // المتابعة
       }
 
-      notify.warn("لم يُعثر على فاتورة بهذا الرقم — يمكنك المتابعة بدون فاتورة");
+      notify.warn(
+        "لم يُعثر على فاتورة بهذا الرقم — يمكنك المتابعة بدون فاتورة",
+      );
     } catch {
       notify.warn("تعذر جلب الفاتورة — يمكنك المتابعة بدونها");
     } finally {
@@ -280,11 +340,47 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
       return;
     }
 
+    if (salesRefundMethod === "CASH") {
+      if (openDrawers.length === 0) {
+        notify.warn(
+          "لا توجد وردية كاشير مفتوحة حالياً في الفرع لصرف النقد منها — افتح وردية أولاً أو اختر طريقة أخرى",
+        );
+        return;
+      }
+      if (!selectedShiftId) {
+        notify.warn(
+          "يرجى اختيار درج النقدية / الوردية التي سيتم صرف المبلغ منها",
+        );
+        return;
+      }
+      if (isInsufficientCash) {
+        const proceedAnyway = await confirm({
+          title: "تنبيه نقص النقد في الدرج",
+          description: `الرصيد المحسوب حالياً في درج (${selectedDrawer?.userName || "الكاشير"}) هو (${fmt(selectedDrawer?.expectedCash || "0")} د.ع)، وهو أقل من مبلغ المرتجع (${fmt(String(salesTotal))} د.ع). هل ترغب في المتابعة والتأكيد؟`,
+          confirmText: "المتابعة على أي حال",
+          variant: "warning",
+        });
+        if (!proceedAnyway) return;
+      }
+    } else if (salesRefundMethod === "STORE_CREDIT") {
+      if (!salesCustomerId) {
+        notify.warn(
+          "طريقة استرداد رصيد المتجر تتطلب اختيار عميل مسجل في CRM لإيداع الرصيد في حسابه",
+        );
+        return;
+      }
+    }
+
+    const drawerNotice =
+      salesRefundMethod === "CASH"
+        ? `استرداد نقدي من درج [${selectedDrawer?.userName || "الكاشير"}]`
+        : salesRefundMethod === "CARD"
+          ? "استرداد بالبطاقة"
+          : "إيداع رصيد متجر بحساب العميل";
+
     const ok = await confirm({
       title: "تأكيد تنفيذ مرتجع المبيعات",
-      description: `سيتم إرجاع ${salesTotalPieces} قطعة بإجمالي ${fmt(String(salesTotal))} د.ع بطريقة [${
-        salesRefundMethod === "CASH" ? "استرداد نقدي" : salesRefundMethod === "CARD" ? "استرداد بالبطاقة" : "رصيد متجر"
-      }]. هل تؤكد التنفيذ الذري فوراً؟`,
+      description: `سيتم إرجاع ${salesTotalPieces} قطعة بإجمالي ${fmt(String(salesTotal))} د.ع بطريقة [${drawerNotice}]. هل تؤكد التنفيذ الذري فوراً؟`,
       confirmText: "تأكيد وطباعة الإيصال",
       variant: "info",
     });
@@ -315,6 +411,10 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
         settlement: {
           method: salesRefundMethod,
           totalAmount: String(salesTotal),
+          shiftId:
+            salesRefundMethod === "CASH"
+              ? (selectedShiftId ?? undefined)
+              : undefined,
           reference: salesCardRef.trim() || undefined,
         },
         reason: salesReason.trim() || undefined,
@@ -336,6 +436,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
 
       void printSalesReturnReceipt(printData);
       onReturnSuccess(printData);
+      void openDrawersQ.refetch();
 
       setSalesCart([]);
       setSalesInvoiceNo("");
@@ -450,7 +551,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                             className="w-full text-right p-1.5 text-xs rounded hover:bg-muted flex items-center justify-between"
                           >
                             <span className="font-semibold">{c.name}</span>
-                            <span className="text-muted-foreground font-mono text-[11px]">{c.phone || "—"}</span>
+                            <span className="text-muted-foreground font-mono text-[11px]">
+                              {c.phone || "—"}
+                            </span>
                           </button>
                         ))}
                       </div>
@@ -471,7 +574,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       "h-7 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer",
                       salesDisposition === "RESTOCK"
                         ? "bg-emerald-600 text-white shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     <RotateCcw className="size-3" aria-hidden />
@@ -485,7 +588,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       "h-7 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer",
                       salesDisposition === "DAMAGED"
                         ? "bg-amber-600 text-white shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     <AlertTriangle className="size-3" aria-hidden />
@@ -518,7 +621,10 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                 <ShoppingCart className="size-4 text-primary" aria-hidden />
                 <span>سلة الأصناف المرتجعة ({salesCart.length})</span>
                 {salesTotalPieces > 0 && (
-                  <Badge variant="secondary" className="text-[11px] font-normal px-2 py-0">
+                  <Badge
+                    variant="secondary"
+                    className="text-[11px] font-normal px-2 py-0"
+                  >
                     إجمالي القطع: {salesTotalPieces}
                   </Badge>
                 )}
@@ -543,7 +649,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
               branchId={activeBranchId}
               tier="RETAIL"
               onAddProduct={handleAddProductFromSearch}
-              onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+              onNotify={(msg, kind) =>
+                kind === "error" ? notify.err(msg) : notify.info(msg)
+              }
               placeholder="ابحث بالاسم أو SKU أو امسح الباركود لإضافته للسلة مباشرة... (F2)"
               compact={true}
               autoFocus={true}
@@ -556,7 +664,8 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                 <ShoppingCart className="size-9 text-muted-foreground/40" />
                 <p className="font-semibold text-sm">سلة المرتجعات فارغة</p>
                 <p className="text-xs max-w-sm">
-                  استخدم حقل البحث الموحد أعلاه للبحث اليدوي بالاسم أو مسح الباركود مباشرة لإدراج الأصناف في السلة
+                  استخدم حقل البحث الموحد أعلاه للبحث اليدوي بالاسم أو مسح
+                  الباركود مباشرة لإدراج الأصناف في السلة
                 </p>
               </div>
             ) : (
@@ -574,7 +683,8 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     </thead>
                     <tbody className="divide-y divide-border">
                       {salesCart.map((item, idx) => {
-                        const subtotal = item.quantity * Number(item.unitPrice || 0);
+                        const subtotal =
+                          item.quantity * Number(item.unitPrice || 0);
                         const isRecentlyAdded = item.id === lastAddedId;
                         return (
                           <tr
@@ -583,17 +693,19 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                               "transition-colors duration-700",
                               isRecentlyAdded
                                 ? "bg-emerald-500/20 dark:bg-emerald-500/25 font-medium"
-                                : "hover:bg-muted/20"
+                                : "hover:bg-muted/20",
                             )}
                           >
                             <td className="p-2.5">
                               <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
                                 <span>{item.productName}</span>
-                                {item.unit && item.conversionFactor && item.conversionFactor > 1 && (
-                                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
-                                    {item.unit} ({item.conversionFactor} قطعة)
-                                  </span>
-                                )}
+                                {item.unit &&
+                                  item.conversionFactor &&
+                                  item.conversionFactor > 1 && (
+                                    <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                                      {item.unit} ({item.conversionFactor} قطعة)
+                                    </span>
+                                  )}
                               </div>
                               {item.barcode && (
                                 <span className="font-mono text-[10px] text-muted-foreground">
@@ -609,9 +721,15 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                                     setSalesCart((prev) =>
                                       prev.map((it, i) =>
                                         i === idx
-                                          ? { ...it, quantity: Math.max(1, it.quantity - 1) }
-                                          : it
-                                      )
+                                          ? {
+                                              ...it,
+                                              quantity: Math.max(
+                                                1,
+                                                it.quantity - 1,
+                                              ),
+                                            }
+                                          : it,
+                                      ),
                                     );
                                   }}
                                   className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground"
@@ -623,9 +741,14 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                                   min={1}
                                   value={item.quantity}
                                   onChange={(e) => {
-                                    const q = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                    const q = Math.max(
+                                      1,
+                                      parseInt(e.target.value, 10) || 1,
+                                    );
                                     setSalesCart((prev) =>
-                                      prev.map((it, i) => (i === idx ? { ...it, quantity: q } : it))
+                                      prev.map((it, i) =>
+                                        i === idx ? { ...it, quantity: q } : it,
+                                      ),
                                     );
                                   }}
                                   className="h-7 w-14 text-center text-xs font-bold p-0"
@@ -635,8 +758,10 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                                   onClick={() => {
                                     setSalesCart((prev) =>
                                       prev.map((it, i) =>
-                                        i === idx ? { ...it, quantity: it.quantity + 1 } : it
-                                      )
+                                        i === idx
+                                          ? { ...it, quantity: it.quantity + 1 }
+                                          : it,
+                                      ),
                                     );
                                   }}
                                   className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground"
@@ -650,7 +775,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                                 value={item.unitPrice}
                                 onChange={(p) => {
                                   setSalesCart((prev) =>
-                                    prev.map((it, i) => (i === idx ? { ...it, unitPrice: p } : it))
+                                    prev.map((it, i) =>
+                                      i === idx ? { ...it, unitPrice: p } : it,
+                                    ),
                                   );
                                 }}
                                 className="h-7 text-xs font-mono"
@@ -664,7 +791,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSalesCart((prev) => prev.filter((_, i) => i !== idx));
+                                  setSalesCart((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  );
                                 }}
                                 className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
                               >
@@ -688,7 +817,10 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                   </button>
                   <div className="flex items-center gap-3">
                     <span className="text-muted-foreground">
-                      القطع: <strong className="text-foreground">{salesTotalPieces}</strong>
+                      القطع:{" "}
+                      <strong className="text-foreground">
+                        {salesTotalPieces}
+                      </strong>
                     </span>
                     <span>
                       المجموع:{" "}
@@ -716,9 +848,12 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
           <CardContent className="p-4 space-y-4">
             {/* كارت المبلغ الإجمالي */}
             <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-center space-y-1">
-              <span className="text-xs text-muted-foreground font-medium">إجمالي المبلغ المرتجع للعميل</span>
+              <span className="text-xs text-muted-foreground font-medium">
+                إجمالي المبلغ المرتجع للعميل
+              </span>
               <div className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
-                {fmt(String(salesTotal))} <span className="text-sm font-bold">د.ع</span>
+                {fmt(String(salesTotal))}{" "}
+                <span className="text-sm font-bold">د.ع</span>
               </div>
               <span className="text-[11px] text-muted-foreground">
                 إجمالي الأصناف: {salesCart.length} ({salesTotalPieces} قطعة)
@@ -727,7 +862,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
 
             {/* اختيار طريقة الاسترداد */}
             <div className="space-y-2">
-              <label className="text-xs font-bold text-foreground">طريقة الاسترداد المالي</label>
+              <label className="text-xs font-bold text-foreground">
+                طريقة الاسترداد المالي
+              </label>
               <div className="space-y-2">
                 <button
                   type="button"
@@ -736,7 +873,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     salesRefundMethod === "CASH"
                       ? "border-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 font-bold text-emerald-900 dark:text-emerald-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -748,8 +885,119 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       </div>
                     </div>
                   </div>
-                  {salesRefundMethod === "CASH" && <CheckCircle2 className="size-4 text-emerald-600" />}
+                  {salesRefundMethod === "CASH" && (
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                  )}
                 </button>
+
+                {salesRefundMethod === "CASH" && (
+                  <div className="p-2.5 rounded-lg border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/50 dark:bg-emerald-950/20 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-emerald-900 dark:text-emerald-300">
+                      <span className="flex items-center gap-1.5">
+                        <Coins className="size-3.5 text-emerald-600" />
+                        اختيار درج النقدية للصرف (الوردية)
+                      </span>
+                      {openDrawers.length > 0 && (
+                        <span className="text-[10px] text-muted-foreground font-normal font-mono">
+                          {openDrawers.length} درج متاح
+                        </span>
+                      )}
+                    </div>
+
+                    {openDrawersQ.isLoading ? (
+                      <div className="text-[11px] text-muted-foreground p-2 text-center">
+                        جارٍ فحص أدراج النقدية المفتوحة...
+                      </div>
+                    ) : openDrawers.length === 0 ? (
+                      <div className="p-2.5 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-[11px] flex items-start gap-2">
+                        <AlertTriangle className="size-4 shrink-0 text-amber-600 mt-0.5" />
+                        <div>
+                          <div className="font-bold">
+                            لا توجد وردية كاشير مفتوحة حالياً
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            يجب فتح وردية في هذا الفرع لصرف النقد، أو اختيار
+                            طريقة استرداد أخرى كالبطاقة أو رصيد المتجر.
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {openDrawers.map((dr) => {
+                          const isSelected = dr.shiftId === selectedShiftId;
+                          const isLow =
+                            Number(dr.expectedCash || 0) < salesTotal;
+                          const shiftTypeLabel =
+                            dr.shiftType === "RETAIL"
+                              ? "تجزئة"
+                              : dr.shiftType === "RECEPTION"
+                                ? "استقبال"
+                                : dr.shiftType === "PRINT_SERVICES"
+                                  ? "طباعة"
+                                  : dr.shiftType;
+
+                          return (
+                            <button
+                              key={dr.shiftId}
+                              type="button"
+                              onClick={() => setSelectedShiftId(dr.shiftId)}
+                              className={cn(
+                                "w-full p-2 rounded-md border text-right transition-all flex flex-col gap-1 cursor-pointer text-xs",
+                                isSelected
+                                  ? "border-emerald-600 bg-white dark:bg-card ring-1 ring-emerald-500 font-bold shadow-xs"
+                                  : "border-border/70 hover:bg-background/80 bg-background/50 text-foreground",
+                              )}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5 font-bold">
+                                  <span>{dr.userName}</span>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[9px] py-0 px-1 font-normal"
+                                  >
+                                    {shiftTypeLabel}
+                                  </Badge>
+                                  {dr.isMine && (
+                                    <Badge className="text-[9px] py-0 px-1 bg-emerald-600 text-white hover:bg-emerald-700 font-normal">
+                                      درجي
+                                    </Badge>
+                                  )}
+                                </div>
+                                {isSelected && (
+                                  <CheckCircle2 className="size-3.5 text-emerald-600" />
+                                )}
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] font-normal">
+                                <span className="text-muted-foreground">
+                                  النقد بالدرج:
+                                </span>
+                                <span
+                                  className={cn(
+                                    "font-mono font-bold",
+                                    isLow
+                                      ? "text-amber-600 dark:text-amber-400"
+                                      : "text-emerald-700 dark:text-emerald-400",
+                                  )}
+                                >
+                                  {fmt(dr.expectedCash)} د.ع
+                                </span>
+                              </div>
+                              {isLow && isSelected && (
+                                <div className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                                  <AlertCircle className="size-3 shrink-0" />
+                                  <span>
+                                    تنبيه: النقد بالدرج أقل من مبلغ المرتجع (
+                                    {fmt(String(salesTotal))} د.ع)
+                                  </span>
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -758,7 +1006,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     salesRefundMethod === "CARD"
                       ? "border-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 font-bold text-emerald-900 dark:text-emerald-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -770,7 +1018,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       </div>
                     </div>
                   </div>
-                  {salesRefundMethod === "CARD" && <CheckCircle2 className="size-4 text-emerald-600" />}
+                  {salesRefundMethod === "CARD" && (
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                  )}
                 </button>
 
                 {salesRefundMethod === "CARD" && (
@@ -791,7 +1041,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     salesRefundMethod === "STORE_CREDIT"
                       ? "border-emerald-600 bg-emerald-50 dark:bg-emerald-950/30 font-bold text-emerald-900 dark:text-emerald-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -803,7 +1053,9 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       </div>
                     </div>
                   </div>
-                  {salesRefundMethod === "STORE_CREDIT" && <CheckCircle2 className="size-4 text-emerald-600" />}
+                  {salesRefundMethod === "STORE_CREDIT" && (
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                  )}
                 </button>
               </div>
             </div>
@@ -812,11 +1064,19 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
             <Button
               type="button"
               onClick={() => void handleExecuteSalesReturn()}
-              disabled={salesReturnMutation.isPending || salesCart.length === 0 || salesTotal <= 0}
+              disabled={
+                salesReturnMutation.isPending ||
+                salesCart.length === 0 ||
+                salesTotal <= 0
+              }
               className="w-full h-12 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white gap-2 shadow-sm cursor-pointer"
             >
               <Receipt className="size-5" />
-              <span>{salesReturnMutation.isPending ? "جاري تنفيذ المرتجع..." : "تأكيد المرتجع وطباعة الإيصال"}</span>
+              <span>
+                {salesReturnMutation.isPending
+                  ? "جاري تنفيذ المرتجع..."
+                  : "تأكيد المرتجع وطباعة الإيصال"}
+              </span>
             </Button>
           </CardContent>
         </Card>
