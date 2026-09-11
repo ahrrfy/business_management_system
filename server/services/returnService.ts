@@ -493,14 +493,12 @@ export async function returnSaleInTx(
   // مسارات التوصيل تتشارك ترتيباً واحداً بعد المصدر: party→consignment→invoice.
   // بدونه يمسك التوريد الإرسالية ثم ينتظر الفاتورة بينما المرتجع يمسك الفاتورة ثم ينتظرها.
   if (deliveryPreview) {
-    const party = (
-      await tx
-        .select({ id: deliveryParties.id })
-        .from(deliveryParties)
-        .where(eq(deliveryParties.id, Number(deliveryPreview.partyId)))
-        .for("update")
-        .limit(1)
-    )[0];
+    // prettier-ignore
+    const party = (await tx.select({ id: deliveryParties.id })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, Number(deliveryPreview.partyId)))
+      .for("update")
+      .limit(1))[0];
     if (!party) {
       throw new TRPCError({
         code: "CONFLICT",
