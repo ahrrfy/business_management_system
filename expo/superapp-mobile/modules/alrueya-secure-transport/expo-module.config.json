@@ -1,0 +1,10 @@
+{
+  "platforms": ["android", "ios"],
+  "android": {
+    "modules": ["online.alarabiya.securetransport.AlrueyaSecureTransportModule"]
+  },
+  "ios": {
+    "modules": ["AlrueyaSecureTransportModule"],
+    "podspecPath": "./ios/AlrueyaSecureTransport.podspec"
+  }
+}

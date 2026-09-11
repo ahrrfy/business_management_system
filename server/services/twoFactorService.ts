@@ -12,6 +12,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
+import { appErrorMessage } from "@shared/errors";
 import { userRecoveryCodes, users, type User } from "../../drizzle/schema";
 import { hashPassword, verifyPassword } from "../auth/password";
 import {
@@ -23,6 +24,11 @@ import {
 } from "../auth/totp";
 import type { Tx } from "../db";
 import { decryptSecret, encryptSecret, isCryptoReady } from "./cryptoService";
+import {
+  clearAccountAuthenticationFailures,
+  isAccountAuthenticationLocked,
+  recordAccountAuthenticationFailure,
+} from "./accountAuthenticationLockout";
 import { requireDb, withTx } from "./tx";
 
 const RECOVERY_CODES_COUNT = 10;
@@ -175,6 +181,92 @@ export async function consumeRecoveryCode(
     await tx.update(userRecoveryCodes).set({ usedAt: new Date() }).where(eq(userRecoveryCodes.id, hit.id));
     return { ok: true, remaining: rows.length - 1 };
   });
+}
+
+/**
+ * يتحقق من عامل ثانٍ جديد لأفعالٍ حساسة داخل جلسة قائمة، مثل فتح قسيمة الراتب.
+ *
+ * ليس رمزَ دخولٍ ولا يُصدر جلسة أو token أو ticket. كل استدعاء يستهلك TOTP جديداً
+ * (أو رمز استرداد واحداً)، ثم يعيد أقل معلومات لازمة لسجل التدقيق. الفشل يدخل في
+ * قفل الحساب المشترك نفسه حتى لا يتحول الجهاز الموثق إلى قناة تخمين للرموز.
+ */
+export async function consumeFreshSecondFactor(
+  userId: number,
+  input: { code?: string; recoveryCode?: string },
+): Promise<{ method: "TOTP" | "RECOVERY"; recoveryCodesRemaining: number | null }> {
+  const hasCode = Boolean(input.code?.trim());
+  const hasRecovery = Boolean(input.recoveryCode?.trim());
+  if (hasCode === hasRecovery) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر التحقق الإضافي",
+        why: "يجب تقديم رمز المصادقة أو رمز استرداد واحد فقط، وليس كليهما أو لا شيء منهما",
+        doThis: "اختر رمزاً واحداً فقط من تطبيق المصادقة أو من رموز الاسترداد ثم أعد المحاولة",
+      }),
+    });
+  }
+
+  const db = requireDb();
+  const [user] = await db
+    .select({
+      id: users.id,
+      isActive: users.isActive,
+      lockedUntil: users.lockedUntil,
+      totpEnabledAt: users.totpEnabledAt,
+      totpSecretEncrypted: users.totpSecretEncrypted,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!user?.isActive || isAccountAuthenticationLocked(user)) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر التحقق الإضافي",
+        why: "لا يمكن إتمام التحقق لهذا الحساب في الوقت الحالي",
+        doThis: "انتظر قليلاً ثم أعد المحاولة، أو تواصل مع مدير النظام إذا استمر المنع",
+      }),
+    });
+  }
+  if (!user.totpEnabledAt || !user.totpSecretEncrypted) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: appErrorMessage({
+        what: "تعذّر فتح القسيمة الحساسة",
+        why: "المصادقة الثنائية غير مفعّلة لهذا الحساب",
+        doThis: "فعّل المصادقة الثنائية من إعدادات حسابك، ثم افتح القسيمة واطلب رمزاً جديداً",
+      }),
+    });
+  }
+
+  let valid = false;
+  let recoveryCodesRemaining: number | null = null;
+  let method: "TOTP" | "RECOVERY" = "TOTP";
+  if (hasCode) {
+    valid = await consumeTotpCode(user.id, input.code!.trim());
+  } else {
+    method = "RECOVERY";
+    const result = await consumeRecoveryCode(user.id, input.recoveryCode!.trim());
+    valid = result.ok;
+    recoveryCodesRemaining = result.remaining;
+  }
+
+  if (!valid) {
+    await recordAccountAuthenticationFailure(user.id);
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: appErrorMessage({
+        what: "تعذّر التحقق الإضافي",
+        why: "الرمز المدخل غير صالح أو لم يعد صالحاً للاستخدام",
+        doThis: "أدخل رمزاً حديثاً من تطبيق المصادقة أو رمز استرداد غير مستخدم، ثم أعد المحاولة",
+      }),
+    });
+  }
+
+  await clearAccountAuthenticationFailures(user.id);
+  return { method, recoveryCodesRemaining };
 }
 
 /** تعطيل 2FA بالكامل + حذف رموز الاسترداد (يستعمله المستخدم بعد تحقّق الراوتر، والأدمن للإنقاذ). */

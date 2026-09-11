@@ -25,6 +25,7 @@ import { extractInsertId } from "../lib/insertId";
 import { assertPeriodOpen } from "./periodLockService";
 import { createAppNotification } from "./appNotificationService";
 import { autoDecideForActiveOwner } from "./approval/ownerAutoDecision";
+import { withIdempotency } from "./idempotency";
 
 /** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
 function daysInclusive(from: string, to: string): number {
@@ -91,66 +92,126 @@ export interface LeaveInput {
   reason?: string | null;
 }
 
-/** إنشاء طلب إجازة جديد بحالة pending. paid مشتقّ من نوع الإجازة (مصدر الحقيقة @shared/hr).
- *  ذرّي: قفل صفّ الموظف ضمن withTx يُسلسل الطلبات المتزامنة فيُرفض الثاني عبر فحص التداخل
- *  ⇒ يسدّ سباق TOCTOU الذي كان يولّد ازدواج طلب وخصم رصيد مرّتين بعد الموافقة على كليهما. */
-export async function createLeave(input: LeaveInput, actor?: Actor) {
+/** Calendar validation belongs at the service boundary too: callers other than
+ * the web router must not turn an impossible ISO-looking date into Date.UTC's
+ * silently rolled-over day. */
+function isRealIsoDay(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isInteger(year) || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function validatedLeaveDays(input: LeaveInput): number {
+  if (!isRealIsoDay(input.fromDate) || !isRealIsoDay(input.toDate)) {
+    throw new Error("تاريخ الإجازة غير صالح");
+  }
   if (input.toDate < input.fromDate)
     throw new Error("تاريخ النهاية يجب ألا يسبق تاريخ البداية");
   const days = daysInclusive(input.fromDate, input.toDate);
   if (days <= 0) throw new Error("عدد الأيام يجب أن يكون أكبر من صفر");
+  return days;
+}
 
-  const id = await withTx(async (tx) => {
-    // قفل صفّ الموظف يجعل طلبَين متزامنَين على نفس الموظف يتسلسلان: الثاني ينتظر التزام
-    // الأول فيرى تداخله ⇒ يُرفض. (employees.id FK من leaveRequests فهو موجود قطعاً عند
-    // أي طلب صالح؛ نقفله مع تأكيد الوجود.)
-    const [emp] = await tx
-      .select({ id: employees.id, branchId: employees.branchId })
-      .from(employees)
-      .where(eq(employees.id, input.employeeId))
-      .for("update")
-      .limit(1);
-    if (!emp) throw new Error("الموظف غير موجود");
-    // عزل الفرع على الكتابة: طلبُ إجازةٍ لموظف فرعٍ آخر يخصم رصيده ويغيّر أجره في مسيّرٍ
-    // لا يملكه الفاعل. يُفحص **بعد** القفل فلا يتغيّر فرعُه بين الفحص والكتابة.
-    if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
-      throw new Error("لا يمكن تسجيل إجازة لموظف من فرعٍ آخر");
-    }
+/**
+ * The insert half of a leave request. Keeping this inside a caller-owned
+ * transaction lets the native self-service path bind its idempotency record
+ * to exactly the same locked employee row and write.
+ */
+async function createLeaveInTx(tx: Tx, input: LeaveInput, days: number): Promise<number> {
+  // قفل صفّ الموظف يجعل طلبَين متزامنَين على نفس الموظف يتسلسلان: الثاني ينتظر التزام
+  // الأول فيرى تداخله ⇒ يُرفض. (employees.id FK من leaveRequests فهو موجود قطعاً عند
+  // أي طلب صالح؛ نقفله مع تأكيد الوجود.)
+  const [emp] = await tx
+    .select({ id: employees.id, branchId: employees.branchId })
+    .from(employees)
+    .where(eq(employees.id, input.employeeId))
+    .for("update")
+    .limit(1);
+  if (!emp) throw new Error("الموظف غير موجود");
+  // عزل الفرع على الكتابة: طلبُ إجازةٍ لموظف فرعٍ آخر يخصم رصيده ويغيّر أجره في مسيّرٍ
+  // لا يملكه الفاعل. يُفحص **بعد** القفل فلا يتغيّر فرعُه بين الفحص والكتابة.
+  if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
+    throw new Error("لا يمكن تسجيل إجازة لموظف من فرعٍ آخر");
+  }
 
-    // منع التداخل: لا طلب آخر (قيد الموافقة أو موافق عليه) يتقاطع مع هذه الفترة لنفس الموظف
-    // ⇒ يمنع الخصم المزدوج من رصيد الإجازات وحجزاً مكرّراً لنفس الأيام. ضمن نفس tx بعد القفل.
-    const [clash] = await tx
-      .select({ id: leaveRequests.id })
-      .from(leaveRequests)
-      .where(
-        and(
-          eq(leaveRequests.employeeId, input.employeeId),
-          ne(leaveRequests.status, "rejected"),
-          lte(leaveRequests.fromDate, input.toDate),
-          gte(leaveRequests.toDate, input.fromDate),
-        ),
-      )
-      .limit(1);
-    if (clash)
-      throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
+  // منع التداخل: لا طلب آخر (قيد الموافقة أو موافق عليه) يتقاطع مع هذه الفترة لنفس الموظف
+  // ⇒ يمنع الخصم المزدوج من رصيد الإجازات وحجزاً مكرّراً لنفس الأيام. ضمن نفس tx بعد القفل.
+  const [clash] = await tx
+    .select({ id: leaveRequests.id })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.employeeId, input.employeeId),
+        ne(leaveRequests.status, "rejected"),
+        lte(leaveRequests.fromDate, input.toDate),
+        gte(leaveRequests.toDate, input.fromDate),
+      ),
+    )
+    .limit(1);
+  if (clash)
+    throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
 
-    const [res] = await tx.insert(leaveRequests).values({
-      employeeId: input.employeeId,
-      leaveType: input.leaveType,
-      paid: leaveTypeIsPaid(input.leaveType),
-      fromDate: input.fromDate,
-      toDate: input.toDate,
-      days,
-      status: "pending",
-      reason: input.reason?.trim() || null,
-    });
-    return extractInsertId(res);
+  const [res] = await tx.insert(leaveRequests).values({
+    employeeId: input.employeeId,
+    leaveType: input.leaveType,
+    paid: leaveTypeIsPaid(input.leaveType),
+    fromDate: input.fromDate,
+    toDate: input.toDate,
+    days,
+    status: "pending",
+    reason: input.reason?.trim() || null,
   });
+  return extractInsertId(res);
+}
+
+/** إنشاء طلب إجازة جديد بحالة pending. paid مشتقّ من نوع الإجازة (مصدر الحقيقة @shared/hr).
+ *  ذرّي: قفل صفّ الموظف ضمن withTx يُسلسل الطلبات المتزامنة فيُرفض الثاني عبر فحص التداخل
+ *  ⇒ يسدّ سباق TOCTOU الذي كان يولّد ازدواج طلب وخصم رصيد مرّتين بعد الموافقة على كليهما. */
+export async function createLeave(input: LeaveInput, actor?: Actor) {
+  const days = validatedLeaveDays(input);
+  const id = await withTx((tx) => createLeaveInTx(tx, input, days));
   if (actor) {
     await autoDecideForActiveOwner(actor, { kind: "hr.leave.decide", id });
   }
   const [created] = await listLeavesByIds(id);
   return created;
+}
+
+/**
+ * Native self-service leave creation. The caller gets one opaque request key
+ * but never chooses an employee, branch, or leave record. The operation is
+ * scoped on the server to that employee, so a copied client key cannot replay
+ * another employee's result.
+ */
+export async function createMobileSelfLeave(input: LeaveInput & { clientRequestId: string }) {
+  const days = validatedLeaveDays(input);
+  const result = await withTx((tx) =>
+    withIdempotency(
+      tx,
+      {
+        operation: `superapp.leave.request.${input.employeeId}`,
+        clientRequestId: input.clientRequestId,
+        payload: {
+          leaveType: input.leaveType,
+          fromDate: input.fromDate,
+          toDate: input.toDate,
+          reason: input.reason?.trim() || null,
+        },
+      },
+      async () => ({ refId: await createLeaveInTx(tx, input, days) }),
+    ),
+  );
+  const [leave] = await listLeavesByIds(result.refId);
+  if (!leave || Number(leave.employeeId) !== input.employeeId) {
+    throw new Error("تعذّر التحقق من طلب الإجازة الشخصي");
+  }
+  return { leave, idempotent: result.replay };
 }
 
 async function listLeavesByIds(id: number) {
@@ -399,26 +460,75 @@ export async function cancelLeave(id: number, actor: { userId: number; scopedBra
   }).then(async () => (await listLeavesByIds(id))[0] ?? null); // القراءة بعد الـcommit.
 }
 
+async function withdrawPendingLeaveInTx(tx: Tx, id: number, employeeId: number): Promise<number> {
+  const [leave] = await tx
+    .select()
+    .from(leaveRequests)
+    .where(eq(leaveRequests.id, id))
+    .for("update")
+    .limit(1);
+  if (!leave || Number(leave.employeeId) !== employeeId) {
+    throw new Error("طلب الإجازة غير موجود");
+  }
+  if (leave.status !== "pending") {
+    throw new Error("يمكن سحب الطلب قبل البتّ فيه فقط");
+  }
+  await tx
+    .update(leaveRequests)
+    .set({ status: "rejected", decidedAt: new Date() })
+    .where(eq(leaveRequests.id, id));
+  return id;
+}
+
 /** يسمح للموظف بسحب طلبه المعلّق فقط؛ القرارات المعتمدة تبقى ضمن مسار الموارد البشرية. */
 export async function withdrawPendingLeave(id: number, employeeId: number) {
-  return withTx(async (tx) => {
-    const [leave] = await tx
-      .select()
-      .from(leaveRequests)
-      .where(eq(leaveRequests.id, id))
-      .for("update")
-      .limit(1);
-    if (!leave || Number(leave.employeeId) !== employeeId) {
-      throw new Error("طلب الإجازة غير موجود");
-    }
-    if (leave.status !== "pending") {
-      throw new Error("يمكن سحب الطلب قبل البتّ فيه فقط");
-    }
-    await tx
-      .update(leaveRequests)
-      .set({ status: "rejected", decidedAt: new Date() })
-      .where(eq(leaveRequests.id, id));
-  }).then(async () => (await listLeavesByIds(id))[0] ?? null);
+  const leaveId = await withTx((tx) => withdrawPendingLeaveInTx(tx, id, employeeId));
+  return (await listLeavesByIds(leaveId))[0] ?? null;
+}
+
+/**
+ * Mobile withdrawal has no leave identifier in its contract. It can only
+ * withdraw the authenticated employee's newest still-pending request, and a
+ * stable client key turns a lost response into a verified replay rather than
+ * a second state transition.
+ */
+export async function withdrawLatestMobileSelfLeave(input: {
+  employeeId: number;
+  clientRequestId: string;
+}) {
+  const result = await withTx((tx) =>
+    withIdempotency(
+      tx,
+      {
+        operation: `superapp.leave.withdraw.${input.employeeId}`,
+        clientRequestId: input.clientRequestId,
+        payload: { action: "withdraw-latest-pending" },
+      },
+      async () => {
+        const [pending] = await tx
+          .select({ id: leaveRequests.id })
+          .from(leaveRequests)
+          .where(
+            and(
+              eq(leaveRequests.employeeId, input.employeeId),
+              eq(leaveRequests.status, "pending"),
+            ),
+          )
+          .orderBy(desc(leaveRequests.requestedAt), desc(leaveRequests.id))
+          .for("update")
+          .limit(1);
+        if (!pending) throw new Error("لا يوجد طلب إجازة معلّق لسحبه");
+        return {
+          refId: await withdrawPendingLeaveInTx(tx, Number(pending.id), input.employeeId),
+        };
+      },
+    ),
+  );
+  const [leave] = await listLeavesByIds(result.refId);
+  if (!leave || Number(leave.employeeId) !== input.employeeId) {
+    throw new Error("تعذّر التحقق من طلب الإجازة الشخصي");
+  }
+  return { leave, idempotent: result.replay };
 }
 
 /** أرصدة الإجازات لكل موظف على رأس العمل: {id, name, annualLeaveBalance, sickLeaveBalance, department}. */

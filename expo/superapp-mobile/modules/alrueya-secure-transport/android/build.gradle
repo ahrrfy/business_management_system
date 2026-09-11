@@ -1,0 +1,24 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'online.alarabiya'
+version = '0.1.0'
+
+android {
+  namespace "online.alarabiya.securetransport"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+  // Android's org.json implementation is supplied by the device at runtime;
+  // provide the same API to plain JVM unit tests so configuration parsing is
+  // tested instead of being swallowed by the defensive malformed-config path.
+  testImplementation 'org.json:json:20240303'
+  testImplementation 'org.robolectric:robolectric:4.11.1'
+}

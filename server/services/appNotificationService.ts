@@ -4,6 +4,7 @@ import {
   appNotificationPreferences,
   appNotifications,
   nativePushOutbox,
+  superAppExpoPushOutbox,
   webPushOutbox,
 } from "../../drizzle/schema";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -14,6 +15,10 @@ import {
   type NativePushEnvironment,
   type NormalizedNativePushPayload,
 } from "./nativePushService";
+import {
+  buildSuperAppExpoPushPayload,
+  superAppExpoPushEnvironment,
+} from "./superAppPushService";
 import { requireDb } from "./tx";
 
 export const APP_NOTIFICATION_KINDS = [
@@ -377,6 +382,9 @@ export async function createAppNotification(
   const normalizedInput = { ...input, eventKey, family };
   const webPayload = buildAppWebPushPayload(normalizedInput);
   const nativePayload = nativePayloadFor(normalizedInput);
+  // A separate Expo worker serves only Super Arabia. Its locked-screen copy
+  // and route are deliberately not inherited from the web/legacy payload.
+  const superAppExpoPayload = buildSuperAppExpoPushPayload({ kind: input.kind });
   try {
     await db.transaction(async (tx) => {
       await tx.insert(appNotifications).values({
@@ -392,7 +400,7 @@ export async function createAppNotification(
         requiresAction: input.requiresAction ?? false,
       });
 
-      if (input.push === false || (!webPayload && !nativePayload)) return;
+      if (input.push === false || (!webPayload && !nativePayload && !superAppExpoPayload)) return;
       const [preferenceRow] = await tx
         .select()
         .from(appNotificationPreferences)
@@ -422,6 +430,13 @@ export async function createAppNotification(
           availableAt: quietRelease ?? new Date(),
         });
       }
+      await tx.insert(superAppExpoPushOutbox).values({
+        userId: input.userId,
+        eventKey,
+        payload: superAppExpoPayload,
+        environment: superAppExpoPushEnvironment(),
+        availableAt: quietRelease ?? new Date(),
+      });
     });
   } catch (error) {
     if (isDupEntry(error)) return { created: false };
