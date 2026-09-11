@@ -2,11 +2,12 @@
  * إيصال تسوية كشف شركة توصيل حراري (80mm)
  * يُطبع عند توريد نقد كشف شركة التوصيل لإثبات المبالغ المسددة، الاستقطاعات، والصافي المورّد للدرج.
  */
-import { CO, esc, fmt, logoUrl, openPrintWindow } from "./brand";
+import { CO, esc, fmt, logoUrl } from "./brand";
 import { wrapReceiptDoc } from "./docHtml";
 import { code128Svg } from "./barcode";
 import { qrCodeSvgSync } from "./qr";
 import { fmtDateTime } from "../date";
+import { printDoc, type PrintDoc, type PrintResult } from "./print";
 
 export interface CompanyStatementReceiptData {
   companyName: string;
@@ -22,7 +23,49 @@ export interface CompanyStatementReceiptData {
   notes?: string | null;
 }
 
-export function printCompanyStatementReceipt(d: CompanyStatementReceiptData): boolean {
+export function buildCompanyStatementReceiptDoc(d: CompanyStatementReceiptData): PrintDoc {
+  const collectedNum = Number(d.collectedTotal || 0);
+  const deductionsNum = Number(d.deductionsTotal || 0);
+  const netNum = Number(d.netRemitted || 0);
+
+  const meta = [
+    `شركة التوصيل: ${d.companyName}`,
+    `رقم كشف الشركة: ${d.statementNumber}`,
+    ...(d.remittanceNumber ? [`رقم سند التوريد: ${d.remittanceNumber}`] : []),
+    `تاريخ التسوية: ${fmtDateTime(d.settledAt ?? new Date())}`,
+    `عدد الطرود المسلّمة: ${d.deliveriesConfirmed} طرد`,
+    ...(d.remainingOpenCount != null && d.remainingOpenCount > 0
+      ? [`الطرود المتبقية: ${d.remainingOpenCount} طرد${d.remainingOpenAmount ? ` (${fmt(d.remainingOpenAmount)} د.ع)` : ""}`]
+      : []),
+    ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
+  ];
+
+  const totals = [
+    { label: "إجمالي التحصيل (COD)", value: `${fmt(collectedNum)} د.ع` },
+    { label: "استقطاعات الشركة (أجور/عمولات)", value: `- ${fmt(deductionsNum)} د.ع` },
+    { label: "صافي النقد المورّد للدرج", value: `${fmt(netNum)} د.ع` },
+  ];
+
+  const qrPayload = d.statementNumber
+    ? `https://alarabiya.online/stmt/${encodeURIComponent(d.statementNumber)}`
+    : `REMIT:${d.remittanceNumber ?? ""}`;
+
+  return {
+    kind: "zreport",
+    title: "إيصال تسوية كشف شركة توصيل",
+    subtitle: `${CO.name} — ${d.companyName}`,
+    meta,
+    totals,
+    footer: "توقيع الكاشير: ____________  توقيع ممثل الشركة: ____________\nسند تسوية مالي موثق بنظام إدارة أعمال الرؤية العربية",
+    barcodeSet: {
+      barcode128: d.statementNumber,
+      qrPayload,
+      displayLabel: `تسوية شركة: ${d.companyName} · كشف ${d.statementNumber}`,
+    },
+  };
+}
+
+export function renderCompanyStatementReceiptHtml(d: CompanyStatementReceiptData): string {
   const logo = logoUrl();
   const collectedNum = Number(d.collectedTotal || 0);
   const deductionsNum = Number(d.deductionsTotal || 0);
@@ -154,5 +197,25 @@ export function printCompanyStatementReceipt(d: CompanyStatementReceiptData): bo
   `;
 
   const html = wrapReceiptDoc(`تسوية ${d.statementNumber}`, body);
-  return openPrintWindow(html);
+  return html;
 }
+
+/**
+ * طباعة إيصال تسوية كشف شركة التوصيل الحراري بالأولوية المتدرجة الصامتة:
+ *  ١) جسر الخادم الحراري الصامت (حين يكون مفعّلاً ومضبوطاً)
+ *  ٢) WebUSB لطابعة الإيصالات الحرارية المتصلة عبر Zadig WinUSB (ربط تلقائي صامت)
+ *  ٣) نافذة حوار المتصفح (بديل أخير إن تعذّرت النواقل الصامتة)
+ * متوافقة استدعائياً مع كافة شاشات الواجهة المتزامنة (تعيد boolean وتطلق الإرسال الصامت).
+ */
+export function printCompanyStatementReceipt(d: CompanyStatementReceiptData): boolean {
+  void printCompanyStatementReceiptAsync(d).catch((e) => {
+    console.warn("[statement-receipt] فشل الطباعة:", e);
+  });
+  return true;
+}
+
+export async function printCompanyStatementReceiptAsync(d: CompanyStatementReceiptData): Promise<PrintResult> {
+  const doc = buildCompanyStatementReceiptDoc(d);
+  return printDoc(doc);
+}
+

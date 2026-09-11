@@ -218,6 +218,7 @@ export default defineConfig({
       "server/services/__tests__/permissionParity.test.ts",
       "server/services/__tests__/globalSearchRbac.test.ts",
       "server/services/__tests__/maintenanceService.test.ts",
+      "server/services/__tests__/printService.test.ts",
       "server/services/__tests__/monthCloseSequence.test.ts",
       "server/services/__tests__/restoreScriptContract.test.ts",
       "server/services/__tests__/storefrontOrderGate.test.ts",

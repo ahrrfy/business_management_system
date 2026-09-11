@@ -9,15 +9,6 @@
       "custodianName"
     ]
   },
-  "client/src/pages/Product": {
-    "onlyNew": [
-      "defaultMin",
-      "productName"
-    ],
-    "onlyEdit": [
-      "originalName"
-    ]
-  },
   "client/src/pages/Purchase": {
     "onlyNew": [],
     "onlyEdit": [

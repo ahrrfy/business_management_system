@@ -79,7 +79,7 @@ import {
   expenseAuditDetail,
   expenseStatusFromSearch,
   isExpenseFinanciallyPrintable,
-} from "./expenseUiPolicy";
+} from "@/lib/expenseUiPolicy";
 import { selectClsFull } from "@/lib/ui/formStyles";
 
 

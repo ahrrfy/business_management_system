@@ -7,6 +7,7 @@
  *    «المستخدم يعدّل لا يبتدئ».
  *  - `disabledReason` (الأوفلاين) يُعطّل الحقول ويُعلن السبب: لا إسناد بلا حرّاس الخادم الحيّة.
  */
+import { useEffect } from "react";
 import { Truck } from "lucide-react";
 import { Link } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -45,6 +46,17 @@ const LABEL = "mb-1 block text-[10px] font-bold text-muted-foreground";
 export function DeliveryModeFields({ draft, onChange, suggestedPartyId = null, disabledReason = null }: DeliveryModeFieldsProps) {
   const disabled = !!disabledReason;
   const partiesQ = trpc.delivery.listParties.useQuery({ activeOnly: true }, { staleTime: 60_000, enabled: !disabled });
+  const quoteQ = trpc.delivery.previewDeliveryQuoteByGovernorate.useQuery(
+    { governorate: draft.governorate },
+    { enabled: !disabled && !!draft.governorate, staleTime: 60_000 },
+  );
+
+  useEffect(() => {
+    if (quoteQ.data?.fee != null && !draft.feeManual && draft.partyId == null) {
+      onChange({ ...draft, fee: String(quoteQ.data.fee) });
+    }
+  }, [quoteQ.data?.fee, draft.feeManual, draft.partyId]);
+
   const parties: DeliveryPartyOption[] = (partiesQ.data ?? []).map((p) => ({
     id: Number(p.id),
     name: p.name,

@@ -2,11 +2,12 @@
  * بوليصة إسناد وتوصيل حرارية (80mm) — ترافق المندوب وتُسلَّم للزبون
  * تشمل تفاصيل الطلب، الباركود، المستلم، والمبلغ المطلوب تحصيله (COD) بدقة.
  */
-import { BRAND as B, CO, esc, fmt, logoUrl, openPrintWindow } from "./brand";
+import { BRAND as B, CO, esc, fmt, logoUrl } from "./brand";
 import { wrapReceiptDoc } from "./docHtml";
 import { code128Svg } from "./barcode";
 import { qrCodeSvgSync } from "./qr";
 import { fmtDateTime } from "../date";
+import { printDoc, type PrintDoc, type PrintResult } from "./print";
 
 export interface DispatchSlipData {
   consignmentNumber: string;
@@ -27,7 +28,57 @@ export interface DispatchSlipData {
   dispatchedAt?: Date | string;
 }
 
-export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
+export function buildDeliveryDispatchSlipDoc(d: DispatchSlipData): PrintDoc {
+  const codNum = Number(d.codAmount || 0);
+  const feeNum = Number(d.deliveryFee || 0);
+  const shopFee = d.feeCollection === "SHOP";
+  const courierFee = d.feeCollection === "COURIER";
+  const counterFee = d.feeCollection === "COUNTER";
+  const totalToCollectFromCustomer = courierFee ? codNum + feeNum : codNum;
+
+  const feeExplanation = shopFee
+    ? "على المكتبة (مجاناً)"
+    : counterFee
+    ? "مقبوضة مسبقاً"
+    : "يقبضها المندوب";
+
+  const meta = [
+    `رقم الإرسالية: ${d.consignmentNumber}`,
+    `رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}: #${d.orderNumber}`,
+    `جهة التوصيل: ${d.partyName}`,
+    `تاريخ الإسناد: ${fmtDateTime(d.dispatchedAt ?? new Date())}`,
+    `المستلم: ${d.recipientName || "—"} (${d.recipientPhone || "—"})`,
+    `العنوان: ${d.deliveryAddress || "غير محدد"}${d.governorate ? ` (${d.governorate})` : ""}`,
+    ...(d.notes ? [`ملاحظات: ${d.notes}`] : []),
+  ];
+
+  const totals = [
+    { label: "قيمة الطلب", value: `${fmt(d.salePrice)} د.ع` },
+    ...(Number(d.deposit || 0) > 0 ? [{ label: "المدفوع مسبقاً (عربون)", value: `- ${fmt(d.deposit!)} د.ع` }] : []),
+    { label: `أجرة التوصيل (${feeExplanation})`, value: feeNum > 0 ? `${fmt(feeNum)} د.ع` : "مجاناً" },
+    { label: "المطلوب تحصيله عند الاستلام", value: `${fmt(totalToCollectFromCustomer)} د.ع` },
+  ];
+
+  const qrPayload = d.consignmentNumber
+    ? `https://alarabiya.online/track/${encodeURIComponent(d.consignmentNumber)}`
+    : `ORD:${d.orderNumber}`;
+
+  return {
+    kind: "receipt",
+    title: "بوليصة إسناد وتوصيل",
+    subtitle: `${CO.name} — ${CO.sub}`,
+    meta,
+    totals,
+    footer: "توقيع واستلام المندوب: ____________  توقيع الزبون: ____________\nيرجى التأكد من محتويات الطرد ومطابقة المبلغ قبل الاستلام",
+    barcodeSet: {
+      barcode128: d.consignmentNumber,
+      qrPayload,
+      displayLabel: `إرسالية: ${d.consignmentNumber}\nالطلب #${d.orderNumber} · المستلم: ${d.recipientName || "—"}`,
+    },
+  };
+}
+
+export function renderDeliveryDispatchSlipHtml(d: DispatchSlipData): string {
   const logo = logoUrl();
   let barSvg = "";
   try {
@@ -175,5 +226,25 @@ export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
   `;
 
   const html = wrapReceiptDoc(`بوليصة ${d.consignmentNumber}`, body);
-  return openPrintWindow(html);
+  return html;
 }
+
+/**
+ * طباعة بوليصة الإسناد والتوصيل الحرارية بالأولوية المتدرجة الصامتة:
+ *  ١) جسر الخادم الحراري الصامت (حين يكون مفعّلاً ومضبوطاً)
+ *  ٢) WebUSB لطابعة الإيصالات الحرارية المتصلة عبر Zadig WinUSB (ربط تلقائي صامت)
+ *  ٣) نافذة حوار المتصفح (بديل أخير إن تعذّرت النواقل الصامتة)
+ * متوافقة استدعائياً مع كافة شاشات الواجهة المتزامنة (تعيد boolean وتطلق الإرسال الصامت).
+ */
+export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
+  void printDeliveryDispatchSlipAsync(d).catch((e) => {
+    console.warn("[dispatch-slip] فشل الطباعة:", e);
+  });
+  return true;
+}
+
+export async function printDeliveryDispatchSlipAsync(d: DispatchSlipData): Promise<PrintResult> {
+  const doc = buildDeliveryDispatchSlipDoc(d);
+  return printDoc(doc);
+}
+

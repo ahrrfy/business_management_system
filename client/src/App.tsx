@@ -34,6 +34,7 @@ import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const ForceTwoFactorEnroll = lazy(() =>
@@ -94,7 +95,6 @@ const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
-const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
 const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
 const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
 const PurchaseIntegrityCases = lazy(() => import("@/pages/PurchaseIntegrityCases"));
@@ -124,7 +124,6 @@ const Account = lazy(() => import("@/pages/Account"));
 const Announcements = lazy(() => import("@/pages/Announcements"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
-const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
 const ChartOfAccounts = lazy(() => import("@/pages/ChartOfAccounts"));
 const StatutoryAccounting = lazy(() => import("@/pages/StatutoryAccounting"));
@@ -312,10 +311,30 @@ function RootRoute() {
   );
 }
 
+/**
+ * ربط تلقائي عام بالطابعة الحرارية المتصلة عبر WebUSB (Zadig WinUSB) عند تشغيل التطبيق أو وصل الكابل.
+ * يضمن بقاء الطابعة الحرارية مربوطة في الذاكرة عبر كافة شاشات النظام (الاستقبال، الكاشير، الشحن، الكشوفات).
+ */
+function GlobalPrinterAutoConnect() {
+  useEffect(() => {
+    if (!isWebUsbSupported()) return;
+    void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    if (!usb) return;
+    const onConnect = () => {
+      void tryReconnectPrinter("receipt").catch(() => { /* صامت */ });
+    };
+    usb.addEventListener("connect", onConnect);
+    return () => usb.removeEventListener("connect", onConnect);
+  }, []);
+  return null;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
     <HostPolicy />
+    <GlobalPrinterAutoConnect />
     {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
     <OfflineBanner />
     <Suspense fallback={<RouteFallback />}>
