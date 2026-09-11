@@ -41,6 +41,13 @@ export interface SettleInput {
   partyId: number;
   amount: string;
   shiftType?: "RECEPTION" | "RETAIL";
+  /**
+   * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
+   * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
+   * أكثر من وردية مفتوحة لموظفَين مختلفَين.
+   * بدونه: السلوك الحالي (درج actor) — متوافق للخلف تماماً.
+   */
+  targetShiftId?: number | null;
   notes?: string | null;
   clientRequestId?: string | null;
 }
@@ -113,6 +120,7 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
       input.branchId,
       "تسوية عهدة مندوب",
       input.shiftType ?? "RECEPTION",
+      input.targetShiftId,  // ش-ISOLATION: الدرج الصريح من الواجهة (إن وُجد)
     );
     await lockCashSourceForUpdate(tx, {
       branchId: input.branchId,
@@ -694,6 +702,13 @@ export interface RecoverWriteOffInput {
   partyId: number;
   amount: string;
   shiftType?: "RECEPTION" | "RETAIL";
+  /**
+   * ش-ISOLATION — الوردية/الدرج الذي سيستلم هذا النقد فعلياً.
+   * يُجاوز `shiftType` والبحث الآلي بـ`actor.userId` حين يكون الفرع فيه
+   * أكثر من وردية مفتوحة لموظفَين مختلفَين.
+   * بدونه: السلوك الحالي (درج actor) — متوافق للخلف تماماً.
+   */
+  targetShiftId?: number | null;
   notes?: string | null;
   clientRequestId?: string | null;
 }
@@ -734,6 +749,7 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       input.branchId,
       "استرداد عجز مشطوب",
       input.shiftType ?? "RECEPTION",
+      input.targetShiftId,  // ش-ISOLATION: الدرج الصريح من الواجهة (إن وُجد)
     );
     await lockCashSourceForUpdate(tx, {
       branchId: input.branchId,

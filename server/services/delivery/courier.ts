@@ -99,6 +99,8 @@ export interface MyDeliveryRow {
   deliveredAt?: Date | null;
   failureReason?: string | null;
   assignedUserId?: number | null;
+  /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
 }
 
 export interface MyDeliveriesResult {
@@ -237,6 +239,7 @@ export async function listMyDeliveries(
     custPhone: sql<
       string | null
     >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    externalTrackingRef: deliveryConsignments.externalTrackingRef,
   };
   const consignmentQuery = () =>
     db
@@ -302,6 +305,7 @@ export async function listMyDeliveries(
       failureReason: r.failureReason,
       assignedUserId:
         r.assignedUserId != null ? Number(r.assignedUserId) : null,
+      externalTrackingRef: r.externalTrackingRef ?? null,
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
   }

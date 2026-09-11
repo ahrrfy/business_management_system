@@ -12428,6 +12428,12 @@ export const deliveryConsignments = mysqlTable(
     cancelledBy: int("cancelledBy").references(() => users.id),
     returnedAt: timestamp("returnedAt"),
     notes: text("notes"),
+    /**
+     * رقم التتبع / المرجع الخارجي لشركة التوصيل — اختياريّ.
+     * يُدخَل عند الإرسال أو لاحقاً من قِبَل الكاشير أو المدير.
+     * يظهر في: مسار الطلب، شاشة المندوب، بوليصة الشحن.
+     */
+    externalTrackingRef: varchar("externalTrackingRef", { length: 100 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

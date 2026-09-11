@@ -44,6 +44,8 @@ export interface DispatchConfirmArgs {
   recipientName: string;
   recipientPhone: string;
   assignedUserId?: number;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string;
 }
 
 /**
@@ -68,6 +70,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const [recipientName, setRecipientName] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const selectedParty = parties.find((p) => String(p.id) === partyId);
 
   useMemo(() => {
@@ -80,6 +83,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
       setAssignedUserId("");
+      setExternalTrackingRef("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id]);
@@ -101,6 +105,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const pickParty = (id: string) => {
     setPartyId(id);
     setAssignedUserId("");
+    setExternalTrackingRef("");
     const p = parties.find((x) => String(x.id) === id);
     if (p) setFee(String(Number(p.defaultFee ?? 0)));
   };
@@ -115,6 +120,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       recipientName: recipientName.trim(),
       recipientPhone: recipientPhone.trim(),
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+      externalTrackingRef: selectedParty?.partyType === "COMPANY" && externalTrackingRef.trim() ? externalTrackingRef.trim() : undefined,
     });
   };
 
@@ -220,6 +226,22 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
                 <option key={driver.userId} value={driver.userId}>{driver.name}</option>
               ))}
             </AppSelect>
+          </div>
+        )}
+        {selectedParty?.partyType === "COMPANY" && (
+          <div className="mb-3">
+            <label className="mb-1.5 block text-sm font-bold">
+              رقم إيصال / مرجع الشركة
+              <span className="mr-1.5 text-xs font-normal text-muted-foreground">(اختياري)</span>
+            </label>
+            <Input
+              value={externalTrackingRef}
+              onChange={(e) => setExternalTrackingRef(e.target.value)}
+              placeholder="أدخل رقم تتبع أو مرجع الشركة إن وُجد…"
+              maxLength={100}
+              className="h-9 text-sm font-mono"
+              dir="ltr"
+            />
           </div>
         )}
         {selectedParty?.hasPortalAccess === false && (

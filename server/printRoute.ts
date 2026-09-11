@@ -26,19 +26,12 @@ async function requireAuth(req: Request, res: Response): Promise<User | null> {
   return null;
 }
 
-// يسمح بالطباعة لمدير/أدمن دون شرط، ولكاشير/مستودع فقط إن كان عنده وردية مفتوحة.
-// السبب: جسر الطباعة الخام مكلف (شبكة + I/O فعلي على الطابعة) ⇒ نقصره على من له
-// مهمة بيع جارية، فلا يبقى مفتوحاً سطحاً لأي حساب عادي.
+// يسمح بالطباعة لجميع كوادر النظام المسجّلين (كاشير، محاسب، أمين مخزن، فني، مدير)
+// دون اشتراط وردية مفتوحة، لأن الطباعة تشمل إغلاق الوردية، وسندات التسليم، ومحاضر الشحن، والكشوف.
 async function requirePrintAuthorized(user: User, res: Response): Promise<boolean> {
   if (user.role === "admin" || user.role === "manager") return true;
-  const branchId = user.branchId;
-  if (branchId == null) {
-    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة (لا فرع مرتبط بالحساب)." });
-    return false;
-  }
-  const open = await getOpenShift(user.id, branchId);
-  if (!open) {
-    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة بلا وردية مفتوحة." });
+  if (user.role === "courier") {
+    res.status(403).json({ ok: false, error: "غير مخوّل بالطباعة المباشرة على طابعة المتجر." });
     return false;
   }
   return true;

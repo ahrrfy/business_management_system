@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "wouter";
 import {
   AlertTriangle,
@@ -428,7 +428,7 @@ function DispatchTab() {
         parties={parties.data ?? []}
         pending={dispatch.isPending}
         onClose={() => setTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId, externalTrackingRef }) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           const labelWin = preopenShippingLabelWindow();
@@ -442,9 +442,10 @@ function DispatchTab() {
               deliveryAddress: ord.deliveryAddress ?? undefined,
               clientRequestId: crypto.randomUUID(),
               assignedUserId,
+              externalTrackingRef: externalTrackingRef || undefined,
             });
-            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
-            printDeliverySlip(ord, party, r);
+            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
+            printDeliverySlip(ord, party, { ...r, externalTrackingRef: externalTrackingRef || undefined });
             setDepartureData({
               consignmentNumber: r.consignmentNumber,
               orderNumber: ord.orderNumber,
@@ -1413,7 +1414,12 @@ function SettleTab() {
       });
       return;
     }
-    remit.mutate({ partyId: Number(partyId), lines: validLines, countedCash: countedCash.toFixed(2), clientRequestId: remitReqId });
+    remit.mutate({
+      partyId: Number(partyId),
+      lines: validLines,
+      countedCash: countedCash.toFixed(2),
+      clientRequestId: remitReqId,
+    });
   };
 
   const selectAll = () => {
@@ -1882,6 +1888,7 @@ function SettleTab() {
                   </Button>
                 );
               })()}
+
             </div>
             <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />
           </div>

@@ -365,6 +365,11 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
               const b = courierParcelBadge(row.status);
               return <span className={cn("rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold", b.cls)}>{b.label}</span>;
             })()}
+            {row.externalTrackingRef && (
+              <span className="rounded-md border border-muted-foreground/30 bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground" dir="ltr" title="مرجع إيصال الشركة">
+                {row.externalTrackingRef}
+              </span>
+            )}
           </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
