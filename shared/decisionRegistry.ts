@@ -214,7 +214,7 @@ const PURCHASING: Record<string, DecisionSpec> = {
     approver: "INDEPENDENT_REVIEWER",
     withdrawable: false,
     procedure: { router: "purchaseReturnGovernance", name: "decideReturn" },
-    href: () => "/purchases?tab=returns-governance",
+    href: () => "/returns?tab=purchases",
   }),
 
   /**

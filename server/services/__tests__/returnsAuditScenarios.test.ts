@@ -100,18 +100,18 @@ describe("٤. تدقيق إزالة التشتت وتوحيد الروابط ف�
     expect(purchasesSrc).toContain("href: `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`");
   });
 
-  it("بوابة المرتجعات ReturnsHub توفر رابط حوكمة واعتمادات المرتجعات كطبقة أمان", () => {
-    expect(returnsHubSrc).toContain("/purchases?tab=returns-governance");
-    expect(returnsHubSrc).toContain("حوكمة واعتمادات المرتجعات");
+  it("بوابة المرتجعات ReturnsHub هي المنفذ المركزي المستقل دون تحويلات مشتتة", () => {
+    expect(returnsHubSrc).not.toContain("/purchases?tab=returns-governance");
+    expect(returnsHubSrc).toContain('backHref="/"');
   });
 
-  it("تبويبات PurchasesHub تحتفظ بحوكمة المرتجعات كطبقة اعتماد وأمان", () => {
-    expect(purchasesHubSrc).toContain('value: "returns-governance"');
-    expect(purchasesHubSrc).toContain('label: "حوكمة المرتجعات"');
+  it("تبويبات PurchasesHub مطهرة بالكامل ولا تحتوي على أي تبويب للمرتجعات", () => {
+    expect(purchasesHubSrc).not.toContain('value: "returns-governance"');
+    expect(purchasesHubSrc).not.toContain('label: "حوكمة المرتجعات"');
   });
 
-  it("تبويبات SalesHub تحتفظ بحوكمة واعتمادات المرتجعات لحماية القرارات", () => {
-    expect(salesHubSrc).toContain('value: "returns"');
-    expect(salesHubSrc).toContain('label: "حوكمة واعتمادات المرتجعات"');
+  it("تبويبات SalesHub مطهرة بالكامل ولا تحتوي على أي تبويب للمرتجعات", () => {
+    expect(salesHubSrc).not.toContain('value: "returns"');
+    expect(salesHubSrc).not.toContain('label: "حوكمة واعتمادات المرتجعات"');
   });
 });

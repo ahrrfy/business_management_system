@@ -34,9 +34,9 @@ describe("تحويل واجهات المشتريات القديمة إلى ال�
     expect(app).not.toContain('import("@/pages/PurchaseGoodsReceipts")');
   });
 
-  it("يحوّل شاشة المرتجع القديم إلى حوكمة المرتجعات", () => {
+  it("يحوّل شاشة المرتجع القديم إلى بوابة المرتجعات المركزية", () => {
     const source = page("PurchaseReturnNew.tsx");
-    expect(source).toContain("/purchases/returns-governance");
+    expect(source).toContain("/returns?tab=purchases");
     expect(source).not.toContain("trpc.purchaseReturns.create");
   });
 

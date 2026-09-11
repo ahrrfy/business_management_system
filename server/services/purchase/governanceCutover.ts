@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 export const LEGACY_PURCHASE_WRITE_REPLACEMENTS = {
   "purchases.receive": "/purchases/goods-receipts",
   "purchases.pay": "/purchases/supplier-payments",
-  "purchaseReturns.create": "/purchases/returns-governance",
+  "purchaseReturns.create": "/returns?tab=purchases",
 } as const;
 
 export type LegacyPurchaseWritePath = keyof typeof LEGACY_PURCHASE_WRITE_REPLACEMENTS;

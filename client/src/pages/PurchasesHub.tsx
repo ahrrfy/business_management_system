@@ -1,13 +1,10 @@
-// PurchasesHub — وحدة «المشتريات» بتبويبات (أوامر الشراء + مرتجعات الشراء).
+// PurchasesHub — وحدة «المشتريات» بتبويباتها المتخصصة.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const Purchases = lazy(() => import("@/pages/Purchases"));
 const PurchaseRequisitions = lazy(() => import("@/pages/PurchaseRequisitions"));
 const PurchaseApprovals = lazy(() => import("@/pages/PurchaseApprovals"));
-const PurchaseReturnsGovernance = lazy(
-  () => import("@/pages/PurchaseReturnsGovernance"),
-);
 const SupplierPaymentsGovernance = lazy(
   () => import("@/pages/SupplierPaymentsGovernance"),
 );
@@ -57,16 +54,6 @@ const TABS: HubTab[] = [
       level: "FULL",
     },
     Component: PurchaseApprovals,
-  },
-  {
-    value: "returns-governance",
-    label: "حوكمة المرتجعات",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseReturnsGovernance,
   },
   {
     value: "supplier-payments",
