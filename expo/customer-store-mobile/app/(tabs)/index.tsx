@@ -29,6 +29,7 @@ import {
   useStorefrontMarketing,
   type StorefrontBanner,
 } from "@/lib/storefront-api";
+import { storefrontDesign } from "@/lib/storefront-design";
 import type { Product } from "@/shared/storefront";
 
 const RECENT_SEARCHES_KEY = "@al_arabiya/recent-searches-v1";
@@ -62,6 +63,13 @@ const SHOPPER_PATHS = [
     route: "/request-quote",
     tone: "rose",
   },
+] as const;
+
+const FALLBACK_DISCOVERY_CATEGORIES = [
+  { id: 0, name: "قرطاسية", icon: "edit" },
+  { id: 0, name: "مستلزمات الدراسة", icon: "menu-book" },
+  { id: 0, name: "الطباعة", icon: "print" },
+  { id: 0, name: "المكتب", icon: "business-center" },
 ] as const;
 
 function routeFromBanner(banner: StorefrontBanner | null) {
@@ -100,6 +108,9 @@ export default function HomeScreen() {
     () => products.filter((product) => productDiscountPercent(product) != null),
     [products],
   );
+  const discoveryCategories = categories.length
+    ? categories
+    : FALLBACK_DISCOVERY_CATEGORIES;
   const homeProducts = useMemo(() => {
     const filtered = homeCategoryId
       ? products.filter((product) => product.categoryId === homeCategoryId)
@@ -204,33 +215,40 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.topBar}>
-          <TouchableOpacity
-            accessibilityLabel="فتح حسابي"
-            activeOpacity={0.82}
-            onPress={() => router.push("/account" as never)}
-            style={styles.accountButton}
-          >
-            <MaterialIcons color="#0E6C5A" name="person-outline" size={23} />
-          </TouchableOpacity>
           <View style={styles.brandLockup}>
-            <Text style={styles.eyebrow}>كل احتياجاتك من</Text>
-            <Text style={styles.brand}>المكتبة العربية</Text>
+            <View style={styles.brandMark}>
+              <MaterialIcons color="#FFFFFF" name="storefront" size={17} />
+            </View>
+            <View>
+              <Text style={styles.brand}>المكتبة العربية</Text>
+              <Text style={styles.eyebrow}>لكل احتياج، من طلب واحد</Text>
+            </View>
           </View>
-          <TouchableOpacity
-            accessibilityLabel="فتح سلة المشتريات"
-            activeOpacity={0.82}
-            onPress={() => router.push("/cart" as never)}
-            style={styles.cartButton}
-          >
-            <MaterialIcons color="#FFFFFF" name="shopping-bag" size={21} />
-            {itemCount > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>
-                  {formatLatinNumber(itemCount)}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          <View style={styles.topActions}>
+            <TouchableOpacity
+              accessibilityLabel="فتح حسابي"
+              activeOpacity={0.82}
+              onPress={() => router.push("/account" as never)}
+              style={styles.accountButton}
+            >
+              <MaterialIcons color="#183D36" name="person-outline" size={22} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityLabel="فتح سلة المشتريات"
+              activeOpacity={0.82}
+              onPress={() => router.push("/cart" as never)}
+              style={styles.cartButton}
+            >
+              <MaterialIcons color="#FFFFFF" name="shopping-bag" size={20} />
+              {itemCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>
+                    {formatLatinNumber(itemCount)}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.searchArea}>
@@ -260,7 +278,10 @@ export default function HomeScreen() {
               {query.trim().length >= 2 ? (
                 searchLoading ? (
                   <View style={styles.searchLoading}>
-                    <ActivityIndicator color="#0E806A" size="small" />
+                    <ActivityIndicator
+                      color={storefrontDesign.semantic.brandStrong}
+                      size="small"
+                    />
                     <Text style={styles.searchLoadingText}>
                       نجهز اقتراحات تناسب بحثك…
                     </Text>
@@ -413,18 +434,34 @@ export default function HomeScreen() {
 
         <View style={styles.assuranceBar}>
           <View style={styles.assuranceItem}>
-            <MaterialIcons color="#0E806A" name="local-shipping" size={18} />
+            <View style={styles.assuranceIcon}>
+              <MaterialIcons
+                color={storefrontDesign.semantic.brandStrong}
+                name="local-shipping"
+                size={17}
+              />
+            </View>
             <Text style={styles.assuranceText}>توصيل داخل العراق</Text>
           </View>
-          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
-            <MaterialIcons color="#0E806A" name="payments" size={18} />
+            <View style={styles.assuranceIcon}>
+              <MaterialIcons
+                color={storefrontDesign.semantic.brandStrong}
+                name="payments"
+                size={17}
+              />
+            </View>
             <Text style={styles.assuranceText}>الدفع عند الاستلام</Text>
           </View>
-          <View style={styles.assuranceDivider} />
           <View style={styles.assuranceItem}>
-            <MaterialIcons color="#0E806A" name="verified-user" size={18} />
-            <Text style={styles.assuranceText}>أسعار واضحة</Text>
+            <View style={styles.assuranceIcon}>
+              <MaterialIcons
+                color={storefrontDesign.semantic.brandStrong}
+                name="verified-user"
+                size={17}
+              />
+            </View>
+            <Text style={styles.assuranceText}>سعر ومخزون مؤكدان</Text>
           </View>
         </View>
 
@@ -451,52 +488,43 @@ export default function HomeScreen() {
           </ScrollView>
         )}
 
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionTitle}>تسوّق حسب احتياجك</Text>
-            <Text style={styles.sectionHint}>
-              اختر الطريق الأسرع لبدء التسوق
-            </Text>
-          </View>
-        </View>
-        <View style={styles.pathGrid}>
-          {SHOPPER_PATHS.map((item) => (
-            <TouchableOpacity
-              accessibilityLabel={`مسار ${item.audience}: ${item.direction}`}
-              accessibilityRole="button"
-              activeOpacity={0.86}
-              key={item.audience}
-              onPress={() => router.push(item.route as never)}
-              style={[
-                styles.pathCard,
-                item.tone === "mint"
-                  ? styles.pathMint
-                  : item.tone === "sand"
-                    ? styles.pathSand
-                    : item.tone === "blue"
-                      ? styles.pathBlue
-                      : styles.pathRose,
-              ]}
+        {saleProducts.length > 0 && (
+          <>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionOverline}>خصومات منتقاة</Text>
+                <Text style={styles.sectionTitle}>عروض اليوم</Text>
+              </View>
+              <View style={styles.salePill}>
+                <MaterialIcons color="#FFFFFF" name="bolt" size={14} />
+                <Text style={styles.salePillText}>وفر الآن</Text>
+              </View>
+            </View>
+            <ScrollView
+              contentContainerStyle={styles.productRail}
+              horizontal
+              showsHorizontalScrollIndicator={false}
             >
-              <View style={styles.pathIcon}>
-                <MaterialIcons color="#0B6554" name={item.icon} size={23} />
-              </View>
-              <View style={styles.pathCopy}>
-                <Text style={styles.pathAudience}>{item.audience}</Text>
-                <Text numberOfLines={1} style={styles.pathDirection}>
-                  {item.direction}
-                </Text>
-              </View>
-              <MaterialIcons color="#6D8C82" name="arrow-back" size={17} />
-            </TouchableOpacity>
-          ))}
-        </View>
+              {saleProducts.map((product, index) => (
+                <ProductCard
+                  animationDelay={index * 55}
+                  key={product.id}
+                  onAddedToCart={() => setSideCartVisible(true)}
+                  onQuickView={setQuickProduct}
+                  product={product}
+                  variant="rail"
+                />
+              ))}
+            </ScrollView>
+          </>
+        )}
 
         <View style={styles.sectionHeader}>
           <View>
-            <Text style={styles.sectionTitle}>تصفّح حسب القسم</Text>
+            <Text style={styles.sectionOverline}>ابدأ بسرعة</Text>
+            <Text style={styles.sectionTitle}>تسوّق حسب القسم</Text>
             <Text style={styles.sectionHint}>
-              الوصول إلى المنتجات التي تحتاجها بسرعة
+              اختصارات مرئية إلى المنتجات التي تحتاجها
             </Text>
           </View>
           <TouchableOpacity
@@ -511,12 +539,16 @@ export default function HomeScreen() {
           horizontal
           showsHorizontalScrollIndicator={false}
         >
-          {categories.map((category, index) => (
+          {discoveryCategories.map((category, index) => (
             <TouchableOpacity
               activeOpacity={0.85}
-              key={category.id}
+              key={`${category.id}-${category.name}`}
               onPress={() =>
-                router.push(`/categories?category=${category.id}` as never)
+                router.push(
+                  category.id
+                    ? (`/categories?category=${category.id}` as never)
+                    : ("/categories" as never),
+                )
               }
               style={styles.categoryItem}
             >
@@ -525,20 +557,22 @@ export default function HomeScreen() {
                   styles.categoryIcon,
                   {
                     backgroundColor: [
-                      "#E0F0EA",
-                      "#F7E8C8",
-                      "#E4ECF8",
-                      "#F3E4E7",
+                      "#E7F4EE",
+                      "#FFF1D5",
+                      "#EAF1FF",
+                      "#FFECEF",
                     ][index % 4],
                   },
                 ]}
               >
                 <MaterialIcons
-                  color="#0B6554"
+                  color={storefrontDesign.semantic.brandStrong}
                   name={
-                    ["menu-book", "edit", "school", "card-giftcard"][
-                      index % 4
-                    ] as never
+                    "icon" in category
+                      ? category.icon
+                      : (["menu-book", "edit", "school", "card-giftcard"][
+                          index % 4
+                        ] as never)
                   }
                   size={25}
                 />
@@ -546,9 +580,86 @@ export default function HomeScreen() {
               <Text numberOfLines={2} style={styles.categoryText}>
                 {category.name}
               </Text>
-              <Text style={styles.categoryCount}>
-                {formatLatinNumber(category.availableCount)} منتج
+              {"availableCount" in category && (
+                <Text style={styles.categoryCount}>
+                  {formatLatinNumber(category.availableCount)} منتج
+                </Text>
+              )}
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        {productsState === "READY" && homeProducts.length > 0 && (
+          <>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionOverline}>الأكثر طلباً</Text>
+                <Text style={styles.sectionTitle}>منتجات يختارها العملاء</Text>
+              </View>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => router.push("/categories" as never)}
+              >
+                <Text style={styles.link}>عرض الكل</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView
+              contentContainerStyle={styles.productRail}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+            >
+              {homeProducts.slice(0, 8).map((product, index) => (
+                <ProductCard
+                  animationDelay={index * 45}
+                  key={`popular-${product.id}`}
+                  onQuickView={setQuickProduct}
+                  product={product}
+                  variant="rail"
+                />
+              ))}
+            </ScrollView>
+          </>
+        )}
+
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionOverline}>مسار مخصص</Text>
+            <Text style={styles.sectionTitle}>تسوّق حسب احتياجك</Text>
+          </View>
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.pathList}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+        >
+          {SHOPPER_PATHS.map((item) => (
+            <TouchableOpacity
+              accessibilityLabel={`مسار ${item.audience}: ${item.direction}`}
+              accessibilityRole="button"
+              activeOpacity={0.88}
+              key={item.audience}
+              onPress={() => router.push(item.route as never)}
+              style={[
+                styles.pathCard,
+                item.tone === "mint"
+                  ? styles.pathMint
+                  : item.tone === "sand"
+                    ? styles.pathSand
+                    : item.tone === "blue"
+                      ? styles.pathBlue
+                      : styles.pathRose,
+              ]}
+            >
+              <View style={styles.pathIcon}>
+                <MaterialIcons color="#183D36" name={item.icon} size={25} />
+              </View>
+              <Text style={styles.pathAudience}>{item.audience}</Text>
+              <Text numberOfLines={2} style={styles.pathDirection}>
+                {item.direction}
               </Text>
+              <View style={styles.pathArrow}>
+                <MaterialIcons color="#183D36" name="arrow-back" size={16} />
+              </View>
             </TouchableOpacity>
           ))}
         </ScrollView>
@@ -556,12 +667,17 @@ export default function HomeScreen() {
         <View style={styles.productsPanel}>
           <View style={styles.productsPanelHeader}>
             <View>
+              <Text style={styles.sectionOverline}>اكتشاف ذكي</Text>
               <Text style={styles.sectionTitle}>المنتجات المختارة لك</Text>
               <Text style={styles.sectionHint}>
-                رتّب واختَر ما يناسبك بسرعة
+                اختر القسم ثم رتّب النتيجة كما تريد
               </Text>
             </View>
-            <MaterialIcons color="#0E806A" name="tune" size={22} />
+            <MaterialIcons
+              color={storefrontDesign.semantic.brandStrong}
+              name="tune"
+              size={22}
+            />
           </View>
           <ScrollView
             contentContainerStyle={styles.filterChips}
@@ -642,39 +758,6 @@ export default function HomeScreen() {
             ))}
           </View>
         </View>
-
-        {saleProducts.length > 0 && (
-          <>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>عروض اليوم</Text>
-                <Text style={styles.sectionHint}>
-                  وفر أكثر على منتجات محددة
-                </Text>
-              </View>
-              <View style={styles.salePill}>
-                <MaterialIcons color="#FFFFFF" name="bolt" size={14} />
-                <Text style={styles.salePillText}>توفير حقيقي</Text>
-              </View>
-            </View>
-            <ScrollView
-              contentContainerStyle={styles.productRail}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-            >
-              {saleProducts.map((product, index) => (
-                <ProductCard
-                  animationDelay={index * 55}
-                  key={product.id}
-                  onAddedToCart={() => setSideCartVisible(true)}
-                  onQuickView={setQuickProduct}
-                  product={product}
-                  variant="rail"
-                />
-              ))}
-            </ScrollView>
-          </>
-        )}
 
         <View style={styles.sectionHeader}>
           <View>
@@ -798,44 +881,59 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginBottom: 17,
-    paddingTop: 7,
+    marginBottom: 18,
+    paddingTop: 5,
   },
-  brandLockup: { alignItems: "center", flex: 1 },
+  brandLockup: {
+    alignItems: "center",
+    flex: 1,
+    flexDirection: "row-reverse",
+    gap: 9,
+  },
+  brandMark: {
+    alignItems: "center",
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    borderRadius: 14,
+    height: 39,
+    justifyContent: "center",
+    width: 39,
+  },
+  topActions: { flexDirection: "row-reverse", gap: 8 },
   eyebrow: {
-    color: "#698078",
+    color: "#71817B",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 11,
-    textAlign: "center",
+    fontSize: 9,
+    marginTop: -2,
+    textAlign: "right",
   },
   brand: {
-    color: "#173E35",
+    color: storefrontDesign.semantic.foreground,
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 23,
-    marginTop: -1,
-    textAlign: "center",
+    fontSize: 18,
+    lineHeight: 27,
+    textAlign: "right",
   },
   accountButton: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#E9DDD1",
-    borderRadius: 16,
+    borderColor: "#E4E9E4",
+    borderRadius: 15,
     borderWidth: 1,
-    height: 46,
+    height: 42,
     justifyContent: "center",
-    width: 46,
+    width: 42,
   },
   cartButton: {
     alignItems: "center",
-    backgroundColor: "#0E806A",
-    borderRadius: 16,
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    borderRadius: 15,
     elevation: 3,
-    height: 46,
+    height: 42,
     justifyContent: "center",
-    shadowColor: "#0C5A4B",
+    shadowColor: "#3C78A8",
     shadowOpacity: 0.18,
     shadowRadius: 8,
-    width: 46,
+    width: 42,
   },
   badge: {
     alignItems: "center",
@@ -855,15 +953,15 @@ const styles = StyleSheet.create({
     fontFamily: "Cairo_800ExtraBold",
     fontSize: 10,
   },
-  searchArea: { marginBottom: 18, zIndex: 10 },
+  searchArea: { marginBottom: 19, zIndex: 10 },
   searchRow: {
     alignItems: "center",
     backgroundColor: "#FFFFFF",
-    borderColor: "#DDDDD5",
-    borderRadius: 18,
+    borderColor: storefrontDesign.semantic.border,
+    borderRadius: 19,
     borderWidth: 1,
     flexDirection: "row-reverse",
-    height: 57,
+    height: 58,
     paddingLeft: 8,
     paddingRight: 14,
   },
@@ -876,9 +974,9 @@ const styles = StyleSheet.create({
   },
   searchAction: {
     alignItems: "center",
-    backgroundColor: "#0E806A",
-    borderRadius: 12,
-    height: 39,
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    borderRadius: 13,
+    height: 41,
     justifyContent: "center",
     width: 39,
   },
@@ -988,29 +1086,36 @@ const styles = StyleSheet.create({
   marketingCarousel: { marginHorizontal: -16 },
   assuranceBar: {
     alignItems: "center",
-    backgroundColor: "#F1F8F4",
-    borderColor: "#DCEDE3",
-    borderRadius: 15,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E6ECE7",
+    borderRadius: 22,
     borderWidth: 1,
     flexDirection: "row-reverse",
-    justifyContent: "space-evenly",
-    marginTop: 17,
-    paddingHorizontal: 7,
-    paddingVertical: 12,
+    justifyContent: "space-between",
+    marginTop: 19,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
   },
   assuranceItem: {
     alignItems: "center",
     flex: 1,
     flexDirection: "column",
-    gap: 3,
+    gap: 4,
+  },
+  assuranceIcon: {
+    alignItems: "center",
+    backgroundColor: storefrontDesign.semantic.safeSurface,
+    borderRadius: 11,
+    height: 31,
+    justifyContent: "center",
+    width: 31,
   },
   assuranceText: {
-    color: "#315A50",
+    color: "#38534C",
     fontFamily: "Cairo_700Bold",
-    fontSize: 9,
+    fontSize: 8,
     textAlign: "center",
   },
-  assuranceDivider: { backgroundColor: "#CFE3D7", height: 28, width: 1 },
   offerStrip: { marginHorizontal: -16, marginTop: 13 },
   offerStripContent: { gap: 8, paddingHorizontal: 16 },
   offerChip: {
@@ -1034,103 +1139,122 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row-reverse",
     justifyContent: "space-between",
-    marginBottom: 12,
-    marginTop: 28,
+    marginBottom: 13,
+    marginTop: 31,
+  },
+  sectionOverline: {
+    color: storefrontDesign.semantic.brandStrong,
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 9,
+    letterSpacing: 0.3,
+    textAlign: "right",
   },
   sectionTitle: {
-    color: "#183D36",
+    color: storefrontDesign.semantic.foreground,
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 18,
+    fontSize: 20,
+    lineHeight: 31,
     textAlign: "right",
   },
   sectionHint: {
-    color: "#6D817A",
+    color: "#6D7F79",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 11,
     marginTop: 2,
     textAlign: "right",
   },
-  link: { color: "#0E806A", fontFamily: "Cairo_700Bold", fontSize: 12 },
-  pathGrid: {
-    flexDirection: "row-reverse",
-    flexWrap: "wrap",
-    gap: 10,
-    justifyContent: "space-between",
+  link: {
+    color: storefrontDesign.semantic.brandStrong,
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 11,
   },
+  pathList: { gap: 10, paddingHorizontal: 1 },
   pathCard: {
-    alignItems: "center",
+    alignItems: "flex-end",
     borderRadius: 17,
     borderWidth: 1,
-    flexDirection: "row-reverse",
-    minHeight: 76,
-    paddingHorizontal: 10,
-    width: "48.5%",
+    minHeight: 137,
+    padding: 12,
+    width: 134,
   },
-  pathMint: { backgroundColor: "#EFF8F2", borderColor: "#D7EBDD" },
-  pathSand: { backgroundColor: "#FFF7E7", borderColor: "#F0E0B9" },
-  pathBlue: { backgroundColor: "#F0F5FB", borderColor: "#D7E2F2" },
-  pathRose: { backgroundColor: "#FFF2F2", borderColor: "#F2D8DC" },
+  pathMint: { backgroundColor: "#E7F4FE", borderColor: "#D5EAF9" },
+  pathSand: { backgroundColor: "#FFF3DC", borderColor: "#F2E4C2" },
+  pathBlue: { backgroundColor: "#EAF1FF", borderColor: "#D8E4F8" },
+  pathRose: { backgroundColor: "#FFECEF", borderColor: "#F7DDE1" },
   pathIcon: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.74)",
-    borderRadius: 13,
-    height: 40,
+    backgroundColor: "rgba(255,255,255,0.76)",
+    borderRadius: 14,
+    height: 44,
     justifyContent: "center",
-    width: 40,
+    width: 44,
   },
-  pathCopy: { flex: 1, marginHorizontal: 7 },
   pathAudience: {
-    color: "#183D36",
+    color: storefrontDesign.semantic.foreground,
     fontFamily: "Cairo_800ExtraBold",
-    fontSize: 12,
+    fontSize: 14,
+    marginTop: 8,
     textAlign: "right",
   },
   pathDirection: {
-    color: "#55716A",
+    color: "#38534C",
     fontFamily: "Cairo_600SemiBold",
     fontSize: 9,
+    lineHeight: 15,
     marginTop: 2,
     textAlign: "right",
   },
-  categoryList: { gap: 10, paddingLeft: 4, paddingRight: 2 },
+  pathArrow: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderRadius: 10,
+    height: 26,
+    justifyContent: "center",
+    marginTop: "auto",
+    width: 26,
+  },
+  categoryList: { gap: 11, paddingLeft: 4, paddingRight: 2 },
   categoryItem: {
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderColor: "#E6E1D9",
-    borderRadius: 18,
-    borderWidth: 1,
-    minHeight: 126,
-    paddingHorizontal: 10,
-    paddingVertical: 12,
-    width: 104,
+    minHeight: 107,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    width: 88,
   },
   categoryIcon: {
     alignItems: "center",
-    borderRadius: 15,
-    height: 50,
+    borderColor: "#FFFFFF",
+    borderRadius: 999,
+    borderWidth: 3,
+    elevation: 2,
+    height: 64,
     justifyContent: "center",
-    width: 50,
+    shadowColor: "#75839A",
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    width: 64,
   },
   categoryText: {
-    color: "#183D36",
+    color: storefrontDesign.semantic.foreground,
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
-    marginTop: 7,
+    fontSize: 10,
+    lineHeight: 15,
+    marginTop: 6,
     textAlign: "center",
   },
   categoryCount: {
     color: "#6D817A",
     fontFamily: "Cairo_600SemiBold",
-    fontSize: 9,
-    marginTop: 3,
+    fontSize: 8,
+    marginTop: 1,
   },
   productsPanel: {
-    backgroundColor: "#F6F7F3",
-    borderColor: "#E4E8E1",
-    borderRadius: 20,
+    backgroundColor: "#EEF3F9",
+    borderColor: "#E0E8F1",
+    borderRadius: 27,
     borderWidth: 1,
-    marginTop: 24,
-    padding: 14,
+    marginTop: 28,
+    padding: 16,
   },
   productsPanelHeader: {
     alignItems: "center",
@@ -1151,7 +1275,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 7,
   },
-  filterChipActive: { backgroundColor: "#0E806A", borderColor: "#0E806A" },
+  filterChipActive: {
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    borderColor: storefrontDesign.semantic.brandStrong,
+  },
   filterChipText: {
     color: "#55716A",
     fontFamily: "Cairo_700Bold",
@@ -1172,7 +1299,10 @@ const styles = StyleSheet.create({
     minHeight: 38,
     paddingHorizontal: 3,
   },
-  sortChipActive: { backgroundColor: "#0E806A", borderColor: "#0E806A" },
+  sortChipActive: {
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    borderColor: storefrontDesign.semantic.brandStrong,
+  },
   sortText: { color: "#55716A", fontFamily: "Cairo_700Bold", fontSize: 9 },
   sortTextActive: { color: "#FFFFFF" },
   salePill: {
@@ -1265,7 +1395,7 @@ const styles = StyleSheet.create({
   },
   emptyIcon: {
     alignItems: "center",
-    backgroundColor: "#E8F5EF",
+    backgroundColor: storefrontDesign.semantic.safeSurface,
     borderRadius: 17,
     height: 54,
     justifyContent: "center",
@@ -1291,13 +1421,13 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   emptyActionText: {
-    color: "#0E806A",
+    color: storefrontDesign.semantic.brandStrong,
     fontFamily: "Cairo_700Bold",
     fontSize: 11,
   },
   allProductsCta: {
     alignItems: "center",
-    backgroundColor: "#173E35",
+    backgroundColor: storefrontDesign.semantic.foreground,
     borderRadius: 18,
     flexDirection: "row-reverse",
     justifyContent: "space-between",
@@ -1320,7 +1450,7 @@ const styles = StyleSheet.create({
   },
   allProductsCtaIcon: {
     alignItems: "center",
-    backgroundColor: "#0E806A",
+    backgroundColor: storefrontDesign.semantic.brandStrong,
     borderRadius: 13,
     height: 38,
     justifyContent: "center",

@@ -13,45 +13,56 @@ import {
 } from "react-native";
 
 import type { StorefrontBanner, StorefrontOffer } from "@/lib/storefront-api";
-import { marketingCarouselGeometry } from "@/lib/marketing-carousel-layout";
+import { storefrontDesign } from "@/lib/storefront-design";
+
+type SlideTone = "evergreen" | "citrus" | "berry";
 
 type Slide = {
   id: string;
-  eyebrow: string;
+  kicker: string;
   title: string;
   subtitle: string;
   cta: string;
   imageUrl?: string | null;
-  accent: "teal" | "gold" | "coral" | "ink";
+  tone: SlideTone;
   source: StorefrontBanner | null;
 };
 
-const SLIDE_GAP = 12;
-const AUTOPLAY_DELAY_MS = 4800;
+const GAP = 12;
+const AUTOPLAY_DELAY_MS = 5600;
 
 function toAssetUrl(value: string | null | undefined) {
   if (!value) return null;
   return value.startsWith("/") ? `https://alarabiya.online${value}` : value;
 }
 
-function offerCopy(offer: StorefrontOffer): {
-  eyebrow: string;
-  title: string;
-  subtitle: string;
-} {
+function offerSlide(offer: StorefrontOffer, index: number): Slide {
   const amount = Number(offer.discountAmount);
   const percent = Number(offer.discountPercent);
-  const value =
+  const saving =
     offer.type === "PERCENT" && percent > 0
       ? `${percent}%`
       : amount > 0
         ? `${new Intl.NumberFormat("en-US").format(amount)} د.ع`
         : "سعر خاص";
+
   return {
-    eyebrow: "عرض فعّال من المكتبة",
+    id: `offer-${offer.id}`,
+    kicker: `عرض فعّال · ${saving}`,
     title: offer.name,
-    subtitle: `${value} وفق شروط العرض المعلنة في السلة`,
+    subtitle: "يُطبّق وفق شروط العرض المعلنة عند إتمام السلة.",
+    cta: "استكشف المنتجات",
+    tone: (["evergreen", "citrus", "berry"] as SlideTone[])[index % 3],
+    source: null,
   };
+}
+
+function decorativeIcon(tone: SlideTone) {
+  return tone === "citrus"
+    ? "auto-stories"
+    : tone === "berry"
+      ? "redeem"
+      : "edit-note";
 }
 
 export function MarketingCarousel({
@@ -64,77 +75,69 @@ export function MarketingCarousel({
   onPress: (banner: StorefrontBanner | null) => void;
 }) {
   const { width } = useWindowDimensions();
+  const cardWidth = Math.min(Math.max(width - 32, 304), 520);
+  const horizontalInset = Math.max(16, (width - cardWidth) / 2);
+  const snapInterval = cardWidth + GAP;
   const slides = useMemo<Slide[]>(() => {
     const heroBanners = banners.filter((banner) => banner.placement === "HERO");
     if (heroBanners.length) {
       return heroBanners.map((banner, index) => ({
-        id: `banner-${banner.id}-${index}`,
-        eyebrow: banner.ctaLabel ? "مختارات مكتبة العربية" : "من مكتبة العربية",
+        id: `banner-${banner.id}`,
+        kicker: banner.ctaLabel ? "اختيار هذا الأسبوع" : "مختارات المكتبة",
         title: banner.title,
-        subtitle: banner.subtitle ?? "اكتشف تفاصيل العرض والمنتجات المشمولة.",
+        subtitle: banner.subtitle ?? "منتجات عملية لمدرستك ومكتبك ومشاريعك.",
         cta: banner.ctaLabel ?? "اكتشف الآن",
         imageUrl: toAssetUrl(banner.mobileImageUrl ?? banner.imageUrl),
-        accent: index % 3 === 0 ? "teal" : index % 3 === 1 ? "gold" : "coral",
+        tone: (["evergreen", "citrus", "berry"] as SlideTone[])[index % 3],
         source: banner,
       }));
     }
-    if (offers.length) {
-      return offers.slice(0, 4).map((offer, index) => {
-        const copy = offerCopy(offer);
-        return {
-          id: `offer-${offer.id}`,
-          ...copy,
-          cta: "تصفح المنتجات",
-          accent: index % 3 === 0 ? "teal" : index % 3 === 1 ? "gold" : "coral",
-          source: null,
-        };
-      });
-    }
+    if (offers.length) return offers.slice(0, 4).map(offerSlide);
+
     return [
       {
         id: "library-welcome",
-        eyebrow: "المكتبة العربية",
-        title: "احتياجات المدرسة والمكتب في مكان واحد",
-        subtitle: "منتجات مختارة، أسعار واضحة، وتوصيل إلى عنوانك.",
-        cta: "تسوّق المنتجات",
-        accent: "teal",
+        kicker: "المكتبة العربية · كل يوم",
+        title: "رتّب احتياجاتك في طلب واحد",
+        subtitle: "قرطاسية، طباعة وتجهيزات عملية للأفراد والجهات.",
+        cta: "ابدأ من المنتجات",
+        tone: "evergreen",
         source: null,
       },
     ];
   }, [banners, offers]);
-  const { cardWidth, sideInset } = marketingCarouselGeometry(width);
-  const snapInterval = cardWidth + SLIDE_GAP;
+
   const listRef = useRef<FlatList<Slide>>(null);
   const activeIndexRef = useRef(0);
-  const isInteractingRef = useRef(false);
+  const interactingRef = useRef(false);
   const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  const updateActiveSlide = useCallback(
+  const updateIndex = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const nextIndex = Math.max(
+      const index = Math.max(
         0,
         Math.min(
           slides.length - 1,
           Math.round(event.nativeEvent.contentOffset.x / snapInterval),
         ),
       );
-      activeIndexRef.current = nextIndex;
-      setActiveIndex(nextIndex);
+      activeIndexRef.current = index;
+      setActiveIndex(index);
     },
     [slides.length, snapInterval],
   );
 
-  const pauseForInteraction = useCallback(() => {
-    isInteractingRef.current = true;
+  const pause = useCallback(() => {
+    interactingRef.current = true;
     if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
   }, []);
 
-  const resumeAfterInteraction = useCallback(() => {
+  const resume = useCallback(() => {
     if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
     resumeTimerRef.current = setTimeout(() => {
-      isInteractingRef.current = false;
-    }, 1200);
+      interactingRef.current = false;
+    }, 1400);
   }, []);
 
   useEffect(() => {
@@ -146,14 +149,14 @@ export function MarketingCarousel({
   useEffect(() => {
     if (slides.length < 2) return;
     const timer = setInterval(() => {
-      if (isInteractingRef.current) return;
-      const nextIndex = (activeIndexRef.current + 1) % slides.length;
+      if (interactingRef.current) return;
+      const next = (activeIndexRef.current + 1) % slides.length;
       listRef.current?.scrollToOffset({
         animated: true,
-        offset: nextIndex * snapInterval,
+        offset: next * snapInterval,
       });
-      activeIndexRef.current = nextIndex;
-      setActiveIndex(nextIndex);
+      activeIndexRef.current = next;
+      setActiveIndex(next);
     }, AUTOPLAY_DELAY_MS);
     return () => clearInterval(timer);
   }, [slides.length, snapInterval]);
@@ -179,80 +182,105 @@ export function MarketingCarousel({
         decelerationRate="fast"
         contentContainerStyle={[
           styles.content,
-          { paddingHorizontal: sideInset },
+          { paddingHorizontal: horizontalInset },
         ]}
         getItemLayout={(_, index) => ({
           index,
           length: snapInterval,
           offset: index * snapInterval,
         })}
-        onScrollBeginDrag={pauseForInteraction}
-        onScrollEndDrag={resumeAfterInteraction}
+        onScrollBeginDrag={pause}
+        onScrollEndDrag={resume}
         onMomentumScrollEnd={(event) => {
-          updateActiveSlide(event);
-          resumeAfterInteraction();
+          updateIndex(event);
+          resume();
         }}
         renderItem={({ item }) => (
           <TouchableOpacity
-            activeOpacity={0.92}
+            activeOpacity={0.94}
             onPress={() => onPress(item.source)}
             style={[
               styles.card,
-              item.accent === "gold"
-                ? styles.gold
-                : item.accent === "coral"
-                  ? styles.coral
-                  : item.accent === "ink"
-                    ? styles.ink
-                    : styles.teal,
+              item.tone === "citrus"
+                ? styles.citrus
+                : item.tone === "berry"
+                  ? styles.berry
+                  : styles.evergreen,
               { width: cardWidth },
             ]}
           >
-            {item.imageUrl && (
-              <Image
-                cachePolicy="memory-disk"
-                contentFit="cover"
-                source={item.imageUrl}
-                style={styles.backgroundImage}
-                transition={0}
-              />
-            )}
-            <View style={styles.overlay} />
-            {!item.imageUrl && (
-              <View style={styles.art}>
+            {item.imageUrl ? (
+              <>
+                <Image
+                  cachePolicy="memory-disk"
+                  contentFit="cover"
+                  source={item.imageUrl}
+                  style={styles.backgroundImage}
+                  transition={0}
+                />
+                <View style={styles.imageScrim} />
+              </>
+            ) : (
+              <View pointerEvents="none" style={styles.paperArt}>
+                <View style={styles.artCircle} />
+                <View style={styles.artBackSheet} />
                 <View style={styles.artSheet}>
                   <MaterialIcons
-                    color={item.accent === "gold" ? "#0E806A" : "#FFF1C6"}
-                    name="auto-stories"
+                    color={
+                      item.tone === "citrus"
+                        ? storefrontDesign.semantic.brandStrong
+                        : storefrontDesign.primitive.white
+                    }
+                    name={decorativeIcon(item.tone)}
                     size={54}
                   />
-                  <View style={styles.artLine} />
+                  <View style={styles.artRule} />
+                  <View style={[styles.artRule, styles.artRuleShort]} />
                 </View>
-                <View style={styles.artCircle} />
               </View>
             )}
             <View style={styles.copy}>
-              <View style={styles.eyebrowPill}>
-                <MaterialIcons color="#FFF2CB" name="storefront" size={13} />
-                <Text style={styles.eyebrow}>{item.eyebrow}</Text>
+              <View
+                style={[
+                  styles.kicker,
+                  item.tone === "citrus" && styles.citrusKicker,
+                ]}
+              >
+                <View style={styles.kickerDot} />
+                <Text
+                  style={[
+                    styles.kickerText,
+                    item.tone === "citrus" && styles.citrusKickerText,
+                  ]}
+                >
+                  {item.kicker}
+                </Text>
               </View>
-              <Text numberOfLines={2} style={styles.title}>
+              <Text
+                numberOfLines={2}
+                style={[
+                  styles.title,
+                  item.tone === "citrus" && styles.citrusTitle,
+                ]}
+              >
                 {item.title}
               </Text>
-              <Text numberOfLines={2} style={styles.subtitle}>
+              <Text
+                numberOfLines={2}
+                style={[
+                  styles.subtitle,
+                  item.tone === "citrus" && styles.citrusSubtitle,
+                ]}
+              >
                 {item.subtitle}
               </Text>
-              <View style={styles.deliveryLine}>
-                <MaterialIcons
-                  color="#D7EEE5"
-                  name="local-shipping"
-                  size={14}
-                />
-                <Text style={styles.deliveryText}>توصيل داخل العراق</Text>
-              </View>
               <View style={styles.cta}>
                 <Text style={styles.ctaText}>{item.cta}</Text>
-                <MaterialIcons color="#FFFFFF" name="arrow-back" size={17} />
+                <MaterialIcons
+                  color={storefrontDesign.semantic.brandStrong}
+                  name="arrow-back"
+                  size={18}
+                />
               </View>
             </View>
           </TouchableOpacity>
@@ -273,23 +301,22 @@ export function MarketingCarousel({
 }
 
 const styles = StyleSheet.create({
-  content: { gap: SLIDE_GAP },
+  content: { gap: GAP },
   card: {
-    borderRadius: 22,
-    elevation: 4,
-    height: 236,
+    borderRadius: 30,
+    height: 282,
     overflow: "hidden",
-    shadowColor: "#173A33",
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
+    shadowColor: "#0B2922",
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.16,
+    shadowRadius: 22,
   },
-  teal: { backgroundColor: "#0E806A" },
-  gold: { backgroundColor: "#F3B85A" },
-  coral: { backgroundColor: "#F05D53" },
-  ink: { backgroundColor: "#32796C" },
+  evergreen: { backgroundColor: storefrontDesign.semantic.brandStrong },
+  citrus: { backgroundColor: storefrontDesign.semantic.highlight },
+  berry: { backgroundColor: "#B85768" },
   backgroundImage: { height: "100%", position: "absolute", width: "100%" },
-  overlay: {
-    backgroundColor: "rgba(11,58,47,0.28)",
+  imageScrim: {
+    backgroundColor: "rgba(12, 35, 30, 0.50)",
     bottom: 0,
     left: 0,
     position: "absolute",
@@ -300,109 +327,133 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     flex: 1,
     justifyContent: "center",
-    paddingHorizontal: 22,
-    paddingVertical: 18,
+    paddingHorizontal: 24,
+    paddingVertical: 22,
+    width: "74%",
   },
-  eyebrowPill: {
+  kicker: {
     alignItems: "center",
     alignSelf: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.16)",
-    borderColor: "rgba(255,255,255,0.22)",
-    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    borderColor: "rgba(255,255,255,0.28)",
+    borderRadius: 999,
     borderWidth: 1,
     flexDirection: "row-reverse",
-    gap: 5,
-    paddingHorizontal: 9,
+    gap: 6,
+    paddingHorizontal: 10,
     paddingVertical: 5,
   },
-  eyebrow: {
-    color: "#FFF8E6",
+  kickerDot: {
+    backgroundColor: storefrontDesign.semantic.highlight,
+    borderRadius: 99,
+    height: 6,
+    width: 6,
+  },
+  kickerText: {
+    color: storefrontDesign.primitive.white,
     fontFamily: "Cairo_700Bold",
-    fontSize: 11,
-    textAlign: "right",
-  },
-  title: {
-    color: "#FFFFFF",
-    fontFamily: "Cairo_800ExtraBold",
-    fontSize: 26,
-    lineHeight: 36,
-    marginTop: 9,
-    textAlign: "right",
-  },
-  subtitle: {
-    color: "#F8FFFC",
-    fontFamily: "Cairo_400Regular",
-    fontSize: 13,
-    lineHeight: 21,
-    marginTop: 7,
-    maxWidth: "78%",
-    textAlign: "right",
-  },
-  deliveryLine: {
-    alignItems: "center",
-    alignSelf: "flex-end",
-    flexDirection: "row-reverse",
-    gap: 4,
-    marginTop: 8,
-  },
-  deliveryText: {
-    color: "#D7EEE5",
-    fontFamily: "Cairo_600SemiBold",
     fontSize: 10,
+    textAlign: "right",
   },
+  citrusKicker: {
+    backgroundColor: "rgba(7,83,69,0.12)",
+    borderColor: "rgba(7,83,69,0.16)",
+  },
+  citrusKickerText: { color: storefrontDesign.semantic.brandStrong },
+  title: {
+    color: storefrontDesign.primitive.white,
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 27,
+    lineHeight: 39,
+    marginTop: 10,
+    textAlign: "right",
+  },
+  citrusTitle: { color: storefrontDesign.semantic.brandStrong },
+  subtitle: {
+    color: "rgba(255,255,255,0.86)",
+    fontFamily: "Cairo_400Regular",
+    fontSize: 12,
+    lineHeight: 20,
+    marginTop: 5,
+    textAlign: "right",
+  },
+  citrusSubtitle: { color: "#38534C" },
   cta: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.20)",
-    borderColor: "rgba(255,255,255,0.40)",
-    borderRadius: 12,
-    borderWidth: 1,
+    alignSelf: "flex-end",
+    backgroundColor: storefrontDesign.primitive.white,
+    borderRadius: 14,
     flexDirection: "row",
-    gap: 6,
-    marginTop: 12,
+    gap: 7,
+    marginTop: 15,
     paddingHorizontal: 13,
     paddingVertical: 10,
   },
-  ctaText: { color: "#FFFFFF", fontFamily: "Cairo_700Bold", fontSize: 12 },
-  art: {
-    alignItems: "center",
+  ctaText: {
+    color: storefrontDesign.semantic.brandStrong,
+    fontFamily: "Cairo_800ExtraBold",
+    fontSize: 11,
+  },
+  paperArt: {
     bottom: -22,
-    justifyContent: "center",
-    left: -13,
+    height: 238,
+    left: -18,
     position: "absolute",
+    width: 188,
+  },
+  artCircle: {
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 120,
+    height: 220,
+    left: -38,
+    position: "absolute",
+    top: -18,
+    width: 220,
+  },
+  artBackSheet: {
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderColor: "rgba(255,255,255,0.26)",
+    borderRadius: 22,
+    borderWidth: 1,
+    height: 146,
+    left: 38,
+    position: "absolute",
+    top: 48,
+    transform: [{ rotate: "-13deg" }],
+    width: 106,
   },
   artSheet: {
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderColor: "rgba(255,255,255,0.16)",
-    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    borderColor: "rgba(255,255,255,0.40)",
+    borderRadius: 25,
     borderWidth: 1,
-    height: 118,
+    height: 164,
     justifyContent: "center",
-    transform: [{ rotate: "-8deg" }],
-    width: 94,
-  },
-  artLine: {
-    backgroundColor: "rgba(255,241,198,0.60)",
-    borderRadius: 2,
-    height: 3,
-    marginTop: 8,
-    width: 42,
-  },
-  artCircle: {
-    borderColor: "rgba(255,255,255,0.16)",
-    borderRadius: 72,
-    borderWidth: 1,
-    height: 144,
+    left: 64,
     position: "absolute",
-    width: 144,
+    top: 31,
+    transform: [{ rotate: "8deg" }],
+    width: 126,
   },
+  artRule: {
+    backgroundColor: "rgba(255,255,255,0.70)",
+    borderRadius: 4,
+    height: 4,
+    marginTop: 12,
+    width: 55,
+  },
+  artRuleShort: { marginTop: 7, width: 35 },
   pagination: {
     alignItems: "center",
     flexDirection: "row",
     gap: 6,
     justifyContent: "center",
-    marginTop: 11,
+    marginTop: 13,
   },
-  dot: { backgroundColor: "#D7CBBE", borderRadius: 4, height: 6, width: 6 },
-  activeDot: { backgroundColor: "#0E806A", width: 20 },
+  dot: { backgroundColor: "#CBD6D0", borderRadius: 10, height: 6, width: 6 },
+  activeDot: {
+    backgroundColor: storefrontDesign.semantic.brandStrong,
+    width: 26,
+  },
 });
