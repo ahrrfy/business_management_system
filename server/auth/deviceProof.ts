@@ -11,12 +11,32 @@ import {
 export const NATIVE_CLIENT_ID = "android-native";
 export const NATIVE_CLIENT_VERSION = "2";
 export const NATIVE_PROOF_VERSION = "1";
+/**
+ * Native client identity is an explicit allow-list, never a free-form header.
+ * Android keeps its deployed v2 contract. Expo has its own identity so an iOS
+ * build is not misrepresented as Android, while both still require the same
+ * non-exportable P-256 possession proof.
+ */
+export const EXPO_SUPERAPP_CLIENT_ID = "superapp-expo";
+export const EXPO_SUPERAPP_CLIENT_VERSION = "1";
+const NATIVE_CLIENT_PROFILES = {
+  [NATIVE_CLIENT_ID]: {
+    version: NATIVE_CLIENT_VERSION,
+    label: "Alrueya Android",
+  },
+  [EXPO_SUPERAPP_CLIENT_ID]: {
+    version: EXPO_SUPERAPP_CLIENT_VERSION,
+    label: "Alrueya Super App",
+  },
+} as const;
+export type NativeClientId = keyof typeof NATIVE_CLIENT_PROFILES;
 export const NATIVE_CHALLENGE_TTL_MS = 90_000;
 export const NATIVE_REQUEST_CLOCK_SKEW_MS = 60_000;
 
 const CHALLENGE_ISSUER = "alrueya-auth";
 const CHALLENGE_AUDIENCE = "alrueya-native-device";
-const SESSION_MARKER_PREFIX = "AlrueyaNativeProof/1;counter=";
+const SESSION_MARKER_PREFIX = "AlrueyaNativeProof/1;";
+const LEGACY_SESSION_MARKER_PREFIX = `${SESSION_MARKER_PREFIX}counter=`;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 type RequestLike = Pick<Request, "method" | "originalUrl" | "url" | "body"> & {
@@ -29,6 +49,7 @@ export type NativeDeviceChallenge = {
 };
 
 export type NativeDeviceRegistration = {
+  clientId: NativeClientId;
   keyThumbprint: string;
   sessionMarker: string;
 };
@@ -42,11 +63,15 @@ export class NativeDeviceProofError extends Error {
 
 function getSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error("JWT_SECRET is required for native device proof");
+  if (!secret)
+    throw new Error("JWT_SECRET is required for native device proof");
   return new TextEncoder().encode(secret);
 }
 
-function header(req: { headers?: Record<string, unknown> } | null | undefined, name: string): string {
+function header(
+  req: { headers?: Record<string, unknown> } | null | undefined,
+  name: string,
+): string {
   const value = req?.headers?.[name.toLowerCase()];
   if (typeof value === "string") return value;
   if (Array.isArray(value) && typeof value[0] === "string") return value[0];
@@ -59,26 +84,55 @@ function boundedHeader(
   maxLength: number,
 ): string {
   const value = header(req, name);
-  if (!value || value.length > maxLength || /[\r\n]/.test(value)) throw new NativeDeviceProofError();
+  if (!value || value.length > maxLength || /[\r\n]/.test(value))
+    throw new NativeDeviceProofError();
   return value;
 }
 
-export function isNativeClientRequest(req: { headers?: Record<string, unknown> } | null | undefined): boolean {
-  return header(req, "x-alrueya-client") === NATIVE_CLIENT_ID;
+export function nativeClientIdFromRequest(
+  req: { headers?: Record<string, unknown> } | null | undefined,
+): NativeClientId | null {
+  const clientId = header(req, "x-alrueya-client");
+  return Object.hasOwn(NATIVE_CLIENT_PROFILES, clientId)
+    ? (clientId as NativeClientId)
+    : null;
 }
 
-export function isCurrentNativeClient(req: { headers?: Record<string, unknown> } | null | undefined): boolean {
-  return isNativeClientRequest(req) &&
-    header(req, "x-alrueya-client-version") === NATIVE_CLIENT_VERSION &&
-    header(req, "x-alrueya-device-proof-version") === NATIVE_PROOF_VERSION;
+export function isNativeClientId(value: unknown): value is NativeClientId {
+  return (
+    typeof value === "string" && Object.hasOwn(NATIVE_CLIENT_PROFILES, value)
+  );
+}
+
+export function isNativeClientRequest(
+  req: { headers?: Record<string, unknown> } | null | undefined,
+): boolean {
+  return nativeClientIdFromRequest(req) != null;
+}
+
+export function isCurrentNativeClient(
+  req: { headers?: Record<string, unknown> } | null | undefined,
+): boolean {
+  const clientId = nativeClientIdFromRequest(req);
+  return (
+    clientId != null &&
+    header(req, "x-alrueya-client-version") ===
+      NATIVE_CLIENT_PROFILES[clientId].version &&
+    header(req, "x-alrueya-device-proof-version") === NATIVE_PROOF_VERSION
+  );
 }
 
 function sha256Base64Url(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("base64url");
 }
 
-function parseP256PublicKey(encoded: string): { key: KeyObject; der: Buffer; thumbprint: string } {
-  if (encoded.length > 512 || !BASE64URL_PATTERN.test(encoded)) throw new NativeDeviceProofError();
+function parseP256PublicKey(encoded: string): {
+  key: KeyObject;
+  der: Buffer;
+  thumbprint: string;
+} {
+  if (encoded.length > 512 || !BASE64URL_PATTERN.test(encoded))
+    throw new NativeDeviceProofError();
   let der: Buffer;
   try {
     der = Buffer.from(encoded, "base64url");
@@ -94,20 +148,28 @@ function parseP256PublicKey(encoded: string): { key: KeyObject; der: Buffer; thu
     throw new NativeDeviceProofError();
   }
   const curve = key.asymmetricKeyDetails?.namedCurve;
-  if (key.asymmetricKeyType !== "ec" || (curve !== "prime256v1" && curve !== "P-256")) {
+  if (
+    key.asymmetricKeyType !== "ec" ||
+    (curve !== "prime256v1" && curve !== "P-256")
+  ) {
     throw new NativeDeviceProofError();
   }
   return { key, der, thumbprint: sha256Base64Url(der) };
 }
 
 function decodeSignature(encoded: string): Buffer {
-  if (encoded.length > 160 || !BASE64URL_PATTERN.test(encoded)) throw new NativeDeviceProofError();
+  if (encoded.length > 160 || !BASE64URL_PATTERN.test(encoded))
+    throw new NativeDeviceProofError();
   const signature = Buffer.from(encoded, "base64url");
-  if (signature.length < 64 || signature.length > 80) throw new NativeDeviceProofError();
+  if (signature.length < 64 || signature.length > 80)
+    throw new NativeDeviceProofError();
   return signature;
 }
 
-export function buildNativeRegistrationMessage(ticket: string, keyThumbprint: string): string {
+export function buildNativeRegistrationMessage(
+  ticket: string,
+  keyThumbprint: string,
+): string {
   return [
     "ALRUEYA-NATIVE-REGISTER",
     NATIVE_PROOF_VERSION,
@@ -116,7 +178,9 @@ export function buildNativeRegistrationMessage(ticket: string, keyThumbprint: st
   ].join("\n");
 }
 
-export async function issueNativeDeviceChallenge(nowMs = Date.now()): Promise<NativeDeviceChallenge> {
+export async function issueNativeDeviceChallenge(
+  nowMs = Date.now(),
+): Promise<NativeDeviceChallenge> {
   const issuedAt = Math.floor(nowMs / 1000);
   const expiresAt = Math.floor((nowMs + NATIVE_CHALLENGE_TTL_MS) / 1000);
   const ticket = await new SignJWT({
@@ -144,10 +208,17 @@ async function verifyChallenge(ticket: string, nowMs: number): Promise<void> {
       currentDate: new Date(nowMs),
       clockTolerance: 5,
     });
-    if (payload.purpose !== "native-device-register" || payload.version !== NATIVE_PROOF_VERSION) {
+    if (
+      payload.purpose !== "native-device-register" ||
+      payload.version !== NATIVE_PROOF_VERSION
+    ) {
       throw new NativeDeviceProofError();
     }
-    if (typeof payload.nonce !== "string" || payload.nonce.length < 32 || !BASE64URL_PATTERN.test(payload.nonce)) {
+    if (
+      typeof payload.nonce !== "string" ||
+      payload.nonce.length < 32 ||
+      !BASE64URL_PATTERN.test(payload.nonce)
+    ) {
       throw new NativeDeviceProofError();
     }
   } catch (error) {
@@ -161,40 +232,99 @@ export async function verifyNativeDeviceRegistration(
   req: { headers?: Record<string, unknown> },
   nowMs = Date.now(),
 ): Promise<NativeDeviceRegistration | null> {
-  if (!isNativeClientRequest(req)) return null;
+  const clientId = nativeClientIdFromRequest(req);
+  if (!clientId) return null;
   if (!isCurrentNativeClient(req)) throw new NativeDeviceProofError();
 
   const publicKey = boundedHeader(req, "x-alrueya-device-key", 512);
   const ticket = boundedHeader(req, "x-alrueya-device-challenge", 4096);
-  const signature = decodeSignature(boundedHeader(req, "x-alrueya-device-signature", 160));
+  const signature = decodeSignature(
+    boundedHeader(req, "x-alrueya-device-signature", 160),
+  );
   await verifyChallenge(ticket, nowMs);
   const parsed = parseP256PublicKey(publicKey);
   const message = buildNativeRegistrationMessage(ticket, parsed.thumbprint);
-  if (!verifySignature("sha256", Buffer.from(message, "utf8"), parsed.key, signature)) {
+  if (
+    !verifySignature(
+      "sha256",
+      Buffer.from(message, "utf8"),
+      parsed.key,
+      signature,
+    )
+  ) {
     throw new NativeDeviceProofError();
   }
-  return { keyThumbprint: parsed.thumbprint, sessionMarker: createNativeSessionMarker(0) };
+  return {
+    clientId,
+    keyThumbprint: parsed.thumbprint,
+    sessionMarker: createNativeSessionMarker(0, clientId),
+  };
 }
 
-export function createNativeSessionMarker(counter: number): string {
-  if (!Number.isSafeInteger(counter) || counter < 0) throw new NativeDeviceProofError();
-  return `${SESSION_MARKER_PREFIX}${counter}`;
+export function createNativeSessionMarker(
+  counter: number,
+  clientId: NativeClientId = NATIVE_CLIENT_ID,
+): string {
+  if (!Number.isSafeInteger(counter) || counter < 0)
+    throw new NativeDeviceProofError();
+  if (!isNativeClientId(clientId)) throw new NativeDeviceProofError();
+  return `${SESSION_MARKER_PREFIX}client=${clientId};counter=${counter}`;
 }
 
-export function parseNativeSessionMarker(marker: string | null | undefined): number | null {
-  if (!marker?.startsWith(SESSION_MARKER_PREFIX)) return null;
-  const raw = marker.slice(SESSION_MARKER_PREFIX.length);
+function parseSessionMarker(marker: string | null | undefined): {
+  clientId: NativeClientId;
+  counter: number;
+} | null {
+  if (!marker) return null;
+  const structured =
+    /^AlrueyaNativeProof\/1;client=([a-z0-9-]{1,40});counter=(\d{1,16})$/.exec(
+      marker,
+    );
+  const clientId = structured
+    ? isNativeClientId(structured[1])
+      ? structured[1]
+      : null
+    : marker.startsWith(LEGACY_SESSION_MARKER_PREFIX)
+      ? NATIVE_CLIENT_ID
+      : null;
+  const raw = structured
+    ? structured[2]
+    : marker.startsWith(LEGACY_SESSION_MARKER_PREFIX)
+      ? marker.slice(LEGACY_SESSION_MARKER_PREFIX.length)
+      : null;
+  if (!clientId || raw == null) return null;
   if (!/^\d{1,16}$/.test(raw)) return null;
   const counter = Number(raw);
-  return Number.isSafeInteger(counter) && counter >= 0 ? counter : null;
+  return Number.isSafeInteger(counter) && counter >= 0
+    ? { clientId, counter }
+    : null;
 }
 
-export function nativeSessionDisplayName(marker: string | null | undefined): string | null {
-  return parseNativeSessionMarker(marker) == null ? null : "Alrueya Android";
+export function parseNativeSessionMarker(
+  marker: string | null | undefined,
+): number | null {
+  return parseSessionMarker(marker)?.counter ?? null;
+}
+
+export function nativeSessionClientId(
+  marker: string | null | undefined,
+): NativeClientId | null {
+  return parseSessionMarker(marker)?.clientId ?? null;
+}
+
+export function nativeSessionDisplayName(
+  marker: string | null | undefined,
+): string | null {
+  const clientId = nativeSessionClientId(marker);
+  return clientId ? NATIVE_CLIENT_PROFILES[clientId].label : null;
 }
 
 function bodyText(req: RequestLike): string {
-  if (req.method?.toUpperCase() === "GET" || req.method?.toUpperCase() === "HEAD") return "";
+  if (
+    req.method?.toUpperCase() === "GET" ||
+    req.method?.toUpperCase() === "HEAD"
+  )
+    return "";
   if (req.body == null) return "";
   if (typeof req.body === "string") return req.body;
   if (Buffer.isBuffer(req.body)) return req.body.toString("utf8");
@@ -236,9 +366,13 @@ export function verifyNativeRequestProof(input: {
   nowMs?: number;
 }): { counter: number; nextMarker: string } {
   const { req } = input;
-  if (!isCurrentNativeClient(req)) throw new NativeDeviceProofError();
+  const clientId = nativeClientIdFromRequest(req);
+  if (!clientId || !isCurrentNativeClient(req))
+    throw new NativeDeviceProofError();
   const currentCounter = parseNativeSessionMarker(input.currentMarker);
   if (currentCounter == null) throw new NativeDeviceProofError();
+  if (nativeSessionClientId(input.currentMarker) !== clientId)
+    throw new NativeDeviceProofError();
 
   const timestampRaw = boundedHeader(req, "x-alrueya-device-timestamp", 16);
   const counterRaw = boundedHeader(req, "x-alrueya-device-counter", 16);
@@ -246,20 +380,35 @@ export function verifyNativeRequestProof(input: {
   if (!/^\d{13,16}$/.test(timestampRaw) || !/^\d{1,16}$/.test(counterRaw)) {
     throw new NativeDeviceProofError();
   }
-  if (nonce.length < 22 || !BASE64URL_PATTERN.test(nonce)) throw new NativeDeviceProofError();
+  if (nonce.length < 22 || !BASE64URL_PATTERN.test(nonce))
+    throw new NativeDeviceProofError();
   const timestamp = Number(timestampRaw);
   const counter = Number(counterRaw);
-  if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(counter) || counter <= currentCounter) {
+  if (
+    !Number.isSafeInteger(timestamp) ||
+    !Number.isSafeInteger(counter) ||
+    counter <= currentCounter
+  ) {
     throw new NativeDeviceProofError();
   }
   const nowMs = input.nowMs ?? Date.now();
-  if (Math.abs(nowMs - timestamp) > NATIVE_REQUEST_CLOCK_SKEW_MS) throw new NativeDeviceProofError();
+  if (Math.abs(nowMs - timestamp) > NATIVE_REQUEST_CLOCK_SKEW_MS)
+    throw new NativeDeviceProofError();
 
-  const publicKey = parseP256PublicKey(boundedHeader(req, "x-alrueya-device-key", 512));
-  if (publicKey.thumbprint !== input.expectedKeyThumbprint) throw new NativeDeviceProofError();
-  const signature = decodeSignature(boundedHeader(req, "x-alrueya-device-signature", 160));
+  const publicKey = parseP256PublicKey(
+    boundedHeader(req, "x-alrueya-device-key", 512),
+  );
+  if (publicKey.thumbprint !== input.expectedKeyThumbprint)
+    throw new NativeDeviceProofError();
+  const signature = decodeSignature(
+    boundedHeader(req, "x-alrueya-device-signature", 160),
+  );
   const target = req.originalUrl || req.url || "";
-  if (!target.startsWith("/api/trpc/") || target.includes("\r") || target.includes("\n")) {
+  if (
+    !target.startsWith("/api/trpc/") ||
+    target.includes("\r") ||
+    target.includes("\n")
+  ) {
     throw new NativeDeviceProofError();
   }
   const message = buildNativeRequestMessage({
@@ -271,14 +420,24 @@ export function verifyNativeRequestProof(input: {
     target,
     body: bodyText(req),
   });
-  if (!verifySignature("sha256", Buffer.from(message, "utf8"), publicKey.key, signature)) {
+  if (
+    !verifySignature(
+      "sha256",
+      Buffer.from(message, "utf8"),
+      publicKey.key,
+      signature,
+    )
+  ) {
     throw new NativeDeviceProofError();
   }
-  return { counter, nextMarker: createNativeSessionMarker(counter) };
+  return { counter, nextMarker: createNativeSessionMarker(counter, clientId) };
 }
 
 /** A protected request was already verified, so its public-key header can be inherited safely. */
-export function verifiedNativeKeyThumbprint(req: { headers?: Record<string, unknown> }): string | null {
+export function verifiedNativeKeyThumbprint(req: {
+  headers?: Record<string, unknown>;
+}): string | null {
   if (!isCurrentNativeClient(req)) return null;
-  return parseP256PublicKey(boundedHeader(req, "x-alrueya-device-key", 512)).thumbprint;
+  return parseP256PublicKey(boundedHeader(req, "x-alrueya-device-key", 512))
+    .thumbprint;
 }

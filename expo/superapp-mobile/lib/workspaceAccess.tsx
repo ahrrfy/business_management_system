@@ -1,0 +1,175 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type PropsWithChildren,
+} from "react";
+import { AppState, Platform, Pressable, StyleSheet, Text, View, type AppStateStatus } from "react-native";
+import {
+  enableAppSwitcherProtectionAsync,
+  usePreventScreenCapture,
+} from "expo-screen-capture";
+
+import { colors, radius, space } from "@/constants/theme";
+import { getSecureTransportRuntimeStatus } from "@/lib/deviceProof";
+import { unlockLocalSession } from "@/lib/localSessionUnlock";
+import { getNativeMobileToday, type MobileToday } from "@/lib/secureTransport";
+
+export type WorkspaceSnapshot = Readonly<{
+  mode: "checking" | "preview" | "signedOut" | "ready" | "error";
+  today: MobileToday | null;
+}>;
+
+type WorkspaceAccessContextValue = WorkspaceSnapshot & {
+  refreshWorkspace(): Promise<WorkspaceSnapshot>;
+};
+
+const WorkspaceAccessContext = createContext<WorkspaceAccessContextValue | null>(null);
+const checking: WorkspaceSnapshot = { mode: "checking", today: null };
+
+function NativeCaptureGuard() {
+  usePreventScreenCapture("superapp-protected-workspace");
+
+  useEffect(() => {
+    void enableAppSwitcherProtectionAsync(0.92).catch(() => undefined);
+  }, []);
+
+  return null;
+}
+
+/**
+ * Security boundary for the whole native tree. Leaving the foreground unmounts
+ * all routed screens, which clears attendance, task, and revealed payslip state.
+ * Returning requires a new local unlock before any protected screen is mounted.
+ */
+export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
+  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(checking);
+  const [unlocked, setUnlocked] = useState(false);
+  const [unlockFailed, setUnlockFailed] = useState(false);
+  const appState = useRef<AppStateStatus>(AppState.currentState);
+  const checkingRef = useRef(false);
+  const snapshotRef = useRef<WorkspaceSnapshot>(checking);
+
+  const publish = useCallback((next: WorkspaceSnapshot) => {
+    snapshotRef.current = next;
+    setSnapshot(next);
+  }, []);
+
+  const refreshWorkspace = useCallback(async (): Promise<WorkspaceSnapshot> => {
+    if (checkingRef.current) return snapshotRef.current;
+    checkingRef.current = true;
+    setUnlockFailed(false);
+    try {
+      const transport = await getSecureTransportRuntimeStatus();
+      if (transport.kind === "unavailable" || !transport.configured) {
+        const next: WorkspaceSnapshot = { mode: "preview", today: null };
+        publish(next);
+        setUnlocked(true);
+        return next;
+      }
+      if (transport.session !== "present") {
+        const next: WorkspaceSnapshot = { mode: "signedOut", today: null };
+        publish(next);
+        setUnlocked(true);
+        return next;
+      }
+
+      try {
+        await unlockLocalSession();
+      } catch {
+        publish(checking);
+        setUnlocked(false);
+        setUnlockFailed(true);
+        return checking;
+      }
+
+      setUnlocked(true);
+      try {
+        const today = await getNativeMobileToday();
+        const next: WorkspaceSnapshot = { mode: "ready", today };
+        publish(next);
+        return next;
+      } catch {
+        const next: WorkspaceSnapshot = { mode: "error", today: null };
+        publish(next);
+        return next;
+      }
+    } finally {
+      checkingRef.current = false;
+    }
+  }, [publish]);
+
+  useEffect(() => {
+    void refreshWorkspace();
+    const subscription = AppState.addEventListener("change", (next) => {
+      const wasActive = appState.current === "active";
+      appState.current = next;
+      if (next !== "active") {
+        publish(checking);
+        setUnlocked(false);
+        setUnlockFailed(false);
+        return;
+      }
+      if (!wasActive) void refreshWorkspace();
+    });
+    return () => subscription.remove();
+  }, [publish, refreshWorkspace]);
+
+  return (
+    <WorkspaceAccessContext.Provider value={{ ...snapshot, refreshWorkspace }}>
+      {Platform.OS === "web" ? null : <NativeCaptureGuard />}
+      {unlocked ? children : (
+        <View accessibilityLabel="شاشة حماية سوبر العربية" style={styles.lockedPage}>
+          <View style={styles.lockedCard}>
+            <Text style={styles.brand}>سوبر العربية</Text>
+            <Text style={styles.title}>{unlockFailed ? "يلزم فتح حماية الجهاز" : "جارٍ تأمين مساحة العمل"}</Text>
+            <Text style={styles.detail}>
+              {unlockFailed
+                ? "استخدم البصمة أو رمز قفل الجهاز للعودة إلى بياناتك."
+                : "لا تُعرض بيانات العمل أثناء انتقال التطبيق أو وجوده في الخلفية."}
+            </Text>
+            {unlockFailed ? (
+              <Pressable accessibilityRole="button" onPress={() => void refreshWorkspace()} style={styles.unlockButton}>
+                <Text style={styles.unlockText}>فتح التطبيق</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      )}
+    </WorkspaceAccessContext.Provider>
+  );
+}
+
+export function useWorkspaceAccess(): WorkspaceAccessContextValue {
+  const value = useContext(WorkspaceAccessContext);
+  if (!value) throw new Error("WorkspaceAccessProvider is required");
+  return value;
+}
+
+const styles = StyleSheet.create({
+  lockedPage: {
+    alignItems: "center",
+    backgroundColor: colors.canvas,
+    flex: 1,
+    justifyContent: "center",
+    padding: space.lg,
+  },
+  lockedCard: {
+    backgroundColor: colors.surface,
+    borderColor: colors.outline,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: space.sm,
+    maxWidth: 420,
+    padding: space.xl,
+    width: "100%",
+  },
+  brand: { color: colors.brand, fontFamily: "Cairo_700Bold", fontSize: 14, textAlign: "right" },
+  title: { color: colors.ink, fontFamily: "Cairo_700Bold", fontSize: 22, lineHeight: 34, textAlign: "right" },
+  detail: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 14, lineHeight: 24, textAlign: "right" },
+  unlockButton: { alignItems: "center", backgroundColor: colors.brand, borderRadius: radius.field, justifyContent: "center", minHeight: 52, marginTop: space.sm },
+  unlockText: { color: colors.surface, fontFamily: "Cairo_700Bold", fontSize: 15 },
+});

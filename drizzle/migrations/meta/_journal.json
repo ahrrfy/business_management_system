@@ -2206,6 +2206,13 @@
 			"when": 1788148800000,
 			"tag": "0340_consignment_external_tracking_ref",
 			"breakpoints": true
+		},
+		{
+			"idx": 343,
+			"version": "5",
+			"when": 1788148803000,
+			"tag": "0343_superapp_expo_push_devices",
+			"breakpoints": true
 		}
 	]
 }

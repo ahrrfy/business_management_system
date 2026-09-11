@@ -105,6 +105,13 @@ const PROCEDURES = {
     roles: ["authenticated-user"],
     branch: "scoped",
   },
+  expoSuperAppProcedure: {
+    authority: "module-map",
+    module: null,
+    level: "RESOLVED",
+    roles: ["authenticated-user", "verified-superapp-expo-device"],
+    branch: "scoped",
+  },
   // تكليف جرد ذاتي: ليست صلاحية مخزون عامة؛ handler يربط كل استعلام بالمستخدم المكلّف.
   stocktakeAssignmentProcedure: {
     authority: "self-assignment",

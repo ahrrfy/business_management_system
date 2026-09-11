@@ -1,0 +1,139 @@
+name: Expo Super Arabia Android release artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: expo-superapp-android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  signed-store-artifact:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Require green repository gates for this main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-android-release-workflow-gate.mjs
+      - name: Restore reviewed Android credentials
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICES_JSON_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$KEYSTORE_B64"
+          test -n "$GOOGLE_SERVICES_JSON_B64"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-upload.jks"
+          printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > "$RUNNER_TEMP/google-services.json"
+          keytool -list -keystore "$RUNNER_TEMP/android-upload.jks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+      - name: Verify Firebase package identity
+        env:
+          GOOGLE_SERVICES_FILE: ${{ runner.temp }}/google-services.json
+          EXPECTED_FCM_PROJECT_ID: ${{ vars.FCM_PROJECT_ID || secrets.FCM_PROJECT_ID }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const source = JSON.parse(fs.readFileSync(process.env.GOOGLE_SERVICES_FILE, 'utf8'));
+          if (source.project_info?.project_id !== process.env.EXPECTED_FCM_PROJECT_ID) throw new Error('Firebase project identity mismatch');
+          const packages = (source.client || []).map((item) => item.client_info?.android_client_info?.package_name);
+          if (!packages.includes('online.alarabiya.store')) throw new Error('Firebase configuration does not contain the Super Arabia store package');
+          NODE
+      - name: Install and verify Expo source
+        working-directory: expo/superapp-mobile
+        run: |
+          pnpm install --frozen-lockfile --ignore-workspace
+          pnpm check
+          pnpm test
+          pnpm lint --max-warnings=0
+          pnpm check:image-size-security
+          pnpm security:dependencies
+          pnpm dlx expo-doctor
+      - name: Generate reviewed production Android project
+        working-directory: expo/superapp-mobile
+        env:
+          APP_VARIANT: production
+          ERP_API_BASE_URL: https://srv1548487.hstgr.cloud
+          ERP_TLS_SPKI_PINS: heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg,brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4
+          ERP_GOOGLE_SERVICES_FILE: ${{ runner.temp }}/google-services.json
+        run: |
+          pnpm check:app-config
+          CI=1 pnpm exec expo prebuild --platform android --clean --no-install
+          grep -Fq 'https://srv1548487.hstgr.cloud' android/app/src/main/res/values/strings.xml
+          grep -Fq 'heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg' android/app/src/main/res/values/strings.xml
+          grep -Fq 'brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4' android/app/src/main/res/values/strings.xml
+      - name: Build signed AAB and APK
+        working-directory: expo/superapp-mobile/android
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/android-upload.jks
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon \
+            :alrueya-secure-transport:testDebugUnitTest \
+            :app:lintRelease \
+            :app:bundleRelease \
+            :app:assembleRelease \
+            -Pandroid.injected.signing.store.file="$KEYSTORE_FILE" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+      - name: Verify identity, signature, ABI, and version
+        env:
+          EXPECTED_UPLOAD_SHA256: ${{ vars.ANDROID_UPLOAD_SIGNING_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk="expo/superapp-mobile/android/app/build/outputs/apk/release/app-release.apk"
+          aab="expo/superapp-mobile/android/app/build/outputs/bundle/release/app-release.aab"
+          test -s "$apk"
+          test -s "$aab"
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          aapt_path="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          "$apksigner_path" verify --verbose "$apk"
+          jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/expo-aab-signature.txt"
+          grep -Fq 'jar verified.' "$RUNNER_TEMP/expo-aab-signature.txt"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='18' versionName='1.1.0'"
+          unzip -Z1 "$apk" | grep -Fq 'lib/arm64-v8a/'
+          actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          expected="$(printf '%s' "$EXPECTED_UPLOAD_SHA256" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
+          test -n "$expected"
+          test "$actual" = "$expected"
+          sha256sum "$apk" "$aab" > expo-superapp-android-SHA256SUMS.txt
+      - name: Reconfirm exact-SHA gates before publishing the artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-android-release-workflow-gate.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: super-arabia-expo-android-${{ github.sha }}
+          path: |
+            expo/superapp-mobile/android/app/build/outputs/bundle/release/app-release.aab
+            expo/superapp-mobile/android/app/build/outputs/apk/release/app-release.apk
+            expo/superapp-mobile/android/app/build/outputs/mapping/release/mapping.txt
+            expo-superapp-android-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove restored credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/android-upload.jks" "$RUNNER_TEMP/google-services.json"

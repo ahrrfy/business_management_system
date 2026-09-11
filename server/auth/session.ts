@@ -4,10 +4,19 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
-import { userSessions, users, type User, type UserSession } from "../../drizzle/schema";
 import {
+  userSessions,
+  users,
+  type User,
+  type UserSession,
+} from "../../drizzle/schema";
+import {
+  NATIVE_CLIENT_ID,
   isCurrentNativeClient,
+  isNativeClientId,
   isNativeClientRequest,
+  nativeClientIdFromRequest,
+  type NativeClientId,
   verifyNativeRequestProof,
 } from "./deviceProof";
 import { getDb } from "../db";
@@ -46,16 +55,27 @@ function getSecret(): Uint8Array {
  * الإنشاء والتحديث (اختلافها يكسر مطابقة قرينة الثقة في جسر أجهزة الحضور).
  */
 function currentRequestIp(
-  req: Request | { ip?: string; socket?: { remoteAddress?: string } } | null | undefined,
+  req:
+    | Request
+    | { ip?: string; socket?: { remoteAddress?: string } }
+    | null
+    | undefined,
 ): string | null {
-  const raw = (req as { ip?: string; socket?: { remoteAddress?: string } } | null | undefined);
+  const raw = req as
+    | { ip?: string; socket?: { remoteAddress?: string } }
+    | null
+    | undefined;
   const value = raw?.ip ?? raw?.socket?.remoteAddress ?? "";
   const withoutZone = value.split("%")[0];
-  const clean = withoutZone.startsWith("::ffff:") ? withoutZone.slice(7) : withoutZone;
+  const clean = withoutZone.startsWith("::ffff:")
+    ? withoutZone.slice(7)
+    : withoutZone;
   return clean ? clean.slice(0, 45) : null;
 }
 
-function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> } | null | undefined): string {
+function getRequestUserAgent(
+  req: Request | { headers?: Record<string, unknown> } | null | undefined,
+): string {
   if (!req) return "";
   const anyReq = req as { headers?: Record<string, unknown> };
   const ua = anyReq.headers?.["user-agent"];
@@ -63,7 +83,17 @@ function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> 
 }
 
 /** يحسب بصمة الجلسة من الطلب الحالي (sha256 مقطوع ٣٢ خانة hex — كافٍ لتمييز جهاز). */
-export function computeSessionFingerprint(req: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null | undefined): string {
+export function computeSessionFingerprint(
+  req:
+    | Request
+    | {
+        ip?: string;
+        headers?: Record<string, unknown>;
+        socket?: { remoteAddress?: string };
+      }
+    | null
+    | undefined,
+): string {
   const ua = getRequestUserAgent(req);
   return createHash("sha256").update(ua).digest("hex").slice(0, 32);
 }
@@ -91,6 +121,8 @@ export type SessionPayload = {
   sid?: number;
   /** SHA-256 thumbprint of the native app's non-exportable EC public key. */
   dpk?: string;
+  /** Versioned allow-listed native client bound to a newly issued device session. */
+  dpc?: NativeClientId;
 };
 
 /**
@@ -106,17 +138,26 @@ export type SessionPayload = {
 export async function signSession(
   uid: number,
   expiresInMs: number = SESSION_DEFAULT_MS,
-  req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null,
+  req?:
+    | Request
+    | {
+        ip?: string;
+        headers?: Record<string, unknown>;
+        socket?: { remoteAddress?: string };
+      }
+    | null,
   iatSec?: number,
   companyId?: number,
   sid?: number,
   deviceKeyThumbprint?: string,
+  nativeClientId?: NativeClientId,
 ): Promise<string> {
   const issuedAtSeconds =
     typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
       ? iatSec
       : Math.floor(Date.now() / 1000);
-  const expirationSeconds = Math.floor(Date.now() / 1000) + Math.floor(expiresInMs / 1000);
+  const expirationSeconds =
+    Math.floor(Date.now() / 1000) + Math.floor(expiresInMs / 1000);
   const claims: Record<string, unknown> = { uid };
   // البصمة تُحسب فقط عند توفّر الطلب. الاستدعاءات بلا req (اختبارات وحدة) تُصدر
   // توكناً بلا fp — ويعامله verifySession كـlegacy (لا مقارنة) لكي لا تنكسر.
@@ -128,9 +169,20 @@ export async function signSession(
       throw new Error("Invalid native device key thumbprint");
     }
     claims.dpk = deviceKeyThumbprint;
+    if (nativeClientId != null) {
+      if (!isNativeClientId(nativeClientId))
+        throw new Error("Invalid native client identity");
+      claims.dpc = nativeClientId;
+    }
+  } else if (nativeClientId != null) {
+    throw new Error("Native client identity requires a device-bound session");
   }
   // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
-  if (typeof companyId === "number" && Number.isInteger(companyId) && companyId > 0) {
+  if (
+    typeof companyId === "number" &&
+    Number.isInteger(companyId) &&
+    companyId > 0
+  ) {
     claims.companyId = companyId;
   }
   // اختياري — معرّف سطر userSessions (راجع تعليق SessionPayload). الاستدعاءات بلا sid
@@ -138,13 +190,15 @@ export async function signSession(
   if (typeof sid === "number" && Number.isInteger(sid) && sid > 0) {
     claims.sid = sid;
   }
-  return new SignJWT(claims)
-    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setIssuedAt(issuedAtSeconds)
-    // nbf = iat: التوكن لا يُقبَل قبل لحظة إصداره (يقطع replay من مزامنة ساعة عكسية).
-    .setNotBefore(issuedAtSeconds)
-    .setExpirationTime(expirationSeconds)
-    .sign(getSecret());
+  return (
+    new SignJWT(claims)
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setIssuedAt(issuedAtSeconds)
+      // nbf = iat: التوكن لا يُقبَل قبل لحظة إصداره (يقطع replay من مزامنة ساعة عكسية).
+      .setNotBefore(issuedAtSeconds)
+      .setExpirationTime(expirationSeconds)
+      .sign(getSecret())
+  );
 }
 
 /**
@@ -158,7 +212,14 @@ export async function signSession(
  */
 export async function verifySession(
   token: string | undefined | null,
-  req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null
+  req?:
+    | Request
+    | {
+        ip?: string;
+        headers?: Record<string, unknown>;
+        socket?: { remoteAddress?: string };
+      }
+    | null,
 ): Promise<SessionPayload | null> {
   if (!token) return null;
   try {
@@ -183,17 +244,23 @@ export async function verifySession(
     // اختياري — توكنات أُصدرت قبل تعدّد الشركات (أو في نشر أحادي الشركة) لا تحمله؛
     // getDb() (server/db.ts) يتعامل مع غيابه بسقوط لمسار DATABASE_URL في وضع غير متعدّد.
     const companyId =
-      typeof payload.companyId === "number" && Number.isInteger(payload.companyId) && payload.companyId > 0
+      typeof payload.companyId === "number" &&
+      Number.isInteger(payload.companyId) &&
+      payload.companyId > 0
         ? payload.companyId
         : undefined;
     // اختياري — راجع تعليق SessionPayload.sid. توكنات قبل هذه الميزة تعود بلا sid.
     const sid =
-      typeof payload.sid === "number" && Number.isInteger(payload.sid) && payload.sid > 0
+      typeof payload.sid === "number" &&
+      Number.isInteger(payload.sid) &&
+      payload.sid > 0
         ? payload.sid
         : undefined;
-    const dpk = typeof payload.dpk === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.dpk)
-      ? payload.dpk
-      : undefined;
+    const dpk =
+      typeof payload.dpk === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.dpk)
+        ? payload.dpk
+        : undefined;
+    const dpc = isNativeClientId(payload.dpc) ? payload.dpc : undefined;
 
     // إن مُرّر طلب: ألزم تطابق fp دائماً ⇒ يحبط إعادة استعمال التوكن من جهاز آخر.
     // المقارنة إلزامية حتى بلا ترويسة UA (بصمة الفراغ لن تطابق بصمة جهاز حقيقي) —
@@ -203,7 +270,13 @@ export async function verifySession(
     if (req) {
       if (dpk) {
         // Proof-bound cookies stay protected even if an attacker strips or spoofs headers.
-        if (!sid || !isCurrentNativeClient(req)) return null;
+        const requestClientId = nativeClientIdFromRequest(req);
+        if (!sid || !requestClientId || !isCurrentNativeClient(req))
+          return null;
+        // Device-bound sessions created after the Expo client was introduced
+        // are tied to one explicit app identity. Older Android sessions have
+        // no claim and remain protected by their existing P-256 proof.
+        if (dpc && dpc !== requestClientId) return null;
       } else {
         // A declared native client must upgrade through authenticated key registration.
         // Browser sessions retain their existing fingerprint behavior unchanged.
@@ -213,7 +286,7 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp, companyId, sid, dpk };
+    return { uid, iat, fp, companyId, sid, dpk, dpc };
   } catch {
     return null;
   }
@@ -221,7 +294,16 @@ export async function verifySession(
 
 /** ناتج تحليل جلسة الطلب: المستخدم (أو null) + معرّف سطر الجلسة الفردية (أو null إن كان
  *  التوكن legacy بلا sid، أو لا مستخدم). راجع تعليق userSessions في drizzle/schema.ts. */
-export type SessionContext = { user: User | null; sessionId: number | null };
+export type SessionContext = {
+  user: User | null;
+  sessionId: number | null;
+  /**
+   * Set only after the request has passed the device-bound session proof.
+   * Routers can use this to make a native-only surface fail closed instead of
+   * trusting a spoofable client header.
+   */
+  nativeClientId: NativeClientId | null;
+};
 
 /** يحلّل جلسة الطلب كاملةً: المستخدم + معرّف الجلسة الفردية (إن وُجد). المصدر الموحّد
  *  الذي يبنى عليه getUserFromRequest (للمسارات التي لا تحتاج sessionId). */
@@ -229,10 +311,10 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   const cookies = parseCookie(req.headers.cookie ?? "");
   // نمرّر req ⇒ verifySession يُلزم تطابق بصمة الجهاز مع التوكن.
   const session = await verifySession(cookies[COOKIE_NAME], req);
-  if (!session) return { user: null, sessionId: null };
+  if (!session) return { user: null, sessionId: null, nativeClientId: null };
 
   const db = getDb();
-  if (!db) return { user: null, sessionId: null };
+  if (!db) return { user: null, sessionId: null, nativeClientId: null };
 
   // uid وsid (إن وُجد) كلاهما معروفان فور فكّ الـJWT أعلاه — لا تبعية بيانات فعلية بين
   // استعلامَي users وuserSessions ⇒ نُطلقهما معاً (مراجعة أداء ٣/٧: كانا متسلسلين فيضاعفان
@@ -242,17 +324,22 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   const [rows, srows] = await Promise.all([
     db.select().from(users).where(eq(users.id, session.uid)).limit(1),
     hasSid
-      ? db.select().from(userSessions).where(eq(userSessions.id, session.sid as number)).limit(1)
+      ? db
+          .select()
+          .from(userSessions)
+          .where(eq(userSessions.id, session.sid as number))
+          .limit(1)
       : Promise.resolve([] as UserSession[]),
   ]);
 
   const user = rows[0];
-  if (!user || !user.isActive) return { user: null, sessionId: null };
+  if (!user || !user.isActive)
+    return { user: null, sessionId: null, nativeClientId: null };
 
   // انتهاء الحساب المؤقّت (0226): يُفحَص هنا لا في الشاشات، فيسقط الوصول من **أوّل طلب**
   // حتى لو بقيت الجلسة مفتوحة بين يدي صاحبها. `null` = حسابٌ دائم ⇒ لا أثر على القائم.
   if (user.accessExpiresAt && user.accessExpiresAt.getTime() <= Date.now()) {
-    return { user: null, sessionId: null };
+    return { user: null, sessionId: null, nativeClientId: null };
   }
 
   // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
@@ -261,7 +348,8 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   const validFromSec = user.sessionsValidFrom
     ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
     : 0;
-  if (session.iat <= validFromSec) return { user: null, sessionId: null };
+  if (session.iat <= validFromSec)
+    return { user: null, sessionId: null, nativeClientId: null };
 
   // إبطال فردي (AUTH-03): توكن يحمل sid ⇒ يجب أن يقابل سطراً حيّاً (غير مُبطَل/منتهٍ)
   // في userSessions. مكمِّل لا بديل لفحص sessionsValidFrom أعلاه — يتيح طرد جهازٍ واحدٍ
@@ -269,14 +357,16 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   let sessionId: number | null = null;
   if (hasSid) {
     const srow = srows[0];
-    const expired = !srow || srow.revokedAt != null || srow.expiresAt.getTime() < Date.now();
+    const expired =
+      !srow || srow.revokedAt != null || srow.expiresAt.getTime() < Date.now();
     if (!srow || srow.userId !== user.id || expired) {
-      return { user: null, sessionId: null };
+      return { user: null, sessionId: null, nativeClientId: null };
     }
     sessionId = srow.id;
     if (session.dpk) {
       const currentMarker = srow.userAgent;
-      if (!currentMarker) return { user: null, sessionId: null };
+      if (!currentMarker)
+        return { user: null, sessionId: null, nativeClientId: null };
       let proof: { counter: number; nextMarker: string };
       try {
         proof = verifyNativeRequestProof({
@@ -286,22 +376,27 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
           currentMarker,
         });
       } catch {
-        return { user: null, sessionId: null };
+        return { user: null, sessionId: null, nativeClientId: null };
       }
       // Queries are integrity-bound but do not consume counters. Mutations atomically advance
       // the session marker so a duplicate side-effect loses the compare-and-swap and is rejected.
-      if (req.method.toUpperCase() !== "GET" && req.method.toUpperCase() !== "HEAD") {
+      if (
+        req.method.toUpperCase() !== "GET" &&
+        req.method.toUpperCase() !== "HEAD"
+      ) {
         const updateResult = await db
           .update(userSessions)
           .set({ userAgent: proof.nextMarker })
-          .where(and(
-            eq(userSessions.id, srow.id),
-            eq(userSessions.userId, user.id),
-            eq(userSessions.userAgent, currentMarker),
-            isNull(userSessions.revokedAt),
-          ));
+          .where(
+            and(
+              eq(userSessions.id, srow.id),
+              eq(userSessions.userId, user.id),
+              eq(userSessions.userAgent, currentMarker),
+              isNull(userSessions.revokedAt),
+            ),
+          );
         if (extractAffectedRows(updateResult) !== 1) {
-          return { user: null, sessionId: null };
+          return { user: null, sessionId: null, nativeClientId: null };
         }
       }
     }
@@ -316,14 +411,25 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
       db.update(userSessions)
         .set({
           lastSeenAt: new Date(),
-          ...(observedIp && observedIp !== srow.ipAddress ? { ipAddress: observedIp } : {}),
+          ...(observedIp && observedIp !== srow.ipAddress
+            ? { ipAddress: observedIp }
+            : {}),
         })
         .where(eq(userSessions.id, srow.id))
-        .catch((e: unknown) => logger.warn({ err: e, sessionId: srow.id }, "session.touch_last_seen_failed"));
+        .catch((e: unknown) =>
+          logger.warn(
+            { err: e, sessionId: srow.id },
+            "session.touch_last_seen_failed",
+          ),
+        );
     }
   }
 
-  return { user, sessionId };
+  return {
+    user,
+    sessionId,
+    nativeClientId: session.dpk ? (session.dpc ?? NATIVE_CLIENT_ID) : null,
+  };
 }
 
 /** Resolve the authenticated user from the request session cookie, or null. */
