@@ -114,7 +114,7 @@ jobs:
           jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/expo-aab-signature.txt"
           grep -Fq 'jar verified.' "$RUNNER_TEMP/expo-aab-signature.txt"
           "$aapt_path" dump badging "$apk" > "$RUNNER_TEMP/expo-apk-badging.txt"
-          grep -Fq "package: name='online.alarabiya.store' versionCode='19' versionName='1.1.1'" "$RUNNER_TEMP/expo-apk-badging.txt"
+          grep -Fq "package: name='online.alarabiya.store' versionCode='20' versionName='1.1.2'" "$RUNNER_TEMP/expo-apk-badging.txt"
           "$aapt2_path" dump resources "$apk" > "$RUNNER_TEMP/expo-apk-resources.txt"
           grep -Fq 'base64url-v1:' "$RUNNER_TEMP/expo-apk-resources.txt"
           unzip -Z1 "$apk" > "$RUNNER_TEMP/expo-apk-entries.txt"
