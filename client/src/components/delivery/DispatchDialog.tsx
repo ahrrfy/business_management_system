@@ -105,6 +105,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const pickParty = (id: string) => {
     setPartyId(id);
     setAssignedUserId("");
+    setExternalTrackingRef("");
     const p = parties.find((x) => String(x.id) === id);
     if (p) setFee(String(Number(p.defaultFee ?? 0)));
   };
@@ -119,7 +120,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       recipientName: recipientName.trim(),
       recipientPhone: recipientPhone.trim(),
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
-      externalTrackingRef: externalTrackingRef.trim() || undefined,
+      externalTrackingRef: selectedParty?.partyType === "COMPANY" && externalTrackingRef.trim() ? externalTrackingRef.trim() : undefined,
     });
   };
 

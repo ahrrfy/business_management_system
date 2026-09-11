@@ -31,8 +31,6 @@ import type {
 function getSecret(): string {
   const s =
     process.env.BARCODE_SECRET ||
-    process.env.JWT_SECRET ||
-    process.env.SESSION_SECRET ||
     (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
   if (!s) throw new Error("BARCODE_SECRET غير مُعيَّن في .env");
   return s;

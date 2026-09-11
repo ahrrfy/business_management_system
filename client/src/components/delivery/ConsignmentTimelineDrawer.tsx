@@ -20,6 +20,7 @@ import {
   CONSIGNMENT_VIEW_CLS,
   deriveConsignmentView,
 } from "@shared/consignmentView";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 // موجة D6 (٢/٩/٢٦): أربعةُ قواميس كانت مُعرَّفةً هنا — نوعُ الحدث وسلطتُه ونوعُ قيد الدفتر
 // وإشارتُه. نُقلت إلى `@shared` كي يحرسها اختبارٌ ويستهلكها أيُّ قارئٍ ثانٍ لنفس الجدولين
 // (تقريرٌ أو كشفُ جهة) بلا اختراع تسميةٍ موازية.
@@ -70,6 +71,15 @@ export interface ConsignmentTimelineDrawerProps {
 
 export function ConsignmentTimelineDrawer({ consignmentId, onClose }: ConsignmentTimelineDrawerProps) {
   const isOpen = consignmentId != null;
+  const me = trpc.auth.me.useQuery();
+  const canEditTracking = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const q = trpc.delivery.consignmentTimeline.useQuery(
     { consignmentId: consignmentId ?? 0 },
     { enabled: isOpen },
@@ -181,7 +191,9 @@ export function ConsignmentTimelineDrawer({ consignmentId, onClose }: Consignmen
                 <span dir="ltr" className="flex-1 font-mono text-sm">
                   {cn_.externalTrackingRef ?? <span className="text-muted-foreground text-xs">لم يُدخَل رقم تتبع بعد</span>}
                 </span>
-                <TrackingRefEditor consignmentId={cn_.id} current={cn_.externalTrackingRef ?? null} />
+                {canEditTracking && (
+                  <TrackingRefEditor consignmentId={cn_.id} current={cn_.externalTrackingRef ?? null} />
+                )}
               </div>
             </section>
 
