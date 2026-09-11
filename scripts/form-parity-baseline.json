@@ -15,13 +15,6 @@
       "revisionReason"
     ]
   },
-  "client/src/pages/Supplier": {
-    "onlyNew": [],
-    "onlyEdit": [
-      "email",
-      "whatsapp"
-    ]
-  },
   "client/src/pages/User": {
     "onlyNew": [
       "account",
