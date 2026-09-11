@@ -1,5 +1,6 @@
 import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
+import { appErrorMessage } from "@shared/errors";
 import {
   AI_PROVIDER_ERROR_CATEGORIES,
   type AiProviderErrorCategory,
@@ -14,6 +15,7 @@ import {
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { EXPO_SUPERAPP_CLIENT_ID } from "./auth/deviceProof";
 import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
 import { canCrossBranches } from "./lib/branchAuthority";
@@ -249,6 +251,25 @@ export const selfServiceProcedure = protectedProcedure;
  * user's permission map and keep all records branch-scoped.
  */
 export const superAppProcedure = protectedProcedure;
+
+/**
+ * A deliberately narrow BFF boundary for the Expo client. The identity comes
+ * from a verified device-bound session in `getSessionContext`; testing a raw
+ * request header here would turn this check into presentation-only security.
+ */
+export const expoSuperAppProcedure = superAppProcedure.use(({ ctx, next }) => {
+  if (ctx.nativeClientId !== EXPO_SUPERAPP_CLIENT_ID) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: appErrorMessage({
+        what: "لا يمكن فتح هذه المساحة من هذه الجلسة",
+        why: "يجب أن تكون الجلسة صادرة من تطبيق سوبر العربية المثبت على جهاز موثق",
+        doThis: "افتح التطبيق المثبت وسجّل الدخول من جديد",
+      }),
+    });
+  }
+  return next({ ctx });
+});
 
 /**
  * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً

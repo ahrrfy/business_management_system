@@ -6,11 +6,13 @@ on:
     branches: [main]
     paths:
       - "expo/customer-store-mobile/**"
+      - "expo/superapp-mobile/**"
       - ".github/workflows/expo-mobile-check.yml"
   push:
     branches: [main]
     paths:
       - "expo/customer-store-mobile/**"
+      - "expo/superapp-mobile/**"
 
 permissions:
   contents: read
@@ -20,7 +22,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  expo-check:
+  customer-store-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -69,3 +71,57 @@ jobs:
 
       - name: Lint
         run: pnpm lint --max-warnings=0
+
+  superapp-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: expo/superapp-mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.path }}
+          key: ${{ runner.os }}-superapp-expo-pnpm-${{ hashFiles('expo/superapp-mobile/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-superapp-expo-pnpm-
+
+      - name: Install dependencies (frozen)
+        run: pnpm install --frozen-lockfile --ignore-workspace
+
+      - name: Verify no known dependency vulnerability
+        run: pnpm audit --audit-level moderate
+
+      - name: Verify secure app configuration
+        run: pnpm check:app-config
+
+      - name: Verify image-size stays out of the Metro graph
+        run: pnpm check:image-size-security
+
+      - name: TypeScript check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Lint
+        run: pnpm lint --max-warnings=0
+
+      - name: Export web bundle
+        run: pnpm exec expo export --platform web

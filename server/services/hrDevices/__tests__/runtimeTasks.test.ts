@@ -440,7 +440,7 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     }
   });
 
-  it("يحفظ إشعار العامل وصندوقي native/Web Push دون انتظار الشبكة", async () => {
+  it("يحفظ إشعار العامل وصناديق native/Web/Expo Push دون انتظار الشبكة", async () => {
     const sendPushToUser = vi.fn(() => new Promise<never>(() => undefined));
     const inserted: unknown[] = [];
     const tx = {
@@ -481,7 +481,7 @@ describe("تصريف مهام عامل جسر الحضور", () => {
       push: true,
     });
     await expect(creating).resolves.toEqual({ created: true });
-    expect(inserted).toHaveLength(3);
+    expect(inserted).toHaveLength(4);
     expect(inserted[0]).toEqual(
       expect.objectContaining({ kind: "ATTENDANCE", family: "EMPLOYEE" }),
     );
@@ -494,6 +494,12 @@ describe("تصريف مهام عامل جسر الحضور", () => {
     expect(inserted[2]).toEqual(
       expect.objectContaining({
         payload: expect.objectContaining({ kind: "ATTENDANCE_CHECK_IN" }),
+      }),
+    );
+    expect(inserted[3]).toEqual(
+      expect.objectContaining({
+        environment: expect.any(String),
+        payload: { version: "1", destination: "my-day" },
       }),
     );
     expect(sendPushToUser).not.toHaveBeenCalled();

@@ -13368,6 +13368,82 @@ export const nativePushDevices = mysqlTable(
 export type NativePushDevice = typeof nativePushDevices.$inferSelect;
 export type InsertNativePushDevice = typeof nativePushDevices.$inferInsert;
 
+/**
+ * أجهزة Expo الخاصة بسوبر العربية فقط. لا نعيد استخدام جدول Android الأصلي ولا
+ * جدول متجر العملاء: الأول يحمل Firebase Installation ID والثاني هوية عميل
+ * المتجر، بينما هذا الجدول يربط Expo Push Token المشفّر بمفتاح إثبات جهاز موظف.
+ */
+export const superAppExpoPushDevices = mysqlTable(
+  "superAppExpoPushDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
+    tokenCiphertext: text("tokenCiphertext").notNull(),
+    devicePublicKeyHash: char("devicePublicKeyHash", { length: 64 }).notNull(),
+    platform: mysqlEnum("platform", ["ANDROID", "IOS"]).notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    appVersion: varchar("appVersion", { length: 64 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    userActiveIdx: index("idx_superapp_expo_push_user_active").on(
+      table.userId,
+      table.revokedAt,
+      table.environment,
+    ),
+    deviceOwnerIdx: index("idx_superapp_expo_push_device_owner").on(
+      table.userId,
+      table.devicePublicKeyHash,
+      table.revokedAt,
+    ),
+  }),
+);
+export type SuperAppExpoPushDevice = typeof superAppExpoPushDevices.$inferSelect;
+
+/**
+ * صندوق مستقل لتطبيق الموظفين. حمولة القفل هنا لا تتضمن راتباً أو حضوراً أو
+ * اسماً أو معرّف عمل؛ تفاصيل الحدث لا تقرأ إلا بعد فتح جلسة Expo الموثقة.
+ */
+export const superAppExpoPushOutbox = mysqlTable(
+  "superAppExpoPushOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    eventKey: varchar("eventKey", { length: 190 }).notNull().unique(),
+    payload: json("payload").notNull(),
+    environment: mysqlEnum("environment", ["dev", "staging", "prod"]).notNull(),
+    status: mysqlEnum("status", ["PENDING", "PROCESSING", "RETRY", "SENT", "DEAD"])
+      .default("PENDING")
+      .notNull(),
+    attemptCount: int("attemptCount").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    completedAt: timestamp("completedAt"),
+    lastError: varchar("lastError", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    dueIdx: index("idx_superapp_expo_push_outbox_due").on(
+      table.status,
+      table.availableAt,
+      table.id,
+    ),
+    userCreatedIdx: index("idx_superapp_expo_push_outbox_user_created").on(
+      table.userId,
+      table.createdAt,
+    ),
+  }),
+);
+export type SuperAppExpoPushOutboxRow = typeof superAppExpoPushOutbox.$inferSelect;
+
 /** أجهزة عملاء متجر العملاء: رمز Expo Push مشفر، ومعرّفه التجزئي فقط للفهرسة ومنع التكرار. لا يرتبط
  * برقم هاتف؛ الربط الاختياري بالعميل يتم بعد تحقق Firebase في طبقة هوية منفصلة. */
 export const storefrontPushDevices = mysqlTable(

@@ -289,6 +289,12 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   nativePushOutbox_eventKey_unique: {
     msg: "حدث الإشعار سبق إدراجه للتسليم — لم يُنشأ إرسال مكرّر.",
   },
+  superAppExpoPushDevices_tokenHash_unique: {
+    msg: "رمز إشعارات هذا الجهاز مسجّل مسبقاً — أعد تفعيل الإشعارات من الجهاز نفسه.",
+  },
+  superAppExpoPushOutbox_eventKey_unique: {
+    msg: "حدث إشعار سوبر العربية سبق إدراجه للتسليم — ستُستكمل المحاولة القائمة دون تكرار.",
+  },
   webPushOutbox_eventKey_unique: {
     msg: "حدث إشعار الويب سبق إدراجه للتسليم — ستستمر المحاولة القائمة دون تكرار.",
   },

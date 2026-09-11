@@ -1,0 +1,42 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_VARIANT": "development"
+      }
+    },
+    "qa-android": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "APP_VARIANT": "development"
+      }
+    },
+    "qa-ios": {
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "development"
+      }
+    },
+    "store-ios": {
+      "autoIncrement": true,
+      "distribution": "store",
+      "env": {
+        "APP_VARIANT": "production",
+        "ERP_API_BASE_URL": "https://srv1548487.hstgr.cloud",
+        "ERP_TLS_SPKI_PINS": "heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg,brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4"
+      }
+    }
+  }
+}

@@ -15,13 +15,17 @@ import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import {
   createNativeSessionMarker,
   issueNativeDeviceChallenge,
+  nativeClientIdFromRequest,
   nativeSessionDisplayName,
   verifiedNativeKeyThumbprint,
   verifyNativeDeviceRegistration,
   type NativeDeviceRegistration,
 } from "../auth/deviceProof";
 import { signSession } from "../auth/session";
-import { signTwoFactorTicket, verifyTwoFactorTicket } from "../auth/twoFactorTicket";
+import {
+  signTwoFactorTicket,
+  verifyTwoFactorTicket,
+} from "../auth/twoFactorTicket";
 import { getSessionCookieOptions } from "../cookies";
 import {
   confirmTwoFactorSetup,
@@ -32,6 +36,7 @@ import {
   regenerateRecoveryCodes,
   startTwoFactorSetup,
 } from "../services/twoFactorService";
+import { recordAccountAuthenticationFailure } from "../services/accountAuthenticationLockout";
 import { getDb, isMultiTenantModeActive, withTenantDb } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
@@ -50,6 +55,8 @@ import {
   consumePasswordResetToken,
   PASSWORD_RESET_GENERIC_ERROR,
 } from "../services/passwordResetService";
+import { revokeAllNativePushDevicesForUser } from "../services/nativePushService";
+import { revokeAllSuperAppExpoPushDevicesForUser } from "../services/superAppPushService";
 import {
   adminProcedure,
   nativeBootstrapProcedure,
@@ -62,10 +69,6 @@ import {
 
 // مزامنة مع ALL_ROLES (shared/permissions) الذي يُمثّل الـenum الكامل في الـschema (١٠ أدوار).
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
-
-/** قفل الحساب ضدّ التخمين: ٥ محاولات فاشلة ⇒ قفل ١٥ دقيقة. */
-const LOCK_THRESHOLD = 5;
-const LOCK_MS = 15 * 60 * 1000;
 
 /** عدّاد محاولات الدخول الفاشلة لكل (شركة×IP) — دفاع ثانوي سريع داخل عامل PM2،
  *  وليس سقفاً عنقودياً: nginx `alroya_auth` هو عدّاد IP المشترك أمام كل العمال، وقفل
@@ -86,7 +89,9 @@ setInterval(() => {
 }, IP_WINDOW_MS).unref?.();
 
 function getClientIp(req: unknown): string {
-  const r = req as { ip?: string; socket?: { remoteAddress?: string } } | undefined;
+  const r = req as
+    | { ip?: string; socket?: { remoteAddress?: string } }
+    | undefined;
   return r?.ip ?? r?.socket?.remoteAddress ?? "unknown";
 }
 
@@ -97,7 +102,9 @@ function getClientUserAgent(req: unknown): string | null {
   return typeof ua === "string" ? ua : null;
 }
 
-async function nativeDeviceAfterAuthentication(req: unknown): Promise<NativeDeviceRegistration | null> {
+async function nativeDeviceAfterAuthentication(
+  req: unknown,
+): Promise<NativeDeviceRegistration | null> {
   try {
     return await verifyNativeDeviceRegistration(
       req as { headers?: Record<string, unknown> },
@@ -105,21 +112,33 @@ async function nativeDeviceAfterAuthentication(req: unknown): Promise<NativeDevi
   } catch {
     throw new TRPCError({
       code: "UNAUTHORIZED",
-      message: "تعذر إثبات هوية جهاز التطبيق. أعد تسجيل الدخول من التطبيق المحدث.",
+      message:
+        "تعذر إثبات هوية جهاز التطبيق. أعد تسجيل الدخول من التطبيق المحدث.",
     });
   }
 }
 
 function inheritedNativeDeviceThumbprint(req: unknown): string | null {
   try {
-    return verifiedNativeKeyThumbprint(req as { headers?: Record<string, unknown> });
+    return verifiedNativeKeyThumbprint(
+      req as { headers?: Record<string, unknown> },
+    );
   } catch {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذر إثبات هوية جهاز التطبيق." });
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "تعذر إثبات هوية جهاز التطبيق.",
+    });
   }
 }
 
-function sessionClientMarker(req: unknown, deviceKeyThumbprint: string | null): string | null {
-  return deviceKeyThumbprint ? createNativeSessionMarker(0) : getClientUserAgent(req);
+function sessionClientMarker(
+  req: unknown,
+  deviceKeyThumbprint: string | null,
+  clientId?: NativeDeviceRegistration["clientId"],
+): string | null {
+  return deviceKeyThumbprint
+    ? createNativeSessionMarker(0, clientId)
+    : getClientUserAgent(req);
 }
 
 /** هاش ٦ بايت (١٢ خانة hex) محايد للهوية — يربط الأحداث بلا كشف القيمة الخام. */
@@ -142,38 +161,20 @@ function clearIpFailures(key: string): void {
   ipAttempts.delete(key);
 }
 
-type DbUser = typeof users.$inferSelect;
-
-/**
- * يزيد عدّاد الإخفاق ويقفل الحساب مؤقّتاً عند بلوغ الحدّ (للحسابات الموجودة فقط).
- * ٦/٧/٢٦: العدّاد صار بنافذة زمنية (LOCK_MS نفسها) عبر lastFailedLoginAt — كان تراكمياً
- * أبدياً لا يُصفَّر إلا بدخول ناجح، فتجمع ٤ أخطاء اليوم + خطأ واحد بعد أسبوع = قفل مفاجئ
- * (سيناريو الجوال: أخطاء لمس متفرقة تتراكم بلا حدود زمنية).
- */
-async function registerFailedLogin(db: NonNullable<ReturnType<typeof getDb>>, user: DbUser) {
-  const now = Date.now();
-  const last = user.lastFailedLoginAt ? new Date(user.lastFailedLoginAt).getTime() : 0;
-  const stale = now - last > LOCK_MS;
-  const attempts = (stale ? 0 : (user.failedLoginAttempts ?? 0)) + 1;
-  const patch =
-    attempts >= LOCK_THRESHOLD
-      ? { failedLoginAttempts: 0, lockedUntil: new Date(now + LOCK_MS), lastFailedLoginAt: new Date(now) }
-      : { failedLoginAttempts: attempts, lastFailedLoginAt: new Date(now) };
-  await db
-    .update(users)
-    .set(patch)
-    .where(eq(users.id, user.id))
-    .catch((e) => logger.warn({ err: e, userId: user.id }, "auth.login.lock_update_failed"));
-}
-
 export const authRouter = router({
   /** Short-lived signed bootstrap challenge; it grants neither identity nor a session. */
-  nativeDeviceChallenge: nativeBootstrapProcedure.query(() => issueNativeDeviceChallenge()),
+  nativeDeviceChallenge: nativeBootstrapProcedure.query(() =>
+    issueNativeDeviceChallenge(),
+  ),
 
   me: publicProcedure.query(({ ctx }) => {
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر (لا شأن للعميل به حتى مشفَّراً).
-    const { passwordHash: _passwordHash, totpSecretEncrypted: _totpSecret, ...safe } = ctx.user;
+    const {
+      passwordHash: _passwordHash,
+      totpSecretEncrypted: _totpSecret,
+      ...safe
+    } = ctx.user;
     // إلزام 2FA (قرار المالك ٢٣/٧ + إنفاذ خادميّ M9 ٣/٨): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل
     // استعمال النظام — تُوجّههم الواجهة إجبارياً لشاشة التفعيل، والخادم يحجب أي إجراء غير التفعيل.
     // نستعمل نفس دالة الإنفاذ الخادميّ (twoFactorEnrollmentRequired) فتتّسق الراية الواجهية مع
@@ -185,7 +186,9 @@ export const authRouter = router({
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
    *  — بلا هذا الاستعلام لا مؤشّر للعميل، ونشر أحادي الشركة يبقى بشاشة دخول كما هي تماماً. */
-  tenancyMode: publicProcedure.query(() => ({ multiTenant: isMultiTenantModeActive() })),
+  tenancyMode: publicProcedure.query(() => ({
+    multiTenant: isMultiTenantModeActive(),
+  })),
 
   /**
    * استعادة عامة بالرمز فقط: لا بريد/اسم مستخدم في الطلب، لذلك لا توجد قناة لتعداد
@@ -208,17 +211,26 @@ export const authRouter = router({
       let companyId: number | undefined;
       if (isMultiTenantModeActive()) {
         if (!companyCode) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "رمز الشركة مطلوب." });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "رمز الشركة مطلوب.",
+          });
         }
         const company = await resolveCompanyByCode(companyCode);
         if (!company) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: PASSWORD_RESET_GENERIC_ERROR });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: PASSWORD_RESET_GENERIC_ERROR,
+          });
         }
         companyId = company.id;
       }
 
       const reset = async () => {
-        await consumePasswordResetToken(input.token, input.newPassword, { user: null, req: ctx.req });
+        await consumePasswordResetToken(input.token, input.newPassword, {
+          user: null,
+          req: ctx.req,
+        });
         // أي كوكي حالية صارت غير صالحة بعد sessionsValidFrom؛ امسحها كي لا تبقى الواجهة
         // في حالة ملتبسة، ثم يدخل المستخدم بكلمته الجديدة عبر المسار الطبيعي و2FA إن كان مفعلاً.
         ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
@@ -226,7 +238,9 @@ export const authRouter = router({
       };
 
       if (companyId != null) {
-        return withTenantDb(companyId, (db) => runWithCompany(companyId!, db, reset));
+        return withTenantDb(companyId, (db) =>
+          runWithCompany(companyId!, db, reset),
+        );
       }
       return reset();
     }),
@@ -247,7 +261,7 @@ export const authRouter = router({
         .refine((d) => !!(d.identifier ?? d.email), {
           message: "أدخل البريد الإلكتروني أو اسم المستخدم",
           path: ["identifier"],
-        })
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       // تحديد الشركة (وضع تعدّد الشركات فقط) — قبل أي لمسة لقاعدة بيانات، كي يُوجَّه كل
@@ -260,11 +274,17 @@ export const authRouter = router({
       const companyCode = input.companyCode?.trim();
       if (isMultiTenantModeActive()) {
         if (!companyCode) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "رمز الشركة مطلوب." });
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "رمز الشركة مطلوب.",
+          });
         }
         const company = await resolveCompanyByCode(companyCode);
         if (!company) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز الشركة غير صحيح أو معطّل." });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "رمز الشركة غير صحيح أو معطّل.",
+          });
         }
         companyId = company.id;
       }
@@ -278,7 +298,10 @@ export const authRouter = router({
       const doLogin = async () => {
         const db = getDb();
         if (!db)
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "قاعدة البيانات غير متاحة",
+          });
 
         // وجود «@» يميّز البريد عن اسم المستخدم بنيوياً (اسم المستخدم لا يحوي @) ⇒ بحث في العمود
         // الصحيح بلا تقاطع ممكن (لا يلتبس بريد مستخدمٍ باسمِ مستخدمِ آخر).
@@ -297,7 +320,11 @@ export const authRouter = router({
 
         // حدّ المحاولات بـ(شركة×IP): يطال المهاجم الذي يدوّر إيميلات غير موجودة.
         const ipRec = ipAttempts.get(rateKey);
-        if (ipRec && Date.now() - ipRec.firstAt <= IP_WINDOW_MS && ipRec.count >= IP_ATTEMPT_THRESHOLD) {
+        if (
+          ipRec &&
+          Date.now() - ipRec.firstAt <= IP_WINDOW_MS &&
+          ipRec.count >= IP_ATTEMPT_THRESHOLD
+        ) {
           await logAudit(
             { user: user ?? null, req: ctx.req },
             {
@@ -306,7 +333,7 @@ export const authRouter = router({
               entityId: user?.id ?? null,
               outcome: "FAILURE",
               newValue: { reason: "ip_rate_limit", ipHash, emailHash },
-            }
+            },
           );
           throw new TRPCError({
             code: "TOO_MANY_REQUESTS",
@@ -320,7 +347,9 @@ export const authRouter = router({
         // يُعامَل كفشل اعتماد عام (نفس الرسالة + نفس التوقيت)، ويُسجَّل خادمياً للأثر فقط.
         const stored = user?.passwordHash ?? DUMMY_STORED;
         const ok = await verifyPassword(input.password, stored);
-        const locked = !!(user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now());
+        const locked = !!(
+          user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()
+        );
 
         // رسالة + كود موحّدان لكل فشل: بريد غير موجود / كلمة خاطئة / معطّل / مقفل (لا تمييز جانبي).
         if (!user || !ok || !user.isActive || locked) {
@@ -328,19 +357,34 @@ export const authRouter = router({
             // القفل يُسجَّل خادمياً للأثر فقط (لا يُكشَف للعميل)، ولا نزيد العدّاد أثناء نافذة القفل.
             await logAudit(
               { user, req: ctx.req },
-              { action: "auth.login.locked", entityType: "user", entityId: user.id, outcome: "FAILURE", newValue: { reason: "locked", ipHash, emailHash } }
+              {
+                action: "auth.login.locked",
+                entityType: "user",
+                entityId: user.id,
+                outcome: "FAILURE",
+                newValue: { reason: "locked", ipHash, emailHash },
+              },
             );
           } else {
-            if (user && !ok) await registerFailedLogin(db, user);
+            if (user && !ok) await recordAccountAuthenticationFailure(user.id);
             await logAudit(
               { user: user ?? null, req: ctx.req },
-              { action: "auth.login.failed", entityType: "user", entityId: user?.id ?? null, outcome: "FAILURE", newValue: { reason: "invalid_credentials", ipHash, emailHash } }
+              {
+                action: "auth.login.failed",
+                entityType: "user",
+                entityId: user?.id ?? null,
+                outcome: "FAILURE",
+                newValue: { reason: "invalid_credentials", ipHash, emailHash },
+              },
             );
           }
           // صاحب الكلمة الصحيحة أثناء نافذة القفل لا يستهلك حدّ IP المشترك — كان تكرار
           // كلمته الصحيحة (٥+ مرات محبطة) يحرق ميزانية الـIP لكل زملائه على نفس الشبكة.
           if (!(user && locked && ok)) recordIpFailure(rateKey);
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "البريد أو كلمة المرور غير صحيحة",
+          });
         }
 
         // نجاح جزئي للتحقق من الكلمة ⇒ صفّر عدّاد IP لئلا يُعاقَب المستخدم الشرعي.
@@ -348,15 +392,22 @@ export const authRouter = router({
 
         // إذا انتهت صلاحية كلمة المرور المؤقتة → ارفض الدخول برسالة صريحة
         if (user.mustChangePassword && user.tempPasswordExpiresAt) {
-          const expired = new Date(user.tempPasswordExpiresAt).getTime() < Date.now();
+          const expired =
+            new Date(user.tempPasswordExpiresAt).getTime() < Date.now();
           if (expired) {
             await logAudit(
               { user, req: ctx.req },
-              { action: "auth.login.expired_temp", entityType: "user", entityId: user.id, outcome: "FAILURE" }
+              {
+                action: "auth.login.expired_temp",
+                entityType: "user",
+                entityId: user.id,
+                outcome: "FAILURE",
+              },
             );
             throw new TRPCError({
               code: "UNAUTHORIZED",
-              message: "انتهت صلاحية كلمة المرور المؤقتة — اطلب من المدير إعادة تعيينها.",
+              message:
+                "انتهت صلاحية كلمة المرور المؤقتة — اطلب من المدير إعادة تعيينها.",
             });
           }
         }
@@ -367,23 +418,38 @@ export const authRouter = router({
         // تصفير عدّاد القفل يُرجأ إلى نجاح الرمز — محاولات الرمز الخاطئة تُحسب على القفل نفسه.
         if (user.totpEnabledAt && user.totpSecretEncrypted) {
           const ticket = await signTwoFactorTicket(
-            { uid: user.id, companyCode: companyCode ?? "", companyId, remember: !!input.remember },
-            ctx.req
+            {
+              uid: user.id,
+              companyCode: companyCode ?? "",
+              companyId,
+              remember: !!input.remember,
+            },
+            ctx.req,
           );
           await logAudit(
             { user, req: ctx.req },
-            { action: "auth.login.2fa_challenge", entityType: "user", entityId: user.id }
+            {
+              action: "auth.login.2fa_challenge",
+              entityType: "user",
+              entityId: user.id,
+            },
           );
           return { requiresTwoFactor: true as const, ticket };
         }
 
-        const expiry = input.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
+        const expiry = input.remember
+          ? SESSION_REMEMBER_MAX_MS
+          : SESSION_DEFAULT_MS;
         const nativeDevice = await nativeDeviceAfterAuthentication(ctx.req);
         // سطر جلسة فردية (AUTH-03) — قبل التوقيع كي يُضمَّن معرّفه (sid) في الـJWT، فيتيح
         // لاحقاً إبطال هذا الجهاز تحديداً من شاشة «الجلسات النشطة» بلا مسّ بقية الأجهزة.
         const sessionId = await createUserSessionRecord({
           userId: user.id,
-          userAgent: sessionClientMarker(ctx.req, nativeDevice?.keyThumbprint ?? null),
+          userAgent: sessionClientMarker(
+            ctx.req,
+            nativeDevice?.keyThumbprint ?? null,
+            nativeDevice?.clientId,
+          ),
           ipAddress: ip,
           expiresAt: new Date(Date.now() + expiry),
         });
@@ -398,21 +464,33 @@ export const authRouter = router({
           companyId,
           sessionId,
           nativeDevice?.keyThumbprint,
+          nativeDevice?.clientId,
         );
-        ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
+        ctx.res.cookie(COOKIE_NAME, token, {
+          ...getSessionCookieOptions(ctx.req),
+          maxAge: expiry,
+        });
 
         // نجاح: حدّث آخر دخول وصفّر القفل — دون إفشال الدخول إن تعثّر التحديث.
         await db
           .update(users)
-          .set({ lastSignedIn: new Date(), failedLoginAttempts: 0, lockedUntil: null, lastFailedLoginAt: null })
+          .set({
+            lastSignedIn: new Date(),
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            lastFailedLoginAt: null,
+          })
           .where(eq(users.id, user.id))
           .catch((e: unknown) =>
-            logger.warn({ err: e, userId: user.id }, "auth.login.post_update_failed")
+            logger.warn(
+              { err: e, userId: user.id },
+              "auth.login.post_update_failed",
+            ),
           );
 
         await logAudit(
           { user, req: ctx.req },
-          { action: "auth.login", entityType: "user", entityId: user.id }
+          { action: "auth.login", entityType: "user", entityId: user.id },
         );
 
         return {
@@ -431,7 +509,9 @@ export const authRouter = router({
       };
 
       if (companyId != null) {
-        return withTenantDb(companyId, (db) => runWithCompany(companyId!, db, doLogin));
+        return withTenantDb(companyId, (db) =>
+          runWithCompany(companyId!, db, doLogin),
+        );
       }
       return doLogin();
     }),
@@ -452,12 +532,15 @@ export const authRouter = router({
         .refine((d) => !!d.code !== !!d.recoveryCode, {
           message: "أدخل رمز التحقق أو رمز الاسترداد (أحدهما).",
           path: ["code"],
-        })
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       const ticket = await verifyTwoFactorTicket(input.ticket, ctx.req);
       if (!ticket) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "انتهت مهلة التحقق — أعد تسجيل الدخول." });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "انتهت مهلة التحقق — أعد تسجيل الدخول.",
+        });
       }
       const ip = getClientIp(ctx.req);
       // نفس مفتاح حدّ محاولات login تماماً (شركة×IP) — راجع تعليق rateKey هناك.
@@ -466,22 +549,38 @@ export const authRouter = router({
       const doVerify = async () => {
         const db = getDb();
         if (!db)
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "قاعدة البيانات غير متاحة",
+          });
 
         const ipRec = ipAttempts.get(rateKey);
-        if (ipRec && Date.now() - ipRec.firstAt <= IP_WINDOW_MS && ipRec.count >= IP_ATTEMPT_THRESHOLD) {
+        if (
+          ipRec &&
+          Date.now() - ipRec.firstAt <= IP_WINDOW_MS &&
+          ipRec.count >= IP_ATTEMPT_THRESHOLD
+        ) {
           throw new TRPCError({
             code: "TOO_MANY_REQUESTS",
             message: "تجاوز عدد المحاولات المسموح به. الرجاء المحاولة لاحقاً.",
           });
         }
 
-        const rows = await db.select().from(users).where(eq(users.id, ticket.uid)).limit(1);
+        const rows = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, ticket.uid))
+          .limit(1);
         const user = rows[0];
-        const locked = !!(user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now());
+        const locked = !!(
+          user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()
+        );
         if (!user || !user.isActive || locked || !user.totpEnabledAt) {
           recordIpFailure(rateKey);
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز التحقق غير صحيح" });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "رمز التحقق غير صحيح",
+          });
         }
 
         // إبطال الجلسات يُبطل التذاكر المعلّقة (P2، مراجعة Codex): تذكرة صُكّت قبل رفع
@@ -491,7 +590,10 @@ export const authRouter = router({
           ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
           : 0;
         if (ticket.iat <= validFromSec) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "انتهت مهلة التحقق — أعد تسجيل الدخول." });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "انتهت مهلة التحقق — أعد تسجيل الدخول.",
+          });
         }
 
         let okCode = false;
@@ -507,21 +609,35 @@ export const authRouter = router({
         }
 
         if (!okCode) {
-          await registerFailedLogin(db, user);
+          await recordAccountAuthenticationFailure(user.id);
           recordIpFailure(rateKey);
           await logAudit(
             { user, req: ctx.req },
-            { action: "auth.login.2fa_failed", entityType: "user", entityId: user.id, outcome: "FAILURE" }
+            {
+              action: "auth.login.2fa_failed",
+              entityType: "user",
+              entityId: user.id,
+              outcome: "FAILURE",
+            },
           );
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز التحقق غير صحيح" });
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "رمز التحقق غير صحيح",
+          });
         }
 
         clearIpFailures(rateKey);
-        const expiry = ticket.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
+        const expiry = ticket.remember
+          ? SESSION_REMEMBER_MAX_MS
+          : SESSION_DEFAULT_MS;
         const nativeDevice = await nativeDeviceAfterAuthentication(ctx.req);
         const sessionId = await createUserSessionRecord({
           userId: user.id,
-          userAgent: sessionClientMarker(ctx.req, nativeDevice?.keyThumbprint ?? null),
+          userAgent: sessionClientMarker(
+            ctx.req,
+            nativeDevice?.keyThumbprint ?? null,
+            nativeDevice?.clientId,
+          ),
           ipAddress: ip,
           expiresAt: new Date(Date.now() + expiry),
         });
@@ -533,15 +649,27 @@ export const authRouter = router({
           ticket.companyId,
           sessionId,
           nativeDevice?.keyThumbprint,
+          nativeDevice?.clientId,
         );
-        ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
+        ctx.res.cookie(COOKIE_NAME, token, {
+          ...getSessionCookieOptions(ctx.req),
+          maxAge: expiry,
+        });
 
         await db
           .update(users)
-          .set({ lastSignedIn: new Date(), failedLoginAttempts: 0, lockedUntil: null, lastFailedLoginAt: null })
+          .set({
+            lastSignedIn: new Date(),
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+            lastFailedLoginAt: null,
+          })
           .where(eq(users.id, user.id))
           .catch((e: unknown) =>
-            logger.warn({ err: e, userId: user.id }, "auth.login.post_update_failed")
+            logger.warn(
+              { err: e, userId: user.id },
+              "auth.login.post_update_failed",
+            ),
           );
 
         if (usedRecovery) {
@@ -552,12 +680,17 @@ export const authRouter = router({
               entityType: "user",
               entityId: user.id,
               newValue: { remaining: recoveryRemaining },
-            }
+            },
           );
         }
         await logAudit(
           { user, req: ctx.req },
-          { action: "auth.login", entityType: "user", entityId: user.id, newValue: { via: "2fa" } }
+          {
+            action: "auth.login",
+            entityType: "user",
+            entityId: user.id,
+            newValue: { via: "2fa" },
+          },
         );
 
         return {
@@ -584,17 +717,26 @@ export const authRouter = router({
     }),
 
   /** حالة المصادقة الثنائية للمستخدم الحالي — تعرضها بطاقة «حسابي». */
-  twoFactorStatus: protectedProcedure.query(({ ctx }) => getTwoFactorStatus(ctx.user.id)),
+  twoFactorStatus: protectedProcedure.query(({ ctx }) =>
+    getTwoFactorStatus(ctx.user.id),
+  ),
 
   /** بدء التفعيل: كلمة المرور الحالية إلزامية (دفاع ضد جلسة متروكة مفتوحة). */
   twoFactorSetupStart: protectedProcedure
     .input(z.object({ password: z.string().min(1).max(128) }))
     .mutation(async ({ input, ctx }) => {
       if (!(await verifyPassword(input.password, ctx.user.passwordHash))) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور غير صحيحة" });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "كلمة المرور غير صحيحة",
+        });
       }
       const r = await startTwoFactorSetup(ctx.user);
-      await logAudit(ctx, { action: "auth.2fa.setup_start", entityType: "user", entityId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "auth.2fa.setup_start",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
       return r;
     }),
 
@@ -603,7 +745,11 @@ export const authRouter = router({
     .input(z.object({ code: z.string().min(1).max(16) }))
     .mutation(async ({ input, ctx }) => {
       const r = await confirmTwoFactorSetup(ctx.user.id, input.code.trim());
-      await logAudit(ctx, { action: "auth.2fa.enabled", entityType: "user", entityId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "auth.2fa.enabled",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
       return r;
     }),
 
@@ -619,32 +765,58 @@ export const authRouter = router({
         .refine((d) => !!d.code !== !!d.recoveryCode, {
           message: "أدخل رمز التحقق أو رمز الاسترداد (أحدهما).",
           path: ["code"],
-        })
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db)
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const rows = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "قاعدة البيانات غير متاحة",
+        });
+      const rows = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, ctx.user.id))
+        .limit(1);
       const fresh = rows[0];
-      const locked = !!(fresh?.lockedUntil && new Date(fresh.lockedUntil).getTime() > Date.now());
+      const locked = !!(
+        fresh?.lockedUntil && new Date(fresh.lockedUntil).getTime() > Date.now()
+      );
       if (!fresh || locked) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذّر التحقق — أعد المحاولة لاحقاً." });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "تعذّر التحقق — أعد المحاولة لاحقاً.",
+        });
       }
       const passOk = await verifyPassword(input.password, fresh.passwordHash);
       let codeOk = false;
       if (passOk) {
-        if (input.code) codeOk = await consumeTotpCode(fresh.id, input.code.trim());
-        else if (input.recoveryCode) codeOk = (await consumeRecoveryCode(fresh.id, input.recoveryCode)).ok;
+        if (input.code)
+          codeOk = await consumeTotpCode(fresh.id, input.code.trim());
+        else if (input.recoveryCode)
+          codeOk = (await consumeRecoveryCode(fresh.id, input.recoveryCode)).ok;
       }
       if (!passOk || !codeOk) {
         // جلسة مخطوفة لا تستطيع brute-force التعطيل — الفشل يقفل الحساب كفشل الدخول تماماً.
-        await registerFailedLogin(db, fresh);
-        await logAudit(ctx, { action: "auth.2fa.disable_failed", entityType: "user", entityId: ctx.user.id, outcome: "FAILURE" });
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور أو رمز التحقق غير صحيح" });
+        await recordAccountAuthenticationFailure(fresh.id);
+        await logAudit(ctx, {
+          action: "auth.2fa.disable_failed",
+          entityType: "user",
+          entityId: ctx.user.id,
+          outcome: "FAILURE",
+        });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "كلمة المرور أو رمز التحقق غير صحيح",
+        });
       }
       await disableTwoFactor(fresh.id);
-      await logAudit(ctx, { action: "auth.2fa.disabled", entityType: "user", entityId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "auth.2fa.disabled",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
       return { success: true } as const;
     }),
 
@@ -652,24 +824,51 @@ export const authRouter = router({
    *  تدقيق ٣/٨: كانت تطلب رمز TOTP فقط ⇒ جلسة مخطوفة برمز TOTP لحظي تُثبّت استمرارية بتوليد
    *  رموز استرداد جديدة. أُضيف تحقّق كلمة المرور اتساقاً مع twoFactorDisable/twoFactorSetupStart. */
   twoFactorRegenerateCodes: protectedProcedure
-    .input(z.object({ password: z.string().min(1).max(128), code: z.string().min(1).max(16) }))
+    .input(
+      z.object({
+        password: z.string().min(1).max(128),
+        code: z.string().min(1).max(16),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const rows = await db.select().from(users).where(eq(users.id, ctx.user.id)).limit(1);
+      if (!db)
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "قاعدة البيانات غير متاحة",
+        });
+      const rows = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, ctx.user.id))
+        .limit(1);
       const fresh = rows[0];
-      const locked = !!(fresh?.lockedUntil && new Date(fresh.lockedUntil).getTime() > Date.now());
+      const locked = !!(
+        fresh?.lockedUntil && new Date(fresh.lockedUntil).getTime() > Date.now()
+      );
       if (!fresh || locked) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "تعذّر التحقق — أعد المحاولة لاحقاً." });
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "تعذّر التحقق — أعد المحاولة لاحقاً.",
+        });
       }
       const passOk = await verifyPassword(input.password, fresh.passwordHash);
-      const codeOk = passOk ? await consumeTotpCode(fresh.id, input.code.trim()) : false;
+      const codeOk = passOk
+        ? await consumeTotpCode(fresh.id, input.code.trim())
+        : false;
       if (!passOk || !codeOk) {
-        await registerFailedLogin(db, fresh);
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "كلمة المرور أو رمز التحقق غير صحيح" });
+        await recordAccountAuthenticationFailure(fresh.id);
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "كلمة المرور أو رمز التحقق غير صحيح",
+        });
       }
       const r = await regenerateRecoveryCodes(ctx.user.id);
-      await logAudit(ctx, { action: "auth.2fa.recovery_regenerated", entityType: "user", entityId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "auth.2fa.recovery_regenerated",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
       return r;
     }),
 
@@ -681,9 +880,22 @@ export const authRouter = router({
       // وهو السلوك الأأمن، ومقبولٌ لعدد مستخدمي المتجر المحدود.
       const db = getDb();
       if (db) {
-        await db.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.id, ctx.user.id));
+        await db
+          .update(users)
+          .set({ sessionsValidFrom: new Date() })
+          .where(eq(users.id, ctx.user.id));
       }
-      await logAudit(ctx, { action: "auth.logout", entityType: "user", entityId: ctx.user.id });
+      // The session is no longer usable after logout, so its Expo device must
+      // not continue receiving even generic lock-screen prompts.
+      await Promise.allSettled([
+        revokeAllNativePushDevicesForUser(ctx.user.id),
+        revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
+      ]);
+      await logAudit(ctx, {
+        action: "auth.logout",
+        entityType: "user",
+        entityId: ctx.user.id,
+      });
     }
     ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
@@ -699,10 +911,14 @@ export const authRouter = router({
           .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
           .max(128)
           .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { validFrom } = await changePasswordSvc(ctx.user.id, input.oldPassword, input.newPassword);
+      const { validFrom } = await changePasswordSvc(
+        ctx.user.id,
+        input.oldPassword,
+        input.newPassword,
+      );
       // أُبطِلت كل الجلسات (sessionsValidFrom=now) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
       // نمرّر ctx.req ⇒ التوكن الجديد يحمل بصمة الجهاز الحالي.
       // AUTH-02: الإبطال يرفض `iat <= validFromSec`؛ لذا نُثبّت iat الكوكي الجديد أكبر
@@ -718,9 +934,18 @@ export const authRouter = router({
       // تظهر فوراً في شاشة «الجلسات النشطة»؛ الصفوف القديمة تختفي منها تلقائياً (بلا كتابة
       // عليها) لأن listUserSessions يُصفّي createdAt >= sessionsValidFrom.
       const nativeDeviceThumbprint = inheritedNativeDeviceThumbprint(ctx.req);
+      const nativeClientId = nativeDeviceThumbprint
+        ? (nativeClientIdFromRequest(
+            ctx.req as { headers?: Record<string, unknown> },
+          ) ?? undefined)
+        : undefined;
       const sessionId = await createUserSessionRecord({
         userId: ctx.user.id,
-        userAgent: sessionClientMarker(ctx.req, nativeDeviceThumbprint),
+        userAgent: sessionClientMarker(
+          ctx.req,
+          nativeDeviceThumbprint,
+          nativeClientId,
+        ),
         ipAddress: getClientIp(ctx.req),
         expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
         createdAt: new Date(validFrom.getTime() + 2000),
@@ -735,6 +960,7 @@ export const authRouter = router({
         getCurrentCompanyId() ?? undefined,
         sessionId,
         nativeDeviceThumbprint ?? undefined,
+        nativeClientId,
       );
       ctx.res.cookie(COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
@@ -751,8 +977,15 @@ export const authRouter = router({
   /** إبطال كل جلسات المستخدم الحالي (تسجيل خروج من كل الأجهزة). */
   revokeMySessions: protectedProcedure.mutation(async ({ ctx }) => {
     await withTx(async (tx) => {
-      await tx.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.id, ctx.user.id));
+      await tx
+        .update(users)
+        .set({ sessionsValidFrom: new Date() })
+        .where(eq(users.id, ctx.user.id));
     });
+    await Promise.allSettled([
+      revokeAllNativePushDevicesForUser(ctx.user.id),
+      revokeAllSuperAppExpoPushDevicesForUser(ctx.user.id),
+    ]);
     await logAudit(ctx, {
       action: "auth.revokeSessions",
       entityType: "user",
@@ -813,7 +1046,7 @@ export const authRouter = router({
         .refine((d) => !!(d.email || d.username), {
           message: "أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل.",
           path: ["username"],
-        })
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       const r = await createUser(input, {
@@ -824,7 +1057,12 @@ export const authRouter = router({
         action: "user.create",
         entityType: "user",
         entityId: r.userId,
-        newValue: { email: input.email ?? null, username: input.username ?? null, role: input.role, branchId: input.branchId ?? null },
+        newValue: {
+          email: input.email ?? null,
+          username: input.username ?? null,
+          role: input.role,
+          branchId: input.branchId ?? null,
+        },
       });
       return { success: true, userId: r.userId };
     }),

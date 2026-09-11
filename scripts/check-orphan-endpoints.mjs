@@ -68,18 +68,19 @@ function walkClient(dir) {
 }
 walkClient(path.join(REPO, "client", "src"));
 
-// The native Android app is a first-class tRPC consumer too. Keep this scan
+// Native Android clients are first-class tRPC consumers too. Keep this scan
 // deliberately narrow: production Kotlin sources and the two transport forms
-// used by TrpcClient (typed helpers and an explicit /api/trpc route).
-function walkAndroidClient(dir) {
+// used by the closed transports (typed helpers and an explicit /api/trpc
+// route). Tests never count as a consumer.
+function walkNativeAndroidClient(dir) {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
     const fp = path.join(dir, name);
     const st = statSync(fp);
-    if (st.isDirectory()) walkAndroidClient(fp);
+    if (st.isDirectory()) walkNativeAndroidClient(fp);
     else if (name.endsWith(".kt")) {
       const src = readFileSync(fp, "utf8");
-      for (const m of src.matchAll(/\.(?:query|mutate|queryArray|mutateArray|queryObject|mutateObject|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
+      for (const m of src.matchAll(/(?:\.|\b)(?:query|mutation|mutate|queryArray|mutateArray|queryObject|mutateObject|queryList|mutateList)\s*\(\s*"([\w.]+)"/g)) {
         addUsedProcedure(m[1]);
       }
       for (const m of src.matchAll(/\/api\/trpc\/([\w.]+)/g)) {
@@ -88,7 +89,18 @@ function walkAndroidClient(dir) {
     }
   }
 }
-walkAndroidClient(path.join(REPO, "android-native", "app", "src", "main", "java"));
+walkNativeAndroidClient(path.join(REPO, "android-native", "app", "src", "main", "java"));
+walkNativeAndroidClient(path.join(
+  REPO,
+  "expo",
+  "superapp-mobile",
+  "modules",
+  "alrueya-secure-transport",
+  "android",
+  "src",
+  "main",
+  "java",
+));
 
 // تطبيق مكتبة العربية عميل Expo مستقل في مستودع/مشروع منفصل، لذلك لا يظهر ضمن client/src أو
 // android-native. نحفظ عقده في بيان JSON مُراجع بدلاً من توسعة baseline اليتامى: كل إجراء فيه

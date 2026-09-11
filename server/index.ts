@@ -731,6 +731,7 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopSuperAppExpoPushWorker: (() => void) | null = null;
   let stopAppNotificationOutboxWorker: (() => Promise<void>) | null = null;
   let stopWebPushOutboxWorker: (() => void) | null = null;
   let stopStorefrontPushCampaignWorker: (() => Promise<void>) | null = null;
@@ -762,6 +763,12 @@ async function startServer() {
     const nativePush = await import("./services/nativePushOutboxWorker");
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // Super Arabia's Expo tokens are intentionally isolated from both the
+    // legacy Android FCM path and the customer-store campaign worker.
+    const superAppExpoPush = await import("./services/superAppPushWorker");
+    superAppExpoPush.startSuperAppExpoPushWorker();
+    stopSuperAppExpoPushWorker = superAppExpoPush.stopSuperAppExpoPushWorker;
 
     // Web Push يمر بالطابور الدائم نفسه دلالياً: لا تضيع الرسالة عند عطل مؤقت في المزود.
     const webPush = await import("./services/webPushOutboxWorker");
@@ -877,6 +884,7 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      stopSuperAppExpoPushWorker?.();
       await stopAppNotificationOutboxWorker?.();
       stopWebPushOutboxWorker?.();
       await stopStorefrontPushCampaignWorker?.();
