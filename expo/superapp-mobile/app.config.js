@@ -39,7 +39,7 @@ const config = {
   // identity intentionally uses a different scheme so it cannot intercept the
   // future production app's links.
   scheme: identity.scheme,
-  version: "1.1.1",
+  version: "1.1.2",
   orientation: "portrait",
   userInterfaceStyle: "light",
   newArchEnabled: true,
@@ -51,7 +51,7 @@ const config = {
     output: "single",
   },
   ios: {
-    buildNumber: "1",
+    buildNumber: "2",
     supportsTablet: true,
     bundleIdentifier: identity.iosBundleId,
     infoPlist: {
@@ -60,7 +60,7 @@ const config = {
     },
   },
   android: {
-    versionCode: 19,
+    versionCode: 20,
     package: identity.androidPackage,
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
