@@ -2,23 +2,76 @@ import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  moduleAccessAllowed,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import { z } from "zod";
-import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, suppliers, users, workOrders } from "../../drizzle/schema";
+import {
+  accountingEntries,
+  branchStock,
+  customers,
+  invoiceItems,
+  invoices,
+  productPrices,
+  productUnits,
+  productVariants,
+  products,
+  returnRequests,
+  salesControlRequests,
+  shifts,
+  suppliers,
+  users,
+  workOrders,
+} from "../../drizzle/schema";
 import { canCrossBranches } from "../lib/branchAuthority";
-import { adjustSupplierBalance, postEntry } from "../services/ledgerService";
-import { createPostingIntent, creditLine, debitLine } from "../services/accounting/postingEngine";
-import { money } from "../services/money";
+import {
+  adjustCustomerBalance,
+  adjustSupplierBalance,
+  computeInvoiceStatus,
+  postEntry,
+} from "../services/ledgerService";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "../services/accounting/postingEngine";
+import { money, toDbMoney } from "../services/money";
+import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSaleAsOwner, returnSaleDirect, returnSaleInTx } from "../services/returnService";
-import { RETURN_EXECUTED_AUDIT_ACTION, type ReturnExecutionMode } from "../services/returns/auditActions";
+import {
+  recordPurchaseReturnCartReceipt,
+  recordSalesReturnCartCardReceipt,
+  recordSalesReturnCartReceipt,
+  returnSaleAsOwner,
+  returnSaleDirect,
+  returnSaleInTx,
+} from "../services/returnService";
+import {
+  RETURN_EXECUTED_AUDIT_ACTION,
+  type ReturnExecutionMode,
+} from "../services/returns/auditActions";
 import { requestSalesControl } from "../services/sale/controlRequests";
 import { withTx } from "../services/tx";
-import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
+import {
+  loadRefundCaps,
+  SURFACED_REFUND_METHODS,
+} from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
-import { forensicTraceInvoices, universalBarcodeScan } from "../services/returns/forensicTraceService";
+import {
+  router,
+  salesCashierProcedure,
+  salesManagerProcedure,
+  salesReadProcedure,
+  workordersCashierProcedure,
+  workordersExecProcedure,
+} from "../trpc";
+import {
+  forensicTraceInvoices,
+  universalBarcodeScan,
+} from "../services/returns/forensicTraceService";
 import { applyMovement } from "../services/inventoryService";
 import { assertPeriodOpen } from "../services/periodLockService";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
@@ -47,18 +100,26 @@ const walkInResolution = z.object({
    * الزبون العابر النقديّ خارج ساعات الوردية حجباً كاملاً.
    */
   shiftId: z.number().int().positive().optional(),
-  reason: z.string().trim().min(3, "سبب المرتجع إلزامي (٣ أحرف على الأقل)").max(500),
+  reason: z
+    .string()
+    .trim()
+    .min(3, "سبب المرتجع إلزامي (٣ أحرف على الأقل)")
+    .max(500),
   disposition: z.enum(["RESTOCK", "DAMAGED"]),
 });
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
-const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+const ymd = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 /**
  * نطاق ملكية الكاشير (نظير `scopedOwnerId` في `branchScopedProcedure` و`sales.get`).
  * المدير والمسؤول والمالك = null (يرون ويعكسون كل فواتير الفرع).
  * الكاشير = معرفه الشخصي (لا يرى ولا يعكس إلا فواتيره وفواتير أوامر الشغل التي استقبلها).
  */
-function getScopedOwnerId(user?: { id?: number | string; role?: string; isOwner?: boolean } | null): number | null {
+function getScopedOwnerId(
+  user?: { id?: number | string; role?: string; isOwner?: boolean } | null,
+): number | null {
   if (!user) return null;
   if (canCrossBranches(user) || user.role === "manager") return null;
   return Number(user.id);
@@ -70,16 +131,25 @@ export const returnRouter = router({
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
-        lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
+        lines: z
+          .array(
+            z.object({
+              invoiceItemId: z.number().int().positive(),
+              baseQuantity: z.number().int().positive(),
+            }),
+          )
+          .min(1),
         // shiftId اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx
         // يرمي طالباً التحديد حينها) — يختار المستخدم أيّ درجٍ خرج منه النقد فعلياً.
-        refund: z.object({
-          amount: nonNegMoneyString,
-          method,
-          shiftId: z.number().int().positive().optional(),
-          // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
-          reference: z.string().trim().min(1).max(100).optional(),
-        }).optional(),
+        refund: z
+          .object({
+            amount: nonNegMoneyString,
+            method,
+            shiftId: z.number().int().positive().optional(),
+            // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
+            reference: z.string().trim().min(1).max(100).optional(),
+          })
+          .optional(),
         /** إلزامي خادمياً إذا كانت الفاتورة بلا customerId؛ لا يغيّر عقد العميل المسجّل. */
         resolution: walkInResolution.optional(),
         restock: z.boolean().optional(),
@@ -88,7 +158,7 @@ export const returnRouter = router({
         clientRequestId: z.string().min(1).max(80).optional(),
         /** تنفيذ مباشر ذري (إلغاء التعليق البيروقراطي للمالك والإدارة والكاشير). */
         directExecution: z.boolean().optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // G3 (١٩/٦/٢٦): استبدال fallback `?? 1` — مرتجع يؤثّر على ذمم وصندوق فرع محدّد، لا فرع افتراضي.
@@ -103,7 +173,12 @@ export const returnRouter = router({
         });
       }
       const actorBranchId = Number(ctx.user.branchId ?? 0);
-      const { invoiceId, clientRequestId, reason: explicitReason, ...payload } = input;
+      const {
+        invoiceId,
+        clientRequestId,
+        reason: explicitReason,
+        ...payload
+      } = input;
       const rawReason = explicitReason || input.resolution?.reason;
 
       /**
@@ -115,27 +190,33 @@ export const returnRouter = router({
        *
        * ⚠️ **العائدُ نوعٌ مُميَّزٌ بـ`mode`**: كلّ مستهلكٍ يتفرّع على `mode` صراحةً.
        */
-      const shouldExecuteDirect = ctx.user.isOwner === true || input.directExecution === true;
+      const shouldExecuteDirect =
+        ctx.user.isOwner === true || input.directExecution === true;
 
       if (shouldExecuteDirect && (!rawReason || rawReason.trim().length < 3)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
+          message:
+            "اكتب سبب المرتجع (٣ أحرف على الأقل) — المرتجع الفوريّ موثَّقٌ بسببه",
         });
       }
       const reason = (rawReason ?? "").trim();
 
-      const [invRow] = await withTx(async (tx) => tx
-        .select({
-          sourceType: invoices.sourceType,
-          branchId: invoices.branchId,
-          createdBy: invoices.createdBy,
-          workOrderCreatedBy: workOrders.createdBy,
-        })
-        .from(invoices)
-        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-        .where(eq(invoices.id, invoiceId))
-        .limit(1), { gate: "NONE" });
+      const [invRow] = await withTx(
+        async (tx) =>
+          tx
+            .select({
+              sourceType: invoices.sourceType,
+              branchId: invoices.branchId,
+              createdBy: invoices.createdBy,
+              workOrderCreatedBy: workOrders.createdBy,
+            })
+            .from(invoices)
+            .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+            .where(eq(invoices.id, invoiceId))
+            .limit(1),
+        { gate: "NONE" },
+      );
 
       if (!invRow) {
         throw new TRPCError({
@@ -147,7 +228,10 @@ export const returnRouter = router({
           }),
         });
       }
-      if (ctx.user.role !== "admin" && Number(invRow.branchId) !== actorBranchId) {
+      if (
+        ctx.user.role !== "admin" &&
+        Number(invRow.branchId) !== actorBranchId
+      ) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
@@ -162,9 +246,9 @@ export const returnRouter = router({
       // لكنه يرجع فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
       const scopedOwnerId = getScopedOwnerId(ctx.user);
       if (
-        scopedOwnerId != null
-        && Number(invRow.createdBy) !== scopedOwnerId
-        && Number(invRow.workOrderCreatedBy) !== scopedOwnerId
+        scopedOwnerId != null &&
+        Number(invRow.createdBy) !== scopedOwnerId &&
+        Number(invRow.workOrderCreatedBy) !== scopedOwnerId
       ) {
         throw new TRPCError({
           code: "FORBIDDEN",
@@ -185,28 +269,47 @@ export const returnRouter = router({
         if (invRow.sourceType === "WORKORDER") {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
-            message: "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
+            message:
+              "فاتورة أمر الشغل تُعالَج من شاشة أمر الشغل (عكس التسليم) — لا من مسار المرتجع",
           });
         }
-        const executed = ctx.user.isOwner === true
-          ? await returnSaleAsOwner({
-              ...payload,
-              invoiceId,
-              ownerReason: reason,
-              clientRequestId: clientRequestId ?? randomUUID(),
-            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role })
-          : await retryOnDeadlock(() => returnSaleDirect({
-              ...payload,
-              invoiceId,
-              operatorReason: reason,
-              clientRequestId: clientRequestId ?? randomUUID(),
-            }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role, isOwner: ctx.user.isOwner }));
+        const executed =
+          ctx.user.isOwner === true
+            ? await returnSaleAsOwner(
+                {
+                  ...payload,
+                  invoiceId,
+                  ownerReason: reason,
+                  clientRequestId: clientRequestId ?? randomUUID(),
+                },
+                {
+                  userId: ctx.user.id,
+                  branchId: actorBranchId,
+                  role: ctx.user.role,
+                },
+              )
+            : await retryOnDeadlock(() =>
+                returnSaleDirect(
+                  {
+                    ...payload,
+                    invoiceId,
+                    operatorReason: reason,
+                    clientRequestId: clientRequestId ?? randomUUID(),
+                  },
+                  {
+                    userId: ctx.user.id,
+                    branchId: actorBranchId,
+                    role: ctx.user.role,
+                    isOwner: ctx.user.isOwner,
+                  },
+                ),
+              );
 
-        const executionMode: ReturnExecutionMode = ctx.user.isOwner === true
-          ? "OWNER_IMMEDIATE"
-          : "DIRECT_EXECUTION";
+        const executionMode: ReturnExecutionMode =
+          ctx.user.isOwner === true ? "OWNER_IMMEDIATE" : "DIRECT_EXECUTION";
 
-        const isReplay = "idempotentReplay" in executed && executed.idempotentReplay === true;
+        const isReplay =
+          "idempotentReplay" in executed && executed.idempotentReplay === true;
         if (!isReplay) {
           await logAudit(ctx, {
             action: RETURN_EXECUTED_AUDIT_ACTION,
@@ -226,13 +329,16 @@ export const returnRouter = router({
         return { ...executed, mode: "EXECUTED" as const, invoiceId };
       }
 
-      const res = await requestSalesControl({
-        requestKey: clientRequestId ?? randomUUID(),
-        invoiceId,
-        requestType: "SALES_RETURN",
-        reason,
-        payload,
-      }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+      const res = await requestSalesControl(
+        {
+          requestKey: clientRequestId ?? randomUUID(),
+          invoiceId,
+          requestType: "SALES_RETURN",
+          reason,
+          payload,
+        },
+        { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
+      );
       await logAudit(ctx, {
         action: "return.request",
         entityType: "invoice",
@@ -259,39 +365,64 @@ export const returnRouter = router({
 
   /** موظّف المحطة يطلب إرجاعاً — بلا أيّ أثرٍ ماليّ أو مخزنيّ حتى الاعتماد. */
   request: workordersCashierProcedure
-    .input(z.object({
-      invoiceId: z.number().int().positive(),
-      lines: z.array(z.object({
-        invoiceItemId: z.number().int().positive(),
-        baseQuantity: z.number().int().positive(),
-      })).min(1),
-      reason: z.string().trim().min(3).max(500),
-    }))
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        lines: z
+          .array(
+            z.object({
+              invoiceItemId: z.number().int().positive(),
+              baseQuantity: z.number().int().positive(),
+            }),
+          )
+          .min(1),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       const res = await createReturnRequest(input, {
-        userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role,
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId),
+        role: ctx.user.role,
       });
       await logAudit(ctx, {
-        action: "return.request", entityType: "invoice", entityId: input.invoiceId,
-        newValue: { requestId: res.requestId, reason: input.reason, lines: input.lines.length },
+        action: "return.request",
+        entityType: "invoice",
+        entityId: input.invoiceId,
+        newValue: {
+          requestId: res.requestId,
+          reason: input.reason,
+          lines: input.lines.length,
+        },
       });
       return res;
     }),
 
   /** قائمة الطلبات: المدير يرى طلبات فرعه، والموظّف يتابع طلباته وحدها. */
   requests: workordersExecProcedure
-    .input(z.object({
-      status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional(),
-      mine: z.boolean().optional(),
-    }).optional())
+    .input(
+      z
+        .object({
+          status: z
+            .enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+            .optional(),
+          mine: z.boolean().optional(),
+        })
+        .optional(),
+    )
     .query(async ({ input, ctx }) => {
       // مَن لا يملك سلطة الاعتماد يرى طلباته وحدها — لا نافذةَ على مرتجعات غيره.
-      const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const canApprove =
+        ctx.user.role === "admin" || ctx.user.role === "manager";
       return listReturnRequests({
-        branchId: ctx.user.role === "admin" ? null : Number(ctx.user.branchId ?? 0),
+        branchId:
+          ctx.user.role === "admin" ? null : Number(ctx.user.branchId ?? 0),
         status: input?.status,
         createdBy: !canApprove || input?.mine ? ctx.user.id : null,
       });
@@ -328,11 +459,24 @@ export const returnRouter = router({
         .limit(1);
       if (!req) return null;
       // عزل الفرع — مرآةٌ لحارس `getInvoice`: لا يقرأ مديرُ فرعٍ بنودَ طلبِ فرعٍ آخر.
-      if (ctx.user.role !== "admin" && Number(req.branchId) !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الطلب لا يخصّ فرعك" });
+      if (
+        ctx.user.role !== "admin" &&
+        Number(req.branchId) !== Number(ctx.user.branchId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "الطلب لا يخصّ فرعك",
+        });
       }
-      const lines = ((req.linesJson as Array<{ invoiceItemId: number; baseQuantity: number }>) ?? [])
-        .map((l) => ({ invoiceItemId: Number(l.invoiceItemId), baseQuantity: Number(l.baseQuantity) }));
+      const lines = (
+        (req.linesJson as Array<{
+          invoiceItemId: number;
+          baseQuantity: number;
+        }>) ?? []
+      ).map((l) => ({
+        invoiceItemId: Number(l.invoiceItemId),
+        baseQuantity: Number(l.baseQuantity),
+      }));
       return {
         id: Number(req.id),
         invoiceId: Number(req.invoiceId),
@@ -349,18 +493,22 @@ export const returnRouter = router({
    * الرافد والدرج والمرجع يقرّرها المدير لحظة الاعتماد كما يفعل في المرتجع المباشر.
    */
   approveRequest: salesManagerProcedure
-    .input(z.object({
-      requestId: z.number().int().positive(),
-      refund: z.object({
-        amount: nonNegMoneyString,
-        method,
-        shiftId: z.number().int().positive().optional(),
-        reference: z.string().trim().min(1).max(100).optional(),
-      }).optional(),
-      resolution: walkInResolution.optional(),
-      restock: z.boolean().optional(),
-      clientRequestId: z.string().min(1).max(80).optional(),
-    }))
+    .input(
+      z.object({
+        requestId: z.number().int().positive(),
+        refund: z
+          .object({
+            amount: nonNegMoneyString,
+            method,
+            shiftId: z.number().int().positive().optional(),
+            reference: z.string().trim().min(1).max(100).optional(),
+          })
+          .optional(),
+        resolution: walkInResolution.optional(),
+        restock: z.boolean().optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       // ٢٠/٨ (تصويب مراجعة Codex): الأدمن **عابرُ فروعٍ بحكم التصميم** وقد يكون
       // `branchId = null`؛ وكان يُرفَض هنا **قبل قراءة الطلب** فيرى الطلبات المعلّقة
@@ -368,30 +516,59 @@ export const returnRouter = router({
       // شرطاً لغير الأدمن.
       const isAdmin = ctx.user.role === "admin";
       if (ctx.user.branchId == null && !isAdmin) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
       // ⚛️ **وحدةٌ ذرّية**: قفلُ الطلب ثمّ التنفيذ ثمّ الختم في معاملةٍ واحدة. كانت ثلاثاً
       // منفصلة ⇒ فشلُ الختم يترك مرتجعاً منفَّذاً وطلباً معلَّقاً لا تُعاد محاولته (الحارس
       // التفاؤليّ يرفضه)، ومعتمدان متزامنان يُنفّذان المرتجع مرّتين.
-      const res = await retryOnDeadlock(() => withTx(async (tx) => {
-        const probe = { userId: ctx.user.id, branchId: ctx.user.branchId ?? null, role: ctx.user.role } as never;
-        const { request, lines, invoiceId } = await loadApprovableRequestTx(tx, input.requestId, probe);
-        // الفاعلُ الماليّ يحمل فرعَ **الطلب** — لا فرعاً مفقوداً ولا فرعَ المعتمِد.
-        const actor = { userId: ctx.user.id, branchId: Number(request.branchId), role: ctx.user.role };
-        const out = await returnSaleInTx(tx, {
-          invoiceId,
-          lines,
-          refund: input.refund,
-          resolution: input.resolution,
-          restock: input.restock,
-          clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
-        }, actor);
-        await markRequestApprovedTx(tx, input.requestId, ctx.user.id, invoiceId);
-        return { ...out, invoiceId };
-      }));
+      const res = await retryOnDeadlock(() =>
+        withTx(async (tx) => {
+          const probe = {
+            userId: ctx.user.id,
+            branchId: ctx.user.branchId ?? null,
+            role: ctx.user.role,
+          } as never;
+          const { request, lines, invoiceId } = await loadApprovableRequestTx(
+            tx,
+            input.requestId,
+            probe,
+          );
+          // الفاعلُ الماليّ يحمل فرعَ **الطلب** — لا فرعاً مفقوداً ولا فرعَ المعتمِد.
+          const actor = {
+            userId: ctx.user.id,
+            branchId: Number(request.branchId),
+            role: ctx.user.role,
+          };
+          const out = await returnSaleInTx(
+            tx,
+            {
+              invoiceId,
+              lines,
+              refund: input.refund,
+              resolution: input.resolution,
+              restock: input.restock,
+              clientRequestId:
+                input.clientRequestId ?? `retreq-${input.requestId}`,
+            },
+            actor,
+          );
+          await markRequestApprovedTx(
+            tx,
+            input.requestId,
+            ctx.user.id,
+            invoiceId,
+          );
+          return { ...out, invoiceId };
+        }),
+      );
       const invoiceId = res.invoiceId;
       await logAudit(ctx, {
-        action: RETURN_EXECUTED_AUDIT_ACTION, entityType: "invoice", entityId: invoiceId,
+        action: RETURN_EXECUTED_AUDIT_ACTION,
+        entityType: "invoice",
+        entityId: invoiceId,
         newValue: {
           mode: "STATION_REQUEST_APPROVAL" satisfies ReturnExecutionMode,
           requestId: input.requestId,
@@ -406,16 +583,22 @@ export const returnRouter = router({
 
   /** رفضٌ بسببٍ إلزاميّ — الموظّف يرى لماذا بدل صمتٍ يُعيد الطلب نفسه. */
   rejectRequest: salesManagerProcedure
-    .input(z.object({
-      requestId: z.number().int().positive(),
-      reason: z.string().trim().min(3).max(500),
-    }))
+    .input(
+      z.object({
+        requestId: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const res = await rejectReturnRequest(input.requestId, input.reason, {
-        userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
       });
       await logAudit(ctx, {
-        action: "return.rejectRequest", entityType: "returnRequest", entityId: input.requestId,
+        action: "return.rejectRequest",
+        entityType: "returnRequest",
+        entityId: input.requestId,
         newValue: { reason: input.reason },
       });
       return res;
@@ -439,7 +622,7 @@ export const returnRouter = router({
           // فلتر منفّذ المرتجع (accountingEntries.createdBy) — لا مالك الفاتورة/العميل.
           createdBy: z.number().int().positive().optional(),
         })
-        .optional()
+        .optional(),
     )
     .query(async ({ input, ctx }) => {
       // عزل الفرع: admin يختار الفرع بحرّية؛ غير-admin مُقيَّد بفرعه. مدير بلا فرع مُسنَد ⇒
@@ -450,7 +633,10 @@ export const returnRouter = router({
       } else if (ctx.user.branchId != null) {
         branchId = Number(ctx.user.branchId);
       } else {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا فرع مُسنَد لهذا المستخدم",
+        });
       }
 
       const db = getDb();
@@ -470,12 +656,26 @@ export const returnRouter = router({
         // سابق، و`returnSale` يرفض المستبدَلة.
         sql`${invoices.status} <> 'SUPERSEDED'`,
       ];
-      if (input?.customerId) where.push(eq(accountingEntries.customerId, input.customerId));
+      if (input?.customerId)
+        where.push(eq(accountingEntries.customerId, input.customerId));
       if (branchId) where.push(eq(accountingEntries.branchId, branchId));
       // entryDate عمود DATE ⇒ نقارن بمنتصف ليل UTC (timezone:"Z") ليطابق ما يُخزَّن فعلياً.
-      if (input?.from) where.push(gte(accountingEntries.entryDate, new Date(input.from + "T00:00:00.000Z")));
-      if (input?.to) where.push(lte(accountingEntries.entryDate, new Date(input.to + "T00:00:00.000Z")));
-      if (input?.createdBy) where.push(eq(accountingEntries.createdBy, input.createdBy));
+      if (input?.from)
+        where.push(
+          gte(
+            accountingEntries.entryDate,
+            new Date(input.from + "T00:00:00.000Z"),
+          ),
+        );
+      if (input?.to)
+        where.push(
+          lte(
+            accountingEntries.entryDate,
+            new Date(input.to + "T00:00:00.000Z"),
+          ),
+        );
+      if (input?.createdBy)
+        where.push(eq(accountingEntries.createdBy, input.createdBy));
       // بحث آمن (escLike + ESCAPE '!') على رقم الفاتورة — يستلزم الانضمام لـinvoices في العدّ أيضاً.
       if (input?.q) {
         const pat = `%${escLike(input.q)}%`;
@@ -491,7 +691,9 @@ export const returnRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           customerId: accountingEntries.customerId,
           customerName: customers.name,
-          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          customerPhone: sql<
+            string | null
+          >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
           amount: accountingEntries.amount,
           notes: accountingEntries.notes,
           createdAt: accountingEntries.createdAt,
@@ -526,7 +728,9 @@ export const returnRouter = router({
    *  «منفّذ المرتجع» بلا كشف دليل المستخدمين الكامل (users.list حصريّ لـadminProcedure، والمدير
    *  غير-admin لا يصله — نمط sales.salespeople حرفياً). */
   performers: salesManagerProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z.object({ branchId: z.number().int().positive().optional() }).optional(),
+    )
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [] as { id: number; name: string }[];
@@ -544,7 +748,8 @@ export const returnRouter = router({
         isNotNull(accountingEntries.invoiceId),
         isNotNull(accountingEntries.createdBy),
       ];
-      if (branchId != null) where.push(eq(accountingEntries.branchId, branchId));
+      if (branchId != null)
+        where.push(eq(accountingEntries.branchId, branchId));
       const rows = await db
         .select({
           id: accountingEntries.createdBy,
@@ -560,274 +765,298 @@ export const returnRouter = router({
       return rows.map((r) => ({ id: Number(r.id), name: r.name }));
     }),
 
-  getInvoice: salesCashierProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
-    const db = getDb();
-    if (!db) return null;
-    const inv = (
-      await db
+  getInvoice: salesCashierProcedure
+    .input(z.object({ invoiceId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return null;
+      const inv = (
+        await db
+          .select({
+            id: invoices.id,
+            invoiceNumber: invoices.invoiceNumber,
+            status: invoices.status,
+            branchId: invoices.branchId,
+            /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
+            createdBy: invoices.createdBy,
+            workOrderCreatedBy: workOrders.createdBy,
+            customerId: invoices.customerId,
+            customerName: customers.name,
+            subtotal: invoices.subtotal,
+            discountAmount: invoices.discountAmount,
+            taxAmount: invoices.taxAmount,
+            total: invoices.total,
+            paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
+            paymentMethod: invoices.paymentMethod,
+          })
+          .from(invoices)
+          .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1)
+      )[0];
+      if (!inv) return null;
+      // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
+      // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
+      if (
+        ctx.user.role !== "admin" &&
+        Number(inv.branchId) !== Number(ctx.user.branchId)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر قراءة تفاصيل الفاتورة",
+            why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
+            doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
+          }),
+        });
+      }
+
+      // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
+      // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
+      const scopedOwnerId = getScopedOwnerId(ctx.user);
+      if (
+        scopedOwnerId != null &&
+        Number(inv.createdBy) !== scopedOwnerId &&
+        Number(inv.workOrderCreatedBy) !== scopedOwnerId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
+            why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
+            doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
+          }),
+        });
+      }
+
+      const rows = await db
         .select({
-          id: invoices.id,
-          invoiceNumber: invoices.invoiceNumber,
-          status: invoices.status,
-          branchId: invoices.branchId,
-          /** منشئ الفاتورة — تحتاجه الشاشة لتعرف مسبقاً أنّ هذا المستخدم محجوبٌ عن اعتماد إرجاعها. */
-          createdBy: invoices.createdBy,
-          workOrderCreatedBy: workOrders.createdBy,
-          customerId: invoices.customerId,
-          customerName: customers.name,
-          subtotal: invoices.subtotal,
-          discountAmount: invoices.discountAmount,
-          taxAmount: invoices.taxAmount,
-          total: invoices.total,
-          paidAmount: invoices.paidAmount,
-          returnedTotal: invoices.returnedTotal,
-          paymentMethod: invoices.paymentMethod,
+          invoiceItemId: invoiceItems.id,
+          productName: products.name,
+          variantName: productVariants.variantName,
+          color: productVariants.color,
+          size: productVariants.size,
+          sku: productVariants.sku,
+          barcode: productUnits.barcode,
+          unitName: productUnits.unitName,
+          conversionFactor: productUnits.conversionFactor,
+          baseQuantity: invoiceItems.baseQuantity,
+          returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+          unitPrice: invoiceItems.unitPrice,
+          total: invoiceItems.total,
         })
-        .from(invoices)
-        .leftJoin(customers, eq(invoices.customerId, customers.id))
-        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
-        .where(eq(invoices.id, input.invoiceId))
-        .limit(1)
-    )[0];
-    if (!inv) return null;
-    // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
-    // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
-    if (ctx.user.role !== "admin" && Number(inv.branchId) !== Number(ctx.user.branchId)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "تعذّر قراءة تفاصيل الفاتورة",
-          why: "الفاتورة تنتمي إلى فرع آخر غير فرعك المسند",
-          doThis: "افتح الفاتورة من فرعها الأصلي أو عبر حساب إداري",
-        }),
+        .from(invoiceItems)
+        .innerJoin(
+          productVariants,
+          eq(invoiceItems.variantId, productVariants.id),
+        )
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+        .where(eq(invoiceItems.invoiceId, input.invoiceId));
+
+      const items = rows.map((r) => {
+        const variantLabel =
+          r.variantName ??
+          ([r.color, r.size].filter((v): v is string => !!v).join(" / ") ||
+            r.sku);
+        const remaining = r.baseQuantity - r.returnedBaseQuantity;
+        return {
+          invoiceItemId: Number(r.invoiceItemId),
+          productName: r.productName,
+          variantLabel,
+          barcode: r.barcode ?? null,
+          sku: r.sku ?? null,
+          unitName: r.unitName ?? "",
+          // معامل تحويل وحدة البيع (درزن=12…) — الشاشة تعرض «١ درزن = ١٢ قطعة» وتَخطو به،
+          // فلا يحسب الموظف الوحدة الأساس ذهنياً (كان أكبر مصدر خطأ كميات المرتجع).
+          conversionFactor: Number(r.conversionFactor ?? 1) || 1,
+          baseQuantity: r.baseQuantity,
+          returnedBaseQuantity: r.returnedBaseQuantity,
+          remaining,
+          unitPrice: r.unitPrice,
+          total: r.total,
+        };
       });
-    }
 
-    // عزل ملكية الكاشير (نطاق sales.get): الكاشير لا يقرأ تفاصيل فاتورة زميله في الفرع نفسه،
-    // لكنه يقرأ فواتيره وفواتير أوامر الشغل التي استقبلها. المدير وadmin يتجاوزان.
-    const scopedOwnerId = getScopedOwnerId(ctx.user);
-    if (
-      scopedOwnerId != null
-      && Number(inv.createdBy) !== scopedOwnerId
-      && Number(inv.workOrderCreatedBy) !== scopedOwnerId
-    ) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: appErrorMessage({
-          what: "تعذّر قراءة تفاصيل الفاتورة للمرتجع",
-          why: "لا يملك الكاشير صلاحية الوصول إلى فاتورة أنشأها موظف آخر",
-          doThis: "اطلب من منشئ الفاتورة أو مدير الفرع إتمام المرتجع",
-        }),
+      // سقوف الاسترداد — **نفس دالّة الخادم التي ستحكم على الطلب** (`loadRefundCaps`) لا نسخةٌ
+      // مقارِبة. كانت الشاشة تحسبها بنفسها فتعرض خياراً يرفضه الخادم بعد ملء كل شيء (بلاغ المالك
+      // ١٧/٨). الآن: ما تعرضه الشاشة = ما يقبله الخادم، بالتعريف.
+      const caps = await loadRefundCaps(db, input.invoiceId);
+      const paidByMethod: Array<{ method: string; amount: string }> = [];
+      caps.netByMethod.forEach((v, m) => {
+        if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
       });
-    }
+      // سقفٌ خامّ لكل طريقة (قبل قصّه بقيمة المرتجع الذي لم تُحدَّد كمّياته بعد) — الشاشة تقصّه
+      // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
+      // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
+      const isWalkIn = inv.customerId == null;
+      const surfacedMethods = isWalkIn
+        ? (["CASH"] as const)
+        : SURFACED_REFUND_METHODS;
+      const refundOptions = surfacedMethods.map((m) => ({
+        method: m,
+        cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
+        /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
+        paid: (caps.netByMethod.get(m) ?? money(0)).toFixed(2),
+        // الحجب يعني «لا يمكن **ردّ نقدٍ** بهذا الرافد» لا «لا يمكن تسجيل مرتجع». النصّ السابق
+        // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
+        // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
+        blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
+          ? isWalkIn
+            ? "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
+            : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
+          : null,
+      }));
 
-    const rows = await db
-      .select({
-        invoiceItemId: invoiceItems.id,
-        productName: products.name,
-        variantName: productVariants.variantName,
-        color: productVariants.color,
-        size: productVariants.size,
-        sku: productVariants.sku,
-        barcode: productUnits.barcode,
-        unitName: productUnits.unitName,
-        conversionFactor: productUnits.conversionFactor,
-        baseQuantity: invoiceItems.baseQuantity,
-        returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
-        unitPrice: invoiceItems.unitPrice,
-        total: invoiceItems.total,
-      })
-      .from(invoiceItems)
-      .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
-      .where(eq(invoiceItems.invoiceId, input.invoiceId));
+      // أدراج الفرع المفتوحة — تُجلب هنا مع التفاصيل لا بطلبٍ ثانٍ مشروط، كي لا تُبنى الشاشة
+      // على حالةٍ ناقصة («جارٍ فحص الورديات…» ثمّ رفضٌ عند الحفظ). قرار المالك (١٧/٨): الاسترداد
+      // من **وردية منفّذ المرتجع المفتوحة** افتراضاً، أو يختار وردية أخرى مفتوحة صراحةً.
+      // النطاق = فرع الفاتورة دائماً (لا فرع الفاعل) — الدرج مورد فرعٍ لا مستخدم.
+      const openShifts = await getOpenShifts(
+        {},
+        {
+          scopedBranchId: Number(inv.branchId),
+          role: ctx.user.role,
+          userId: ctx.user.id,
+        },
+      );
+      const refundShifts = openShifts.map((s) => ({
+        shiftId: s.shiftId,
+        userId: s.userId,
+        userName: s.userName,
+        shiftType: s.shiftType,
+        expectedCash: s.expectedCash,
+        /** درج المنفّذ نفسه — تختاره الشاشة افتراضاً فلا يقرّر الموظف ما لا يعرفه. */
+        isMine: Number(s.userId) === Number(ctx.user.id),
+      }));
 
-    const items = rows.map((r) => {
-      const variantLabel =
-        r.variantName ?? ([r.color, r.size].filter((v): v is string => !!v).join(" / ") || r.sku);
-      const remaining = r.baseQuantity - r.returnedBaseQuantity;
-      return {
-        invoiceItemId: Number(r.invoiceItemId),
-        productName: r.productName,
-        variantLabel,
-        barcode: r.barcode ?? null,
-        sku: r.sku ?? null,
-        unitName: r.unitName ?? "",
-        // معامل تحويل وحدة البيع (درزن=12…) — الشاشة تعرض «١ درزن = ١٢ قطعة» وتَخطو به،
-        // فلا يحسب الموظف الوحدة الأساس ذهنياً (كان أكبر مصدر خطأ كميات المرتجع).
-        conversionFactor: Number(r.conversionFactor ?? 1) || 1,
-        baseQuantity: r.baseQuantity,
-        returnedBaseQuantity: r.returnedBaseQuantity,
-        remaining,
-        unitPrice: r.unitPrice,
-        total: r.total,
-      };
-    });
-
-    // سقوف الاسترداد — **نفس دالّة الخادم التي ستحكم على الطلب** (`loadRefundCaps`) لا نسخةٌ
-    // مقارِبة. كانت الشاشة تحسبها بنفسها فتعرض خياراً يرفضه الخادم بعد ملء كل شيء (بلاغ المالك
-    // ١٧/٨). الآن: ما تعرضه الشاشة = ما يقبله الخادم، بالتعريف.
-    const caps = await loadRefundCaps(db, input.invoiceId);
-    const paidByMethod: Array<{ method: string; amount: string }> = [];
-    caps.netByMethod.forEach((v, m) => {
-      if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
-    });
-    // سقفٌ خامّ لكل طريقة (قبل قصّه بقيمة المرتجع الذي لم تُحدَّد كمّياته بعد) — الشاشة تقصّه
-    // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
-    // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
-    const isWalkIn = inv.customerId == null;
-    const surfacedMethods = isWalkIn ? (["CASH"] as const) : SURFACED_REFUND_METHODS;
-    const refundOptions = surfacedMethods.map((m) => ({
-      method: m,
-      cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
-      /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
-      paid: (caps.netByMethod.get(m) ?? money(0)).toFixed(2),
-      // الحجب يعني «لا يمكن **ردّ نقدٍ** بهذا الرافد» لا «لا يمكن تسجيل مرتجع». النصّ السابق
-      // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
-      // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
-      blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
-        ? isWalkIn
-          ? "لا يوجد مقبوض يغطي ردّ الزبون العابر؛ لا تسجّل المرتجع قبل ربطه بعميل أو معالجة أصل الفاتورة."
-          : "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
-        : null,
-    }));
-
-    // أدراج الفرع المفتوحة — تُجلب هنا مع التفاصيل لا بطلبٍ ثانٍ مشروط، كي لا تُبنى الشاشة
-    // على حالةٍ ناقصة («جارٍ فحص الورديات…» ثمّ رفضٌ عند الحفظ). قرار المالك (١٧/٨): الاسترداد
-    // من **وردية منفّذ المرتجع المفتوحة** افتراضاً، أو يختار وردية أخرى مفتوحة صراحةً.
-    // النطاق = فرع الفاتورة دائماً (لا فرع الفاعل) — الدرج مورد فرعٍ لا مستخدم.
-    const openShifts = await getOpenShifts(
-      {},
-      { scopedBranchId: Number(inv.branchId), role: ctx.user.role, userId: ctx.user.id },
-    );
-    const refundShifts = openShifts.map((s) => ({
-      shiftId: s.shiftId,
-      userId: s.userId,
-      userName: s.userName,
-      shiftType: s.shiftType,
-      expectedCash: s.expectedCash,
-      /** درج المنفّذ نفسه — تختاره الشاشة افتراضاً فلا يقرّر الموظف ما لا يعرفه. */
-      isMine: Number(s.userId) === Number(ctx.user.id),
-    }));
-
-    /**
-     * ⭐ الطلب المعلّق يُكشَف للشاشة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
-     * كانت الشاشة تعرض الفاتورة كأنّها بكرٌ: كامل المتبقّي قابلٌ للإرجاع وبلا أيّ إشارةٍ إلى
-     * طلبٍ سابقٍ ينتظر مراجعاً. فيُعيد الموظّف الإرسال فيصطدم بخطأ الفهرس الفريد الخامّ
-     * (`activeInvoiceUq`) بلا تفسير، أو — أسوأ — يظنّ أنّ المرتجع الأوّل لم يُسجَّل أصلاً
-     * فيسلّم البضاعة والنقود مرّةً ثانية. النظامان معاً يُكشَفان: الحوكميّ الجديد والقديم.
-     */
-    const invoiceCreatedBy = inv.createdBy == null ? null : Number(inv.createdBy);
-    const [governedPending] = await db
-      .select({
-        id: salesControlRequests.id,
-        requestType: salesControlRequests.requestType,
-        requestedBy: salesControlRequests.requestedBy,
-        requestedByName: users.name,
-        reason: salesControlRequests.reason,
-        createdAt: salesControlRequests.createdAt,
-      })
-      .from(salesControlRequests)
-      .leftJoin(users, eq(salesControlRequests.requestedBy, users.id))
-      .where(and(
-        eq(salesControlRequests.invoiceId, input.invoiceId),
-        eq(salesControlRequests.status, "PENDING"),
-      ))
-      .limit(1);
-    const [legacyPending] = await db
-      .select({
-        id: returnRequests.id,
-        createdBy: returnRequests.createdBy,
-        createdByName: users.name,
-        reason: returnRequests.reason,
-        createdAt: returnRequests.createdAt,
-      })
-      .from(returnRequests)
-      .leftJoin(users, eq(returnRequests.createdBy, users.id))
-      .where(and(
-        eq(returnRequests.invoiceId, input.invoiceId),
-        eq(returnRequests.status, "PENDING_APPROVAL"),
-      ))
-      .limit(1);
-
-    const canReviewRole = ctx.user.role === "admin" || moduleAccessAllowed(
-      ctx.user.role as RoleKey,
-      (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
-      "FULL",
-      ["manager"],
-    );
-
-    return {
-      /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
-      refundPool: caps.pool.toFixed(2),
-      refundOptions,
-      refundShifts,
       /**
-       * طلبٌ معلّقٌ على هذه الفاتورة — الشاشة تُظهره وتمنع إرسالاً ثانياً. `canReviewIt`
-       * تُشتقّ خادمياً بسلطة الدور (salesManagerProcedure) وحارس `assertReviewerSeparation`
-       * كي لا تدعو الشاشةُ مستخدماً إلى زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
+       * ⭐ الطلب المعلّق يُكشَف للشاشة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ ولا أثر له»).
+       * كانت الشاشة تعرض الفاتورة كأنّها بكرٌ: كامل المتبقّي قابلٌ للإرجاع وبلا أيّ إشارةٍ إلى
+       * طلبٍ سابقٍ ينتظر مراجعاً. فيُعيد الموظّف الإرسال فيصطدم بخطأ الفهرس الفريد الخامّ
+       * (`activeInvoiceUq`) بلا تفسير، أو — أسوأ — يظنّ أنّ المرتجع الأوّل لم يُسجَّل أصلاً
+       * فيسلّم البضاعة والنقود مرّةً ثانية. النظامان معاً يُكشَفان: الحوكميّ الجديد والقديم.
        */
-      pendingRequest: governedPending
-        ? {
-            source: "CONTROL" as const,
-            id: Number(governedPending.id),
-            requestType: governedPending.requestType,
-            requestedBy: Number(governedPending.requestedBy),
-            requestedByName: governedPending.requestedByName ?? null,
-            reason: governedPending.reason,
-            createdAt: governedPending.createdAt,
-            isMine: Number(governedPending.requestedBy) === Number(ctx.user.id),
-            canReviewIt:
-              canReviewRole
-              && Number(governedPending.requestedBy) !== Number(ctx.user.id)
-              && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
-          }
-        : legacyPending
+      const invoiceCreatedBy =
+        inv.createdBy == null ? null : Number(inv.createdBy);
+      const [governedPending] = await db
+        .select({
+          id: salesControlRequests.id,
+          requestType: salesControlRequests.requestType,
+          requestedBy: salesControlRequests.requestedBy,
+          requestedByName: users.name,
+          reason: salesControlRequests.reason,
+          createdAt: salesControlRequests.createdAt,
+        })
+        .from(salesControlRequests)
+        .leftJoin(users, eq(salesControlRequests.requestedBy, users.id))
+        .where(
+          and(
+            eq(salesControlRequests.invoiceId, input.invoiceId),
+            eq(salesControlRequests.status, "PENDING"),
+          ),
+        )
+        .limit(1);
+      const [legacyPending] = await db
+        .select({
+          id: returnRequests.id,
+          createdBy: returnRequests.createdBy,
+          createdByName: users.name,
+          reason: returnRequests.reason,
+          createdAt: returnRequests.createdAt,
+        })
+        .from(returnRequests)
+        .leftJoin(users, eq(returnRequests.createdBy, users.id))
+        .where(
+          and(
+            eq(returnRequests.invoiceId, input.invoiceId),
+            eq(returnRequests.status, "PENDING_APPROVAL"),
+          ),
+        )
+        .limit(1);
+
+      const canReviewRole =
+        ctx.user.role === "admin" ||
+        moduleAccessAllowed(
+          ctx.user.role as RoleKey,
+          (ctx.user.permissionsOverride ?? null) as PermissionMap | null,
+          "sales",
+          "FULL",
+          ["manager"],
+        );
+
+      return {
+        /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
+        refundPool: caps.pool.toFixed(2),
+        refundOptions,
+        refundShifts,
+        /**
+         * طلبٌ معلّقٌ على هذه الفاتورة — الشاشة تُظهره وتمنع إرسالاً ثانياً. `canReviewIt`
+         * تُشتقّ خادمياً بسلطة الدور (salesManagerProcedure) وحارس `assertReviewerSeparation`
+         * كي لا تدعو الشاشةُ مستخدماً إلى زرِّ اعتمادٍ سيرفضه الخادم (نمط «ما تعرضه الشاشة = ما يقبله الخادم»).
+         */
+        pendingRequest: governedPending
           ? {
-              source: "LEGACY" as const,
-              id: Number(legacyPending.id),
-              requestType: "SALES_RETURN" as const,
-              requestedBy: Number(legacyPending.createdBy),
-              requestedByName: legacyPending.createdByName ?? null,
-              reason: legacyPending.reason,
-              createdAt: legacyPending.createdAt,
-              isMine: Number(legacyPending.createdBy) === Number(ctx.user.id),
+              source: "CONTROL" as const,
+              id: Number(governedPending.id),
+              requestType: governedPending.requestType,
+              requestedBy: Number(governedPending.requestedBy),
+              requestedByName: governedPending.requestedByName ?? null,
+              reason: governedPending.reason,
+              createdAt: governedPending.createdAt,
+              isMine:
+                Number(governedPending.requestedBy) === Number(ctx.user.id),
               canReviewIt:
-                canReviewRole
-                && Number(legacyPending.createdBy) !== Number(ctx.user.id)
-                && Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+                canReviewRole &&
+                Number(governedPending.requestedBy) !== Number(ctx.user.id) &&
+                Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+            }
+          : legacyPending
+            ? {
+                source: "LEGACY" as const,
+                id: Number(legacyPending.id),
+                requestType: "SALES_RETURN" as const,
+                requestedBy: Number(legacyPending.createdBy),
+                requestedByName: legacyPending.createdByName ?? null,
+                reason: legacyPending.reason,
+                createdAt: legacyPending.createdAt,
+                isMine: Number(legacyPending.createdBy) === Number(ctx.user.id),
+                canReviewIt:
+                  canReviewRole &&
+                  Number(legacyPending.createdBy) !== Number(ctx.user.id) &&
+                  Number(invoiceCreatedBy ?? -1) !== Number(ctx.user.id),
+              }
+            : null,
+        walkInResolutionPolicy: isWalkIn
+          ? {
+              required: true as const,
+              kind: "IMMEDIATE_REFUND" as const,
+              method: "CASH" as const,
+              exactAmountRequired: true as const,
+              reasonRequired: true as const,
+              dispositions: ["RESTOCK", "DAMAGED"] as const,
             }
           : null,
-      walkInResolutionPolicy: isWalkIn
-        ? {
-            required: true as const,
-            kind: "IMMEDIATE_REFUND" as const,
-            method: "CASH" as const,
-            exactAmountRequired: true as const,
-            reasonRequired: true as const,
-            dispositions: ["RESTOCK", "DAMAGED"] as const,
-          }
-        : null,
-      id: Number(inv.id),
-      invoiceNumber: inv.invoiceNumber,
-      status: inv.status,
-      branchId: Number(inv.branchId),
-      customerId: inv.customerId === null ? null : Number(inv.customerId),
-      customerName: inv.customerName ?? null,
-      subtotal: inv.subtotal,
-      discountAmount: inv.discountAmount,
-      taxAmount: inv.taxAmount,
-      total: inv.total,
-      paidAmount: inv.paidAmount,
-      /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
-      returnedTotal: inv.returnedTotal ?? "0",
-      paymentMethod: inv.paymentMethod,
-      paidByMethod,
-      items,
-    };
-  }),
+        id: Number(inv.id),
+        invoiceNumber: inv.invoiceNumber,
+        status: inv.status,
+        branchId: Number(inv.branchId),
+        customerId: inv.customerId === null ? null : Number(inv.customerId),
+        customerName: inv.customerName ?? null,
+        subtotal: inv.subtotal,
+        discountAmount: inv.discountAmount,
+        taxAmount: inv.taxAmount,
+        total: inv.total,
+        paidAmount: inv.paidAmount,
+        /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
+        returnedTotal: inv.returnedTotal ?? "0",
+        paymentMethod: inv.paymentMethod,
+        paidByMethod,
+        items,
+      };
+    }),
 
   /**
    * التحري والتقصي الجنائي للفواتير المفقودة بعدسات متعددة:
@@ -837,17 +1066,29 @@ export const returnRouter = router({
     .input(
       z.object({
         query: z.string().trim().min(1, "أدخل نص البحث"),
-        mode: z.enum(["ITEM_BARCODE", "CARD_LAST4", "CUSTOMER_PHONE", "DATE_SHIFT"]),
+        mode: z.enum([
+          "ITEM_BARCODE",
+          "CARD_LAST4",
+          "CUSTOMER_PHONE",
+          "DATE_SHIFT",
+        ]),
         days: z.number().int().min(1).max(180).optional(),
         shiftId: z.number().int().positive().optional(),
-        dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
+        dateFrom: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        dateTo: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      }),
     )
     .query(async ({ input, ctx }) => {
       return forensicTraceInvoices(input, {
         userId: ctx.user.id,
-        branchId: ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
+        branchId:
+          ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
       });
     }),
@@ -860,7 +1101,8 @@ export const returnRouter = router({
     .query(async ({ input, ctx }) => {
       return universalBarcodeScan(input.barcode, {
         userId: ctx.user.id,
-        branchId: ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
+        branchId:
+          ctx.user.role === "admin" ? 0 : Number(ctx.user.branchId ?? 0),
         role: ctx.user.role,
       });
     }),
@@ -869,10 +1111,17 @@ export const returnRouter = router({
    * الورديات المفتوحة للمستخدم أو الفرع (لإرجاع مالي أو دفع فرق استبدال في الدرج).
    */
   shifts: salesReadProcedure.query(async ({ ctx }) => {
-    const actorBranchId = ctx.user.role === "admin" || !ctx.user.branchId ? null : Number(ctx.user.branchId);
+    const actorBranchId =
+      ctx.user.role === "admin" || !ctx.user.branchId
+        ? null
+        : Number(ctx.user.branchId);
     const openShifts = await getOpenShifts(
       {},
-      { scopedBranchId: actorBranchId, role: ctx.user.role, userId: ctx.user.id },
+      {
+        scopedBranchId: actorBranchId,
+        role: ctx.user.role,
+        userId: ctx.user.id,
+      },
     );
     return openShifts.map((s) => ({
       shiftId: s.shiftId,
@@ -892,11 +1141,17 @@ export const returnRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متوفرة" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "قاعدة البيانات غير متوفرة",
+        });
       }
       const code = input.barcode.trim();
       const owner = await resolveBarcodeOwner(db, code);
-      const actorBranchId = ctx.user.role === "admin" || !ctx.user.branchId ? 1 : Number(ctx.user.branchId);
+      const actorBranchId =
+        ctx.user.role === "admin" || !ctx.user.branchId
+          ? 1
+          : Number(ctx.user.branchId);
 
       if (!owner) {
         // إذا لم يُعثر عليه بالباركود، نحاول بالـ SKU
@@ -934,7 +1189,12 @@ export const returnRouter = router({
           ? await db
               .select({ price: productPrices.price })
               .from(productPrices)
-              .where(and(eq(productPrices.productUnitId, baseUnit.id), eq(productPrices.priceTier, "RETAIL")))
+              .where(
+                and(
+                  eq(productPrices.productUnitId, baseUnit.id),
+                  eq(productPrices.priceTier, "RETAIL"),
+                ),
+              )
               .limit(1)
           : [];
 
@@ -942,7 +1202,12 @@ export const returnRouter = router({
         const [stockRow] = await db
           .select({ quantity: branchStock.quantity })
           .from(branchStock)
-          .where(and(eq(branchStock.variantId, skuVariant.variantId), eq(branchStock.branchId, actorBranchId)))
+          .where(
+            and(
+              eq(branchStock.variantId, skuVariant.variantId),
+              eq(branchStock.branchId, actorBranchId),
+            ),
+          )
           .limit(1);
 
         // أدنى سعر تاريخي 60 يوماً
@@ -951,12 +1216,21 @@ export const returnRouter = router({
           .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
           .from(invoiceItems)
           .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
-          .where(and(eq(invoiceItems.variantId, skuVariant.variantId), gte(invoices.createdAt, sixtyDaysAgo)));
+          .where(
+            and(
+              eq(invoiceItems.variantId, skuVariant.variantId),
+              gte(invoices.createdAt, sixtyDaysAgo),
+            ),
+          );
 
         const retailPrice = priceRow?.price ? String(priceRow.price) : "0";
-        const lowestHistoricalPrice = lowestRow?.minPrice ? String(lowestRow.minPrice) : retailPrice;
+        const lowestHistoricalPrice = lowestRow?.minPrice
+          ? String(lowestRow.minPrice)
+          : retailPrice;
 
-        const costPrice = skuVariant.costPrice ? String(skuVariant.costPrice) : "0";
+        const costPrice = skuVariant.costPrice
+          ? String(skuVariant.costPrice)
+          : "0";
 
         return {
           productId: Number(skuVariant.productId),
@@ -984,14 +1258,24 @@ export const returnRouter = router({
       const [priceRow] = await db
         .select({ price: productPrices.price })
         .from(productPrices)
-        .where(and(eq(productPrices.productUnitId, owner.productUnitId), eq(productPrices.priceTier, "RETAIL")))
+        .where(
+          and(
+            eq(productPrices.productUnitId, owner.productUnitId),
+            eq(productPrices.priceTier, "RETAIL"),
+          ),
+        )
         .limit(1);
 
       // الرصيد المخزني
       const [stockRow] = await db
         .select({ quantity: branchStock.quantity })
         .from(branchStock)
-        .where(and(eq(branchStock.variantId, owner.variantId), eq(branchStock.branchId, actorBranchId)))
+        .where(
+          and(
+            eq(branchStock.variantId, owner.variantId),
+            eq(branchStock.branchId, actorBranchId),
+          ),
+        )
         .limit(1);
 
       // أدنى سعر بيع تاريخي خلال ٦٠ يوماً
@@ -1000,11 +1284,20 @@ export const returnRouter = router({
         .select({ minPrice: sql<string>`MIN(${invoiceItems.unitPrice})` })
         .from(invoiceItems)
         .innerJoin(invoices, eq(invoiceItems.invoiceId, invoices.id))
-        .where(and(eq(invoiceItems.variantId, owner.variantId), gte(invoices.createdAt, sixtyDaysAgo)));
+        .where(
+          and(
+            eq(invoiceItems.variantId, owner.variantId),
+            gte(invoices.createdAt, sixtyDaysAgo),
+          ),
+        );
 
       const retailPrice = priceRow?.price ? String(priceRow.price) : "0";
-      const costPrice = variantRow?.costPrice ? String(variantRow.costPrice) : "0";
-      const lowestHistoricalPrice = lowestRow?.minPrice ? String(lowestRow.minPrice) : retailPrice;
+      const costPrice = variantRow?.costPrice
+        ? String(variantRow.costPrice)
+        : "0";
+      const lowestHistoricalPrice = lowestRow?.minPrice
+        ? String(lowestRow.minPrice)
+        : retailPrice;
 
       return {
         productId: Number(owner.productId),
@@ -1029,31 +1322,37 @@ export const returnRouter = router({
     .input(
       z.object({
         mode: z.enum(["STORE_CREDIT", "DIRECT_EXCHANGE"]),
-        returnItems: z.array(
-          z.object({
-            variantId: z.number().int().positive(),
-            productUnitId: z.number().int().positive().optional(),
-            productName: z.string().min(1),
-            barcode: z.string().nullish(),
-            quantity: z.number().int().positive(),
-            unitPrice: nonNegMoneyString,
-            disposition: z.enum(["RESTOCK", "SCRAP"]),
+        returnItems: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive().optional(),
+              productName: z.string().min(1),
+              barcode: z.string().nullish(),
+              quantity: z.number().int().positive(),
+              unitPrice: nonNegMoneyString,
+              disposition: z.enum(["RESTOCK", "SCRAP"]),
+            }),
+          )
+          .min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
+        exchangeItems: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive().optional(),
+              productName: z.string().min(1),
+              barcode: z.string().nullish(),
+              quantity: z.number().int().positive(),
+              unitPrice: nonNegMoneyString,
+            }),
+          )
+          .optional(),
+        customer: z
+          .object({
+            name: z.string().trim().max(120).nullish(),
+            phone: z.string().trim().max(40).nullish(),
           })
-        ).min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
-        exchangeItems: z.array(
-          z.object({
-            variantId: z.number().int().positive(),
-            productUnitId: z.number().int().positive().optional(),
-            productName: z.string().min(1),
-            barcode: z.string().nullish(),
-            quantity: z.number().int().positive(),
-            unitPrice: nonNegMoneyString,
-          })
-        ).optional(),
-        customer: z.object({
-          name: z.string().trim().max(120).nullish(),
-          phone: z.string().trim().max(40).nullish(),
-        }).nullish(),
+          .nullish(),
         reason: z.string().trim().max(500).nullish(),
         settlement: z.object({
           returnTotal: nonNegMoneyString,
@@ -1064,7 +1363,7 @@ export const returnRouter = router({
           reference: z.string().trim().nullish(),
         }),
         clientRequestId: z.string().min(1).max(80).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
@@ -1079,85 +1378,158 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 1);
 
-      return withTx(async (tx) => {
-        await assertPeriodOpen(tx, new Date());
+      return withTx(
+        async (tx) => {
+          await assertPeriodOpen(tx, new Date());
 
-        const now = new Date();
-        const randSuffix = Math.floor(1000 + Math.random() * 9000);
-        const voucherCode = input.mode === "DIRECT_EXCHANGE"
-          ? `EX-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`
-          : `SC-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
+          const now = new Date();
+          const randSuffix = Math.floor(1000 + Math.random() * 9000);
+          const voucherCode =
+            input.mode === "DIRECT_EXCHANGE"
+              ? `EX-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`
+              : `SC-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
 
-        const customerName = input.customer?.name?.trim() || "زبون عابر";
-        const customerPhone = input.customer?.phone?.trim() || null;
-        const returnReason = input.reason?.trim() || (input.mode === "DIRECT_EXCHANGE" ? "استبدال مباشر بضاعة" : "إرجاع بضاعة بدون فاتورة");
+          const customerName = input.customer?.name?.trim() || "زبون عابر";
+          const customerPhone = input.customer?.phone?.trim() || null;
+          const returnReason =
+            input.reason?.trim() ||
+            (input.mode === "DIRECT_EXCHANGE"
+              ? "استبدال مباشر بضاعة"
+              : "إرجاع بضاعة بدون فاتورة");
 
-        // ١) حركات المخزون للمرتجع (زيادة المخزون إذا كان RESTOCK)
-        for (const itm of input.returnItems) {
-          if (itm.disposition === "RESTOCK") {
-            await applyMovement(tx, {
-              variantId: itm.variantId,
-              branchId: actorBranchId,
-              baseQuantity: itm.quantity,
-              movementType: "RETURN",
-              referenceType: input.mode === "DIRECT_EXCHANGE" ? "EXCHANGE_RETURN" : "NO_RECEIPT_RETURN",
-              notes: `${input.mode === "DIRECT_EXCHANGE" ? "استبدال بضاعة" : "مرتجع استثنائي بدون وصل"} [${voucherCode}] — ${returnReason} (${customerName})`,
-              createdBy: ctx.user.id,
-            });
+          // ١) حركات المخزون للمرتجع (زيادة المخزون إذا كان RESTOCK)
+          for (const itm of input.returnItems) {
+            if (itm.disposition === "RESTOCK") {
+              await applyMovement(tx, {
+                variantId: itm.variantId,
+                branchId: actorBranchId,
+                baseQuantity: itm.quantity,
+                movementType: "RETURN",
+                referenceType:
+                  input.mode === "DIRECT_EXCHANGE"
+                    ? "EXCHANGE_RETURN"
+                    : "NO_RECEIPT_RETURN",
+                notes: `${input.mode === "DIRECT_EXCHANGE" ? "استبدال بضاعة" : "مرتجع استثنائي بدون وصل"} [${voucherCode}] — ${returnReason} (${customerName})`,
+                createdBy: ctx.user.id,
+              });
+            }
           }
-        }
 
-        // ٢) حركات المخزون للبديل الجديد (خصم المخزون OUT) في حالة الاستبدال المباشر
-        if (input.mode === "DIRECT_EXCHANGE" && input.exchangeItems && input.exchangeItems.length > 0) {
-          for (const itm of input.exchangeItems) {
-            await applyMovement(tx, {
-              variantId: itm.variantId,
-              branchId: actorBranchId,
-              baseQuantity: itm.quantity,
-              movementType: "OUT",
-              referenceType: "EXCHANGE_ISSUE",
-              notes: `صرف بضاعة بديلة مقابل استبدال [${voucherCode}] — ${returnReason} (${customerName})`,
-              createdBy: ctx.user.id,
-            });
+          // ٢) حركات المخزون للبديل الجديد (خصم المخزون OUT) في حالة الاستبدال المباشر
+          if (
+            input.mode === "DIRECT_EXCHANGE" &&
+            input.exchangeItems &&
+            input.exchangeItems.length > 0
+          ) {
+            for (const itm of input.exchangeItems) {
+              await applyMovement(tx, {
+                variantId: itm.variantId,
+                branchId: actorBranchId,
+                baseQuantity: itm.quantity,
+                movementType: "OUT",
+                referenceType: "EXCHANGE_ISSUE",
+                notes: `صرف بضاعة بديلة مقابل استبدال [${voucherCode}] — ${returnReason} (${customerName})`,
+                createdBy: ctx.user.id,
+              });
+            }
           }
-        }
 
-        // ٣) توثيق التدقيق الرقابي
-        await logAudit(ctx, {
-          action: input.mode === "DIRECT_EXCHANGE" ? "return.direct_exchange" : "return.no_receipt_voucher",
-          entityType: "voucher",
-          entityId: null,
-          newValue: {
+          // ٣) توثيق التدقيق الرقابي
+          await logAudit(ctx, {
+            action:
+              input.mode === "DIRECT_EXCHANGE"
+                ? "return.direct_exchange"
+                : "return.no_receipt_voucher",
+            entityType: "voucher",
+            entityId: null,
+            newValue: {
+              voucherCode,
+              mode: input.mode,
+              customerName,
+              customerPhone,
+              reason: returnReason,
+              returnTotal: input.settlement.returnTotal,
+              exchangeTotal: input.settlement.exchangeTotal ?? "0",
+              differenceAmount: input.settlement.differenceAmount,
+              returnLinesCount: input.returnItems.length,
+              exchangeLinesCount: input.exchangeItems?.length ?? 0,
+              dispositions: input.returnItems.map((i) => ({
+                name: i.productName,
+                disp: i.disposition,
+                qty: i.quantity,
+              })),
+            },
+          });
+
+          return {
+            ok: true as const,
             voucherCode,
             mode: input.mode,
-            customerName,
-            customerPhone,
-            reason: returnReason,
             returnTotal: input.settlement.returnTotal,
             exchangeTotal: input.settlement.exchangeTotal ?? "0",
             differenceAmount: input.settlement.differenceAmount,
-            returnLinesCount: input.returnItems.length,
-            exchangeLinesCount: input.exchangeItems?.length ?? 0,
-            dispositions: input.returnItems.map((i) => ({ name: i.productName, disp: i.disposition, qty: i.quantity })),
-          },
-        });
+            customerName,
+            customerPhone,
+            dateStr: now.toLocaleDateString("ar-IQ", {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            }),
+          };
+        },
+        { gate: "NONE" },
+      );
+    }),
 
-        return {
-          ok: true as const,
-          voucherCode,
-          mode: input.mode,
-          returnTotal: input.settlement.returnTotal,
-          exchangeTotal: input.settlement.exchangeTotal ?? "0",
-          differenceAmount: input.settlement.differenceAmount,
-          customerName,
-          customerPhone,
-          dateStr: now.toLocaleDateString("ar-IQ", {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
+  /**
+   * جلب أدراج النقدية / الورديات المفتوحة في فرع الكاشير لصرف المرتجع منها
+   * متاحة للكاشير والمدير ضمن صلاحيات المبيعات، وتفرّق بين وردية المستخدم الحالي والورديات الأخرى
+   */
+  getOpenRefundDrawers: salesCashierProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      if (
+        ctx.user.branchId == null &&
+        ctx.user.role !== "admin" &&
+        !input?.branchId
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر استعراض أدراج النقدية المفتوحة",
+            why: "لا يوجد فرع مُسنَد لحسابك الحالي",
+            doThis: "تواصل مع مدير النظام لإسناد الفرع التشغيلي لحسابك",
           }),
-        };
-      }, { gate: "NONE" });
+        });
+      }
+      const actorBranchId =
+        input?.branchId ??
+        (ctx.user.branchId ? Number(ctx.user.branchId) : undefined);
+      if (!actorBranchId) {
+        return [];
+      }
+      const openShifts = await getOpenShifts(
+        { branchId: actorBranchId },
+        {
+          scopedBranchId: actorBranchId,
+          role: ctx.user.role,
+          userId: ctx.user.id,
+        },
+      );
+      return openShifts.map((s) => ({
+        shiftId: s.shiftId,
+        userId: s.userId,
+        userName: s.userName,
+        shiftType: s.shiftType,
+        expectedCash: s.expectedCash,
+        isMine: Number(s.userId) === Number(ctx.user.id),
+      }));
     }),
 
   /**
@@ -1169,22 +1541,26 @@ export const returnRouter = router({
     .input(
       z.object({
         invoiceNumber: z.string().trim().max(64).nullish(),
-        customer: z.object({
-          customerId: z.number().int().positive().nullish(),
-          name: z.string().trim().max(120).nullish(),
-          phone: z.string().trim().max(40).nullish(),
-        }).nullish(),
-        disposition: z.enum(["RESTOCK", "DAMAGED"]).default("RESTOCK"),
-        items: z.array(
-          z.object({
-            variantId: z.number().int().positive(),
-            productUnitId: z.number().int().positive().optional(),
-            productName: z.string().min(1),
-            barcode: z.string().nullish(),
-            quantity: z.number().int().positive(),
-            unitPrice: nonNegMoneyString,
+        customer: z
+          .object({
+            customerId: z.number().int().positive().nullish(),
+            name: z.string().trim().max(120).nullish(),
+            phone: z.string().trim().max(40).nullish(),
           })
-        ).min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
+          .nullish(),
+        disposition: z.enum(["RESTOCK", "DAMAGED"]).default("RESTOCK"),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive().optional(),
+              productName: z.string().min(1),
+              barcode: z.string().nullish(),
+              quantity: z.number().int().positive(),
+              unitPrice: nonNegMoneyString,
+            }),
+          )
+          .min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
         settlement: z.object({
           method: z.enum(["CASH", "CARD", "STORE_CREDIT"]),
           totalAmount: nonNegMoneyString,
@@ -1193,7 +1569,7 @@ export const returnRouter = router({
         }),
         reason: z.string().trim().max(500).nullish(),
         clientRequestId: z.string().min(1).max(80).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
@@ -1208,80 +1584,311 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 1);
 
-      return withTx(async (tx) => {
-        await assertPeriodOpen(tx, new Date());
+      return withTx(
+        async (tx) => {
+          await assertPeriodOpen(tx, new Date());
 
-        const now = new Date();
-        const randSuffix = Math.floor(1000 + Math.random() * 9000);
-        const returnNumber = `SR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
+          const now = new Date();
+          const randSuffix = Math.floor(1000 + Math.random() * 9000);
+          const returnNumber = `SR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
 
-        const customerName = input.customer?.name?.trim() || "زبون عابر";
-        const customerPhone = input.customer?.phone?.trim() || null;
-        const returnReason = input.reason?.trim() || (input.disposition === "RESTOCK" ? "مرتجع مبيعات — إعادة للرف" : "مرتجع مبيعات — إتلاف وتسجيل خسارة");
-
-        // ١) تنفيذ حركة المخزون لكل بند
-        for (const itm of input.items) {
-          if (input.disposition === "RESTOCK") {
-            // إعادة للرف/المخزون
-            await applyMovement(tx, {
-              variantId: itm.variantId,
-              branchId: actorBranchId,
-              baseQuantity: itm.quantity,
-              movementType: "RETURN",
-              referenceType: "SALES_RETURN",
-              notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
-              createdBy: ctx.user.id,
+          const customerName = input.customer?.name?.trim() || "زبون عابر";
+          const customerPhone = input.customer?.phone?.trim() || null;
+          const returnReason =
+            input.reason?.trim() ||
+            (input.disposition === "RESTOCK"
+              ? "مرتجع مبيعات — إعادة للرف"
+              : "مرتجع مبيعات — إتلاف وتسجيل خسارة");
+          const returnTotalDec = new Decimal(input.settlement.totalAmount);
+          if (returnTotalDec.lte(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "مبلغ المرتجع غير صالح",
+                why: "يجب أن يكون إجمالي مبلغ المرتجع أكبر من صفر",
+                doThis: "تحقق من كميات وأسعار الأصناف في سلة المرتجع",
+              }),
             });
           }
-          // إذا كان تالفاً (DAMAGED) لا يُعاد إلى مخزون الرف الصالح للبيع، ويُكتفى بتوثيقه محاسبياً ورقابياً
-        }
 
-        // ٢) توثيق قيد محاسبي في دفتر الأستاذ العام
-        const returnTotalDec = new Decimal(input.settlement.totalAmount);
-        const salesReturnSource = {
-          roleDebits: {
-            SALES_STATIONERY: returnTotalDec,
-            DELIVERY_REVENUE: money(0),
-            TAX_PAYABLE: money(0),
-            INVENTORY: money(0),
-          },
-          roleCredits: {
-            AR: returnTotalDec,
-            COGS: money(0),
-          },
-        };
-        const salesReturnIntent = createPostingIntent(
-          "RETURN_SALE_INVENTORY",
-          "RETURN",
-          [
-            debitLine("SALES_STATIONERY", returnTotalDec),
-            debitLine("DELIVERY_REVENUE", money(0)),
-            creditLine("AR", returnTotalDec),
-          ],
-          salesReturnSource,
-        );
+          // ٠) التحقق من الفاتورة الأصلية إن أدخلت
+          let matchedInvoice: typeof invoices.$inferSelect | null = null;
+          if (input.invoiceNumber?.trim()) {
+            const [found] = await tx
+              .select()
+              .from(invoices)
+              .where(
+                and(
+                  eq(invoices.invoiceNumber, input.invoiceNumber.trim()),
+                  eq(invoices.branchId, actorBranchId),
+                ),
+              )
+              .limit(1);
+            if (found) {
+              matchedInvoice = found;
+            }
+          }
 
-        await postEntry(tx, {
-          entryType: "RETURN",
-          branchId: actorBranchId,
-          customerId: input.customer?.customerId ?? null,
-          amount: returnTotalDec.neg(),
-          revenue: returnTotalDec.neg(),
-          cost: new Decimal(0),
-          profit: returnTotalDec.neg(),
-          notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${input.settlement.method === "CASH" ? "نقدي" : input.settlement.method === "CARD" ? "بطاقة" : "رصيد متجر"})`,
-          createdBy: ctx.user.id,
-          createdByNameSnapshot: ctx.user.name ?? "كاشير",
-          postingIntent: salesReturnIntent,
-          postingSourceComponents: salesReturnSource,
-        });
+          // ١) تنفيذ حركة المخزون لكل بند
+          for (const itm of input.items) {
+            if (input.disposition === "RESTOCK") {
+              // إعادة للرف/المخزون
+              await applyMovement(tx, {
+                variantId: itm.variantId,
+                branchId: actorBranchId,
+                baseQuantity: itm.quantity,
+                movementType: "RETURN",
+                referenceType: "SALES_RETURN",
+                notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+                createdBy: ctx.user.id,
+              });
+            }
+            // إذا كان تالفاً (DAMAGED) لا يُعاد إلى مخزون الرف الصالح للبيع، ويُكتفى بتوثيقه محاسبياً ورقابياً
+          }
 
-        // ٣) توثيق التدقيق الرقابي
-        await logAudit(ctx, {
-          action: "sale.return_cart",
-          entityType: "sale",
-          entityId: null,
-          newValue: {
+          // ٢) معالجة التسوية المالية وحركة الصندوق/الدرج/البطاقة/رصيد المتجر
+          let generatedReceiptId: number | null = null;
+
+          if (input.settlement.method === "CASH") {
+            const targetShiftId = input.settlement.shiftId;
+            if (!targetShiftId) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر الصرف النقدي للمرتجع",
+                  why: "لم يتم تحديد درج النقدية / الوردية التي سيتم صرف المبلغ منها",
+                  doThis:
+                    "اختر درج النقدية / الوردية المفتوحة من القائمة قبل التأكيد",
+                }),
+              });
+            }
+
+            const [targetShift] = await tx
+              .select()
+              .from(shifts)
+              .where(
+                and(
+                  eq(shifts.id, targetShiftId),
+                  eq(shifts.branchId, actorBranchId),
+                ),
+              )
+              .for("update")
+              .limit(1);
+
+            if (!targetShift || targetShift.status !== "OPEN") {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر الصرف من الدرج المحدد",
+                  why: "الوردية المحددة غير موجودة أو مغلقة حالياً",
+                  doThis:
+                    "اختر وردية مفتوحة سارية في الفرع أو افتح وردية جديدة للكاشير",
+                }),
+              });
+            }
+
+            // فحص كفاية النقد في الدرج لمنع العجز والكسر المالي
+            await assertCashOutAvailable(tx, {
+              branchId: actorBranchId,
+              cashBucket: "DRAWER",
+              shiftId: targetShiftId,
+              amount: returnTotalDec,
+              operation: `استرداد نقدي لمرتجع مبيعات [${returnNumber}]`,
+            });
+
+            // تسجيل سند إخراج نقد من الدرج (OUT) لضبط Z-report وcomputeExpectedCash بالمليم
+            generatedReceiptId = await recordSalesReturnCartReceipt(tx, {
+              branchId: actorBranchId,
+              shiftId: targetShiftId,
+              amount: returnTotalDec,
+              returnNumber,
+              customerName,
+              customerId: input.customer?.customerId,
+              userId: ctx.user.id,
+            });
+
+            // قيد صرف النقد من الخزينة/الدرج في الأستاذ العام
+            const refundPostingSource = {
+              roleDebits: { AR: returnTotalDec },
+              roleCredits: { CASH: returnTotalDec },
+            };
+            await postEntry(tx, {
+              entryType: "PAYMENT_OUT",
+              branchId: actorBranchId,
+              invoiceId: matchedInvoice?.id ?? null,
+              receiptId: generatedReceiptId,
+              customerId: input.customer?.customerId ?? null,
+              amount: returnTotalDec,
+              notes: `صرف نقدي لمرتجع مبيعات [${returnNumber}] من درج #${targetShiftId}`,
+              createdBy: ctx.user.id,
+              createdByNameSnapshot: ctx.user.name ?? "كاشير",
+              postingIntent: createPostingIntent(
+                "PAYMENT_OUT_CUSTOMER_REFUND",
+                "PAYMENT_OUT",
+                [
+                  debitLine("AR", returnTotalDec),
+                  creditLine("CASH", returnTotalDec),
+                ],
+                refundPostingSource,
+              ),
+              postingSourceComponents: refundPostingSource,
+            });
+          } else if (input.settlement.method === "CARD") {
+            generatedReceiptId = await recordSalesReturnCartCardReceipt(tx, {
+              branchId: actorBranchId,
+              amount: returnTotalDec,
+              returnNumber,
+              customerName,
+              customerId: input.customer?.customerId,
+              reference: input.settlement.reference,
+              userId: ctx.user.id,
+            });
+
+            const refundPostingSource = {
+              roleDebits: { AR: returnTotalDec },
+              roleCredits: { CARD_BANK: returnTotalDec },
+            };
+            await postEntry(tx, {
+              entryType: "PAYMENT_OUT",
+              branchId: actorBranchId,
+              invoiceId: matchedInvoice?.id ?? null,
+              receiptId: generatedReceiptId,
+              customerId: input.customer?.customerId ?? null,
+              amount: returnTotalDec,
+              notes: `استرداد بطاقة لمرتجع مبيعات [${returnNumber}]`,
+              createdBy: ctx.user.id,
+              createdByNameSnapshot: ctx.user.name ?? "كاشير",
+              postingIntent: createPostingIntent(
+                "PAYMENT_OUT_CUSTOMER_REFUND",
+                "PAYMENT_OUT",
+                [
+                  debitLine("AR", returnTotalDec),
+                  creditLine("CARD_BANK", returnTotalDec),
+                ],
+                refundPostingSource,
+              ),
+              postingSourceComponents: refundPostingSource,
+            });
+          } else if (input.settlement.method === "STORE_CREDIT") {
+            if (!input.customer?.customerId) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر إيداع رصيد المتجر",
+                  why: "طريقة استرداد رصيد المتجر تتطلب تحديد عميل مسجل في النظام لإيداع الرصيد في حسابه",
+                  doThis: "اختر العميل من CRM أو حدد طريقة استرداد نقدي",
+                }),
+              });
+            }
+            await adjustCustomerBalance(
+              tx,
+              input.customer.customerId,
+              returnTotalDec.neg(),
+            );
+          }
+
+          // ٣) توثيق قيد حدث المرتجع (RETURN) في دفتر الأستاذ العام
+          // خالي تماماً من الأسطر الصفرية تجنباً لخطأ PostingIntent
+          const salesReturnSource = {
+            roleDebits: {
+              SALES_STATIONERY: returnTotalDec,
+              DELIVERY_REVENUE: money(0),
+              TAX_PAYABLE: money(0),
+              INVENTORY: money(0),
+            },
+            roleCredits: {
+              AR: returnTotalDec,
+              COGS: money(0),
+            },
+          };
+          const salesReturnIntent = createPostingIntent(
+            "RETURN_SALE_INVENTORY",
+            "RETURN",
+            [
+              debitLine("SALES_STATIONERY", returnTotalDec),
+              creditLine("AR", returnTotalDec),
+            ],
+            salesReturnSource,
+          );
+
+          await postEntry(tx, {
+            entryType: "RETURN",
+            branchId: actorBranchId,
+            invoiceId: matchedInvoice?.id ?? null,
+            receiptId: generatedReceiptId,
+            customerId: input.customer?.customerId ?? null,
+            amount: returnTotalDec.neg(),
+            revenue: returnTotalDec.neg(),
+            cost: new Decimal(0),
+            profit: returnTotalDec.neg(),
+            notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${
+              input.settlement.method === "CASH"
+                ? `نقدي من درج #${input.settlement.shiftId}`
+                : input.settlement.method === "CARD"
+                  ? "بطاقة"
+                  : "رصيد متجر"
+            })`,
+            createdBy: ctx.user.id,
+            createdByNameSnapshot: ctx.user.name ?? "كاشير",
+            postingIntent: salesReturnIntent,
+            postingSourceComponents: salesReturnSource,
+          });
+
+          // ٤) تحديث بيانات الفاتورة الأصلية إن وُجدت
+          if (matchedInvoice) {
+            const newReturnedTotal = money(
+              matchedInvoice.returnedTotal ?? "0",
+            ).plus(returnTotalDec);
+            let newPaid = money(matchedInvoice.paidAmount ?? "0");
+            if (
+              input.settlement.method === "CASH" ||
+              input.settlement.method === "CARD"
+            ) {
+              const paidMinusRefund = newPaid.minus(returnTotalDec);
+              newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
+            }
+            const isFullyReturned = newReturnedTotal.gte(
+              money(matchedInvoice.total),
+            );
+            const newStatus = isFullyReturned
+              ? "RETURNED"
+              : computeInvoiceStatus(
+                  matchedInvoice.total,
+                  toDbMoney(newPaid),
+                  toDbMoney(newReturnedTotal),
+                );
+            await tx
+              .update(invoices)
+              .set({
+                returnedTotal: toDbMoney(newReturnedTotal),
+                paidAmount: toDbMoney(newPaid),
+                status: newStatus,
+              })
+              .where(eq(invoices.id, matchedInvoice.id));
+          }
+
+          // ٥) توثيق التدقيق الرقابي
+          await logAudit(ctx, {
+            action: "sale.return_cart",
+            entityType: "sale",
+            entityId: matchedInvoice?.id ?? null,
+            newValue: {
+              returnNumber,
+              customerName,
+              customerPhone,
+              originalInvoiceNumber: input.invoiceNumber,
+              disposition: input.disposition,
+              totalAmount: input.settlement.totalAmount,
+              method: input.settlement.method,
+              shiftId: input.settlement.shiftId,
+              receiptId: generatedReceiptId,
+              itemsCount: input.items.length,
+              reason: returnReason,
+            },
+          });
+
+          return {
+            ok: true as const,
             returnNumber,
             customerName,
             customerPhone,
@@ -1289,39 +1896,27 @@ export const returnRouter = router({
             disposition: input.disposition,
             totalAmount: input.settlement.totalAmount,
             method: input.settlement.method,
+            reference: input.settlement.reference,
             itemsCount: input.items.length,
-            reason: returnReason,
-          },
-        });
-
-        return {
-          ok: true as const,
-          returnNumber,
-          customerName,
-          customerPhone,
-          originalInvoiceNumber: input.invoiceNumber,
-          disposition: input.disposition,
-          totalAmount: input.settlement.totalAmount,
-          method: input.settlement.method,
-          reference: input.settlement.reference,
-          itemsCount: input.items.length,
-          items: input.items.map((i) => ({
-            name: i.productName,
-            quantity: i.quantity,
-            unitPrice: i.unitPrice,
-            barcode: i.barcode,
-          })),
-          dateStr: now.toLocaleDateString("ar-IQ", {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          }),
-          timeStr: now.toLocaleTimeString("ar-IQ", {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        };
-      }, { gate: "NONE" });
+            items: input.items.map((i) => ({
+              name: i.productName,
+              quantity: i.quantity,
+              unitPrice: i.unitPrice,
+              barcode: i.barcode,
+            })),
+            dateStr: now.toLocaleDateString("ar-IQ", {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            }),
+            timeStr: now.toLocaleTimeString("ar-IQ", {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          };
+        },
+        { gate: "NONE" },
+      );
     }),
 
   /**
@@ -1329,7 +1924,7 @@ export const returnRouter = router({
    * يدعم: اختيار المورد، رقم مرجعي اختياري، سلة الأصناف بتكلفة الشراء
    * طرق التسوية:
    *   - CREDIT_OFFSET: معادلة على الحساب نفسه يقلل الذمم علينا
-   *   - CASH_IN: مردود نقدي (توريد نقد)
+   *   - CASH_IN: مردود نقدي (توريد نقد للدرج)
    *   - CARD_TRANSFER: تحويل بنكي / بطاقة
    */
   executePurchaseReturnCart: salesManagerProcedure
@@ -1337,16 +1932,18 @@ export const returnRouter = router({
       z.object({
         supplierId: z.number().int().positive("يجب اختيار المورد"),
         reference: z.string().trim().max(64).nullish(),
-        items: z.array(
-          z.object({
-            variantId: z.number().int().positive(),
-            productUnitId: z.number().int().positive().optional(),
-            productName: z.string().min(1),
-            barcode: z.string().nullish(),
-            quantity: z.number().int().positive(),
-            unitCost: nonNegMoneyString,
-          })
-        ).min(1, "يجب تحديد صنف واحد على الأقل للمرتجع"),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive().optional(),
+              productName: z.string().min(1),
+              barcode: z.string().nullish(),
+              quantity: z.number().int().positive(),
+              unitCost: nonNegMoneyString,
+            }),
+          )
+          .min(1, "يجب تحديد صنف واحد على الأقل للمرتجع"),
         settlement: z.object({
           method: z.enum(["CREDIT_OFFSET", "CASH_IN", "CARD_TRANSFER"]),
           totalAmount: nonNegMoneyString,
@@ -1355,7 +1952,7 @@ export const returnRouter = router({
         }),
         reason: z.string().trim().max(500).nullish(),
         clientRequestId: z.string().min(1).max(80).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
@@ -1370,131 +1967,219 @@ export const returnRouter = router({
       }
       const actorBranchId = Number(ctx.user.branchId ?? 1);
 
-      return withTx(async (tx) => {
-        await assertPeriodOpen(tx, new Date());
+      return withTx(
+        async (tx) => {
+          await assertPeriodOpen(tx, new Date());
 
-        // التحقق من وجود المورد
-        const [supplier] = await tx
-          .select()
-          .from(suppliers)
-          .where(eq(suppliers.id, input.supplierId))
-          .limit(1);
+          // التحقق من وجود المورد
+          const [supplier] = await tx
+            .select()
+            .from(suppliers)
+            .where(eq(suppliers.id, input.supplierId))
+            .limit(1);
 
-        if (!supplier) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: appErrorMessage({
-              what: "المورد غير موجود",
-              why: "لم يتم العثور على سجل المورد المحدد في قاعدة البيانات",
-              doThis: "اختر مورداً صالحاً من القائمة",
-            }),
-          });
-        }
+          if (!supplier) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: appErrorMessage({
+                what: "المورد غير موجود",
+                why: "لم يتم العثور على سجل المورد المحدد في قاعدة البيانات",
+                doThis: "اختر مورداً صالحاً من القائمة",
+              }),
+            });
+          }
 
-        const now = new Date();
-        const randSuffix = Math.floor(1000 + Math.random() * 9000);
-        const returnNumber = `PR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
-        const returnReason = input.reason?.trim() || "مرتجع مشتريات للمورد بالسلة";
-        const returnTotalDec = new Decimal(input.settlement.totalAmount);
+          const now = new Date();
+          const randSuffix = Math.floor(1000 + Math.random() * 9000);
+          const returnNumber = `PR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
+          const returnReason =
+            input.reason?.trim() || "مرتجع مشتريات للمورد بالسلة";
+          const returnTotalDec = new Decimal(input.settlement.totalAmount);
+          if (returnTotalDec.lte(0)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: appErrorMessage({
+                what: "مبلغ المرتجع غير صالح",
+                why: "يجب أن يكون إجمالي مرتجع الشراء أكبر من صفر",
+                doThis: "تحقق من بنود المرتجع وتكلفتها",
+              }),
+            });
+          }
 
-        // ١) خصم الأصناف من مخزون الفرع (حركة OUT / PURCHASE_RETURN)
-        for (const itm of input.items) {
-          await applyMovement(tx, {
-            variantId: itm.variantId,
+          // ١) خصم الأصناف من مخزون الفرع (حركة OUT / PURCHASE_RETURN)
+          for (const itm of input.items) {
+            await applyMovement(tx, {
+              variantId: itm.variantId,
+              branchId: actorBranchId,
+              baseQuantity: itm.quantity,
+              movementType: "OUT",
+              referenceType: "PURCHASE_RETURN",
+              notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${itm.productName} للمورد (${supplier.name})`,
+              createdBy: ctx.user.id,
+            });
+          }
+
+          // ٢) الأثر المالي بحسب طريقة التسوية
+          let generatedReceiptId: number | null = null;
+          if (input.settlement.method === "CREDIT_OFFSET") {
+            // معادلة على الحساب نفسه يقلل الذمم علينا: AP يقل بالقيمة السالبة
+            await adjustSupplierBalance(
+              tx,
+              input.supplierId,
+              returnTotalDec.neg(),
+            );
+          } else if (input.settlement.method === "CASH_IN") {
+            const targetShiftId = input.settlement.shiftId;
+            if (!targetShiftId) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر إيداع المردود النقدي",
+                  why: "لم يتم تحديد درج النقدية / الوردية المستلمة للنقد من المورد",
+                  doThis: "اختر درج الوردية المفتوحة من القائمة",
+                }),
+              });
+            }
+            const [targetShift] = await tx
+              .select()
+              .from(shifts)
+              .where(
+                and(
+                  eq(shifts.id, targetShiftId),
+                  eq(shifts.branchId, actorBranchId),
+                ),
+              )
+              .for("update")
+              .limit(1);
+
+            if (!targetShift || targetShift.status !== "OPEN") {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر توريد النقد للدرج",
+                  why: "الوردية المحددة غير موجودة أو مغلقة حالياً",
+                  doThis: "اختر وردية مفتوحة سارية في الفرع",
+                }),
+              });
+            }
+
+            generatedReceiptId = await recordPurchaseReturnCartReceipt(tx, {
+              branchId: actorBranchId,
+              shiftId: targetShiftId,
+              amount: returnTotalDec,
+              returnNumber,
+              supplierId: input.supplierId,
+              supplierName: supplier.name,
+              userId: ctx.user.id,
+            });
+
+            const paymentInSource = {
+              roleDebits: { CASH: returnTotalDec },
+              roleCredits: { AP: returnTotalDec },
+            };
+            await postEntry(tx, {
+              entryType: "PAYMENT_IN",
+              branchId: actorBranchId,
+              supplierId: input.supplierId,
+              receiptId: generatedReceiptId,
+              amount: returnTotalDec,
+              notes: `مردود نقدي لمرتجع مشتريات [${returnNumber}] إلى درج #${targetShiftId}`,
+              createdBy: ctx.user.id,
+              createdByNameSnapshot: ctx.user.name ?? "مدير",
+              postingIntent: createPostingIntent(
+                "PAYMENT_IN_SUPPLIER_REFUND",
+                "PAYMENT_IN",
+                [
+                  debitLine("CASH", returnTotalDec),
+                  creditLine("AP", returnTotalDec),
+                ],
+                paymentInSource,
+              ),
+              postingSourceComponents: paymentInSource,
+            });
+          }
+
+          // ٣) توثيق قيد محاسبي في دفتر الأستاذ العام
+          const purchaseReturnSource = {
+            roleDebits: {
+              AP: returnTotalDec,
+            },
+            roleCredits: {
+              INVENTORY: returnTotalDec,
+            },
+          };
+          const purchaseReturnIntent = createPostingIntent(
+            "RETURN_PURCHASE_INVENTORY",
+            "RETURN",
+            [
+              debitLine("AP", returnTotalDec),
+              creditLine("INVENTORY", returnTotalDec),
+            ],
+            purchaseReturnSource,
+          );
+
+          await postEntry(tx, {
+            entryType: "RETURN",
             branchId: actorBranchId,
-            baseQuantity: itm.quantity,
-            movementType: "OUT",
-            referenceType: "PURCHASE_RETURN",
-            notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${itm.productName} للمورد (${supplier.name})`,
-            createdBy: ctx.user.id,
-          });
-        }
-
-        // ٢) الأثر المالي بحسب طريقة التسوية
-        if (input.settlement.method === "CREDIT_OFFSET") {
-          // معادلة على الحساب نفسه يقلل الذمم علينا: AP يقل بالقيمة السالبة
-          await adjustSupplierBalance(tx, input.supplierId, returnTotalDec.neg());
-        }
-
-        // ٣) توثيق قيد محاسبي في دفتر الأستاذ العام
-        const purchaseReturnSource = {
-          roleDebits: {
-            AP: returnTotalDec,
-          },
-          roleCredits: {
-            INVENTORY: returnTotalDec,
-            TAX_PAYABLE: money(0),
-            PURCHASE_PRICE_VARIANCE: money(0),
-          },
-        };
-        const purchaseReturnIntent = createPostingIntent(
-          "RETURN_PURCHASE_INVENTORY",
-          "RETURN",
-          [
-            debitLine("AP", returnTotalDec),
-            creditLine("INVENTORY", returnTotalDec),
-            creditLine("TAX_PAYABLE", money(0)),
-          ],
-          purchaseReturnSource,
-        );
-
-        await postEntry(tx, {
-          entryType: "RETURN",
-          branchId: actorBranchId,
-          supplierId: input.supplierId,
-          purchaseLiabilityAccount: "AP",
-          amount: returnTotalDec.neg(),
-          cost: returnTotalDec.neg(),
-          profit: new Decimal(0),
-          notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${supplier.name} (${input.settlement.method === "CREDIT_OFFSET" ? "معادلة ذمة" : input.settlement.method === "CASH_IN" ? "مردود نقدي" : "تحويل بنكي"})`,
-          createdBy: ctx.user.id,
-          createdByNameSnapshot: ctx.user.name ?? "مدير",
-          postingIntent: purchaseReturnIntent,
-          postingSourceComponents: purchaseReturnSource,
-        });
-
-        // ٤) توثيق التدقيق الرقابي
-        await logAudit(ctx, {
-          action: "purchase.return_cart",
-          entityType: "purchase",
-          entityId: null,
-          newValue: {
-            returnNumber,
             supplierId: input.supplierId,
+            receiptId: generatedReceiptId,
+            purchaseLiabilityAccount: "AP",
+            amount: returnTotalDec.neg(),
+            cost: returnTotalDec.neg(),
+            profit: new Decimal(0),
+            notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${supplier.name} (${input.settlement.method === "CREDIT_OFFSET" ? "معادلة ذمة" : input.settlement.method === "CASH_IN" ? "مردود نقدي" : "تحويل بنكي"})`,
+            createdBy: ctx.user.id,
+            createdByNameSnapshot: ctx.user.name ?? "مدير",
+            postingIntent: purchaseReturnIntent,
+            postingSourceComponents: purchaseReturnSource,
+          });
+
+          // ٤) توثيق التدقيق الرقابي
+          await logAudit(ctx, {
+            action: "purchase.return_cart",
+            entityType: "purchase",
+            entityId: null,
+            newValue: {
+              returnNumber,
+              supplierId: input.supplierId,
+              supplierName: supplier.name,
+              reference: input.reference,
+              totalAmount: input.settlement.totalAmount,
+              method: input.settlement.method,
+              shiftId: input.settlement.shiftId,
+              receiptId: generatedReceiptId,
+              itemsCount: input.items.length,
+              reason: returnReason,
+            },
+          });
+
+          return {
+            ok: true as const,
+            returnNumber,
             supplierName: supplier.name,
+            supplierPhone: supplier.phone,
             reference: input.reference,
             totalAmount: input.settlement.totalAmount,
             method: input.settlement.method,
             itemsCount: input.items.length,
-            reason: returnReason,
-          },
-        });
-
-        return {
-          ok: true as const,
-          returnNumber,
-          supplierName: supplier.name,
-          supplierPhone: supplier.phone,
-          reference: input.reference,
-          totalAmount: input.settlement.totalAmount,
-          method: input.settlement.method,
-          itemsCount: input.items.length,
-          items: input.items.map((i) => ({
-            name: i.productName,
-            quantity: i.quantity,
-            unitCost: i.unitCost,
-            barcode: i.barcode,
-          })),
-          dateStr: now.toLocaleDateString("ar-IQ", {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          }),
-          timeStr: now.toLocaleTimeString("ar-IQ", {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        };
-      }, { gate: "NONE" });
+            items: input.items.map((i) => ({
+              name: i.productName,
+              quantity: i.quantity,
+              unitCost: i.unitCost,
+              barcode: i.barcode,
+            })),
+            dateStr: now.toLocaleDateString("ar-IQ", {
+              year: "numeric",
+              month: "long",
+              day: "numeric",
+            }),
+            timeStr: now.toLocaleTimeString("ar-IQ", {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          };
+        },
+        { gate: "NONE" },
+      );
     }),
 });

@@ -10,8 +10,10 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Building2,
   CheckCircle2,
+  Coins,
   CreditCard,
   FileText,
   Minus,
@@ -57,13 +59,20 @@ interface PurchaseReturnPortalProps {
   onReturnSuccess: (data: PrintPurchaseReturnData) => void;
 }
 
-export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: PurchaseReturnPortalProps) {
+export function PurchaseReturnPortal({
+  initialPoRef,
+  onReturnSuccess,
+}: PurchaseReturnPortalProps) {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
-  const activeBranchId = me.data?.branchId ? Number(me.data.branchId) : Number(branches.data?.[0]?.id || 1);
+  const activeBranchId = me.data?.branchId
+    ? Number(me.data.branchId)
+    : Number(branches.data?.[0]?.id || 1);
 
-  const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(
+    null,
+  );
   const [purchaseRef, setPurchaseRef] = useState(initialPoRef ?? "");
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
 
@@ -75,7 +84,30 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
   const [purchaseReason, setPurchaseReason] = useState("");
   const [purchaseBarcode, setPurchaseBarcode] = useState("");
   const [purchaseCart, setPurchaseCart] = useState<PurchaseCartItem[]>([]);
-  const [purchaseSettlement, setPurchaseSettlement] = useState<"CREDIT_OFFSET" | "CASH_IN" | "CARD_TRANSFER">("CREDIT_OFFSET");
+  const [purchaseSettlement, setPurchaseSettlement] = useState<
+    "CREDIT_OFFSET" | "CASH_IN" | "CARD_TRANSFER"
+  >("CREDIT_OFFSET");
+
+  const openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery(undefined, {
+    refetchInterval: 30_000,
+  });
+  const openDrawers = openDrawersQ.data ?? [];
+  const [selectedShiftId, setSelectedShiftId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (openDrawers.length > 0 && selectedShiftId == null) {
+      const mine = openDrawers.find((d) => d.isMine);
+      if (mine) {
+        setSelectedShiftId(mine.shiftId);
+      } else {
+        setSelectedShiftId(openDrawers[0].shiftId);
+      }
+    }
+  }, [openDrawers, selectedShiftId]);
+
+  const selectedDrawer = useMemo(() => {
+    return openDrawers.find((d) => d.shiftId === selectedShiftId) ?? null;
+  }, [openDrawers, selectedShiftId]);
 
   const purchaseBarcodeRef = useRef<HTMLInputElement>(null);
 
@@ -86,7 +118,10 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
   }, [selectedSupplierId, suppliersQuery.data]);
 
   const purchaseTotal = useMemo(() => {
-    return purchaseCart.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice || 0), 0);
+    return purchaseCart.reduce(
+      (sum, item) => sum + item.quantity * Number(item.unitPrice || 0),
+      0,
+    );
   }, [purchaseCart]);
 
   const purchaseTotalPieces = useMemo(() => {
@@ -97,7 +132,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
     function onKey(e: KeyboardEvent) {
       if (e.key !== "F2") return;
       e.preventDefault();
-      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      const el = document.querySelector<HTMLInputElement>(
+        "input[data-product-search='1']",
+      );
       el?.focus();
       el?.select();
     }
@@ -148,7 +185,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
     if (!raw) return;
     setPurchaseScanPending(true);
     try {
-      const res = await utils.returns.lookupItemForReturn.fetch({ barcode: raw });
+      const res = await utils.returns.lookupItemForReturn.fetch({
+        barcode: raw,
+      });
       if (!res) {
         notify.warn(`لم يتم العثور على منتج بالباركود: ${raw}`);
         return;
@@ -192,7 +231,8 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
     }
   };
 
-  const purchaseReturnMutation = trpc.returns.executePurchaseReturnCart.useMutation();
+  const purchaseReturnMutation =
+    trpc.returns.executePurchaseReturnCart.useMutation();
 
   const handleExecutePurchaseReturn = async () => {
     if (!selectedSupplierId || !selectedSupplier) {
@@ -208,12 +248,27 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
       return;
     }
 
+    if (purchaseSettlement === "CASH_IN") {
+      if (openDrawers.length === 0) {
+        notify.warn(
+          "لا توجد وردية كاشير مفتوحة حالياً في الفرع لتوريد النقد إليها — افتح وردية أولاً أو اختر طريقة أخرى",
+        );
+        return;
+      }
+      if (!selectedShiftId) {
+        notify.warn(
+          "يرجى اختيار درج النقدية / الوردية التي سيتم توريد النقد إليها",
+        );
+        return;
+      }
+    }
+
     const methodDesc =
       purchaseSettlement === "CREDIT_OFFSET"
         ? "معادلة ذمم (تقليل ذمة المورد علينا)"
         : purchaseSettlement === "CASH_IN"
-        ? "مردود نقدي (توريد نقد للدرج)"
-        : "حوالة بنكية / بطاقة";
+          ? `مردود نقدي وتوريد إلى درج [${selectedDrawer?.userName || "الكاشير"}]`
+          : "حوالة بنكية / بطاقة";
 
     const ok = await confirm({
       title: `تأكيد مرتجع الشراء للمورد: ${selectedSupplier.name}`,
@@ -243,6 +298,10 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
         settlement: {
           method: purchaseSettlement,
           totalAmount: String(purchaseTotal),
+          shiftId:
+            purchaseSettlement === "CASH_IN"
+              ? (selectedShiftId ?? undefined)
+              : undefined,
         },
         reason: purchaseReason.trim() || undefined,
       });
@@ -288,16 +347,23 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                   </label>
                   {selectedSupplier && (
                     <Badge
-                      variant={Number(selectedSupplier.currentBalance || 0) > 0 ? "destructive" : "secondary"}
+                      variant={
+                        Number(selectedSupplier.currentBalance || 0) > 0
+                          ? "destructive"
+                          : "secondary"
+                      }
                       className="font-mono text-[10px] px-1.5 py-0"
                     >
-                      رصيده: {fmt(String(selectedSupplier.currentBalance || "0"))} د.ع
+                      رصيده:{" "}
+                      {fmt(String(selectedSupplier.currentBalance || "0"))} د.ع
                     </Badge>
                   )}
                 </div>
                 <AppSelect
                   value={selectedSupplierId ? String(selectedSupplierId) : ""}
-                  onValueChange={(val) => setSelectedSupplierId(val ? Number(val) : null)}
+                  onValueChange={(val) =>
+                    setSelectedSupplierId(val ? Number(val) : null)
+                  }
                   placeholder="اختر المورد..."
                 >
                   <option value="">-- اختر المورد --</option>
@@ -346,7 +412,10 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                 <Package className="size-4 text-blue-600" aria-hidden />
                 <span>أصناف مرتجع المورد ({purchaseCart.length})</span>
                 {purchaseTotalPieces > 0 && (
-                  <Badge variant="secondary" className="text-[11px] font-normal px-2 py-0">
+                  <Badge
+                    variant="secondary"
+                    className="text-[11px] font-normal px-2 py-0"
+                  >
                     إجمالي القطع: {purchaseTotalPieces}
                   </Badge>
                 )}
@@ -371,7 +440,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
               branchId={activeBranchId}
               tier="RETAIL"
               onAddProduct={handleAddProductFromSearch}
-              onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+              onNotify={(msg, kind) =>
+                kind === "error" ? notify.err(msg) : notify.info(msg)
+              }
               placeholder="ابحث بالاسم أو SKU أو امسح الباركود لإدراج بضاعة المورد بسعر التكلفة... (F2)"
               compact={true}
               autoFocus={true}
@@ -384,7 +455,8 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                 <Building2 className="size-9 text-muted-foreground/40" />
                 <p className="font-semibold text-sm">سلة مرتجع الشراء فارغة</p>
                 <p className="text-xs max-w-sm">
-                  استخدم حقل البحث الموحد أعلاه بالاسم أو مسح الباركود لإدراج أصناف المورد بالتكلفة الأصلية
+                  استخدم حقل البحث الموحد أعلاه بالاسم أو مسح الباركود لإدراج
+                  أصناف المورد بالتكلفة الأصلية
                 </p>
               </div>
             ) : (
@@ -402,7 +474,8 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                     </thead>
                     <tbody className="divide-y divide-border">
                       {purchaseCart.map((item, idx) => {
-                        const subtotal = item.quantity * Number(item.unitPrice || 0);
+                        const subtotal =
+                          item.quantity * Number(item.unitPrice || 0);
                         const isRecentlyAdded = item.id === lastAddedId;
                         return (
                           <tr
@@ -411,17 +484,19 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                               "transition-colors duration-700",
                               isRecentlyAdded
                                 ? "bg-blue-500/20 dark:bg-blue-500/25 font-medium"
-                                : "hover:bg-muted/20"
+                                : "hover:bg-muted/20",
                             )}
                           >
                             <td className="p-2.5">
                               <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
                                 <span>{item.productName}</span>
-                                {item.unit && item.conversionFactor && item.conversionFactor > 1 && (
-                                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
-                                    {item.unit} ({item.conversionFactor} قطعة)
-                                  </span>
-                                )}
+                                {item.unit &&
+                                  item.conversionFactor &&
+                                  item.conversionFactor > 1 && (
+                                    <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                                      {item.unit} ({item.conversionFactor} قطعة)
+                                    </span>
+                                  )}
                               </div>
                               {item.barcode && (
                                 <span className="font-mono text-[10px] text-muted-foreground">
@@ -437,9 +512,15 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                                     setPurchaseCart((prev) =>
                                       prev.map((it, i) =>
                                         i === idx
-                                          ? { ...it, quantity: Math.max(1, it.quantity - 1) }
-                                          : it
-                                      )
+                                          ? {
+                                              ...it,
+                                              quantity: Math.max(
+                                                1,
+                                                it.quantity - 1,
+                                              ),
+                                            }
+                                          : it,
+                                      ),
                                     );
                                   }}
                                   className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground"
@@ -451,9 +532,14 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                                   min={1}
                                   value={item.quantity}
                                   onChange={(e) => {
-                                    const q = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                    const q = Math.max(
+                                      1,
+                                      parseInt(e.target.value, 10) || 1,
+                                    );
                                     setPurchaseCart((prev) =>
-                                      prev.map((it, i) => (i === idx ? { ...it, quantity: q } : it))
+                                      prev.map((it, i) =>
+                                        i === idx ? { ...it, quantity: q } : it,
+                                      ),
                                     );
                                   }}
                                   className="h-7 w-14 text-center text-xs font-bold p-0"
@@ -463,8 +549,10 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                                   onClick={() => {
                                     setPurchaseCart((prev) =>
                                       prev.map((it, i) =>
-                                        i === idx ? { ...it, quantity: it.quantity + 1 } : it
-                                      )
+                                        i === idx
+                                          ? { ...it, quantity: it.quantity + 1 }
+                                          : it,
+                                      ),
                                     );
                                   }}
                                   className="size-7 rounded border flex items-center justify-center hover:bg-muted text-muted-foreground"
@@ -478,7 +566,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                                 value={item.unitPrice}
                                 onChange={(p) => {
                                   setPurchaseCart((prev) =>
-                                    prev.map((it, i) => (i === idx ? { ...it, unitPrice: p } : it))
+                                    prev.map((it, i) =>
+                                      i === idx ? { ...it, unitPrice: p } : it,
+                                    ),
                                   );
                                 }}
                                 className="h-7 text-xs font-mono"
@@ -492,7 +582,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setPurchaseCart((prev) => prev.filter((_, i) => i !== idx));
+                                  setPurchaseCart((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  );
                                 }}
                                 className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
                               >
@@ -516,7 +608,10 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                   </button>
                   <div className="flex items-center gap-3">
                     <span className="text-muted-foreground">
-                      القطع: <strong className="text-foreground">{purchaseTotalPieces}</strong>
+                      القطع:{" "}
+                      <strong className="text-foreground">
+                        {purchaseTotalPieces}
+                      </strong>
                     </span>
                     <span>
                       المجموع:{" "}
@@ -544,9 +639,12 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
           <CardContent className="p-4 space-y-4">
             {/* كارت المبلغ الإجمالي */}
             <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-xl text-center space-y-1">
-              <span className="text-xs text-muted-foreground font-medium">إجمالي قيمة مردود المشتريات</span>
+              <span className="text-xs text-muted-foreground font-medium">
+                إجمالي قيمة مردود المشتريات
+              </span>
               <div className="text-2xl font-black text-blue-700 dark:text-blue-400 font-mono">
-                {fmt(String(purchaseTotal))} <span className="text-sm font-bold">د.ع</span>
+                {fmt(String(purchaseTotal))}{" "}
+                <span className="text-sm font-bold">د.ع</span>
               </div>
               <span className="text-[11px] text-muted-foreground">
                 الأصناف: {purchaseCart.length} ({purchaseTotalPieces} قطعة)
@@ -555,7 +653,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
 
             {/* طريقة التسوية */}
             <div className="space-y-2">
-              <label className="text-xs font-bold text-foreground">المعالجة المالية</label>
+              <label className="text-xs font-bold text-foreground">
+                المعالجة المالية
+              </label>
               <div className="space-y-2">
                 <button
                   type="button"
@@ -564,7 +664,7 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     purchaseSettlement === "CREDIT_OFFSET"
                       ? "border-blue-600 bg-blue-50 dark:bg-blue-950/30 font-bold text-blue-900 dark:text-blue-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -576,7 +676,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                       </div>
                     </div>
                   </div>
-                  {purchaseSettlement === "CREDIT_OFFSET" && <CheckCircle2 className="size-4 text-blue-600" />}
+                  {purchaseSettlement === "CREDIT_OFFSET" && (
+                    <CheckCircle2 className="size-4 text-blue-600" />
+                  )}
                 </button>
 
                 <button
@@ -586,7 +688,7 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     purchaseSettlement === "CASH_IN"
                       ? "border-blue-600 bg-blue-50 dark:bg-blue-950/30 font-bold text-blue-900 dark:text-blue-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -598,8 +700,102 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                       </div>
                     </div>
                   </div>
-                  {purchaseSettlement === "CASH_IN" && <CheckCircle2 className="size-4 text-blue-600" />}
+                  {purchaseSettlement === "CASH_IN" && (
+                    <CheckCircle2 className="size-4 text-blue-600" />
+                  )}
                 </button>
+
+                {/* قائمة أدراج النقدية المفتوحة للتوريد إليها */}
+                {purchaseSettlement === "CASH_IN" && (
+                  <div className="p-3 rounded-lg border border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-blue-950/20 space-y-2">
+                    <div className="flex items-center justify-between text-xs font-bold text-blue-900 dark:text-blue-300">
+                      <div className="flex items-center gap-1.5">
+                        <Coins className="size-3.5" />
+                        <span>اختيار درج الوردية المودع بها النقد:</span>
+                      </div>
+                      {openDrawers.length > 0 && (
+                        <span className="text-[10px] text-muted-foreground font-normal font-mono">
+                          {openDrawers.length} درج متاح
+                        </span>
+                      )}
+                    </div>
+
+                    {openDrawersQ.isLoading ? (
+                      <div className="text-[11px] text-muted-foreground p-2 text-center">
+                        جارٍ فحص أدراج النقدية المفتوحة...
+                      </div>
+                    ) : openDrawers.length === 0 ? (
+                      <div className="p-2.5 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-[11px] flex items-start gap-2">
+                        <AlertTriangle className="size-4 shrink-0 text-amber-600 mt-0.5" />
+                        <div>
+                          <div className="font-bold">
+                            لا توجد وردية كاشير مفتوحة حالياً
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            يجب فتح وردية في هذا الفرع لاستلام النقد في الدرج،
+                            أو اختيار طريقة تسوية أخرى كمعادلة الذمم.
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {openDrawers.map((dr) => {
+                          const isSelected = dr.shiftId === selectedShiftId;
+                          const shiftTypeLabel =
+                            dr.shiftType === "RETAIL"
+                              ? "تجزئة"
+                              : dr.shiftType === "RECEPTION"
+                                ? "استقبال"
+                                : dr.shiftType === "PRINT_SERVICES"
+                                  ? "طباعة"
+                                  : dr.shiftType;
+
+                          return (
+                            <button
+                              key={dr.shiftId}
+                              type="button"
+                              onClick={() => setSelectedShiftId(dr.shiftId)}
+                              className={cn(
+                                "w-full p-2 rounded-md border text-right transition-all flex flex-col gap-1 cursor-pointer text-xs",
+                                isSelected
+                                  ? "border-blue-600 bg-white dark:bg-card ring-1 ring-blue-500 font-bold shadow-xs"
+                                  : "border-border/70 hover:bg-background/80 bg-background/50 text-foreground",
+                              )}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5 font-bold">
+                                  <span>{dr.userName}</span>
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[9px] py-0 px-1 font-normal"
+                                  >
+                                    {shiftTypeLabel}
+                                  </Badge>
+                                  {dr.isMine && (
+                                    <Badge className="text-[9px] py-0 px-1 bg-blue-600 text-white hover:bg-blue-700 font-normal">
+                                      درجي
+                                    </Badge>
+                                  )}
+                                </div>
+                                {isSelected && (
+                                  <CheckCircle2 className="size-3.5 text-blue-600" />
+                                )}
+                              </div>
+                              <div className="flex items-center justify-between text-[11px] font-normal">
+                                <span className="text-muted-foreground">
+                                  النقد الحالي بالدرج:
+                                </span>
+                                <span className="font-mono font-bold text-foreground">
+                                  {fmt(dr.expectedCash)} د.ع
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <button
                   type="button"
@@ -608,7 +804,7 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                     "w-full p-3 rounded-lg border text-right transition-all flex items-center justify-between text-xs cursor-pointer",
                     purchaseSettlement === "CARD_TRANSFER"
                       ? "border-blue-600 bg-blue-50 dark:bg-blue-950/30 font-bold text-blue-900 dark:text-blue-200"
-                      : "border-border hover:bg-muted/50 text-foreground"
+                      : "border-border hover:bg-muted/50 text-foreground",
                   )}
                 >
                   <div className="flex items-center gap-2.5">
@@ -620,7 +816,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                       </div>
                     </div>
                   </div>
-                  {purchaseSettlement === "CARD_TRANSFER" && <CheckCircle2 className="size-4 text-blue-600" />}
+                  {purchaseSettlement === "CARD_TRANSFER" && (
+                    <CheckCircle2 className="size-4 text-blue-600" />
+                  )}
                 </button>
               </div>
             </div>
@@ -639,7 +837,9 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
             >
               <FileText className="size-5" />
               <span>
-                {purchaseReturnMutation.isPending ? "جاري تسجيل المرتجع..." : "تأكيد مرتجع الشراء وطباعة السند"}
+                {purchaseReturnMutation.isPending
+                  ? "جاري تسجيل المرتجع..."
+                  : "تأكيد مرتجع الشراء وطباعة السند"}
               </span>
             </Button>
           </CardContent>
