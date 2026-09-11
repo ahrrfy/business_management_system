@@ -988,7 +988,7 @@ export default function Purchases() {
                           key: "preturn",
                           kind: "reverse",
                           label: "مرتجع شراء",
-                          href: `/returns?tab=purchases&po=${encodeURIComponent(p.poNumber)}`,
+                          href: `/returns?portal=purchases&po=${encodeURIComponent(p.poNumber)}`,
                           // الإرجاع للمورد ممكن فقط بعد اعتماد الفاتورة وترحيلها.
                           hidden: p.status !== "RECEIVED",
                           gate: {

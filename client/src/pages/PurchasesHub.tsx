@@ -3,7 +3,6 @@ import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
 const Purchases = lazy(() => import("@/pages/Purchases"));
-const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
 const PurchaseRequisitions = lazy(() => import("@/pages/PurchaseRequisitions"));
 const PurchaseApprovals = lazy(() => import("@/pages/PurchaseApprovals"));
 const PurchaseReturnsGovernance = lazy(
@@ -58,17 +57,6 @@ const TABS: HubTab[] = [
       level: "FULL",
     },
     Component: PurchaseApprovals,
-  },
-  // purchaseReturns.list خادمياً = purchasesManagerProcedure(["manager", "purchasing"], "purchases", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
-  {
-    value: "returns",
-    label: "مرتجعات الشراء",
-    gate: {
-      roles: ["manager", "purchasing"],
-      module: "purchases",
-      level: "FULL",
-    },
-    Component: PurchaseReturns,
   },
   {
     value: "returns-governance",

@@ -19,7 +19,7 @@ const REPORT_VIEWER_GATE: NonNullable<HubTab["gate"]> = {
 const TABS: HubTab[] = [
   { value: "invoices", label: "فواتير المبيعات", Component: Invoices },
   // returns.list خادمياً = salesManagerProcedure(["manager"], "sales", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
-  { value: "returns", label: "مرتجعات البيع", gate: { roles: ["manager"], module: "sales", level: "FULL" }, Component: SalesReturns },
+  { value: "returns", label: "حوكمة واعتمادات المرتجعات", gate: { roles: ["manager"], module: "sales", level: "FULL" }, Component: SalesReturns },
   { value: "controls", label: "طلبات العمليات", gate: { module: "sales", level: "READ" }, Component: SalesControlApprovals },
   { value: "report", label: "تقرير المبيعات", gate: REPORT_VIEWER_GATE, Component: SalesReport },
 ];

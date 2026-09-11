@@ -8,7 +8,7 @@
  *  - طرق التسوية: معادلة ذمم (خصم من رصيد المورد)، مردود نقدي (توريد للصندوق)، أو تحويل بنكي
  *  - طباعة سند إرجاع مشتريات حراري 80مم/58مم
  */
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2,
   CheckCircle2,
@@ -49,14 +49,21 @@ export interface PurchaseCartItem {
 }
 
 interface PurchaseReturnPortalProps {
+  initialPoRef?: string;
   onReturnSuccess: (data: PrintPurchaseReturnData) => void;
 }
 
-export function PurchaseReturnPortal({ onReturnSuccess }: PurchaseReturnPortalProps) {
+export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: PurchaseReturnPortalProps) {
   const utils = trpc.useUtils();
 
   const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null);
-  const [purchaseRef, setPurchaseRef] = useState("");
+  const [purchaseRef, setPurchaseRef] = useState(initialPoRef ?? "");
+
+  useEffect(() => {
+    if (initialPoRef) {
+      setPurchaseRef(initialPoRef);
+    }
+  }, [initialPoRef]);
   const [purchaseReason, setPurchaseReason] = useState("");
   const [purchaseBarcode, setPurchaseBarcode] = useState("");
   const [purchaseCart, setPurchaseCart] = useState<PurchaseCartItem[]>([]);

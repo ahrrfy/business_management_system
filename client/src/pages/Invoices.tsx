@@ -38,7 +38,6 @@ import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeli
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 import { InvoiceDetailDrawer } from "@/components/invoice/InvoiceDetailDrawer";
-import { SalesReturnDrawer } from "@/components/invoice/SalesReturnDrawer";
 import { QuickSalesPaymentDialog } from "@/components/invoice/QuickSalesPaymentDialog";
 
 type Row = RouterOutputs["sales"]["list"][number];
@@ -258,7 +257,6 @@ export default function Invoices() {
   const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
   const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
   const [drawerInvoiceId, setDrawerInvoiceId] = useState<number | null>(null);
-  const [returnDrawerInvoiceId, setReturnDrawerInvoiceId] = useState<number | null>(null);
   const [payTarget, setPayTarget] = useState<Row | null>(null);
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
@@ -793,7 +791,7 @@ export default function Invoices() {
                   key: "return",
                   kind: "reverse",
                   label: "إرجاع فوري",
-                  onSelect: () => setReturnDrawerInvoiceId(r.id),
+                  href: `/returns?portal=sales&invoice=${encodeURIComponent(r.invoiceNumber)}`,
                   hidden: !returnable,
                   gate: { roles: ["cashier", "manager"], module: "sales", level: "FULL" },
                 },
@@ -1254,15 +1252,10 @@ export default function Invoices() {
         onClose={() => setDrawerInvoiceId(null)}
         onOpenReturn={(id) => {
           setDrawerInvoiceId(null);
-          setReturnDrawerInvoiceId(id);
+          navigate(`/returns?portal=sales&invoice=${id}`);
         }}
         onPrintThermal={(id) => void reprintThermal(id)}
         onPrintA4={(id) => void printA4(id)}
-      />
-      <SalesReturnDrawer
-        invoiceId={returnDrawerInvoiceId}
-        onClose={() => setReturnDrawerInvoiceId(null)}
-        onSuccess={() => void utils.sales.list.invalidate()}
       />
       {payTarget ? (
         <QuickSalesPaymentDialog

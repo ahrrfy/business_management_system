@@ -342,6 +342,8 @@ export default defineConfig({
       "client/src/components/delivery/companyStatementReconciliation.test.ts",
       // م٨ (٦/٩/٢٦) — تكافؤ نموذج القدرات مع بوّابات الوحدة (نقيّ، بلا قاعدة).
       "server/services/__tests__/capabilityGateEquivalence.test.ts",
+      // تدقيق ومحاكاة مسارات وسيناريوهات المرتجعات الموحدة والحوكمة (نقي، بلا قاعدة).
+      "server/services/__tests__/returnsAuditScenarios.test.ts",
     ],
   },
 });

@@ -7,11 +7,12 @@
  * ربط ذري متكامل نقدياً ومخزنياً ومحاسبياً مع الطباعة الحرارية.
  */
 import React, { useMemo, useState } from "react";
-import { useLocation, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   Building2,
   Clock,
   Printer,
+  ShieldCheck,
   ShoppingCart,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -57,8 +58,11 @@ export default function ReturnsHub() {
   const searchStr = useSearch();
 
   const urlParams = useMemo(() => new URLSearchParams(searchStr), [searchStr]);
-  const initialMode = (urlParams.get("portal") as ReturnPortalMode) || "sales";
+  const portalParam = urlParams.get("portal") || urlParams.get("tab");
+  const initialMode = (portalParam === "purchases" ? "purchases" : "sales") as ReturnPortalMode;
   const [portalMode, setPortalMode] = useState<ReturnPortalMode>(initialMode);
+  const initialInvoice = urlParams.get("invoice") || undefined;
+  const initialPo = urlParams.get("po") || undefined;
 
   const switchPortal = (mode: ReturnPortalMode) => {
     setPortalMode(mode);
@@ -135,6 +139,16 @@ export default function ReturnsHub() {
         description="منظومة متكاملة لمرتجعات المبيعات ومشتريات الموردين بربط ذري فوري ومخزني ومحاسبي وطباعة حرارية"
         backHref="/invoices"
         backLabel="المبيعات"
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href="/purchases?tab=returns-governance">
+              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 border-dashed">
+                <ShieldCheck className="size-3.5 text-primary" aria-hidden />
+                <span>حوكمة واعتمادات المرتجعات</span>
+              </Button>
+            </Link>
+          </div>
+        }
       />
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
@@ -220,9 +234,15 @@ export default function ReturnsHub() {
       {/* المنفذ النشط                                                         */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {portalMode === "sales" ? (
-        <SalesReturnPortal onReturnSuccess={handleSalesSuccess} />
+        <SalesReturnPortal
+          initialInvoiceNo={initialInvoice}
+          onReturnSuccess={handleSalesSuccess}
+        />
       ) : (
-        <PurchaseReturnPortal onReturnSuccess={handlePurchaseSuccess} />
+        <PurchaseReturnPortal
+          initialPoRef={initialPo}
+          onReturnSuccess={handlePurchaseSuccess}
+        />
       )}
 
       {/* ═════════════════════════════════════════════════════════════════════ */}

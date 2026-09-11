@@ -9,7 +9,7 @@
  *  - طرق الاسترداد المالي: نقدي (درج الكاشير)، بطاقة، أو رصيد متجر
  *  - طباعة حرارية فورية 80مم/58مم
  */
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -52,13 +52,14 @@ export interface SalesCartItem {
 }
 
 interface SalesReturnPortalProps {
+  initialInvoiceNo?: string;
   onReturnSuccess: (data: PrintSalesReturnData) => void;
 }
 
-export function SalesReturnPortal({ onReturnSuccess }: SalesReturnPortalProps) {
+export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
 
-  const [salesInvoiceNo, setSalesInvoiceNo] = useState("");
+  const [salesInvoiceNo, setSalesInvoiceNo] = useState(initialInvoiceNo ?? "");
   const [salesCustomerName, setSalesCustomerName] = useState("");
   const [salesCustomerPhone, setSalesCustomerPhone] = useState("");
   const [salesCustomerId, setSalesCustomerId] = useState<number | null>(null);
@@ -133,8 +134,8 @@ export function SalesReturnPortal({ onReturnSuccess }: SalesReturnPortalProps) {
   };
 
   const [invoiceLookupLoading, setInvoiceLookupLoading] = useState(false);
-  const handleLookupInvoice = async () => {
-    const raw = salesInvoiceNo.trim();
+  const handleLookupInvoice = async (targetNo?: string) => {
+    const raw = (targetNo ?? salesInvoiceNo).trim();
     if (!raw) return;
     setInvoiceLookupLoading(true);
     try {
@@ -197,6 +198,13 @@ export function SalesReturnPortal({ onReturnSuccess }: SalesReturnPortalProps) {
       setInvoiceLookupLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (initialInvoiceNo) {
+      setSalesInvoiceNo(initialInvoiceNo);
+      void handleLookupInvoice(initialInvoiceNo);
+    }
+  }, [initialInvoiceNo]);
 
   const salesReturnMutation = trpc.returns.executeSalesReturnCart.useMutation();
 
