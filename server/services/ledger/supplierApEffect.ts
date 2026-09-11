@@ -15,13 +15,20 @@
 // [[supplier-statement-grni-adjust-blindness-2026-09-11]].
 
 import { sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import {
+  GRNI_SUPPLIER_INVOICE_FORWARD_PREFIX,
+  GRNI_SUPPLIER_INVOICE_REVERSAL_PREFIX,
+} from "@shared/grniDedupe";
 
 type ApOp = SQL | SQLWrapper;
 
-/** بادئة `dedupeKey` لقيد فاتورة المورّد GRNI (يدائن AP، أثرٌ موجب). */
-export const GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP = "^GRNI:SUPPLIER_INVOICE:";
-/** بادئة `dedupeKey` لعكس فاتورة المورّد GRNI (يَدين AP، أثرٌ سالب). */
-export const GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP = "^GRNI:SUPPLIER_INVOICE_REVERSAL:";
+// أنماط REGEXP مشتقّة من بادئات dedupeKey المشتركة (المصدر الوحيد في @shared/grniDedupe).
+// نستعمل REGEXP لا LIKE كي يُعامَل `_` حرفاً حقيقياً لا محرفَ بدل. بادئاتنا بلا محارف regex خاصّة
+// عدا لا شيء (`:`/`_`/الحروف كلّها حرفيّة)، فالبادئة نفسها نمطٌ صالح مسبوقٌ بـ`^`.
+/** REGEXP لقيد فاتورة المورّد GRNI (يدائن AP، أثرٌ موجب). */
+export const GRNI_SUPPLIER_INVOICE_FORWARD_REGEXP = `^${GRNI_SUPPLIER_INVOICE_FORWARD_PREFIX}`;
+/** REGEXP لعكس فاتورة المورّد GRNI (يَدين AP، أثرٌ سالب). */
+export const GRNI_SUPPLIER_INVOICE_REVERSAL_REGEXP = `^${GRNI_SUPPLIER_INVOICE_REVERSAL_PREFIX}`;
 
 /** أعمدة القيد اللازمة — تُمرَّر إمّا كأعمدة Drizzle (`accountingEntries.amount`) أو كأجزاء
  *  SQL خام لسياق الاسم المستعار (`sql\`ae.amount\``)؛ كلاهما `SQLWrapper` صالحٌ في قالب sql. */

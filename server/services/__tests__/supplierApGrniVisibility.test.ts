@@ -14,6 +14,11 @@ import { reconcileSupplierBalances } from "../reconcileService";
 import { getSupplierStatement } from "../reports/apAging";
 import { getArApAgingDetail } from "../reportsAgingDetailService";
 import { getPurchasesReport } from "../reportsPurchasesService";
+import { postSupplierInvoiceGrniTx } from "../purchase/grniAccounting";
+import { adjustSupplierBalance } from "../ledgerService";
+import { withTx } from "../tx";
+import { money } from "../money";
+import { classifyGrniApEntry } from "@shared/grniDedupe";
 import { truncateTables } from "./__testUtils__";
 
 const creator = { userId: 1, branchId: 1, role: "admin" as const };
@@ -171,5 +176,66 @@ describe("رؤية ذمّة المورّد لأوامر الشراء الحدي�
     expect(row).toBeDefined();
     expect(row!.total).toBe("60.00");
     expect(row!.unpaid).toBe("60.00");
+  });
+
+  // مراجعة Codex على PR #1079 (P1): قيود GRNI عديمةُ الـPO (عكسُ فاتورة، وفاتورةٌ مطابَقة على عدّة
+  // أوامر) تحرّك الذمّة لكنّها لا تنتمي لصفّ أمر ⇒ يجب أن تظهر حركةً وتتّزن.
+  it("عكسُ فاتورة المورّد (قيد GRNI عديم الـPO) يُصفّر المتبقّي ويبقي reconcile نظيفاً", async () => {
+    const poId = await postModernCreditPurchase();
+    const [invoice] = await db().select().from(s.supplierInvoices).where(eq(s.supplierInvoices.supplierId, 1));
+    expect(invoice).toBeDefined();
+    // نُعيد إنتاج أثر العكس كما يفعله decideSupplierInvoiceApproval: قيد ADJUST عكسيّ بلا PO + خفض الرصيد.
+    await withTx(async (tx) => {
+      await postSupplierInvoiceGrniTx(tx, {
+        supplierInvoiceId: Number(invoice.id),
+        purchaseOrderId: null,
+        supplierId: 1,
+        branchId: 1,
+        invoiceAmount: money("60.00"),
+        taxAmount: money("0"),
+        grniAmount: money("60.00"),
+        actorId: 2,
+        reversal: true,
+      });
+      await adjustSupplierBalance(tx, 1, money("60.00").negated());
+    });
+
+    const [supplier] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1));
+    expect(supplier.currentBalance).toBe("0.00");
+    expect(await reconcileSupplierBalances()).toEqual([]);
+
+    const stmt = await getSupplierStatement(1, {});
+    expect(stmt!.summary.currentBalance).toBe("0.00");
+    expect(stmt!.summary.unpaid).toBe("0.00");
+    // العكس يظهر حركةً مدينة (يخفض ما ندين به) في دفتر الكشف.
+    const reversal = stmt!.payments.find((p) => classifyGrniApEntry(p.entryType, p.dedupeKey) === "REVERSAL");
+    expect(reversal).toBeDefined();
+    expect(reversal!.amount).toBe("60.00");
+    expect(poId).toBeGreaterThan(0);
+  });
+
+  it("فاتورة مورّد مجمّعة (GRNI عديم الـPO، +ذمّة) تظهر في الكشف وتُحتسب في الرصيد", async () => {
+    // فاتورةٌ مطابَقة على عدّة أوامر تُرحَّل بـpurchaseOrderId=null (supplierInvoices.ts) — لا صفّ أمرٍ لها.
+    await withTx(async (tx) => {
+      await postSupplierInvoiceGrniTx(tx, {
+        supplierInvoiceId: 9001,
+        purchaseOrderId: null,
+        supplierId: 1,
+        branchId: 1,
+        invoiceAmount: money("60.00"),
+        taxAmount: money("0"),
+        grniAmount: money("60.00"),
+        actorId: 2,
+      });
+      await adjustSupplierBalance(tx, 1, money("60.00"));
+    });
+
+    expect(await reconcileSupplierBalances()).toEqual([]);
+    const stmt = await getSupplierStatement(1, {});
+    expect(stmt!.summary.currentBalance).toBe("60.00");
+    expect(stmt!.summary.unpaid).toBe("60.00");
+    const forward = stmt!.payments.find((p) => classifyGrniApEntry(p.entryType, p.dedupeKey) === "FORWARD");
+    expect(forward).toBeDefined();
+    expect(forward!.amount).toBe("60.00");
   });
 });
