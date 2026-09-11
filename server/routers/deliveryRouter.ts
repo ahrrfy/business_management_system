@@ -58,6 +58,8 @@ import { listPartyBoardTx, suggestPartyForZoneTx } from "../services/delivery/bo
 import { previewDailySettlementTx, settleDailyTx } from "../services/delivery/dailySettlement";
 import { withTx } from "../services/tx";
 import { rolloutMode } from "../config/rolloutFlags";
+import { dispatchByBarcode } from "../services/delivery/barcodeDispatchService";
+import { returnByBarcode } from "../services/delivery/barcodeReturnService";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -579,6 +581,52 @@ export const deliveryRouter = router({
       return res;
     }),
 
+  /** إسناد سريع بالباركود (طلب متجر ORD-، أمر شغل WO-، فاتورة INV-) مع إرجاع بيانات الطباعة المباشرة */
+  dispatchByBarcode: storeFulfillProcedure
+    .input(
+      z.object({
+        barcode: z.string().trim().min(1).max(200),
+        partyId: z.number().int().positive(),
+        deliveryFee: moneyStr.nullish(),
+        assignedUserId: z.number().int().positive().nullish(),
+        externalTrackingRef: z.string().trim().max(100).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
+        partialDispatchConfirmed: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await retryOnDup(() =>
+        dispatchByBarcode(
+          {
+            barcode: input.barcode,
+            partyId: input.partyId,
+            deliveryFee: input.deliveryFee,
+            assignedUserId: input.assignedUserId,
+            externalTrackingRef: input.externalTrackingRef,
+            clientRequestId: input.clientRequestId,
+            partialDispatchConfirmed: input.partialDispatchConfirmed,
+          },
+          actorOf(ctx),
+        ),
+      );
+      await logAudit(ctx, {
+        action: "delivery.dispatchByBarcode",
+        entityType: "deliveryConsignment",
+        entityId: res.consignmentId,
+        newValue: {
+          barcode: input.barcode,
+          sourceType: res.sourceType,
+          sourceId: res.sourceId,
+          sourceNumber: res.sourceNumber,
+          partyId: input.partyId,
+          codAmount: res.codAmount,
+          deliveryFee: res.deliveryFee,
+        },
+      });
+      return res;
+    }),
+
   /** تحديث رقم التتبع / المرجع الخارجي لشركة التوصيل على إرسالية موجودة. */
   updateTrackingRef: deliveryCashierProcedure
     .input(
@@ -949,6 +997,42 @@ export const deliveryRouter = router({
         returnReason: input.returnReason ?? null,
       }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
+      return res;
+    }),
+
+  /** استلام مرتجع سريع بالباركود (CN-، أو الرقم الخارجي، أو INV-، أو ORD-، أو WO-) */
+  returnByBarcode: storeFulfillProcedure
+    .input(
+      z.object({
+        barcode: z.string().trim().min(1).max(200),
+        returnReason: z.string().trim().min(2).max(255).optional(),
+        refundShiftId: z.number().int().positive().optional(),
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() =>
+        returnByBarcode(
+          {
+            barcode: input.barcode,
+            returnReason: input.returnReason,
+            refundShiftId: input.refundShiftId,
+            clientRequestId: input.clientRequestId,
+          },
+          actorOf(ctx),
+        ),
+      );
+      await logAudit(ctx, {
+        action: "delivery.returnByBarcode",
+        entityType: "deliveryConsignment",
+        entityId: res.consignmentId,
+        newValue: {
+          barcode: input.barcode,
+          consignmentNumber: res.consignmentNumber,
+          invoiceId: res.invoiceId,
+          reversed: res.reversed,
+        },
+      });
       return res;
     }),
 

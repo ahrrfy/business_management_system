@@ -45,6 +45,8 @@ import { CompanyStatementBox } from "@/components/delivery/CompanyStatementBox";
 import { CollectConsignmentDialog } from "@/components/delivery/CollectConsignmentDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { StaffConfirmDialog, FailReasonDialog, DeclareReturnDialog, ManualProofDialog } from "@/components/delivery/TransitActionDialogs";
+import { BarcodeDispatchStream } from "@/components/delivery/BarcodeDispatchStream";
+import { BarcodeReturnStream } from "@/components/delivery/BarcodeReturnStream";
 import { confirm } from "@/lib/confirm";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -308,7 +310,11 @@ function DispatchTab() {
         cell: ({ row }) => (
           <>
             {row.original.title}
-            {row.original.hasDelivery && <Badge variant="secondary" className="ms-2">توصيل</Badge>}
+            {row.original.sourceType === "ONLINE_ORDER" ? (
+              <Badge variant="outline" className="ms-2 border-primary text-primary font-bold">متجر</Badge>
+            ) : (
+              row.original.hasDelivery && <Badge variant="secondary" className="ms-2">توصيل</Badge>
+            )}
           </>
         ),
       },
@@ -384,6 +390,8 @@ function DispatchTab() {
     [canDispatch],
   );
 
+  const dispatchByBarcodeMutation = trpc.delivery.dispatchByBarcode.useMutation();
+
   /*
    * ⚠️ **بعد `useMemo`** (٢/٩/٢٦): كان هذا الحارس فوقه، فانقلابُ `ready.isError` عند
    * فشل إعادة جلبٍ يُنقص عدد الخطّافات بين تصييرَين وReact يسقط بدل عرض رسالة الخطأ.
@@ -392,78 +400,108 @@ function DispatchTab() {
   if (ready.isError) return <ErrorState onRetry={() => ready.refetch()} />;
 
   return (
-    <div className="rounded-xl border bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-        <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
-        <div className="flex items-center gap-2">
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="رقم الطلب أو العميل…"
-            aria-label="بحث في الطلبات الجاهزة"
-            className="h-8 w-56"
-          />
-          <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
-            <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
-            تحديث
-          </Button>
+    <div className="space-y-4">
+      {canDispatch && (
+        <BarcodeDispatchStream
+          onDispatchSuccess={() => {
+            void ready.refetch();
+            void utils.delivery.readyForDispatch.invalidate();
+            void utils.delivery.inTransit.invalidate();
+            void utils.delivery.openConsignments.invalidate();
+          }}
+        />
+      )}
+      <div className="rounded-xl border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+          <span className="text-sm font-bold">الطلبات الجاهزة للتوصيل ({rows.length})</span>
+          <div className="flex items-center gap-2">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="رقم الطلب أو العميل…"
+              aria-label="بحث في الطلبات الجاهزة"
+              className="h-8 w-56"
+            />
+            <Button variant="outline" size="sm" onClick={() => void ready.refetch()} disabled={ready.isFetching}>
+              <RotateCcw aria-hidden className={cn("size-3.5", ready.isFetching && "animate-spin")} />
+              تحديث
+            </Button>
+          </div>
         </div>
+        {/*
+          * موجة الجداول (٢/٩/٢٦): قائمةُ عرضٍ خالصة ⇒ `DataTable`. البحث في ترويسة البطاقة أعلاه
+          * (يُغذّي `rows`) ⇒ `searchable={false}` مع `externalFiltersActive` كي لا يُعلن الجدولُ
+          * «لا صفوف بعد» بينما الصفوفُ محجوبةٌ بالبحث وحده.
+          */}
+        <DataTable<ReadyOrder>
+          columns={readyColumns}
+          data={rows}
+          searchable={false}
+          externalFiltersActive={query.trim() !== ""}
+          loading={ready.isLoading}
+          emptyState={<EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />}
+          emptyFilteredState={<EmptyState icon={Truck} title="لا نتائج" description="لا طلبات مطابقة لبحثك." />}
+        />
+        <DispatchDialog
+          order={target}
+          parties={parties.data ?? []}
+          pending={dispatch.isPending || dispatchByBarcodeMutation.isPending}
+          onClose={() => setTarget(null)}
+          onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId, externalTrackingRef }) => {
+            const ord = target!;
+            const party = (parties.data ?? []).find((p) => p.id === partyId);
+            const labelWin = preopenShippingLabelWindow();
+            try {
+              let r: { consignmentNumber: string; codAmount: string; invoiceNumber?: string | null; deliveryFee: string };
+              if (ord.sourceType === "ONLINE_ORDER") {
+                const res = await dispatchByBarcodeMutation.mutateAsync({
+                  barcode: ord.orderNumber,
+                  partyId,
+                  deliveryFee: fee || undefined,
+                  assignedUserId,
+                  externalTrackingRef: externalTrackingRef || undefined,
+                  clientRequestId: crypto.randomUUID(),
+                });
+                r = {
+                  consignmentNumber: res.consignmentNumber,
+                  codAmount: res.codAmount,
+                  invoiceNumber: res.invoiceNumber ?? res.sourceNumber,
+                  deliveryFee: res.deliveryFee,
+                };
+              } else {
+                r = await dispatch.mutateAsync({
+                  workOrderId: ord.id,
+                  partyId,
+                  deliveryFee: fee,
+                  recipientName: recipientName || undefined,
+                  recipientPhone: recipientPhone || undefined,
+                  deliveryAddress: ord.deliveryAddress ?? undefined,
+                  clientRequestId: crypto.randomUUID(),
+                  assignedUserId,
+                  externalTrackingRef: externalTrackingRef || undefined,
+                });
+              }
+              void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
+              printDeliverySlip(ord, party, { ...r, invoiceNumber: r.invoiceNumber ?? ord.orderNumber, externalTrackingRef: externalTrackingRef || undefined });
+              setDepartureData({
+                consignmentNumber: r.consignmentNumber,
+                orderNumber: ord.orderNumber,
+                title: ord.title,
+                customerName: recipientName || ord.customerName,
+                customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
+                deliveryAddress: ord.deliveryAddress,
+                courierName: party?.name ?? "المندوب",
+                courierPhone: party?.phone,
+                codAmount: r.codAmount,
+                deliveryFee: fee,
+                feeCollection: ord.deliveryFeeCollection ?? "COURIER",
+              });
+            } catch {
+              labelWin?.close();
+            }
+          }}
+        />
       </div>
-      {/*
-        * موجة الجداول (٢/٩/٢٦): قائمةُ عرضٍ خالصة ⇒ `DataTable`. البحث في ترويسة البطاقة أعلاه
-        * (يُغذّي `rows`) ⇒ `searchable={false}` مع `externalFiltersActive` كي لا يُعلن الجدولُ
-        * «لا صفوف بعد» بينما الصفوفُ محجوبةٌ بالبحث وحده.
-        */}
-      <DataTable<ReadyOrder>
-        columns={readyColumns}
-        data={rows}
-        searchable={false}
-        externalFiltersActive={query.trim() !== ""}
-        loading={ready.isLoading}
-        emptyState={<EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />}
-        emptyFilteredState={<EmptyState icon={Truck} title="لا نتائج" description="لا طلبات مطابقة لبحثك." />}
-      />
-      <DispatchDialog
-        order={target}
-        parties={parties.data ?? []}
-        pending={dispatch.isPending}
-        onClose={() => setTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId, externalTrackingRef }) => {
-          const ord = target!;
-          const party = (parties.data ?? []).find((p) => p.id === partyId);
-          const labelWin = preopenShippingLabelWindow();
-          try {
-            const r = await dispatch.mutateAsync({
-              workOrderId: ord.id,
-              partyId,
-              deliveryFee: fee,
-              recipientName: recipientName || undefined,
-              recipientPhone: recipientPhone || undefined,
-              deliveryAddress: ord.deliveryAddress ?? undefined,
-              clientRequestId: crypto.randomUUID(),
-              assignedUserId,
-              externalTrackingRef: externalTrackingRef || undefined,
-            });
-            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, externalTrackingRef: externalTrackingRef || undefined, into: labelWin });
-            printDeliverySlip(ord, party, { ...r, externalTrackingRef: externalTrackingRef || undefined });
-            setDepartureData({
-              consignmentNumber: r.consignmentNumber,
-              orderNumber: ord.orderNumber,
-              title: ord.title,
-              customerName: recipientName || ord.customerName,
-              customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
-              deliveryAddress: ord.deliveryAddress,
-              courierName: party?.name ?? "المندوب",
-              courierPhone: party?.phone,
-              codAmount: r.codAmount,
-              deliveryFee: fee,
-              feeCollection: ord.deliveryFeeCollection ?? "COURIER",
-            });
-          } catch {
-            labelWin?.close();
-          }
-        }}
-      />
       <DeliveryDepartureOverlay
         open={!!departureData}
         onClose={() => setDepartureData(null)}
@@ -942,7 +980,14 @@ function InTransitTab() {
   if (rows.isError) return <ErrorState onRetry={() => void rows.refetch()} />;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      {canFulfil && (
+        <BarcodeReturnStream
+          onReturnSuccess={() => {
+            invalidateAll();
+          }}
+        />
+      )}
       {/* ─── الشريط العلوي: عدّادات صادقة + تعرّض مضاعف + بحث + إجراءات جماعية ─── */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex h-10 items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="حالة الطرد">

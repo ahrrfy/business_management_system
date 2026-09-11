@@ -29,12 +29,15 @@ import { enqueueStorefrontOrderStatusPush } from "./storefrontPushCampaignServic
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
   partyId: number;
+  externalTrackingRef?: string | null;
 }
 
 export interface DispatchOnlineOrderResult {
   orderId: number;
   invoiceId: number;
   invoiceNumber: string;
+  consignmentId?: number;
+  consignmentNumber?: string;
   partyId: number;
   total: string;
   alreadyDispatched?: boolean;
@@ -221,7 +224,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       notifyResult = sale;
     }
 
-    await dispatchInvoiceInTx(tx, {
+    const dispatchRes = await dispatchInvoiceInTx(tx, {
       invoiceId,
       partyId: input.partyId,
       // الشحن المجاني = الزبون يدفع صفراً، لكن المندوب يستحق الأجرة الفعلية على المكتبة.
@@ -236,6 +239,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       longitude: cur.longitude ?? null,
       onlineOrderId: Number(cur.id),
       clientRequestId: `online-parcel:${cur.id}`,
+      externalTrackingRef: input.externalTrackingRef ?? null,
     }, actor);
     await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
     await enqueueStorefrontOrderStatusPush(tx, {
@@ -246,7 +250,15 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     });
     return {
       cancelled: false as const,
-      result: { orderId: Number(cur.id), invoiceId, invoiceNumber, partyId: input.partyId, total },
+      result: {
+        orderId: Number(cur.id),
+        invoiceId,
+        invoiceNumber,
+        consignmentId: dispatchRes.consignmentId,
+        consignmentNumber: dispatchRes.consignmentNumber,
+        partyId: input.partyId,
+        total,
+      },
     };
   });
 

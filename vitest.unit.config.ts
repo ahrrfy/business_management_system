@@ -344,6 +344,8 @@ export default defineConfig({
       "server/services/__tests__/capabilityGateEquivalence.test.ts",
       // تدقيق ومحاكاة مسارات وسيناريوهات المرتجعات الموحدة والحوكمة (نقي، بلا قاعدة).
       "server/services/__tests__/returnsAuditScenarios.test.ts",
+      // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
+      "shared/barcodeScanner.test.ts",
     ],
   },
 });
