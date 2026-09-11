@@ -48,6 +48,8 @@ export interface PurchaseCartItem {
   barcode?: string | null;
   quantity: number;
   unitPrice: string;
+  unit?: string;
+  conversionFactor?: number;
 }
 
 interface PurchaseReturnPortalProps {
@@ -91,8 +93,21 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
     return purchaseCart.reduce((sum, item) => sum + item.quantity, 0);
   }, [purchaseCart]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      el?.focus();
+      el?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const handleAddProductFromSearch = (line: InvoiceLine) => {
     const variantId = line.variantId;
+    const factor = Math.max(1, Number(line.conversionFactor) || 1);
     const costStr = String(line.price || line.costBase || "0");
 
     setPurchaseCart((prev) => {
@@ -117,6 +132,8 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
           barcode: line.barcode ?? null,
           quantity: line.qty || 1,
           unitPrice: costStr,
+          unit: line.unit || "قطعة",
+          conversionFactor: factor,
         },
         ...prev,
       ];
@@ -210,13 +227,19 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
       const res = await purchaseReturnMutation.mutateAsync({
         supplierId: selectedSupplierId,
         reference: purchaseRef.trim() || undefined,
-        items: purchaseCart.map((i) => ({
-          variantId: i.variantId,
-          productName: i.productName,
-          barcode: i.barcode,
-          quantity: i.quantity,
-          unitCost: i.unitPrice,
-        })),
+        items: purchaseCart.map((i) => {
+          const factor = Math.max(1, Number(i.conversionFactor) || 1);
+          const baseQty = Math.round(i.quantity * factor);
+          const totalLineCost = Number(i.unitPrice) * i.quantity;
+          const baseUnitCost = (totalLineCost / baseQty).toFixed(2);
+          return {
+            variantId: i.variantId,
+            productName: i.productName,
+            barcode: i.barcode,
+            quantity: baseQty,
+            unitCost: baseUnitCost,
+          };
+        }),
         settlement: {
           method: purchaseSettlement,
           totalAmount: String(purchaseTotal),
@@ -392,7 +415,14 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                             )}
                           >
                             <td className="p-2.5">
-                              <div className="font-bold text-foreground">{item.productName}</div>
+                              <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
+                                <span>{item.productName}</span>
+                                {item.unit && item.conversionFactor && item.conversionFactor > 1 && (
+                                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                                    {item.unit} ({item.conversionFactor} قطعة)
+                                  </span>
+                                )}
+                              </div>
                               {item.barcode && (
                                 <span className="font-mono text-[10px] text-muted-foreground">
                                   {item.barcode}

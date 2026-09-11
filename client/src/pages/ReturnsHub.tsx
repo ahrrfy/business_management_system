@@ -6,7 +6,7 @@
  *  ٢) مرتجعات الشراء (PurchaseReturnPortal): اختيار المورد ورصيده، الرقم المرجعي، سلة التكلفة، ومعادلة الذمة أو النقد
  * ربط ذري متكامل نقدياً ومخزنياً ومحاسبياً مع الطباعة الحرارية.
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   Building2,
@@ -69,6 +69,18 @@ export default function ReturnsHub() {
     p.set("portal", mode);
     setLocation(`/returns?${p.toString()}`);
   };
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      el?.focus();
+      el?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ═════════════════════════════════════════════════════════════════════════
   // العمليات الأخيرة والطباعة (Recent Operations & Printing)

@@ -51,6 +51,8 @@ export interface SalesCartItem {
   barcode?: string | null;
   quantity: number;
   unitPrice: string;
+  unit?: string;
+  conversionFactor?: number;
 }
 
 interface SalesReturnPortalProps {
@@ -94,8 +96,21 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
     return salesCart.reduce((sum, item) => sum + item.quantity, 0);
   }, [salesCart]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      el?.focus();
+      el?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const handleAddProductFromSearch = (line: InvoiceLine) => {
     const variantId = line.variantId;
+    const factor = Math.max(1, Number(line.conversionFactor) || 1);
     const priceStr = String(line.price || "0");
 
     setSalesCart((prev) => {
@@ -120,6 +135,8 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
           barcode: line.barcode ?? null,
           quantity: line.qty || 1,
           unitPrice: priceStr,
+          unit: line.unit || "قطعة",
+          conversionFactor: factor,
         },
         ...prev,
       ];
@@ -282,13 +299,19 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
           phone: salesCustomerPhone.trim() || undefined,
         },
         disposition: salesDisposition,
-        items: salesCart.map((i) => ({
-          variantId: i.variantId,
-          productName: i.productName,
-          barcode: i.barcode,
-          quantity: i.quantity,
-          unitPrice: i.unitPrice,
-        })),
+        items: salesCart.map((i) => {
+          const factor = Math.max(1, Number(i.conversionFactor) || 1);
+          const baseQty = Math.round(i.quantity * factor);
+          const totalLineAmount = Number(i.unitPrice) * i.quantity;
+          const baseUnitPrice = (totalLineAmount / baseQty).toFixed(2);
+          return {
+            variantId: i.variantId,
+            productName: i.productName,
+            barcode: i.barcode,
+            quantity: baseQty,
+            unitPrice: baseUnitPrice,
+          };
+        }),
         settlement: {
           method: salesRefundMethod,
           totalAmount: String(salesTotal),
@@ -564,7 +587,14 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                             )}
                           >
                             <td className="p-2.5">
-                              <div className="font-bold text-foreground">{item.productName}</div>
+                              <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
+                                <span>{item.productName}</span>
+                                {item.unit && item.conversionFactor && item.conversionFactor > 1 && (
+                                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                                    {item.unit} ({item.conversionFactor} قطعة)
+                                  </span>
+                                )}
+                              </div>
                               {item.barcode && (
                                 <span className="font-mono text-[10px] text-muted-foreground">
                                   {item.barcode}

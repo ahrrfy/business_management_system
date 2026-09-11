@@ -231,67 +231,102 @@ export function ProductSearchBar({
     options: { quietNotFound?: boolean } = {},
   ): Promise<ExactProductResolution> {
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      let row: Awaited<ReturnType<typeof utils.catalog.byBarcode.fetch>> | null = null;
+      try {
+        row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      } catch {
+        // إذا كان المستخدم لا يملك صلاحية كتالوج المنتجات أو حدث خطأ، ننتقل للفحص الاحتياطي
+        row = null;
+      }
+
       if (row) {
         if (isPurchase) {
           // byBarcode يثبت المالك الأساسي/البديل أولاً؛ ثم نأخذ بيانات التكلفة من بوابة الشراء
           // ونطابق productUnitId صراحةً، فلا يتحول المسح إلى اختيار أول نتيجة LIKE.
-          const purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
-          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
-          if (!purchaseRow) {
-            setScanStatus("error");
-            onScanStatus?.("error");
-            setTimeout(() => {
-              setScanStatus((curr) => (curr === "error" ? "idle" : curr));
-            }, 900);
-            onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
-            return "BLOCKED";
+          let purchaseRows: Awaited<ReturnType<typeof utils.catalog.forPurchase.fetch>> = [];
+          try {
+            purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
+          } catch {
+            purchaseRows = [];
           }
+          const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
+          if (purchaseRow) {
+            addRow({
+              productId: purchaseRow.productId,
+              variantId: purchaseRow.variantId,
+              productUnitId: purchaseRow.productUnitId,
+              name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
+              sku: purchaseRow.sku,
+              barcode: row.barcode ?? null,
+              unitName: purchaseRow.unitName,
+              conversionFactor: purchaseRow.conversionFactor,
+              stockBase: purchaseRow.stockBase ?? 0,
+              stockBranchId: branchId,
+              reservedBase: 0,
+              availableBase: purchaseRow.stockBase ?? 0,
+              isService: false,
+              allowBackorder: false,
+              price: estimatedPurchaseUnitPrice(
+                purchaseRow.costPriceBase,
+                purchaseRow.conversionFactor,
+                purchaseCurrency,
+                purchaseAgreedRate || null,
+              ),
+              costBase: purchaseRow.costPriceBase,
+            });
+            return "FOUND";
+          }
+        } else {
           addRow({
-            productId: purchaseRow.productId,
-            variantId: purchaseRow.variantId,
-            productUnitId: purchaseRow.productUnitId,
-            name: purchaseRow.productName + (purchaseRow.variantName ? ` — ${purchaseRow.variantName}` : ""),
-            sku: purchaseRow.sku,
+            productId: row.productId,
+            variantId: row.variantId,
+            productUnitId: row.productUnitId,
+            name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
+            sku: row.sku,
             barcode: row.barcode ?? null,
-            unitName: purchaseRow.unitName,
-            conversionFactor: purchaseRow.conversionFactor,
-            stockBase: purchaseRow.stockBase ?? 0,
-            stockBranchId: branchId,
-            reservedBase: 0,
-            availableBase: purchaseRow.stockBase ?? 0,
-            isService: false,
-            allowBackorder: false,
-            price: estimatedPurchaseUnitPrice(
-              purchaseRow.costPriceBase,
-              purchaseRow.conversionFactor,
-              purchaseCurrency,
-              purchaseAgreedRate || null,
-            ),
-            costBase: purchaseRow.costPriceBase,
+            unitName: row.unitName,
+            conversionFactor: row.conversionFactor,
+            stockBase: row.stockBase ?? 0,
+            stockBranchId: row.branchId,
+            reservedBase: row.reservedBase ?? 0,
+            availableBase: row.availableBase ?? (row.stockBase ?? 0),
+            isService: row.isService || row.isPrintService,
+            allowBackorder: row.allowBackorder === true,
+            price: row.price ?? "0",
+            costBase: "0",
           });
           return "FOUND";
         }
-        addRow({
-          productId: row.productId,
-          variantId: row.variantId,
-          productUnitId: row.productUnitId,
-          name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
-          sku: row.sku,
-          barcode: row.barcode ?? null,
-          unitName: row.unitName,
-          conversionFactor: row.conversionFactor,
-          stockBase: row.stockBase ?? 0,
-          stockBranchId: row.branchId,
-          reservedBase: row.reservedBase ?? 0,
-          availableBase: row.availableBase ?? (row.stockBase ?? 0),
-          isService: row.isService || row.isPrintService,
-          allowBackorder: row.allowBackorder === true,
-          price: row.price ?? "0",
-          costBase: "0",
-        });
-        return "FOUND";
       }
+
+      // خط دفاع/احتياط للمرتجعات: فحص الأصناف المتوقفة/غير النشطة أو عند غياب صلاحية الكتالوج المباشرة
+      try {
+        const retItem = await utils.returns.lookupItemForReturn.fetch({ barcode: code });
+        if (retItem) {
+          addRow({
+            productId: retItem.productId,
+            variantId: retItem.variantId,
+            productUnitId: Number(retItem.productUnitId || 0),
+            name: retItem.productName + (retItem.variantName ? ` — ${retItem.variantName}` : ""),
+            sku: retItem.sku || "",
+            barcode: retItem.barcode ?? code,
+            unitName: retItem.unitName || "قطعة",
+            conversionFactor: "1",
+            stockBase: retItem.currentStock ?? 0,
+            stockBranchId: branchId,
+            reservedBase: 0,
+            availableBase: retItem.currentStock ?? 0,
+            isService: false,
+            allowBackorder: true,
+            price: isPurchase ? (retItem.costPrice || "0") : (retItem.retailPrice || retItem.lowestHistoricalPrice || "0"),
+            costBase: retItem.costPrice || "0",
+          });
+          return "FOUND";
+        }
+      } catch {
+        // تجاهل الخطأ في الفحص الاحتياطي
+      }
+
       if (!options.quietNotFound) {
         setScanStatus("error");
         onScanStatus?.("error");
@@ -369,6 +404,7 @@ export function ProductSearchBar({
           </span>
           <Input
             ref={inputRef}
+            data-product-search="1"
             autoFocus={autoFocus}
             value={query}
             onChange={(e) => {
