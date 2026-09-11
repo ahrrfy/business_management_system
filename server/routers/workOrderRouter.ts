@@ -1091,6 +1091,7 @@ export const workOrderRouter = router({
           deliveryFeeCollection: workOrders.deliveryFeeCollection,
           branchId: workOrders.branchId,
           version: workOrders.version,
+          notes: workOrders.customizationText,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -1157,11 +1158,12 @@ export const workOrderRouter = router({
           customerId: invoices.customerId,
           customerName: sql<string | null>`COALESCE(${customers.name}, ${invoices.contactName})`,
           customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${customers.whatsapp}, ${invoices.contactPhone})`,
-          deliveryAddress: sql<string | null>`NULL`,
-          deliveryPhone: sql<string | null>`NULL`,
-          deliveryCost: sql<string | null>`'0.00'`,
+          deliveryAddress: customers.address,
+          deliveryPhone: sql<string | null>`COALESCE(${invoices.contactPhone}, ${customers.phone}, ${customers.whatsapp})`,
+          deliveryCost: sql<string | null>`COALESCE(${invoices.deliveryFee}, '0.00')`,
           deliveryFeeCollection: sql<string | null>`'COURIER'`,
           branchId: invoices.branchId,
+          notes: invoices.notes,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))

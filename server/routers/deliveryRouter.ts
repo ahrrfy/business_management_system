@@ -531,6 +531,8 @@ export const deliveryRouter = router({
         partialDispatchConfirmed: z.boolean().optional(),
         /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
         externalTrackingRef: z.string().trim().max(100).nullish(),
+        /** ملاحظات التوصيل (اختياري). */
+        notes: z.string().max(1000).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -564,6 +566,8 @@ export const deliveryRouter = router({
         partialDispatchConfirmed: z.boolean().optional(),
         /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
         externalTrackingRef: z.string().trim().max(100).nullish(),
+        /** ملاحظات التوصيل (اختياري). */
+        notes: z.string().max(1000).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -592,6 +596,8 @@ export const deliveryRouter = router({
         externalTrackingRef: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         partialDispatchConfirmed: z.boolean().optional(),
+        deliveryAddress: z.string().max(1000).nullish(),
+        notes: z.string().max(1000).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -606,6 +612,8 @@ export const deliveryRouter = router({
             externalTrackingRef: input.externalTrackingRef,
             clientRequestId: input.clientRequestId,
             partialDispatchConfirmed: input.partialDispatchConfirmed,
+            deliveryAddress: input.deliveryAddress,
+            notes: input.notes,
           },
           actorOf(ctx),
         ),

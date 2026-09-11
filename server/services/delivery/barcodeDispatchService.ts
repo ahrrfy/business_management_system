@@ -32,6 +32,8 @@ export interface BarcodeDispatchInput {
   assignedUserId?: number | null;
   clientRequestId?: string | null;
   partialDispatchConfirmed?: boolean;
+  deliveryAddress?: string | null;
+  notes?: string | null;
 }
 
 export interface BarcodeDispatchResult {
@@ -276,7 +278,8 @@ export async function dispatchByBarcode(
         deliveryFee: input.deliveryFee ?? workOrder.deliveryCost,
         recipientName: workOrder.customerName ?? undefined,
         recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? undefined,
-        deliveryAddress: workOrder.deliveryAddress ?? undefined,
+        deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? undefined,
+        notes: input.notes ?? undefined,
         assignedUserId: input.assignedUserId,
         clientRequestId: input.clientRequestId,
         externalTrackingRef: input.externalTrackingRef ?? null,
@@ -297,7 +300,7 @@ export async function dispatchByBarcode(
       deliveryFee: res.deliveryFee,
       recipientName: workOrder.customerName ?? null,
       recipientPhone: workOrder.deliveryPhone ?? workOrder.customerPhone ?? null,
-      deliveryAddress: workOrder.deliveryAddress ?? null,
+      deliveryAddress: input.deliveryAddress ?? workOrder.deliveryAddress ?? null,
       partyName: party.name,
     };
   }
@@ -313,8 +316,11 @@ export async function dispatchByBarcode(
       contactName: invoices.contactName,
       contactPhone: invoices.contactPhone,
       deliveryFee: invoices.deliveryFee,
+      customerAddress: customers.address,
+      invoiceNotes: invoices.notes,
     })
     .from(invoices)
+    .leftJoin(customers, eq(invoices.customerId, customers.id))
     .where(
       and(
         or(
@@ -374,7 +380,7 @@ export async function dispatchByBarcode(
           deliveryFee: String(createdCn?.deliveryFee ?? "0"),
           recipientName: createdCn?.recipientName ?? invoice.contactName ?? null,
           recipientPhone: createdCn?.recipientPhone ?? invoice.contactPhone ?? null,
-          deliveryAddress: createdCn?.deliveryAddress ?? null,
+          deliveryAddress: createdCn?.deliveryAddress ?? input.deliveryAddress ?? invoice.customerAddress ?? null,
           partyName: party.name,
         };
       }
@@ -387,6 +393,8 @@ export async function dispatchByBarcode(
         deliveryFee: input.deliveryFee ?? invoice.deliveryFee,
         recipientName: invoice.contactName ?? undefined,
         recipientPhone: invoice.contactPhone ?? undefined,
+        deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? undefined,
+        notes: input.notes ?? invoice.invoiceNotes ?? undefined,
         assignedUserId: input.assignedUserId,
         clientRequestId: input.clientRequestId,
         externalTrackingRef: input.externalTrackingRef ?? null,
@@ -407,7 +415,7 @@ export async function dispatchByBarcode(
       deliveryFee: res.deliveryFee,
       recipientName: invoice.contactName ?? null,
       recipientPhone: invoice.contactPhone ?? null,
-      deliveryAddress: null,
+      deliveryAddress: input.deliveryAddress ?? invoice.customerAddress ?? null,
       partyName: party.name,
     };
   }

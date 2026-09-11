@@ -60,6 +60,9 @@ export default function DeliveryWorkflowPage() {
   const [dispatchFee, setDispatchFee] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
   const [recipientName, setRecipientName] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [deliveryNotes, setDeliveryNotes] = useState("");
+  const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const [returnScanned, setReturnScanned] = useState<ScannedOrder | null>(null);
   const [returnBarcodeInput, setReturnBarcodeInput] = useState("");
   const [returnType, setReturnType] = useState<"FULL" | "PARTIAL">("FULL");
@@ -78,6 +81,13 @@ export default function DeliveryWorkflowPage() {
   const individualCouriers = allParties.filter((p) => p.partyType === "INDIVIDUAL");
   const companyCouriers = allParties.filter((p) => p.partyType === "COMPANY");
   const selectedPartyInfo = allParties.find((p) => p.id === selectedPartyId);
+
+  // اختيار أول جهة توصيل افتراضياً لتفادي تعطيل الماسح أو تعليق النموذج
+  useEffect(() => {
+    if (!selectedPartyId && allParties.length > 0) {
+      setSelectedPartyId(allParties[0]?.id ?? null);
+    }
+  }, [allParties, selectedPartyId]);
 
   const lookupWorkOrder = useCallback(async (raw: string, target: "dispatch" | "return") => {
     const r = parseScan(raw);
@@ -109,6 +119,9 @@ export default function DeliveryWorkflowPage() {
         setDispatchScanned(order); setDispatchBarcodeInput("");
         setRecipientPhone(wo.deliveryPhone ?? wo.customerPhone ?? "");
         setRecipientName(wo.customerName ?? ""); setDispatchFee(wo.deliveryCost ?? "");
+        setDeliveryAddress(wo.deliveryAddress ?? "");
+        setDeliveryNotes((wo as { notes?: string | null }).notes ?? "");
+        setExternalTrackingRef("");
       } else {
         if (order.status === "RETURNED") notify.warn(`الفاتورة #${order.orderNumber} مسترجعة بالكامل مسبقاً`);
         else if (order.status === "CANCELLED") notify.warn(`الطلب / الفاتورة #${order.orderNumber} ملغاة مسبقاً`);
@@ -118,7 +131,7 @@ export default function DeliveryWorkflowPage() {
     } catch (e) { notify.err(e, "تعذّر جلب الطلب"); }
   }, [utils]);
 
-  const dispatchEnabled = activeSection === "dispatch" && !!selectedPartyId && !dispatchScanned;
+  const dispatchEnabled = activeSection === "dispatch" && !dispatchScanned;
   const returnEnabled = activeSection === "return" && !returnScanned;
 
   useBarcodeScanner(
@@ -142,6 +155,7 @@ export default function DeliveryWorkflowPage() {
     notify.ok((kind === "invoice" ? "أُسندت الفاتورة #" : "أُسند #") + (dispatchScanned?.orderNumber ?? ""), "إرسالية " + data.consignmentNumber);
     const chosenParty = (partiesQ.data ?? []).find((p) => p.id === selectedPartyId);
     const cod = round2(D(dispatchScanned?.salePrice ?? "0").minus(D(dispatchScanned?.deposit ?? "0"))).toFixed(2);
+    const finalAddress = deliveryAddress.trim() || dispatchScanned?.deliveryAddress || "غير محدد";
     const slip: DispatchSlipData = {
       consignmentNumber: data.consignmentNumber,
       orderNumber: dispatchScanned?.orderNumber ?? "",
@@ -149,7 +163,7 @@ export default function DeliveryWorkflowPage() {
       partyName: chosenParty?.name ?? "المندوب",
       recipientName: recipientName || dispatchScanned?.customerName || "",
       recipientPhone: recipientPhone || dispatchScanned?.deliveryPhone || dispatchScanned?.customerPhone || "",
-      deliveryAddress: dispatchScanned?.deliveryAddress || "غير محدد",
+      deliveryAddress: finalAddress,
       salePrice: dispatchScanned?.salePrice ?? "0",
       deposit: dispatchScanned?.deposit ?? "0",
       codAmount: cod,
@@ -162,6 +176,7 @@ export default function DeliveryWorkflowPage() {
     printDeliveryDispatchSlip(slip);
     setDispatchScanned(null); setDispatchBarcodeInput("");
     setRecipientPhone(""); setRecipientName(""); setDispatchFee("");
+    setDeliveryAddress(""); setDeliveryNotes(""); setExternalTrackingRef("");
     void utils.workOrders.invalidate(); void utils.delivery.invalidate();
   }
 
@@ -185,7 +200,11 @@ export default function DeliveryWorkflowPage() {
   });
 
   async function handleDispatch() {
-    if (!dispatchScanned || !selectedPartyId) return;
+    if (!dispatchScanned) return;
+    if (!selectedPartyId) {
+      notify.err("يرجى اختيار جهة التوصيل أولاً");
+      return;
+    }
     if (dispatchScanned.activeConsignment) {
       notify.err(
         `لا يمكن إسناد الطلب — مسند حالياً لـ ${dispatchScanned.activeConsignment.partyName ?? "جهة أخرى"} بالإرسالية ${dispatchScanned.activeConsignment.consignmentNumber}`,
@@ -195,24 +214,39 @@ export default function DeliveryWorkflowPage() {
     }
     const fee = D(dispatchFee || "0");
     const docLabel = dispatchScanned.kind === "invoice" ? "الفاتورة" : "الطلب";
+    const finalAddress = deliveryAddress.trim() || dispatchScanned.deliveryAddress || "غير محدد";
     const ok = await confirm({
       title: "تأكيد الإسناد",
-      description: `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}\nالعميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}\nالعنوان: ${dispatchScanned.deliveryAddress ?? "غير محدد"}\n` +
-        (fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة"),
+      description: `${docLabel}: #${dispatchScanned.orderNumber} — ${dispatchScanned.title ?? ""}\nالعميل: ${dispatchScanned.customerName ?? ""} ${dispatchScanned.customerPhone ?? ""}\nالعنوان: ${finalAddress}\n` +
+        (fee.gt(0) ? `أجرة التوصيل: ${fmt(fee.toFixed(2))} د.ع (على الجهة)` : "بدون أجرة") +
+        (deliveryNotes.trim() ? `\nالملاحظات: ${deliveryNotes.trim()}` : "") +
+        (externalTrackingRef.trim() ? `\nرقم التتبع: ${externalTrackingRef.trim()}` : ""),
       confirmText: "أسند للمندوب",
     });
     if (!ok) return;
 
     if (dispatchScanned.kind === "invoice") {
       dispatchInvoiceMut.mutate({
-        invoiceId: dispatchScanned.id, partyId: selectedPartyId, deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
-        recipientName: recipientName || undefined, recipientPhone: recipientPhone || undefined, deliveryAddress: dispatchScanned.deliveryAddress || undefined,
+        invoiceId: dispatchScanned.id,
+        partyId: selectedPartyId,
+        deliveryFee: fee.gt(0) ? fee.toFixed(2) : undefined,
+        recipientName: recipientName.trim() || undefined,
+        recipientPhone: recipientPhone.trim() || undefined,
+        deliveryAddress: deliveryAddress.trim() || undefined,
+        notes: deliveryNotes.trim() || undefined,
+        externalTrackingRef: externalTrackingRef.trim() || undefined,
         clientRequestId: crypto.randomUUID(),
       });
     } else {
       dispatchMut.mutate({
-        workOrderId: dispatchScanned.id, partyId: selectedPartyId, deliveryFee: fee.toFixed(2),
-        recipientName: recipientName || undefined, recipientPhone: recipientPhone || undefined,
+        workOrderId: dispatchScanned.id,
+        partyId: selectedPartyId,
+        deliveryFee: fee.toFixed(2),
+        recipientName: recipientName.trim() || undefined,
+        recipientPhone: recipientPhone.trim() || undefined,
+        deliveryAddress: deliveryAddress.trim() || undefined,
+        notes: deliveryNotes.trim() || undefined,
+        externalTrackingRef: externalTrackingRef.trim() || undefined,
         clientRequestId: crypto.randomUUID(),
       });
     }
@@ -400,14 +434,8 @@ export default function DeliveryWorkflowPage() {
                       </div>
                     </div>
                   </div>
-                  {dispatchScanned.deliveryAddress && (
-                    <div className="flex items-start gap-2 rounded-xl border bg-background p-3">
-                      <Truck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                      <div><p className="text-xs text-muted-foreground">عنوان التوصيل</p><p className="font-bold">{dispatchScanned.deliveryAddress}</p></div>
-                    </div>
-                  )}
-                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3 space-y-3">
-                    <p className="text-xs font-extrabold text-primary">بيانات الإسناد</p>
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-3">
+                    <p className="text-xs font-extrabold text-primary">بيانات الإسناد والتوصيل</p>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="mb-1 block text-xs font-bold">هاتف المستلم</label>
@@ -418,6 +446,45 @@ export default function DeliveryWorkflowPage() {
                         <MoneyInput value={dispatchFee} onChange={setDispatchFee} placeholder="0" className="h-10" ariaLabel="أجرة التوصيل" />
                       </div>
                     </div>
+                    <div>
+                      <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                        <Truck aria-hidden className="size-3.5 text-muted-foreground" />
+                        عنوان التوصيل
+                      </label>
+                      <Input
+                        value={deliveryAddress}
+                        onChange={(e) => setDeliveryAddress(e.target.value)}
+                        placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة..."
+                        className="h-10 bg-background"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                        <FileText aria-hidden className="size-3.5 text-muted-foreground" />
+                        ملاحظات التوصيل
+                      </label>
+                      <Input
+                        value={deliveryNotes}
+                        onChange={(e) => setDeliveryNotes(e.target.value)}
+                        placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل..."
+                        className="h-10 bg-background"
+                      />
+                    </div>
+                    {selectedPartyInfo?.partyType === "COMPANY" && (
+                      <div>
+                        <label className="mb-1 flex items-center gap-1 text-xs font-bold">
+                          <Package aria-hidden className="size-3.5 text-muted-foreground" />
+                          رقم تتبع / بوليصة الشركة الخارجية (اختياري)
+                        </label>
+                        <Input
+                          value={externalTrackingRef}
+                          onChange={(e) => setExternalTrackingRef(e.target.value)}
+                          placeholder="رقم البوليصة أو شحنة الشركة..."
+                          className="h-10 bg-background font-mono text-xs"
+                          dir="ltr"
+                        />
+                      </div>
+                    )}
                   </div>
                   <Button className="w-full py-6 text-base font-extrabold" onClick={() => void handleDispatch()} disabled={dispatchMut.isPending || !!dispatchScanned.activeConsignment}>
                     {dispatchScanned.activeConsignment

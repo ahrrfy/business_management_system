@@ -52,6 +52,8 @@ export interface DispatchInput {
   partialDispatchConfirmed?: boolean;
   /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
   externalTrackingRef?: string | null;
+  /** ملاحظات التوصيل للمندوب أو شركة الشحن. */
+  notes?: string | null;
 }
 
 function reopenedConsignmentSourceId(wo: { id: number | string; version: number | string }): number {
@@ -465,6 +467,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         recipientName: input.recipientName ?? null,
         recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
         deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+        notes: input.notes ?? (reusableCn.notes ?? null),
         feeCollection,
         feeSettledAt: null,
         parcelStatus: "ASSIGNED",
@@ -511,6 +514,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       // أدناه؛ يمنع مندوباً يُرسَل بلا وسيلة اتصال بالزبون حين لا يُدخِل الموظّف رقماً صريحاً هنا.
       recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+      notes: input.notes ?? null,
       feeCollection,
       feeSettledAt: null,
       parcelStatus: "ASSIGNED",
