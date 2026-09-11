@@ -149,10 +149,12 @@ export async function pairPrinter(role: PrinterRole = "receipt"): Promise<boolea
 
 /**
  * إعادة ربط صامتة بلا نافذة اختيار:
- * - متى وُجد جهاز محفوظ للدور ⇒ **يُلزَم مطابقته** (للدورين) لئلا يخطف دورٌ طابعة الآخر.
- * - بلا محفوظ: "receipt" يربط أوّل جهاز صالح (سلوك أوّل ربط)؛ "label" لا يربط شيئاً.
- * لا نطمس المعرّف المحفوظ هنا (الحفظ في pairPrinter فقط) لئلا ينحرف الافتراضي.
- * يُرجِع false بهدوء إن لا جهاز مناسب — لا يرمي.
+ * - متى وُجد جهاز محفوظ للدور: يُفحص أولاً لمطابقته وربطه فوراً.
+ * - بالنسبة لدور الإيصالات ("receipt"): إن لم يتطابق الجهاز المحفوظ (مثلاً تم استبدال الطابعة بموديل حراري آخر
+ *   أو توصيل طابعة حرارية جديدة مثل POS-80 / Rongta / Xprinter / Epson عبر Zadig WinUSB):
+ *   يتم فحص باقي الأجهزة المصرّح بها في المتصفّح (التي لم تُحجز لدور الملصقات) وربط أول جهاز صالح وتثبيته.
+ * - بالنسبة لدور الملصقات ("label"): يُلزم مطابقة الجهاز المحفوظ لئلا يطبع ملصقات 50مم على ورق إيصالات 80مم.
+ * يُرجِع false بهدوء إن لم يتوفر جهاز مناسب — لا يرمي.
  */
 export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
   if (!isWebUsbSupported()) return false;
@@ -167,31 +169,44 @@ export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promis
   if (!devices.length) return false;
 
   const remembered = readRemembered(role);
-  // إن وُجد محفوظ نُلزم المطابقة؛ والملصقات لا تربط جهازاً عشوائياً أبداً.
-  const requireRemembered = role === "label" || !!remembered;
 
-  // رتّب الأجهزة: المطابق للمحفوظ أولاً.
+  // ١) المحاولة الأولى: رتّب الأجهزة بحيث يُفحص المطابق للمحفوظ أولاً
   if (remembered) {
     devices.sort((a, b) => {
       const am = a.vendorId === remembered.vendorId && a.productId === remembered.productId ? 0 : 1;
       const bm = b.vendorId === remembered.vendorId && b.productId === remembered.productId ? 0 : 1;
       return am - bm;
     });
-  }
 
-  for (const dev of devices) {
-    const matches = !!remembered && dev.vendorId === remembered.vendorId && dev.productId === remembered.productId;
-    if (requireRemembered && !matches) continue; // لا تربط إلا المطابق
-    if (claimedByOtherRole(role, dev)) continue; // الجهاز مأخوذ للدور الآخر
-    try {
-      if (await claimDevice(role, dev)) {
-        if (!remembered) rememberDevice(role, dev); // ثبّت فقط عند أوّل ربط — لا نطمس المحفوظ
-        return true;
+    for (const dev of devices) {
+      const matches = dev.vendorId === remembered.vendorId && dev.productId === remembered.productId;
+      if (!matches) continue;
+      if (claimedByOtherRole(role, dev)) continue;
+      try {
+        if (await claimDevice(role, dev)) {
+          return true;
+        }
+      } catch {
+        /* جرّب الجهاز التالي */
       }
-    } catch {
-      /* جرّب الجهاز التالي */
     }
   }
+
+  // ٢) المحاولة الثانية: لدور الإيصالات، إن لم يتطابق المحفوظ (أو لم يكن هناك محفوظ)، اربط أول جهاز صالح غير محجوز
+  if (role === "receipt") {
+    for (const dev of devices) {
+      if (claimedByOtherRole(role, dev)) continue;
+      try {
+        if (await claimDevice(role, dev)) {
+          rememberDevice(role, dev); // ثبّت كطابعة إيصالات افتراضية للمستقبل
+          return true;
+        }
+      } catch {
+        /* جرّب الجهاز التالي */
+      }
+    }
+  }
+
   return false;
 }
 
