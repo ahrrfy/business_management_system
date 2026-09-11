@@ -1,0 +1,13 @@
+{
+  "orphans": [
+    "PurchaseReturnNew.tsx",
+    "PurchaseReturnsGovernance.tsx",
+    "SalesReturnNew.tsx",
+    "WorkOrderNew.tsx"
+  ],
+  "deadAppImports": [],
+  "misplacedComponents": [
+    "_VoucherFormShared.tsx",
+    "expenseUiPolicy.ts"
+  ]
+}

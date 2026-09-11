@@ -6,14 +6,17 @@
  *  ٢) مرتجعات الشراء (PurchaseReturnPortal): اختيار المورد ورصيده، الرقم المرجعي، سلة التكلفة، ومعادلة الذمة أو النقد
  * ربط ذري متكامل نقدياً ومخزنياً ومحاسبياً مع الطباعة الحرارية.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   Building2,
   Clock,
+  History,
   Printer,
+  RotateCcw,
   ShoppingCart,
 } from "lucide-react";
+import { LoadingState } from "@/components/PageState";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,6 +39,9 @@ import {
 } from "@/components/returns/printThermalReturnReceipt";
 import { SalesReturnPortal } from "@/components/returns/SalesReturnPortal";
 import { PurchaseReturnPortal } from "@/components/returns/PurchaseReturnPortal";
+
+const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
+const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
 
 export type ReturnPortalMode = "sales" | "purchases";
 
@@ -63,10 +69,26 @@ export default function ReturnsHub() {
   const initialInvoice = urlParams.get("invoice") || undefined;
   const initialPo = urlParams.get("po") || undefined;
 
+  const viewParam = urlParams.get("view");
+  const [subTab, setSubTab] = useState<"create" | "history">(
+    viewParam === "history" || viewParam === "ledger" ? "history" : "create"
+  );
+
   const switchPortal = (mode: ReturnPortalMode) => {
     setPortalMode(mode);
     const p = new URLSearchParams(searchStr);
     p.set("portal", mode);
+    setLocation(`/returns?${p.toString()}`);
+  };
+
+  const switchSubTab = (tab: "create" | "history") => {
+    setSubTab(tab);
+    const p = new URLSearchParams(searchStr);
+    if (tab === "history") {
+      p.set("view", "history");
+    } else {
+      p.delete("view");
+    }
     setLocation(`/returns?${p.toString()}`);
   };
 
@@ -232,24 +254,68 @@ export default function ReturnsHub() {
       </div>
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      {/* المنفذ النشط                                                         */}
+      {/* التبديل بين منفذ الإنشاء المباشر والسجل التاريخي الشامل               */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      {portalMode === "sales" ? (
-        <SalesReturnPortal
-          initialInvoiceNo={initialInvoice}
-          onReturnSuccess={handleSalesSuccess}
-        />
+      <div className="flex items-center justify-between border-b pb-2 pt-1">
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant={subTab === "create" ? "default" : "outline"}
+            size="sm"
+            onClick={() => switchSubTab("create")}
+            className="text-xs h-8 gap-1.5"
+          >
+            <RotateCcw className="size-3.5" />
+            <span>بوابة الإرجاع والتسوية الفورية</span>
+          </Button>
+          <Button
+            type="button"
+            variant={subTab === "history" ? "default" : "outline"}
+            size="sm"
+            onClick={() => switchSubTab("history")}
+            className="text-xs h-8 gap-1.5"
+          >
+            <History className="size-3.5" />
+            <span>
+              {portalMode === "sales"
+                ? "سجل وأرشيف مرتجعات المبيعات"
+                : "سجل وأرشيف مرتجعات المشتريات"}
+            </span>
+          </Button>
+        </div>
+      </div>
+
+      {/* ═════════════════════════════════════════════════════════════════════ */}
+      {/* عرض المنفذ النشط أو السجل التاريخي                                   */}
+      {/* ═════════════════════════════════════════════════════════════════════ */}
+      {subTab === "create" ? (
+        <>
+          {portalMode === "sales" ? (
+            <SalesReturnPortal
+              initialInvoiceNo={initialInvoice}
+              onReturnSuccess={handleSalesSuccess}
+            />
+          ) : (
+            <PurchaseReturnPortal
+              initialPoRef={initialPo}
+              onReturnSuccess={handlePurchaseSuccess}
+            />
+          )}
+        </>
       ) : (
-        <PurchaseReturnPortal
-          initialPoRef={initialPo}
-          onReturnSuccess={handlePurchaseSuccess}
-        />
+        <Suspense fallback={<LoadingState />}>
+          {portalMode === "sales" ? (
+            <SalesReturns embedded />
+          ) : (
+            <PurchaseReturns embedded />
+          )}
+        </Suspense>
       )}
 
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* قسم العمليات المنجزة حديثاً وإعادة الطباعة الحرارية                   */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      {recentOps.length > 0 && (
+      {subTab === "create" && recentOps.length > 0 && (
         <Card className="shadow-xs border-muted mt-6">
           <CardHeader className="p-4 pb-2">
             <CardTitle className="text-sm font-bold flex items-center justify-between">
