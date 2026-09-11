@@ -7,7 +7,7 @@
  *   (sale-side only). On purchase side, we fall back to substring match.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Camera, Search, X } from "lucide-react";
+import { Camera, CheckCircle2, AlertCircle, Search, X } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -19,6 +19,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { estimatedPurchaseUnitPrice } from "./purchasePrice";
 import { resolveExactBeforeFuzzy, type ExactProductResolution } from "./productSearchResolution";
+import { playReadyBeep } from "@/lib/notifyBeep";
 
 export interface ProductSearchBarProps {
   invoiceType: InvoiceType;
@@ -35,6 +36,12 @@ export interface ProductSearchBarProps {
    */
   purchaseCurrency?: Currency;
   purchaseAgreedRate?: string;
+  placeholder?: string;
+  compact?: boolean;
+  className?: string;
+  inputClassName?: string;
+  autoFocus?: boolean;
+  onScanStatus?: (status: "success" | "error") => void;
 }
 
 interface NormalizedRow {
@@ -67,7 +74,21 @@ function stockBadgeColor(stock: number): string {
   return "text-muted-foreground";
 }
 
-export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify, purchaseCurrency = "IQD", purchaseAgreedRate = "" }: ProductSearchBarProps) {
+export function ProductSearchBar({
+  invoiceType,
+  branchId,
+  tier,
+  onAddProduct,
+  onNotify,
+  purchaseCurrency = "IQD",
+  purchaseAgreedRate = "",
+  placeholder,
+  compact = false,
+  className,
+  inputClassName,
+  autoFocus = false,
+  onScanStatus,
+}: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const branchesQ = trpc.branches.list.useQuery();
   const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -78,6 +99,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const [query, setQuery] = useState("");
   const [showDrop, setShowDrop] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(-1);
+  const [scanStatus, setScanStatus] = useState<"idle" | "success" | "error">("idle");
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -193,6 +215,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       note: "",
     };
     onAddProduct(line);
+    setScanStatus("success");
+    playReadyBeep();
+    onScanStatus?.("success");
+    setTimeout(() => {
+      setScanStatus((curr) => (curr === "success" ? "idle" : curr));
+    }, 900);
     setQuery("");
     setShowDrop(false);
     inputRef.current?.focus();
@@ -211,6 +239,11 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           const purchaseRows = await utils.catalog.forPurchase.fetch({ branchId, query: code, limit: 50 });
           const purchaseRow = purchaseRows.find((candidate) => candidate.productUnitId === row.productUnitId);
           if (!purchaseRow) {
+            setScanStatus("error");
+            onScanStatus?.("error");
+            setTimeout(() => {
+              setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+            }, 900);
             onNotify?.(`الباركود ليس لوحدة مؤهلة للشراء: ${code}`, "error");
             return "BLOCKED";
           }
@@ -259,9 +292,21 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         });
         return "FOUND";
       }
-      if (!options.quietNotFound) onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      if (!options.quietNotFound) {
+        setScanStatus("error");
+        onScanStatus?.("error");
+        setTimeout(() => {
+          setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+        }, 900);
+        onNotify?.(`الباركود غير معروف: ${code}`, "error");
+      }
       return "NOT_FOUND";
     } catch (error) {
+      setScanStatus("error");
+      onScanStatus?.("error");
+      setTimeout(() => {
+        setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+      }, 900);
       onNotify?.(error instanceof Error ? error.message : "تعذّر الاتصال بالخادم", "error");
       return "BLOCKED";
     }
@@ -288,7 +333,18 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
             ? results[selectedIdx]
             : settled && results.length === 1 ? results[0] : undefined,
         );
-        if (decision.status === "NOT_FOUND" && decision.fuzzy) addRow(decision.fuzzy);
+        if (decision.status === "NOT_FOUND") {
+          if (decision.fuzzy) {
+            addRow(decision.fuzzy);
+          } else {
+            setScanStatus("error");
+            onScanStatus?.("error");
+            setTimeout(() => {
+              setScanStatus((curr) => (curr === "error" ? "idle" : curr));
+            }, 900);
+            onNotify?.(`لم يتم العثور على صنف مطابق: ${code}`, "error");
+          }
+        }
       }
     } else if (e.key === "Escape") {
       setShowDrop(false);
@@ -299,7 +355,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const loading = (isPurchase ? purQ.isFetching : posQ.isFetching) && query.trim().length > 0;
 
   return (
-    <div ref={wrapRef} className="relative">
+    <div ref={wrapRef} className={cn("relative", className)}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative w-full min-w-0 flex-1 sm:min-w-72">
           {/* توحيد بصريّ (٢٥/٨): استعمال `barcodeSearchInputClass` + `<BarcodeSearchCue />` كنمطٍ موحَّد
@@ -313,17 +369,40 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           </span>
           <Input
             ref={inputRef}
+            autoFocus={autoFocus}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (scanStatus !== "idle") setScanStatus("idle");
+            }}
             onKeyDown={handleKey}
             onFocus={() => {
               if (results.length > 0) setShowDrop(true);
             }}
-            placeholder="ابحث بالاسم أو SKU أو امسح الباركود..."
-            className={`h-11 pe-10 text-sm ${barcodeSearchInputClass}`}
+            placeholder={placeholder ?? "ابحث بالاسم أو SKU أو امسح الباركود..."}
+            className={cn(
+              compact ? "h-9 text-xs" : "h-11 text-sm",
+              "pe-10 transition-all duration-200",
+              barcodeSearchInputClass,
+              scanStatus === "success" && "border-emerald-500 ring-2 ring-emerald-500/40 bg-emerald-50/20 dark:bg-emerald-950/20",
+              scanStatus === "error" && "border-destructive ring-2 ring-destructive/40 bg-destructive/10 animate-pulse",
+              inputClassName
+            )}
             aria-label="بحث المنتجات"
           />
-          {query && (
+          {scanStatus === "success" && (
+            <span className="pointer-events-none absolute end-10 top-1/2 -translate-y-1/2 text-emerald-600 font-bold text-xs flex items-center gap-1 bg-emerald-100/90 dark:bg-emerald-950/90 px-1.5 py-0.5 rounded shadow-xs animate-in fade-in zoom-in-95">
+              <CheckCircle2 className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span className="text-[11px]">تمت الإضافة</span>
+            </span>
+          )}
+          {scanStatus === "error" && (
+            <span className="pointer-events-none absolute end-10 top-1/2 -translate-y-1/2 text-destructive font-bold text-xs flex items-center gap-1 bg-destructive/15 dark:bg-destructive/30 px-1.5 py-0.5 rounded shadow-xs animate-in fade-in zoom-in-95">
+              <AlertCircle className="size-3.5 text-destructive" />
+              <span className="text-[11px]">غير موجود</span>
+            </span>
+          )}
+          {query && scanStatus === "idle" && (
             <button
               type="button"
               aria-label="مسح"
@@ -339,10 +418,27 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           <BarcodeSearchCue />
         </div>
         <div className="flex w-full shrink-0 gap-2 sm:w-auto">
-          <div className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg border border-primary/50 bg-primary/10 px-3 text-xs font-bold text-primary sm:flex-none">
+          <div
+            className={cn(
+              "flex flex-1 items-center justify-center gap-1.5 rounded-lg border font-bold sm:flex-none transition-colors",
+              compact ? "h-9 px-2.5 text-[11px]" : "h-11 px-3 text-xs",
+              scanStatus === "success"
+                ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+                : scanStatus === "error"
+                ? "border-destructive bg-destructive/10 text-destructive"
+                : "border-primary/50 bg-primary/10 text-primary"
+            )}
+          >
             <Camera aria-hidden className="size-4" /> قارئ باركود
           </div>
-          <div className="flex shrink-0 items-center rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
+          <div
+            className={cn(
+              "flex shrink-0 items-center rounded-md bg-muted px-2 py-1 font-semibold text-muted-foreground",
+              compact ? "text-[10px]" : "text-[11px]"
+            )}
+          >
+            F2 للبحث
+          </div>
         </div>
       </div>
 

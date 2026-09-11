@@ -40,6 +40,8 @@ import {
   printSalesReturnReceipt,
   type PrintSalesReturnData,
 } from "./printThermalReturnReceipt";
+import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
+import type { InvoiceLine } from "@/components/invoice/types";
 
 export interface SalesCartItem {
   id: string;
@@ -58,11 +60,15 @@ interface SalesReturnPortalProps {
 
 export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesReturnPortalProps) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const branches = trpc.branches.list.useQuery();
+  const activeBranchId = me.data?.branchId ? Number(me.data.branchId) : Number(branches.data?.[0]?.id || 1);
 
   const [salesInvoiceNo, setSalesInvoiceNo] = useState(initialInvoiceNo ?? "");
   const [salesCustomerName, setSalesCustomerName] = useState("");
   const [salesCustomerPhone, setSalesCustomerPhone] = useState("");
   const [salesCustomerId, setSalesCustomerId] = useState<number | null>(null);
+  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
   const [salesCustomerSearch, setSalesCustomerSearch] = useState("");
   const debouncedCustomerSearch = useDebouncedValue(salesCustomerSearch.trim(), 300);
 
@@ -88,6 +94,40 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
     return salesCart.reduce((sum, item) => sum + item.quantity, 0);
   }, [salesCart]);
 
+  const handleAddProductFromSearch = (line: InvoiceLine) => {
+    const variantId = line.variantId;
+    const priceStr = String(line.price || "0");
+
+    setSalesCart((prev) => {
+      const existingIdx = prev.findIndex((i) => i.variantId === variantId);
+      if (existingIdx >= 0) {
+        const target = prev[existingIdx];
+        const updated = [...prev];
+        const newQty = target.quantity + (line.qty || 1);
+        const [moved] = updated.splice(existingIdx, 1);
+        const itemToPlace = { ...moved, quantity: newQty };
+        setLastAddedId(itemToPlace.id);
+        return [itemToPlace, ...updated];
+      }
+      const newId = `${variantId}-${Date.now()}`;
+      setLastAddedId(newId);
+      return [
+        {
+          id: newId,
+          variantId,
+          productUnitId: line.productUnitId,
+          productName: line.name,
+          barcode: line.barcode ?? null,
+          quantity: line.qty || 1,
+          unitPrice: priceStr,
+        },
+        ...prev,
+      ];
+    });
+
+    notify.ok(`أُضيف للسلة: ${line.name}`);
+  };
+
   const [salesScanPending, setSalesScanPending] = useState(false);
   const handleSalesScan = async (barcodeToScan?: string) => {
     const raw = (barcodeToScan ?? salesBarcode).trim();
@@ -105,14 +145,18 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
       setSalesCart((prev) => {
         const existingIdx = prev.findIndex((i) => i.variantId === variantId);
         if (existingIdx >= 0) {
+          const target = prev[existingIdx];
           const updated = [...prev];
-          updated[existingIdx].quantity += 1;
-          return updated;
+          const [moved] = updated.splice(existingIdx, 1);
+          const itemToPlace = { ...moved, quantity: target.quantity + 1 };
+          setLastAddedId(itemToPlace.id);
+          return [itemToPlace, ...updated];
         }
+        const newId = `${variantId}-${Date.now()}`;
+        setLastAddedId(newId);
         return [
-          ...prev,
           {
-            id: `${variantId}-${Date.now()}`,
+            id: newId,
             variantId,
             productUnitId: res.productUnitId,
             productName: res.productName,
@@ -120,6 +164,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
             quantity: 1,
             unitPrice: priceStr,
           },
+          ...prev,
         ];
       });
 
@@ -283,28 +328,19 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
       {/* العمود الرئيسي: السلة وبيانات العميل */}
-      <div className="lg:col-span-8 space-y-5">
-        {/* بطاقة بيانات الفاتورة والعميل والتصنيف المخزني */}
+      <div className="lg:col-span-8 space-y-3.5">
+        {/* بطاقة بيانات الفاتورة والعميل والتصنيف المخزني — تصميم رشيق ومضغوط للأعلى */}
         <Card className="shadow-xs border-emerald-500/20">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-bold flex items-center justify-between">
-              <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
-                <UserCheck className="size-4" aria-hidden />
-                <span>بيانات العميل والفاتورة والتصنيف المخزني</span>
-              </div>
-              <Badge variant="outline" className="text-[11px] font-normal text-muted-foreground">
-                الفاتورة والعميل اختياريان
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <CardContent className="p-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 items-end">
               {/* حقل الفاتورة الأصلية (اختياري) */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground flex items-center justify-between">
-                  <span>رقم الفاتورة الأصلية (اختياري)</span>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-foreground">
+                    رقم الفاتورة (اختياري)
+                  </label>
                   {salesInvoiceNo && (
                     <button
                       type="button"
@@ -314,8 +350,8 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       مسح
                     </button>
                   )}
-                </label>
-                <div className="flex gap-1.5">
+                </div>
+                <div className="flex gap-1">
                   <Input
                     value={salesInvoiceNo}
                     onChange={(e) => setSalesInvoiceNo(e.target.value)}
@@ -325,8 +361,8 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                         void handleLookupInvoice();
                       }
                     }}
-                    placeholder="مثال: INV-1002 أو 1002..."
-                    className="h-9 text-xs"
+                    placeholder="INV-1002 أو 1002..."
+                    className="h-8.5 text-xs"
                   />
                   <Button
                     type="button"
@@ -334,7 +370,7 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     size="sm"
                     onClick={() => void handleLookupInvoice()}
                     disabled={invoiceLookupLoading || !salesInvoiceNo.trim()}
-                    className="h-9 shrink-0 text-xs px-3"
+                    className="h-8.5 shrink-0 text-xs px-2.5"
                   >
                     {invoiceLookupLoading ? "فحص..." : "فحص"}
                   </Button>
@@ -342,9 +378,11 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
               </div>
 
               {/* حقل العميل والـ CRM الذكي */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground flex items-center justify-between">
-                  <span>العميل / CRM (ذكي واختياري)</span>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-foreground">
+                    العميل / CRM (اختياري)
+                  </label>
                   {salesCustomerId && (
                     <button
                       type="button"
@@ -355,10 +393,10 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       }}
                       className="text-[10px] text-muted-foreground hover:text-destructive"
                     >
-                      إلغاء التحديد
+                      إلغاء
                     </button>
                   )}
-                </label>
+                </div>
                 <div className="relative">
                   <Input
                     value={salesCustomerSearch || salesCustomerName}
@@ -368,15 +406,14 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                       if (salesCustomerId) setSalesCustomerId(null);
                     }}
                     placeholder="اسم العميل أو ابحث في الـ CRM..."
-                    className="h-9 text-xs pr-8"
+                    className="h-8.5 text-xs pr-7"
                   />
-                  <UserCheck className="absolute right-2.5 top-2.5 size-4 text-muted-foreground pointer-events-none" />
-                  {/* نتائج البحث السريع في CRM */}
+                  <UserCheck className="absolute right-2 top-2 size-3.5 text-muted-foreground pointer-events-none" />
                   {debouncedCustomerSearch.length >= 2 &&
                     customersQuery.data &&
                     customersQuery.data.length > 0 &&
                     !salesCustomerId && (
-                      <div className="absolute z-20 top-full mt-1 right-0 left-0 bg-popover border rounded-lg shadow-lg p-1 max-h-48 overflow-auto">
+                      <div className="absolute z-30 top-full mt-1 right-0 left-0 bg-popover border rounded-lg shadow-lg p-1 max-h-44 overflow-auto">
                         {customersQuery.data.map((c) => (
                           <button
                             key={c.id}
@@ -387,126 +424,127 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                               setSalesCustomerPhone(c.phone || "");
                               setSalesCustomerSearch("");
                             }}
-                            className="w-full text-right p-2 text-xs rounded hover:bg-muted flex items-center justify-between"
+                            className="w-full text-right p-1.5 text-xs rounded hover:bg-muted flex items-center justify-between"
                           >
                             <span className="font-semibold">{c.name}</span>
-                            <span className="text-muted-foreground font-mono">{c.phone || "—"}</span>
+                            <span className="text-muted-foreground font-mono text-[11px]">{c.phone || "—"}</span>
                           </button>
                         ))}
                       </div>
                     )}
                 </div>
               </div>
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              {/* محدد التصنيف المخزني: رجوع للرف أو تالف */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground">
-                  المسار المخزني للصنف المرتجع
+              {/* المسار المخزني للصنف: رجوع للرف أو تالف */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-foreground">
+                  المسار المخزني للصنف
                 </label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-1 bg-muted/40 p-0.5 rounded-lg border">
                   <button
                     type="button"
                     onClick={() => setSalesDisposition("RESTOCK")}
                     className={cn(
-                      "py-2 px-3 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 transition-all",
+                      "h-7 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer",
                       salesDisposition === "RESTOCK"
-                        ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
-                        : "bg-background text-muted-foreground hover:bg-muted"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <RotateCcw className="size-3.5" aria-hidden />
-                    <span>رجوع للرف (سليم)</span>
+                    <RotateCcw className="size-3" aria-hidden />
+                    <span>رجوع للرف</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setSalesDisposition("DAMAGED")}
                     className={cn(
-                      "py-2 px-3 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 transition-all",
+                      "h-7 px-2 rounded-md text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer",
                       salesDisposition === "DAMAGED"
-                        ? "bg-amber-600 text-white border-amber-600 shadow-xs"
-                        : "bg-background text-muted-foreground hover:bg-muted"
+                        ? "bg-amber-600 text-white shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
                     )}
                   >
-                    <AlertTriangle className="size-3.5" aria-hidden />
-                    <span>تالف (تسجيل خسارة)</span>
+                    <AlertTriangle className="size-3" aria-hidden />
+                    <span>تالف (خسارة)</span>
                   </button>
                 </div>
               </div>
 
               {/* سبب الإرجاع */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-foreground">
                   سبب الإرجاع / ملاحظة
                 </label>
                 <Input
                   value={salesReason}
                   onChange={(e) => setSalesReason(e.target.value)}
-                  placeholder="مثال: رغبة العميل، خطأ مقاس، عيب مصنعي..."
-                  className="h-9 text-xs"
+                  placeholder="رغبة العميل، مقاس، عيب مصنعي..."
+                  className="h-8.5 text-xs"
                 />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* بطاقة مسح الباركود وسلة المنتجات */}
+        {/* بطاقة مسح الباركود والبحث الموحد وسلة الأصناف */}
         <Card className="shadow-xs">
-          <CardHeader className="p-4 pb-2">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+          <CardHeader className="p-3 pb-2 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-sm font-bold flex items-center gap-2">
-                <ScanLine className="size-4 text-primary" aria-hidden />
+                <ShoppingCart className="size-4 text-primary" aria-hidden />
                 <span>سلة الأصناف المرتجعة ({salesCart.length})</span>
+                {salesTotalPieces > 0 && (
+                  <Badge variant="secondary" className="text-[11px] font-normal px-2 py-0">
+                    إجمالي القطع: {salesTotalPieces}
+                  </Badge>
+                )}
               </CardTitle>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleSalesScan();
-                }}
-                className="flex items-center gap-2 flex-1 sm:max-w-md"
-              >
-                <div className="relative flex-1">
-                  <Input
-                    ref={salesBarcodeRef}
-                    value={salesBarcode}
-                    onChange={(e) => setSalesBarcode(e.target.value)}
-                    placeholder="امسح الباركود أو اكتب كود الصنف واضغط Enter..."
-                    className="h-9 text-xs pr-8 font-mono"
-                    autoFocus
-                  />
-                  <ScanLine className="absolute right-2.5 top-2.5 size-4 text-muted-foreground pointer-events-none" />
-                </div>
+              {salesCart.length > 0 && (
                 <Button
-                  type="submit"
+                  type="button"
+                  variant="ghost"
                   size="sm"
-                  disabled={salesScanPending || !salesBarcode.trim()}
-                  className="h-9 shrink-0 text-xs px-3"
+                  onClick={() => setSalesCart([])}
+                  className="h-7 text-xs text-muted-foreground hover:text-destructive px-2"
                 >
-                  {salesScanPending ? "إضافة..." : "إضافة للسلة"}
+                  <Trash2 className="size-3 ml-1" />
+                  تفريغ السلة
                 </Button>
-              </form>
+              )}
             </div>
+
+            {/* المكون الموحد للبحث عن المنتجات وإضافتها للسلة كما في الكاشير */}
+            <ProductSearchBar
+              invoiceType="SALE_RETURN"
+              branchId={activeBranchId}
+              tier="RETAIL"
+              onAddProduct={handleAddProductFromSearch}
+              onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+              placeholder="ابحث بالاسم أو SKU أو امسح الباركود لإضافته للسلة مباشرة... (F2)"
+              compact={true}
+              autoFocus={true}
+            />
           </CardHeader>
-          <CardContent className="p-4 pt-2">
+
+          <CardContent className="p-3 pt-0">
             {salesCart.length === 0 ? (
-              <div className="py-12 border-2 border-dashed rounded-xl text-center flex flex-col items-center justify-center gap-2 text-muted-foreground bg-muted/10">
-                <ShoppingCart className="size-10 text-muted-foreground/40" />
+              <div className="py-10 border-2 border-dashed rounded-xl text-center flex flex-col items-center justify-center gap-2 text-muted-foreground bg-muted/10">
+                <ShoppingCart className="size-9 text-muted-foreground/40" />
                 <p className="font-semibold text-sm">سلة المرتجعات فارغة</p>
                 <p className="text-xs max-w-sm">
-                  امسح باركود المنتج المراد إرجاعه أو اكتب رقمه واضغط Enter لإضافته مباشرة وتحديد كميته وسعره
+                  استخدم حقل البحث الموحد أعلاه للبحث اليدوي بالاسم أو مسح الباركود مباشرة لإدراج الأصناف في السلة
                 </p>
               </div>
             ) : (
-              <div className="border rounded-xl overflow-hidden">
-                <div className="overflow-x-auto">
+              <div className="border rounded-xl overflow-hidden shadow-2xs">
+                <div className="max-h-[460px] overflow-y-auto overflow-x-auto">
                   <table className="w-full text-xs text-right">
-                    <thead className="bg-muted/60 text-muted-foreground font-semibold border-b">
+                    <thead className="sticky top-0 bg-muted/95 backdrop-blur z-10 text-muted-foreground font-semibold border-b shadow-2xs">
                       <tr>
                         <th className="p-2.5">الصنف</th>
                         <th className="p-2.5 text-center w-36">الكمية</th>
-                        <th className="p-2.5 w-36">السعر (د.ع)</th>
+                        <th className="p-2.5 w-36">سعر الإرجاع (د.ع)</th>
                         <th className="p-2.5 w-28 text-left">الإجمالي</th>
                         <th className="p-2.5 w-12 text-center">حذف</th>
                       </tr>
@@ -514,8 +552,17 @@ export function SalesReturnPortal({ initialInvoiceNo, onReturnSuccess }: SalesRe
                     <tbody className="divide-y divide-border">
                       {salesCart.map((item, idx) => {
                         const subtotal = item.quantity * Number(item.unitPrice || 0);
+                        const isRecentlyAdded = item.id === lastAddedId;
                         return (
-                          <tr key={item.id} className="hover:bg-muted/20">
+                          <tr
+                            key={item.id}
+                            className={cn(
+                              "transition-colors duration-700",
+                              isRecentlyAdded
+                                ? "bg-emerald-500/20 dark:bg-emerald-500/25 font-medium"
+                                : "hover:bg-muted/20"
+                            )}
+                          >
                             <td className="p-2.5">
                               <div className="font-bold text-foreground">{item.productName}</div>
                               {item.barcode && (
