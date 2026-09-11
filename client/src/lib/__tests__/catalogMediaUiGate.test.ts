@@ -23,19 +23,16 @@ describe("catalog media UI gate", () => {
     expect(text).not.toMatch(/url:\s*unchanged\s*\?/);
     expect(text).not.toMatch(/url:\s*it\.dataUrl/);
 
-    const edit = source("client/src/pages/ProductEdit.tsx");
-    const payload = edit.slice(edit.indexOf("function buildPayload"), edit.indexOf("async function save"));
+    const model = source("client/src/components/form/product/productFormModel.ts");
+    const payload = model.slice(model.indexOf("function buildUpdateProductPayload"), model.indexOf("function makeVariant"));
     expect(payload).not.toMatch(/image:\s*v\.image\s*[,}]/);
     expect(payload).toMatch(/image:\s*v\.image\s*===\s*null\s*\?\s*null\s*:\s*undefined/);
+    expect(payload).toContain("images: buildProductImagesPayload(m.images)");
+    expect(payload).not.toMatch(/images:\s*images\.map/);
 
-    for (const path of [
-      "client/src/pages/ProductEdit.tsx",
-      "client/src/components/product/SimpleProductEditForm.tsx",
-    ]) {
-      const consumer = source(path);
-      expect(consumer).toContain("images: buildProductImagesPayload(images)");
-      expect(consumer).not.toMatch(/images:\s*images\.map/);
-    }
+    const simple = source("client/src/components/product/SimpleProductEditForm.tsx");
+    expect(simple).toContain("images: buildProductImagesPayload(images)");
+    expect(simple).not.toMatch(/images:\s*images\.map/);
   });
 
   it("legacy catalog surfaces expose no direct image uploader", () => {

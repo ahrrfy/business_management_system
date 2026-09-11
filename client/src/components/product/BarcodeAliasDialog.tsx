@@ -1,34 +1,39 @@
-/**
- * حوار إدارة بدائل الباركود لوحدةٍ واحدة — يحلّ (variantId + unitName) إلى productUnitId عبر
- * `resolveProductUnitId` ثمّ يقرأ/يكتب مباشرةً عبر `listUnitBarcodes`/`addUnitBarcodeAlias`/
- * `removeUnitBarcodeAlias` (نفس الإجراءات المستقلّة القائمة أصلاً في catalogRouter.ts — تفحص
- * التفرّد وتكتب فوراً، ذرّيّةٌ بذاتها). مستقلٌّ تماماً عن نموذج التعديل الرئيسيّ وزرّ حفظه.
- *
- * (م٦: كان مكوّناً مساعداً داخل `pages/ProductEdit.tsx`؛ نُقل حرفياً كي تصغر الصفحة.)
- */
 import { useState } from "react";
-
+import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { notify } from "@/lib/notify";
 import { ACTION_LABELS } from "@shared/actionLabels";
+import { getProductUnitResolutionState } from "@/components/product-studio/studioUnknownBarcode";
 
+export interface BarcodeAliasDialogProps {
+  variantId: number;
+  unitName: string;
+  label: string;
+  onClose: () => void;
+}
+
+/**
+ * بدائل الباركود (توسعة ٣/٨): حوار لإدارة أرقام الباركود البديلة لوحدة منتج معيّنة عبر
+ * `addUnitBarcodeAlias`/`removeUnitBarcodeAlias`.
+ */
 export function BarcodeAliasDialog({
-  variantId, unitName, label, onClose,
-}: { variantId: number; unitName: string; label: string; onClose: () => void }) {
+  variantId,
+  unitName,
+  label,
+  onClose,
+}: BarcodeAliasDialogProps) {
   const utils = trpc.useUtils();
   const unitIdQ = trpc.catalog.resolveProductUnitId.useQuery({ variantId, unitName }, { enabled: variantId > 0 });
   const productUnitId = unitIdQ.data ?? null;
+  const unitResolutionState = getProductUnitResolutionState({
+    isLoading: unitIdQ.isLoading,
+    isError: unitIdQ.isError,
+    productUnitId,
+  });
   const listQ = trpc.catalog.listUnitBarcodes.useQuery(
     { productUnitId: productUnitId ?? 0 },
     { enabled: productUnitId != null },
@@ -36,11 +41,20 @@ export function BarcodeAliasDialog({
   const [code, setCode] = useState("");
   const [note, setNote] = useState("");
   const add = trpc.catalog.addUnitBarcodeAlias.useMutation({
-    onSuccess: () => { setCode(""); setNote(""); void listQ.refetch(); void utils.catalog.listUnitBarcodesMany.invalidate(); notify.ok("أُضيف الباركود البديل"); },
+    onSuccess: () => {
+      setCode("");
+      setNote("");
+      void listQ.refetch();
+      void utils.catalog.listUnitBarcodesMany.invalidate();
+      notify.ok("أُضيف الباركود البديل");
+    },
     onError: (e) => notify.err(e),
   });
   const remove = trpc.catalog.removeUnitBarcodeAlias.useMutation({
-    onSuccess: () => { void listQ.refetch(); void utils.catalog.listUnitBarcodesMany.invalidate(); },
+    onSuccess: () => {
+      void listQ.refetch();
+      void utils.catalog.listUnitBarcodesMany.invalidate();
+    },
     onError: (e) => notify.err(e),
   });
 
@@ -51,11 +65,28 @@ export function BarcodeAliasDialog({
           <DialogTitle>بدائل الباركود — {label}</DialogTitle>
           <DialogDescription>باركودات إضافية تُشير لنفس السلعة/الوحدة (نفس السعر والمخزون). تُحفظ فوراً بلا حاجة لزرّ «حفظ التعديلات».</DialogDescription>
         </DialogHeader>
-        {productUnitId == null ? (
-          // `productUnitId = unitIdQ.data ?? null` ⇒ هذا الفرع يغطّي انتظارَ الاستعلام **وفشلَه**
-          // معاً، فالنصّ يبقى معروضاً أبداً إن تعذّر حلّ الوحدة. بابٌ مسدود **قائمٌ قبل التوحيد**
-          // (كان يقول «جارٍ التحديد…» ويبقى كذلك) — يلزمه حالةُ خطأ صريحة في شريحةٍ لاحقة.
+        {unitResolutionState === "loading" ? (
           <p className="text-sm text-muted-foreground">{ACTION_LABELS.loading}</p>
+        ) : unitResolutionState === "error" ? (
+          <div className="space-y-2 rounded-md border border-destructive/35 bg-destructive/5 p-3">
+            <p className="flex items-start gap-2 text-sm text-destructive" role="alert">
+              <AlertCircle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              تعذّر تحديد وحدة المنتج: {unitIdQ.error?.message ?? "خطأ غير معروف"}
+            </p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void unitIdQ.refetch()}>
+              إعادة المحاولة
+            </Button>
+          </div>
+        ) : unitResolutionState === "missing" ? (
+          <div className="space-y-2 rounded-md border border-destructive/35 bg-destructive/5 p-3">
+            <p className="flex items-start gap-2 text-sm text-destructive" role="alert">
+              <AlertCircle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              لم تعد الوحدة «{unitName}» موجودةً في هذا المتغيّر. أغلق الحوار وحدّث بيانات المنتج.
+            </p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void unitIdQ.refetch()}>
+              إعادة التحقق
+            </Button>
+          </div>
         ) : (
           <div className="space-y-3">
             <div className="text-xs text-muted-foreground">
@@ -64,12 +95,17 @@ export function BarcodeAliasDialog({
             <div className="space-y-1.5">
               {listQ.isLoading ? (
                 <p className="text-xs text-muted-foreground">{ACTION_LABELS.loading}</p>
+              ) : listQ.isError ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                  <span role="alert">تعذّر تحميل بدائل الباركود: {listQ.error.message}</span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void listQ.refetch()}>إعادة المحاولة</Button>
+                </div>
               ) : (listQ.data?.aliases ?? []).length === 0 ? (
                 <p className="text-xs text-muted-foreground">لا بدائل بعد.</p>
               ) : (
                 (listQ.data?.aliases ?? []).map((a) => (
                   <div key={a.id} className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm">
-                    <span className="font-mono" dir="ltr">{a.barcode}</span>
+                    <span className="whitespace-pre-wrap font-mono" dir="ltr">{a.barcode}</span>
                     <span className="flex-1 truncate text-xs text-muted-foreground">{a.note ?? ""}</span>
                     <Button type="button" size="sm" variant="ghost" className="text-destructive" disabled={remove.isPending} onClick={() => remove.mutate({ id: a.id })}>
                       حذف
