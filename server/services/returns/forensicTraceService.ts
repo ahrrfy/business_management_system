@@ -9,7 +9,7 @@
  *
  * بالإضافة إلى وظيفة المسح الكوني (universalBarcodeScan) لتحديد وجهة أي باركود ممسوح.
  */
-import { and, desc, eq, gte, inArray, isNotNull, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, like, lte, or, sql } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -393,6 +393,7 @@ export async function forensicTraceInvoices(
         and(
           shiftId ? eq(invoices.shiftId, shiftId) : sql`1=1`,
           gte(invoices.createdAt, dateFrom),
+          lte(invoices.createdAt, dateTo),
           scopedBranchId != null ? eq(invoices.branchId, scopedBranchId) : sql`1=1`
         )
       )

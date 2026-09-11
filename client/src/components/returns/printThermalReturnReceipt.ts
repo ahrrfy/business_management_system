@@ -77,7 +77,7 @@ export async function printSalesReturnReceipt(data: PrintSalesReturnData) {
     itemBlocks,
     totals,
     barcodeSet: {
-      qrPayload: `https://alarabiya.online/return/${encodeURIComponent(data.returnNumber)}`,
+      qrPayload: data.returnNumber,
       barcode128: data.returnNumber,
       displayLabel: `سند مرتجع مبيعات: ${data.returnNumber}`,
     },
@@ -124,7 +124,7 @@ export async function printPurchaseReturnVoucher(data: PrintPurchaseReturnData) 
     itemBlocks,
     totals,
     barcodeSet: {
-      qrPayload: `https://alarabiya.online/preturn/${encodeURIComponent(data.returnNumber)}`,
+      qrPayload: data.returnNumber,
       barcode128: data.returnNumber,
       displayLabel: `مرتجع مشتريات للمورد: ${data.returnNumber}`,
     },
