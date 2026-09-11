@@ -120,7 +120,7 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   const bridgeEnabled = await isServerBridgeEnabled();
 
   // النقطية تُبنى مرة واحدة لمساري الطباعة الصامتة (الجسر/WebUSB).
-  if (bridgeEnabled || isPaired() || isWebUsbSupported()) {
+  if (bridgeEnabled || isPaired()) {
     const raster = await receiptToRaster(d);
     if (raster) {
       const bytes = new EscPos().init().raster(raster).feed(3).cut().openDrawer().bytes();
