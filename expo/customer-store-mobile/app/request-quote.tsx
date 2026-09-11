@@ -24,7 +24,7 @@ import { classifyNetworkError, createStorefrontQuoteRequest } from "@/lib/storef
 import { governorates } from "@/shared/governorates";
 
 type QuoteType = "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
-const quoteTypes: Array<{ value: QuoteType; label: string }> = [
+const quoteTypes: { value: QuoteType; label: string }[] = [
   { value: "BULK", label: "كمية وجملة" },
   { value: "CUSTOM_PRINT", label: "طباعة وتخصيص" },
   { value: "BUSINESS", label: "شركة أو مكتب" },
