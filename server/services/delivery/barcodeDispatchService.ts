@@ -183,6 +183,8 @@ export async function dispatchByBarcode(
         onlineOrderId: Number(onlineOrder.id),
         partyId: input.partyId,
         externalTrackingRef: input.externalTrackingRef ?? null,
+        deliveryAddress: input.deliveryAddress ?? onlineOrder.shippingAddress ?? null,
+        notes: input.notes ?? null,
       },
       dispatchActor,
     );

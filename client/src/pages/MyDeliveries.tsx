@@ -6,7 +6,7 @@
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
 import { useEffect, useState } from "react";
-import { Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
+import { AlertCircle, Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
@@ -24,6 +24,7 @@ import {
   CONSIGNMENT_VIEW_CLS,
   deriveConsignmentView,
 } from "@shared/consignmentView";
+import { SHORTFALL_REASONS, SHORTFALL_REASON_LABEL_AR, type ShortfallReason } from "@shared/shortfallReason";
 
 type MyDeliveries = RouterOutputs["courier"]["myDeliveries"];
 type DeliveryRow = MyDeliveries["toDeliver"][number];
@@ -43,6 +44,8 @@ export default function MyDeliveries() {
   const utils = trpc.useUtils();
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
+  const [partialTarget, setPartialTarget] = useState<DeliveryRow | null>(null);
+  const [toDeliverFilter, setToDeliverFilter] = useState<"ALL" | "UNRECEIVED" | "IN_TRANSIT">("ALL");
 
   // طلب متجر: يُحصّل COD ويرفع العهدة (confirmDelivery).
   const confirmM = trpc.courier.confirmDelivery.useMutation({
@@ -126,12 +129,31 @@ export default function MyDeliveries() {
     confirmM.mutate({ onlineOrderId: row.id });
   }
 
+  function doPartialConfirm(row: DeliveryRow, collectedAmount: string, reason?: string) {
+    setConfirmingKey(rowKey(row));
+    confirmCnM.mutate({
+      consignmentId: row.id,
+      collectedAmount,
+      shortfallReason: (reason ?? "PARTIAL_REFUSAL") as any,
+      clientRequestId: crypto.randomUUID(),
+    });
+    setPartialTarget(null);
+  }
+
   if (q.isError) return <div className="p-6"><ErrorState onRetry={() => q.refetch()} /></div>;
 
   const data = q.data;
   const linked = data?.linked ?? false;
   const readOnly = data?.memberRole === "ACCOUNTANT";
   const ownScope = data?.memberRole === "DRIVER";
+
+  const unreceivedRows = (data?.toDeliver ?? []).filter((r) => r.status === "ASSIGNED");
+  const inTransitRows = (data?.toDeliver ?? []).filter((r) => r.status !== "ASSIGNED");
+  const displayedToDeliver = toDeliverFilter === "UNRECEIVED"
+    ? unreceivedRows
+    : toDeliverFilter === "IN_TRANSIT"
+    ? inTransitRows
+    : (data?.toDeliver ?? []);
 
   return (
     <div className="space-y-4 p-4 md:p-6" dir="rtl">
@@ -157,7 +179,7 @@ export default function MyDeliveries() {
             <StatCard label="أجرة مكتسبة" value={`${money(data!.financialSummary?.feeEarned)} د.ع`} icon={Banknote} tone="positive" />
             <StatCard label={ownScope ? "أجرة مستحقة لي" : "أجرة مستحقة للجهة"} value={`${money(data!.financialSummary?.feeDue)} د.ع`} icon={Banknote} tone={Number(data!.financialSummary?.feeDue ?? 0) > 0 ? "warning" : "positive"} />
             <StatCard label="قيد التوصيل" value={data!.toDeliver.length} icon={Truck} tone="info" />
-            <StatCard label="سُلّمت" value={data!.delivered.length} icon={PackageCheck} tone="positive" />
+            <StatCard label="سُلّمت (بانتظار التحاسب)" value={data!.delivered.length} icon={PackageCheck} tone={data!.delivered.length > 0 ? "warning" : "positive"} />
           </div>
 
           {data!.financialSummary?.hasFinancialAnomaly && (
@@ -176,133 +198,135 @@ export default function MyDeliveries() {
           <section className="space-y-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-bold text-muted-foreground">قيد التوصيل ({data!.toDeliver.length})</h2>
-              {/*
-                ٢٢/٨ — أزرار جماعية للمندوب: كان لكل طرد تدرّج (٣ نقرات لكلٍّ قبل زر «تم التسليم»).
-                شركةٌ بعشرة طرود يومياً = ٣٠ نقرة قبل التسليم — لن تُتبنّى البوّابة عملياً.
-                Promise.allSettled: كل طرد مستقل، لا نوقف الجميع عند فشل واحد.
-              */}
-              {!readOnly && (() => {
-                const assignedIds = data!.toDeliver.filter((r) => r.kind === "consignment" && r.status === "ASSIGNED").map((r) => r.id);
-                const readyOutIds = data!.toDeliver.filter((r) => r.kind === "consignment" && (r.status === "ACCEPTED" || r.status === "PICKED_UP")).map((r) => r.id);
-                const busy = transitionM.isPending;
-                return (
-                  <div className="ms-auto flex gap-2">
-                    {assignedIds.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={async () => {
-                          const results = await Promise.allSettled(
-                            assignedIds.map((id) => transitionM.mutateAsync({
-                              consignmentId: id,
-                              toStatus: "ACCEPTED",
-                              reason: null,
-                              clientRequestId: crypto.randomUUID(),
-                            })),
-                          );
-                          const ok = results.filter((r) => r.status === "fulfilled").length;
-                          const err = results.length - ok;
-                          if (err === 0) notify.ok(`قُبلت ${ok} طرداً`);
-                          else notify.err(`نجح ${ok} وفشل ${err} — راجع الطرود الفاشلة يدوياً`);
-                          void utils.courier.myDeliveries.invalidate();
-                        }}
-                      >
-                        قبول الكل ({assignedIds.length})
-                      </Button>
+              {data!.toDeliver.length > 0 && (
+                <div className="flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-0.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setToDeliverFilter("ALL")}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 font-semibold transition",
+                      toDeliverFilter === "ALL" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
                     )}
-                    {readyOutIds.length > 0 && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={async () => {
-                          /**
-                           * ٢٢/٨ (Codex P2 #3): آلة الحالة الخادميّة تفرض ACCEPTED → PICKED_UP →
-                           * OUT_FOR_DELIVERY (خطوتان لا قفزة). كان الزرّ يقفز مباشرةً فيفشل كل
-                           * الـACCEPTED. الآن كل صفٍّ ACCEPTED يمرّ بخطوتين متتاليتين قبل الخروج.
-                           */
-                          const rowByIdMap = new Map<number, DeliveryRow>();
-                          for (const row of data!.toDeliver) rowByIdMap.set(row.id, row);
-                          const stepFor = (id: number): Array<"PICKED_UP" | "OUT_FOR_DELIVERY"> => {
-                            const st = rowByIdMap.get(id)?.status;
-                            if (st === "ACCEPTED") return ["PICKED_UP", "OUT_FOR_DELIVERY"];
-                            if (st === "PICKED_UP") return ["OUT_FOR_DELIVERY"];
-                            return [];
-                          };
-                          const results = await Promise.allSettled(
-                            readyOutIds.map(async (id) => {
-                              const steps = stepFor(id);
-                              for (const to of steps) {
-                                await transitionM.mutateAsync({
-                                  consignmentId: id,
-                                  toStatus: to,
-                                  reason: null,
-                                  clientRequestId: crypto.randomUUID(),
-                                });
-                              }
-                            }),
-                          );
-                          const ok = results.filter((r) => r.status === "fulfilled").length;
-                          const err = results.length - ok;
-                          if (err === 0) notify.ok(`خرج ${ok} طرداً للتوصيل`);
-                          else notify.err(`نجح ${ok} وفشل ${err} — راجع الطرود الفاشلة يدوياً`);
-                          void utils.courier.myDeliveries.invalidate();
-                        }}
-                      >
-                        خرج الكل الآن ({readyOutIds.length})
-                      </Button>
+                  >
+                    الكل ({data!.toDeliver.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setToDeliverFilter("UNRECEIVED")}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 font-semibold transition",
+                      toDeliverFilter === "UNRECEIVED" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
                     )}
-                  </div>
-                );
-              })()}
+                  >
+                    غير مستلم ({unreceivedRows.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setToDeliverFilter("IN_TRANSIT")}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 font-semibold transition",
+                      toDeliverFilter === "IN_TRANSIT" ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    مستلم / بالطريق ({inTransitRows.length})
+                  </button>
+                </div>
+              )}
             </div>
             {data!.toDeliver.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">لا طلبات قيد التوصيل حالياً.</div>
+            ) : displayedToDeliver.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">لا طلبات تطابق الفلتر المحدد.</div>
             ) : (
-              data!.toDeliver.map((row) => (
+              displayedToDeliver.map((row) => (
                 <DeliveryCard
                   key={rowKey(row)}
                   row={row}
-                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending || transitionM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending}
                   onConfirm={() => doConfirm(row)}
+                  onPartial={() => setPartialTarget(row)}
                   onFail={() => setFailTarget(row)}
-                  onTransition={(status) => transitionParcel(row, status)}
                   readOnly={readOnly}
                 />
               ))
             )}
           </section>
 
-          {/* سُلّمت حديثاً */}
+          {/* سُلّمت — بانتظار التحاسب */}
           {data!.delivered.length > 0 && (
             <section className="space-y-2">
               <h2 className="flex items-center gap-1.5 text-sm font-bold text-muted-foreground">
-                سُلّمت حديثاً ({data!.delivered.length})
-                {/* lucide-react لا يقبل title كمُعامِل SVG مباشر — نلفّه بـ<span title> (نمط Inbox.tsx). */}
-                <span title="تُعرض آخر ٤٠ عملية تسليم مُسجَّلة لك ضمن أحدث ١٢٠ طلباً أُسنِد إليك — عدٌّ لا حدٌّ زمنيّ (قد تظهر تسليماتٌ أقدم من أيام لو قلّت طلباتك الحديثة).">
+                سُلّمت — بانتظار التحاسب ({data!.delivered.length})
+                <span title="الطلبات المُسلَّمة للزبائن والتي لم يتم التحاسب عليها أو توريد نقدها للمتجر بعد. تختفي تلقائياً بمجرد إثبات التوريد.">
                   <Info aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
                 </span>
               </h2>
-              {data!.delivered.map((row) => (
-                <div key={rowKey(row)} className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
-                  <span className="flex items-center gap-2 font-medium">
-                    <CheckCircle2 aria-hidden className="size-4 text-[var(--sem-pos)]" />
-                    <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
-                    <SourceTag kind={row.kind} />
-                    <span className="text-muted-foreground">{row.customerName ?? ""}</span>
-                  </span>
-                  {/* ١٠/٨: orderTotal = ما دفعه الزبون عند الباب (بضاعة + أجرتك) — نوسمه كي لا
-                      يُقرأ رقماً مغايراً لما ورّدته (البضاعة وحدها). */}
-                  <span className="flex flex-col items-end">
-                    <span className="tabular-nums text-muted-foreground" dir="ltr">{money(row.orderTotal)} د.ع</span>
-                    <span className="text-[10px] text-muted-foreground">قبضته من الزبون عند الباب</span>
-                  </span>
-                </div>
-              ))}
+              {data!.delivered.map((row) => {
+                const isPartial = row.moneyStatus === "PARTIAL" || (Number(row.collectedAmount ?? 0) > 0 && Number(row.codDue) > 0);
+                return (
+                  <div
+                    key={rowKey(row)}
+                    className={cn(
+                      "flex items-center justify-between rounded-xl border p-3 text-sm transition",
+                      isPartial
+                        ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]/40"
+                        : "border-[var(--sem-pos)]/25 bg-[var(--sem-pos)]/5",
+                    )}
+                  >
+                    <span className="flex items-center gap-2 font-medium">
+                      {isPartial ? (
+                        <AlertCircle aria-hidden className="size-4 shrink-0 text-[var(--sem-warn)]" />
+                      ) : (
+                        <CheckCircle2 aria-hidden className="size-4 shrink-0 text-[var(--sem-pos)]" />
+                      )}
+                      <span dir="ltr" className="font-bold tracking-wider text-foreground">{row.orderNumber}</span>
+                      <SourceTag kind={row.kind} />
+                      {isPartial ? (
+                        <span className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-warn)]">
+                          تسليم جزئي
+                        </span>
+                      ) : (
+                        <span className="rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos)]/10 px-1.5 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">
+                          تسليم كامل
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground">{row.customerName ?? ""}</span>
+                    </span>
+
+                    <span className="flex flex-col items-end">
+                      {isPartial ? (
+                        <>
+                          <span className="tabular-nums font-bold text-foreground" dir="ltr">
+                            مقبوض: {money(row.collectedAmount)} د.ع
+                          </span>
+                          <span className="tabular-nums text-[10px] font-bold text-[var(--sem-warn)]" dir="ltr">
+                            عجز: {money(row.codDue)} د.ع
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="tabular-nums font-bold text-foreground" dir="ltr">
+                            {money(row.orderTotal)} د.ع
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">قبضته بالكامل عند الباب</span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
             </section>
           )}
         </>
+      )}
+
+      {partialTarget && (
+        <PartialModal
+          row={partialTarget}
+          pending={confirmCnM.isPending}
+          onCancel={() => !confirmCnM.isPending && setPartialTarget(null)}
+          onConfirm={(amount, reason) => doPartialConfirm(partialTarget, amount, reason)}
+        />
       )}
 
       {failTarget && (
@@ -351,7 +375,7 @@ function courierParcelBadge(parcelStatus: string | null | undefined) {
   return { label: CONSIGNMENT_VIEW_AR[key], cls: CONSIGNMENT_VIEW_CLS[key] };
 }
 
-function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void; onTransition: (status: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY") => void; readOnly: boolean }) {
+function DeliveryCard({ row, busy, onConfirm, onPartial, onFail, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onPartial: () => void; onFail: () => void; readOnly: boolean }) {
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
   return (
@@ -409,54 +433,212 @@ function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: 
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        {!readOnly && row.kind === "consignment" && row.status === "ASSIGNED" && (
-          <Button variant="outline" size="sm" onClick={() => onTransition("ACCEPTED")} disabled={busy}>قبول الطلب</Button>
-        )}
-        {!readOnly && row.kind === "consignment" && row.status === "ACCEPTED" && (
-          <Button variant="outline" size="sm" onClick={() => onTransition("PICKED_UP")} disabled={busy}>استلمت الطرد</Button>
-        )}
-        {!readOnly && row.kind === "consignment" && row.status === "PICKED_UP" && (
-          <Button variant="outline" size="sm" onClick={() => onTransition("OUT_FOR_DELIVERY")} disabled={busy}>خرج للتوصيل</Button>
-        )}
-        {!readOnly && row.kind === "consignment" && row.status === "FAILED" && (
-          <Button variant="outline" size="sm" onClick={() => onTransition("ASSIGNED")} disabled={busy}>إعادة المحاولة</Button>
-        )}
-        {phone && (
-          <>
-            <a
-              href={`tel:${phone}`}
-              className="flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs font-bold transition hover:bg-accent"
-            >
-              <Phone aria-hidden className="size-3.5" /> اتّصال
-            </a>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5">
+        {/* أزرار التواصل (اتصال + واتساب) */}
+        <div className="flex items-center gap-1.5">
+          {phone && (
+            <>
+              <a
+                href={`tel:${phone}`}
+                className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs font-bold transition hover:bg-accent"
+              >
+                <Phone aria-hidden className="size-3.5" /> اتّصال
+              </a>
+              <button
+                type="button"
+                onClick={() => openWhatsApp(phone, waMsg)}
+                className="flex items-center gap-1 rounded-lg border border-[var(--brand-whatsapp)]/40 bg-[var(--brand-whatsapp)]/10 px-2.5 py-1.5 text-xs font-bold text-[var(--brand-whatsapp)] transition hover:bg-[var(--brand-whatsapp)]/20"
+              >
+                <MessageCircle aria-hidden className="size-3.5" /> واتساب
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* أزرار الإجراء المباشرة الصريحة */}
+        {!readOnly && (
+          <div className="ms-auto flex flex-wrap items-center gap-1.5">
+            {/* تعذّر التسليم */}
+            {(row.kind === "online" || (row.kind === "consignment" && row.status !== "FAILED")) && (
+              <button
+                type="button"
+                onClick={onFail}
+                disabled={busy}
+                className="flex items-center gap-1 rounded-lg border border-[var(--sem-neg)]/40 px-2.5 py-1.5 text-xs font-bold text-[var(--sem-neg)] transition hover:bg-[var(--sem-neg-bg)] disabled:opacity-50"
+              >
+                <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
+              </button>
+            )}
+
+            {/* تسليم جزئي — متاح للإرساليات التي عليها مبلغ مطلوب */}
+            {row.kind === "consignment" && Number(row.codDue) > 0 && (
+              <button
+                type="button"
+                onClick={onPartial}
+                disabled={busy}
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/20 disabled:opacity-50"
+              >
+                <AlertCircle aria-hidden className="size-3.5" /> تسليم جزئي
+              </button>
+            )}
+
+            {/* تم التسليم بالكامل */}
             <button
-              onClick={() => openWhatsApp(phone, waMsg)}
-              className="flex items-center gap-1 rounded-lg border border-[var(--brand-whatsapp)]/40 bg-[var(--brand-whatsapp)]/10 px-3 py-2 text-xs font-bold text-[var(--brand-whatsapp)] transition hover:bg-[var(--brand-whatsapp)]/20"
+              type="button"
+              onClick={onConfirm}
+              disabled={busy}
+              className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
             >
-              <MessageCircle aria-hidden className="size-3.5" /> واتساب
+              {busy ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <CheckCircle2 aria-hidden className="size-3.5" />}
+              تم التسليم
             </button>
-          </>
+          </div>
         )}
-        {/* «تعذّر التسليم» يعكس بيع الطلب ⇒ لطلبات المتجر فقط (لها مسار عكسٍ خاصّ). إرساليات
-            الاستقبال تُعالَج تعذُّراتها بيد الموظّف عبر إرجاع الإرسالية، فلا زرّ عكسٍ للمندوب هنا. */}
-        {!readOnly && (row.kind === "online" || (row.kind === "consignment" && row.status !== "FAILED")) && (
+      </div>
+    </div>
+  );
+}
+
+/** حوار «تسليم جزئي»: إدخال المبلغ المقبوض فعلياً واختيار سبب العجز. z-[100]. */
+function PartialModal({
+  row,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  row: DeliveryRow;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: (amount: string, reason?: ShortfallReason) => void;
+}) {
+  const due = Number(row.codDue ?? row.orderTotal ?? 0);
+  const [amountStr, setAmountStr] = useState("");
+  const [reason, setReason] = useState<ShortfallReason>("PARTIAL_REFUSAL");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !pending) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onCancel]);
+
+  const numAmount = Number(amountStr);
+  const isValidAmount =
+    amountStr.trim() !== "" && !isNaN(numAmount) && numAmount >= 0 && numAmount < due;
+  const shortage = isValidAmount ? Math.max(0, due - numAmount) : 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="تسليم جزئي"
+      onClick={onCancel}
+      dir="rtl"
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center gap-2 text-base font-bold text-[var(--sem-warn)]">
+          <AlertCircle aria-hidden className="size-5" />
+          تسليم جزئي للطرد <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+        </div>
+
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          أدخل المبلغ الفعلي الذي قبضته من العميل. سيُسجَّل الفرق كعجز تحصيل على الفاتورة وتتحول حالة الطرد إلى مُسلَّم.
+        </p>
+
+        <div className="mb-4 rounded-lg border border-border bg-muted/40 p-3 text-xs space-y-1">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">المبلغ المطلوب كاملاً:</span>
+            <span className="font-bold tabular-nums" dir="ltr">{money(due)} د.ع</span>
+          </div>
+          {isValidAmount && (
+            <>
+              <div className="flex justify-between font-medium text-[var(--sem-pos)]">
+                <span>المقبوض:</span>
+                <span className="tabular-nums" dir="ltr">{money(numAmount)} د.ع</span>
+              </div>
+              <div className="flex justify-between font-bold text-[var(--sem-warn)]">
+                <span>عجز التحصيل:</span>
+                <span className="tabular-nums" dir="ltr">{money(shortage)} د.ع</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-bold text-foreground">
+              المبلغ المقبوض فعلياً (د.ع) <span className="text-destructive">*</span>
+            </label>
+            <input
+              type="number"
+              min="0"
+              max={Math.max(0, due - 1)}
+              step="any"
+              autoFocus
+              value={amountStr}
+              onChange={(e) => setAmountStr(e.target.value)}
+              placeholder={`أقل من ${money(due)}`}
+              className="w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+            {numAmount >= due && amountStr !== "" && (
+              <p className="mt-1 text-[11px] text-[var(--sem-neg)]">
+                للتسليم بالمبلغ الكامل، استخدم زر «تم التسليم» المباشر بدلاً من الجزئي.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              سبب العجز / النقص
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {SHORTFALL_REASONS.map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setReason(r)}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-medium transition",
+                    reason === r
+                      ? "bg-[var(--sem-warn)] text-background"
+                      : "bg-muted text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  {SHORTFALL_REASON_LABEL_AR[r]}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
           <button
-            onClick={onFail}
-            disabled={busy}
-            className="ms-auto flex items-center gap-1 rounded-lg border border-[var(--sem-neg)]/40 px-3 py-2 text-xs font-bold text-[var(--sem-neg)] transition hover:bg-[var(--sem-neg-bg)] disabled:opacity-50"
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50"
           >
-            <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
+            تراجع
           </button>
-        )}
-        {!readOnly && (row.kind !== "consignment" || row.status === "OUT_FOR_DELIVERY") && <button
-          onClick={onConfirm}
-          disabled={busy}
-          className={`${row.kind === "consignment" ? "ms-auto " : ""}flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50`}
-        >
-          {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
-          {row.kind === "consignment" ? "تم التسليم" : "تم التسليم والتحصيل"}
-        </button>}
+          <button
+            type="button"
+            onClick={() => isValidAmount && onConfirm(amountStr.trim(), reason)}
+            disabled={pending || !isValidAmount}
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--sem-warn)] px-4 py-2 text-sm font-bold text-background transition hover:bg-[var(--sem-warn-hover)] disabled:opacity-50"
+          >
+            {pending ? (
+              <Loader2 aria-hidden className="size-4 animate-spin" />
+            ) : (
+              <CheckCircle2 aria-hidden className="size-4" />
+            )}
+            تأكيد التسليم الجزئي
+          </button>
+        </div>
       </div>
     </div>
   );

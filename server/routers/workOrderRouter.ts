@@ -10,6 +10,7 @@ import {
   auditLogs,
   customers,
   invoices,
+  onlineOrders,
   deliveryConsignments,
   deliveryParties,
   productVariants,
@@ -1073,7 +1074,47 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) return null;
       const raw = input.orderNumber.trim();
-      const stripped = raw.replace(/^WO-/i, "").replace(/^INV-/i, "");
+      let resolvedRaw = raw;
+      if (/^CN[S]?-/i.test(raw)) {
+        const [matchedCn] = await db
+          .select({
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            workOrderId: deliveryConsignments.workOrderId,
+            invoiceId: deliveryConsignments.invoiceId,
+            sourceType: deliveryConsignments.sourceType,
+            sourceId: deliveryConsignments.sourceId,
+          })
+          .from(deliveryConsignments)
+          .where(
+            or(
+              eq(deliveryConsignments.consignmentNumber, raw),
+              eq(deliveryConsignments.externalTrackingRef, raw),
+            ),
+          )
+          .limit(1);
+
+        if (matchedCn) {
+          if (matchedCn.workOrderId) {
+            const [wo] = await db.select({ n: workOrders.orderNumber }).from(workOrders).where(eq(workOrders.id, matchedCn.workOrderId)).limit(1);
+            if (wo?.n) resolvedRaw = wo.n;
+          } else if (matchedCn.sourceType === "ONLINE_ORDER" && matchedCn.sourceId) {
+            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.id, matchedCn.sourceId)).limit(1);
+            if (ordRow?.n) resolvedRaw = ordRow.n;
+          } else if (matchedCn.invoiceId) {
+            const [ordRow] = await db.select({ n: onlineOrders.orderNumber }).from(onlineOrders).where(eq(onlineOrders.invoiceId, matchedCn.invoiceId)).limit(1);
+            if (ordRow?.n) {
+              resolvedRaw = ordRow.n;
+            } else {
+              const [invRow] = await db.select({ n: invoices.invoiceNumber }).from(invoices).where(eq(invoices.id, matchedCn.invoiceId)).limit(1);
+              if (invRow?.n) resolvedRaw = invRow.n;
+            }
+          }
+        }
+      }
+
+      const rawCode = resolvedRaw;
+      const stripped = rawCode.replace(/^WO-/i, "").replace(/^INV-/i, "").replace(/^ORD-/i, "");
+      const isNumeric = /^\d+$/.test(rawCode);
       const [row] = await db
         .select({
           id: workOrders.id,
@@ -1097,11 +1138,12 @@ export const workOrderRouter = router({
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
         .where(
           or(
-            eq(workOrders.orderNumber, raw),
+            eq(workOrders.orderNumber, rawCode),
             eq(workOrders.orderNumber, `WO-${stripped}`),
             eq(workOrders.orderNumber, stripped),
-            like(workOrders.orderNumber, `%${stripped}%`)
-          )
+            like(workOrders.orderNumber, `%${stripped}%`),
+            isNumeric ? eq(workOrders.id, Number(rawCode)) : sql`0=1`,
+          ),
         )
         .limit(1);
       if (row) {
@@ -1169,10 +1211,11 @@ export const workOrderRouter = router({
         .leftJoin(customers, eq(invoices.customerId, customers.id))
         .where(
           or(
-            eq(invoices.invoiceNumber, raw),
+            eq(invoices.invoiceNumber, rawCode),
             eq(invoices.invoiceNumber, `INV-${stripped}`),
             eq(invoices.invoiceNumber, stripped),
-            like(invoices.invoiceNumber, `%${stripped}%`)
+            like(invoices.invoiceNumber, `%${stripped}%`),
+            isNumeric ? eq(invoices.id, Number(rawCode)) : sql`0=1`,
           )
         )
         .limit(1);
@@ -1204,6 +1247,88 @@ export const workOrderRouter = router({
           ...inv,
           version: 1,
           kind: "invoice" as const,
+          activeConsignment: activeCn
+            ? {
+                id: activeCn.id,
+                consignmentNumber: activeCn.consignmentNumber,
+                partyId: activeCn.partyId,
+                partyName: activeCn.partyName,
+                partyType: activeCn.partyType,
+                parcelStatus: activeCn.parcelStatus,
+                moneyStatus: activeCn.moneyStatus,
+                codAmount: String(activeCn.codAmount),
+                collectedAmount: String(activeCn.collectedAmount),
+              }
+            : null,
+        };
+      }
+
+      const [ord] = await db
+        .select({
+          id: onlineOrders.id,
+          orderNumber: onlineOrders.orderNumber,
+          title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
+          status: onlineOrders.status,
+          salePrice: onlineOrders.total,
+          deposit: sql<string>`'0.00'`,
+          customerId: onlineOrders.customerId,
+          customerName: customers.name,
+          customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          deliveryAddress: sql<string | null>`COALESCE(NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address})`,
+          deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+          deliveryCost: onlineOrders.shippingCost,
+          deliveryFeeCollection: sql<string | null>`'COURIER'`,
+          branchId: onlineOrders.branchId,
+          notes: onlineOrders.cancelReason,
+          invoiceId: onlineOrders.invoiceId,
+        })
+        .from(onlineOrders)
+        .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+        .where(
+          or(
+            eq(onlineOrders.orderNumber, rawCode),
+            eq(onlineOrders.orderNumber, `ORD-${stripped}`),
+            eq(onlineOrders.orderNumber, stripped),
+            like(onlineOrders.orderNumber, `%${stripped}%`),
+            isNumeric ? eq(onlineOrders.id, Number(rawCode)) : sql`0=1`,
+          ),
+        )
+        .limit(1);
+
+      if (ord) {
+        const [activeCn] = await db
+          .select({
+            id: deliveryConsignments.id,
+            consignmentNumber: deliveryConsignments.consignmentNumber,
+            partyId: deliveryConsignments.partyId,
+            partyName: deliveryParties.name,
+            partyType: deliveryParties.partyType,
+            parcelStatus: deliveryConsignments.parcelStatus,
+            moneyStatus: deliveryConsignments.moneyStatus,
+            codAmount: deliveryConsignments.codAmount,
+            collectedAmount: deliveryConsignments.collectedAmount,
+          })
+          .from(deliveryConsignments)
+          .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+          .where(
+            and(
+              or(
+                and(
+                  eq(deliveryConsignments.sourceId, ord.id),
+                  eq(deliveryConsignments.sourceType, "ONLINE_ORDER"),
+                ),
+                ord.invoiceId ? eq(deliveryConsignments.invoiceId, ord.invoiceId) : sql`0=1`,
+              ),
+              notInArray(deliveryConsignments.parcelStatus, ["CANCELLED", "RETURNED"]),
+            ),
+          )
+          .orderBy(desc(deliveryConsignments.id))
+          .limit(1);
+
+        return {
+          ...ord,
+          version: 1,
+          kind: "onlineOrder" as const,
           activeConsignment: activeCn
             ? {
                 id: activeCn.id,

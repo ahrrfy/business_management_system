@@ -44,7 +44,7 @@ type ReceptionHandoverMethod = (typeof PAYMENT_METHODS)[number]["v"];
 
 interface ScannedOrder {
   id: number;
-  kind?: "workOrder" | "invoice";
+  kind?: "workOrder" | "invoice" | "onlineOrder";
   orderNumber: string;
   title: string | null;
   customerName: string | null;
