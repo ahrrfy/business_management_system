@@ -102,6 +102,10 @@ const GoodsReceiptReversalGovernance = lazy(() => import("@/pages/GoodsReceiptRe
 const SupplierInvoiceApprovalGovernance = lazy(() => import("@/pages/SupplierInvoiceApprovalGovernance"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
+const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
+const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
+const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
+const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
@@ -411,9 +415,9 @@ export default function App() {
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
-      <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
+      <Route path="/sales-returns/new"><SalesReturnNew /></Route>
       <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
-      <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchase-returns/new"><PurchaseReturnNew /></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
       <Route path="/purchase-returns"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
@@ -423,7 +427,7 @@ export default function App() {
       <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
+      <Route path="/purchases/returns-governance"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>
@@ -443,7 +447,7 @@ export default function App() {
       <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
       <Route path="/work-orders"><Shell><RequireRole gate={WORK_ORDERS_HUB_GATE}><PrintHub /></RequireRole></Shell></Route>
       {/* إنشاء الخدمة دُمج في شاشة الاستقبال؛ الرابط القديم لا يفتح بوابة ثانية. */}
-      <Route path="/work-orders/new"><Redirect to="/pos?mode=RECEPTION" /></Route>
+      <Route path="/work-orders/new"><WorkOrderNew /></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
