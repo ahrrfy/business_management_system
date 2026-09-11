@@ -231,6 +231,33 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     expect(mine2.delivered.some((r) => r.kind === "consignment" && r.id === disp.consignmentId)).toBe(true);
   });
 
+  it("listMyDeliveries: تختفي الإرسالية من delivered تماماً بمجرد توريدها وتسويتها ماليّاً (SETTLED)", async () => {
+    const { partyA } = await seedParties();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const disp = await dispatchReception(partyA);
+
+    // 1. قبل التسليم: في toDeliver (غير مستلم / مستلم)
+    const before = await listMyDeliveries(3);
+    expect(before.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(true);
+    expect(before.delivered.some((r) => r.id === disp.consignmentId)).toBe(false);
+
+    // 2. بعد التسليم: تنتقل إلى delivered لأنها لم تُورّد بعد (moneyStatus=UNSETTLED)
+    await advanceToOutForDelivery(disp.consignmentId);
+    await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
+    const afterDelivery = await listMyDeliveries(3);
+    expect(afterDelivery.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(false);
+    expect(afterDelivery.delivered.some((r) => r.id === disp.consignmentId)).toBe(true);
+
+    // 3. بعد التوريد الكامل: تختفي تماماً من delivered
+    await recordDeliveryRemittance(
+      { branchId: 1, partyId: partyA, countedCash: "10000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "10000" }] },
+      CASHIER,
+    );
+    const afterRemit = await listMyDeliveries(3);
+    expect(afterRemit.toDeliver.some((r) => r.id === disp.consignmentId)).toBe(false);
+    expect(afterRemit.delivered.some((r) => r.id === disp.consignmentId)).toBe(false);
+  });
+
   it("رحلة الظهور الكاملة: جاهز من الفني → إدارة التوصيل → جهة أ فقط", async () => {
     const { partyA } = await seedParties();
     const woId = await readyReception();
@@ -299,8 +326,9 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
     await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
     const after = await consignment(disp.consignmentId);
     expect(after.status).toBe("DELIVERED");
-    expect(after.courierDeliveredAt).not.toBeNull();
-    expect((await listMyDeliveries(3)).delivered.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(true);
+    // COD=0 مسوّى ماليّاً سلفاً فلا يبقى في delivered (المُسلَّم غير المُسوّى فقط هو ما يظهر للمندوب).
+    expect((await listMyDeliveries(3)).toDeliver.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(false);
+    expect((await listMyDeliveries(3)).delivered.some((r) => r.id === disp.consignmentId && r.kind === "consignment")).toBe(false);
   });
 
   it("PARTIAL يبقى في حساب المندوب ويمكن ختم تسليمه بعد أول توريد", async () => {

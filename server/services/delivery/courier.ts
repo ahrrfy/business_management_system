@@ -18,6 +18,7 @@ import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { assertNotReturnDeclared } from "./declaredReturn";
 import Decimal from "decimal.js";
+import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   customers,
@@ -174,12 +175,19 @@ export async function listMyDeliveries(
   );
   // لا نقصّ العمل المفتوح أبداً؛ التاريخ وحده محدود حتى لا يكبر حساب الشركة
   // بلا سقف. الطلبات الجديدة تسلك deliveryConsignments، وهذه قراءة توافقية للإرث.
+  // deliveredOnlineRows: نحصرها على غير المسدّد فقط كي لا تظهر الطلبات المنتهية تاريخياً.
   const [openOnlineRows, deliveredOnlineRows] = await Promise.all([
     legacyOnlineQuery()
       .where(and(legacyOnlineScope, eq(onlineOrders.status, "SHIPPED")))
       .orderBy(desc(onlineOrders.id)),
     legacyOnlineQuery()
-      .where(and(legacyOnlineScope, eq(onlineOrders.status, "DELIVERED")))
+      .where(
+        and(
+          legacyOnlineScope,
+          eq(onlineOrders.status, "DELIVERED"),
+          sql`(${invoices.paidAmount} IS NULL OR ${openBalanceExpr({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal }, "COLLECTIBLE")} > 0)`,
+        ),
+      )
       .orderBy(desc(onlineOrders.id))
       .limit(100),
   ]);
@@ -214,9 +222,10 @@ export async function listMyDeliveries(
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
 
-  // إرساليات الاستقبال المُسنَدة لهذه الجهة. الرؤية التشغيلية لا تعتمد على remittanceId:
-  // التوريد الجزئي لا يعني أن الطرد اختفى، وختم التسليم يبقى في السجل حتى بعد التسوية المالية.
-  // نضمّ أيضاً إرث COD=0 الذي أُنشئ DELIVERED بلا ختم كي لا تبقى طرود قديمة يتيمة عن الحساب.
+  // إرساليات الاستقبال المُسنَدة لهذه الجهة:
+  // - قيد التوصيل (toDeliver): الجديد المستلم والغير مستلم (ASSIGNED/ACCEPTED/PICKED_UP/OUT_FOR_DELIVERY/FAILED).
+  // - سُلّمت (delivered): المُسلَّم للزبون فقط والذي لم يتم التحاسب عليه أو توريده بعد (UNSETTLED/PARTIAL أو أجرته معلّقة).
+  //   بمجرد التوريد أو التسوية المالية بالكامل (SETTLED) يخرج الطرد تلقائياً ليبقى الحساب نظيفاً للمندوب.
   const consignmentSelection = {
     id: deliveryConsignments.id,
     consignmentNumber: deliveryConsignments.consignmentNumber,
@@ -268,6 +277,7 @@ export async function listMyDeliveries(
         and(
           consignmentScope,
           sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
+          sql`${deliveryConsignments.status} NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')`,
         ),
       )
       .orderBy(desc(deliveryConsignments.id)),
@@ -276,6 +286,8 @@ export async function listMyDeliveries(
         and(
           consignmentScope,
           eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+          sql`${deliveryConsignments.status} NOT IN ('CANCELLED','RETURNED','WRITTEN_OFF')`,
+          sql`(${deliveryConsignments.moneyStatus} IN ('UNSETTLED', 'PARTIAL') OR (${deliveryConsignments.moneyStatus} = 'NOT_APPLICABLE' AND ${deliveryConsignments.feeSettledAt} IS NULL AND ${deliveryConsignments.feeCollection} IN ('SHOP', 'COUNTER') AND CAST(${deliveryConsignments.deliveryFee} AS DECIMAL(15,2)) > 0))`,
         ),
       )
       .orderBy(desc(deliveryConsignments.id))
