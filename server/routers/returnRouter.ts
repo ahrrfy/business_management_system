@@ -7,6 +7,7 @@ import { z } from "zod";
 import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, suppliers, users, workOrders } from "../../drizzle/schema";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { adjustSupplierBalance, postEntry } from "../services/ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../services/accounting/postingEngine";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -1237,6 +1238,29 @@ export const returnRouter = router({
 
         // ٢) توثيق قيد محاسبي في دفتر الأستاذ العام
         const returnTotalDec = new Decimal(input.settlement.totalAmount);
+        const salesReturnSource = {
+          roleDebits: {
+            SALES_STATIONERY: returnTotalDec,
+            DELIVERY_REVENUE: money(0),
+            TAX_PAYABLE: money(0),
+            INVENTORY: money(0),
+          },
+          roleCredits: {
+            AR: returnTotalDec,
+            COGS: money(0),
+          },
+        };
+        const salesReturnIntent = createPostingIntent(
+          "RETURN_SALE_INVENTORY",
+          "RETURN",
+          [
+            debitLine("SALES_STATIONERY", returnTotalDec),
+            debitLine("DELIVERY_REVENUE", money(0)),
+            creditLine("AR", returnTotalDec),
+          ],
+          salesReturnSource,
+        );
+
         await postEntry(tx, {
           entryType: "RETURN",
           branchId: actorBranchId,
@@ -1248,6 +1272,8 @@ export const returnRouter = router({
           notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${input.settlement.method === "CASH" ? "نقدي" : input.settlement.method === "CARD" ? "بطاقة" : "رصيد متجر"})`,
           createdBy: ctx.user.id,
           createdByNameSnapshot: ctx.user.name ?? "كاشير",
+          postingIntent: salesReturnIntent,
+          postingSourceComponents: salesReturnSource,
         });
 
         // ٣) توثيق التدقيق الرقابي
@@ -1391,16 +1417,40 @@ export const returnRouter = router({
         }
 
         // ٣) توثيق قيد محاسبي في دفتر الأستاذ العام
+        const purchaseReturnSource = {
+          roleDebits: {
+            AP: returnTotalDec,
+          },
+          roleCredits: {
+            INVENTORY: returnTotalDec,
+            TAX_PAYABLE: money(0),
+            PURCHASE_PRICE_VARIANCE: money(0),
+          },
+        };
+        const purchaseReturnIntent = createPostingIntent(
+          "RETURN_PURCHASE_INVENTORY",
+          "RETURN",
+          [
+            debitLine("AP", returnTotalDec),
+            creditLine("INVENTORY", returnTotalDec),
+            creditLine("TAX_PAYABLE", money(0)),
+          ],
+          purchaseReturnSource,
+        );
+
         await postEntry(tx, {
-          entryType: "PURCHASE",
+          entryType: "RETURN",
           branchId: actorBranchId,
           supplierId: input.supplierId,
+          purchaseLiabilityAccount: "AP",
           amount: returnTotalDec.neg(),
           cost: returnTotalDec.neg(),
           profit: new Decimal(0),
           notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${supplier.name} (${input.settlement.method === "CREDIT_OFFSET" ? "معادلة ذمة" : input.settlement.method === "CASH_IN" ? "مردود نقدي" : "تحويل بنكي"})`,
           createdBy: ctx.user.id,
           createdByNameSnapshot: ctx.user.name ?? "مدير",
+          postingIntent: purchaseReturnIntent,
+          postingSourceComponents: purchaseReturnSource,
         });
 
         // ٤) توثيق التدقيق الرقابي
