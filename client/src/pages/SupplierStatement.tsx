@@ -24,6 +24,7 @@ import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatte
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { selectClsFull } from "@/lib/ui/formStyles";
+import { classifyGrniApEntry } from "@shared/grniDedupe";
 import { Info } from "lucide-react";
 
 
@@ -232,11 +233,16 @@ export default function SupplierStatement() {
     //  ⇒ مرتجع الشراء/الاسترداد/الشراء اليتيم بإشارة معكوسة والرصيد الجاري لا يتّزن مع currentBalance.
     const payTxs = d.payments.map((p) => {
       const amt = D(p.amount);
-      const reducesAP = p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE";
+      // قيد فاتورة مورّد GRNI عديمُ الـPO: فاتورةٌ مطابَقة على عدّة أوامر (FORWARD، تزيد ما ندين به)
+      // أو عكسُ فاتورة مورّد (REVERSAL، يخفضه). amount موجبٌ في الحالتين ⇒ العكس يخفض AP كالدفعة.
+      const grni = classifyGrniApEntry(p.entryType, p.dedupeKey);
+      const reducesAP = p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE" || grni === "REVERSAL";
       // signed = أثر AP الموقَّع (موجب=يزيد، سالب=يخفض). RETURN وحده amount سالب أصلاً ⇒ نستعمله كما هو.
       const signed = p.entryType === "RETURN" ? amt : (reducesAP ? amt.neg() : amt);
       const description =
-        p.entryType === "RETURN" ? "مرتجع شراء"
+        grni === "REVERSAL" ? "عكس فاتورة مورّد"
+        : grni === "FORWARD" ? "فاتورة شراء (عدّة أوامر)"
+        : p.entryType === "RETURN" ? "مرتجع شراء"
         : p.entryType === "PAYMENT_IN" ? "استرداد من المورد"
         : p.entryType === "EXCHANGE_SETTLE" ? "تسوية عبر صيرفة"
         : p.entryType === "PURCHASE" ? "شراء (بلا أمر)"
@@ -258,7 +264,9 @@ export default function SupplierStatement() {
       // §الفلترة: PAYMENT_OUT وحدها تُصنَّف مخصَّصة/غير مخصَّصة (بحسب purchaseOrderId)؛ كل
       // الأنواع الأخرى (مرتجع/استرداد/صيرفة/شراء يتيم/تصحيح افتتاحي) تقع في «أخرى».
       const filterGroup: LedgerFilterGroup =
-        p.entryType === "PAYMENT_OUT" ? (p.purchaseOrderId ? "pay_alloc" : "pay_unalloc") : "other";
+        grni === "FORWARD" ? "buy"
+        : p.entryType === "PAYMENT_OUT" ? (p.purchaseOrderId ? "pay_alloc" : "pay_unalloc")
+        : "other";
       return {
         t: new Date(p.entryDate).getTime(),
         date: fmtDate(p.entryDate),

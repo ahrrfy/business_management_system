@@ -16,6 +16,15 @@ import {
   reconcileCustomerBalances,
   reconcileSupplierBalances,
 } from "./reconcileService";
+import { supplierApEffectSql } from "./ledger/supplierApEffect";
+
+/** أعمدة القيد بالاسم المستعار `ae` — أثر AP الموحَّد (PURCHASE القديم + GRNI/ADJUST الحديث). */
+const AE_AP = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -1049,15 +1058,7 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN t.net > 0 THEN t.net ELSE 0 END), 0) AS CHAR) AS c,
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS d
       FROM (
-        SELECT ae.supplierId AS supplierId, SUM(CASE
-          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-          WHEN ae.entryType = 'PURCHASE' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'PAYMENT_OUT' THEN -CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'PAYMENT_IN' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'RETURN' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'OPENING' THEN CAST(ae.amount AS DECIMAL(15,2))
-          WHEN ae.entryType = 'EXCHANGE_SETTLE' THEN -CAST(ae.amount AS DECIMAL(15,2))
-          ELSE 0 END) AS net
+        SELECT ae.supplierId AS supplierId, SUM(${supplierApEffectSql(AE_AP)}) AS net
         FROM accountingEntries ae
         WHERE ae.supplierId IS NOT NULL AND ae.entryDate <= ${asOf}
         GROUP BY ae.supplierId
