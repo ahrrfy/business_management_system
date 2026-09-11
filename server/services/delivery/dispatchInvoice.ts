@@ -51,6 +51,8 @@ export interface DispatchInvoiceInput {
    * ومن يقرّه صراحةً يُكتب قراره في حدث الإرسالية.
    */
   partialDispatchConfirmed?: boolean;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
 }
 
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
@@ -307,6 +309,7 @@ export async function dispatchInvoiceInTx(
         settledAt: codPositive ? null : dispatchedAt,
         dispatchedBy: actor.userId,
         dispatchedAt,
+        externalTrackingRef: input.externalTrackingRef ?? null,
       });
       consignmentId = extractInsertId(cnRes);
     }

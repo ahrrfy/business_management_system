@@ -50,6 +50,8 @@ export interface DispatchInput {
   assignedUserId?: number | null;
   /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
   partialDispatchConfirmed?: boolean;
+  /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
 }
 
 function reopenedConsignmentSourceId(wo: { id: number | string; version: number | string }): number {
@@ -518,6 +520,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       status: "DISPATCHED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
+      externalTrackingRef: input.externalTrackingRef ?? null,
     });
     const consignmentId = reusableCn ? Number(reusableCn.id) : extractInsertId(cnRes!);
 

@@ -46,7 +46,6 @@
     "employeeRouter.unlinkAccount@server/routers/employeeRouter.ts",
     "globalSearchRouter.search@server/routers/globalSearchRouter.ts",
     "imageStudioRouter.aiConfig@server/routers/imageStudioRouter.ts",
-    "imageStudioRouter.proConfig@server/routers/imageStudioRouter.ts",
     "imageStudioRouter.updateAiSettings@server/routers/imageStudioRouter.ts",
     "imageStudioRouter.updateSettings@server/routers/imageStudioRouter.ts",
     "imageStudioRouter.verifyAiConnection@server/routers/imageStudioRouter.ts",

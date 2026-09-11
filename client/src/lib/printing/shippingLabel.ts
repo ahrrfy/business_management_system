@@ -36,6 +36,8 @@ export interface ShippingLabelData {
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
   deliveryPartyName?: string | null;
+  /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
+  externalTrackingRef?: string | null;
   createdAt?: Date | string | null;
   items: ShippingLabelItem[];
   /** رابط عام موقّع للملصق؛ عند المسح يفتح ملخص الطلب بدلاً من نص باركود غير مفيد. */
@@ -66,7 +68,9 @@ export async function shippingLabelHtml(
   }
   let qr = "";
   try {
-    qr = await qrCodeSvg(o.qrUrl || o.orderNumber, { margin: 1 });
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const targetPayload = o.qrUrl || (origin ? `${origin}/verify?payload=${encodeURIComponent(o.orderNumber)}` : o.orderNumber);
+    qr = await qrCodeSvg(targetPayload, { margin: 1 });
   } catch {
     qr = "";
   }
@@ -161,6 +165,7 @@ ${CAIRO_FONT}
       <div class="ft-info">
         <div><b>الطلب:</b> ${esc(o.orderNumber)} &nbsp; <b>التاريخ:</b> ${esc(fmtDate(o.createdAt))}</div>
         ${o.deliveryPartyName ? `<div><b>المندوب:</b> ${esc(o.deliveryPartyName)}</div>` : ""}
+        ${o.externalTrackingRef ? `<div><b>مرجع الشركة:</b> <span dir="ltr" style="font-family:monospace;font-weight:bold">${esc(o.externalTrackingRef)}</span></div>` : ""}
         <div class="ft-c">امسح QR لفتح معلومات الطلب</div>
       </div>
     </div>

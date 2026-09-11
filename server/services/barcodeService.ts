@@ -29,7 +29,9 @@ import type {
 // -------------------------------------------------------------------
 
 function getSecret(): string {
-  const s = process.env.BARCODE_SECRET || (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
+  const s =
+    process.env.BARCODE_SECRET ||
+    (process.env.NODE_ENV !== "production" ? "default_dev_barcode_secret_32_bytes_ok" : undefined);
   if (!s) throw new Error("BARCODE_SECRET غير مُعيَّن في .env");
   return s;
 }
@@ -59,7 +61,15 @@ export function verifyOnlineOrderLabelToken(orderNumber: string, token: string):
 /** يُفكّك payload ويتحقق من التوقيع */
 export function verifyPayload(qrPayload: string): VerifyResult {
   try {
-    const parts = qrPayload.split("|");
+    let raw = (qrPayload || "").trim();
+    // إن كان المدخل رابطاً كاملاً يحمل ?payload= أو ?p= نستخرج المعامل منه
+    if (raw.includes("payload=") || raw.includes("p=")) {
+      try {
+        const u = new URL(raw, "http://localhost");
+        raw = u.searchParams.get("payload") || u.searchParams.get("p") || raw;
+      } catch { /* تجاهل */ }
+    }
+    const parts = raw.split("|");
     if (parts.length < 6) return { valid: false };
 
     const [docType, number, date, amount, branchIdStr, receivedSig] = parts;
