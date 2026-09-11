@@ -6,8 +6,5 @@
     "WorkOrderNew.tsx"
   ],
   "deadAppImports": [],
-  "misplacedComponents": [
-    "_VoucherFormShared.tsx",
-    "expenseUiPolicy.ts"
-  ]
+  "misplacedComponents": []
 }
