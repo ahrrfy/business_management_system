@@ -539,8 +539,7 @@ async function startServer() {
     }),
   );
 
-  // حدّ صارم على **كتابة الطلب** العلنية (storefront.createOrder) — إجراء كتابة بلا مصادقة
-  // ⇒ حماية من إغراق جدول الطلبات/إنشاء عملاء وهميين بالجملة. (يسبق الحدّ العام للقراءة.)
+  // حدّ صارم على **كتابة البيع/عرض السعر** العلنية — كلاهما ينشئ عميلاً وصفوفاً بلا مصادقة.
   app.use(
     "/api/trpc",
     rateLimit({
@@ -548,8 +547,12 @@ async function startServer() {
       limit: Number(process.env.STOREFRONT_ORDER_RATE_LIMIT_MAX ?? 20),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      skip: (req) => !req.path.includes("storefront.createOrder"),
-      handler: rateLimitHandler("طلبات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+      skip: (req) =>
+        !req.path.includes("storefront.createOrder") &&
+        !req.path.includes("storefront.createQuoteRequest"),
+      handler: rateLimitHandler(
+        "طلبات أو عروض سعر كثيرة، انتظر قليلاً ثم أعد المحاولة.",
+      ),
     }),
   );
 

@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   bundleComponents,
+  customers,
   productUnits,
   productVariants,
   productPrices,
@@ -25,6 +26,7 @@ import {
   hashStorefrontGuestTrackingToken,
   parseAndVerifyStorefrontGuestTrackingToken,
 } from "../lib/storefrontGuestTracking";
+import { baghdadToday } from "./businessDay";
 import { money, toDateStr } from "./money";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
 import {
@@ -517,7 +519,7 @@ async function acceptLockedOfficialQuotation(
 
   if (
     quote.validUntil &&
-    toDateStr(new Date(quote.validUntil as unknown as string)) < toDateStr()
+    toDateStr(new Date(quote.validUntil as unknown as string)) < baghdadToday()
   ) {
     // وسم الانتهاء ليس بيعاً ولا حجزاً؛ يمنع تكرار محاولة قبول عرض فات موعده ويعطي الموظف
     // طابوراً صادقاً لإعادة التسعير.
@@ -795,15 +797,105 @@ export async function acceptStorefrontOfficialQuotationByGuestToken(
   });
 }
 
-export async function createStorefrontQuoteRequest(
-  input: CreateStorefrontQuoteRequestInput,
-): Promise<{
+export interface CreateStorefrontQuoteRequestResult {
   requestId: number;
   requestNumber: string;
   guestTrackingToken: string | null;
   guestTrackingExpiresAt: Date | null;
   idempotentReplay: boolean;
-}> {
+}
+
+const QUOTE_REQUEST_KEY_CONFLICT = appErrorMessage({
+  what: "تعذّر إرسال طلب عرض السعر",
+  why: "رمز الإرسال هذا مستعمل لطلب عميل آخر، ولا نكشف تفاصيل طلبه حمايةً لخصوصيته",
+  doThis: "حدّث الصفحة ثم أعد الإرسال، وسيُنشأ رمز جديد تلقائياً",
+});
+
+/**
+ * يستعيد ردّ طلب العرض الضائع قبل Turnstile، لكن فقط لمالك المفتاح نفسه. لا ينشئ عميلاً
+ * ولا يلمس أي سجل؛ اصطدام المفتاح بهاتف آخر يفشل بلا كشف رقم SRQ أو أي تفاصيل تجارية.
+ */
+export async function findOwnedStorefrontQuoteRequestReplay(
+  input: CreateStorefrontQuoteRequestInput,
+): Promise<CreateStorefrontQuoteRequestResult | null> {
+  const clientRequestId = input.clientRequestId.trim();
+  if (!clientRequestId) return null;
+  const phone = normalizeStorePhone(input.customerPhone);
+  return withTx(async (tx) => {
+    const replay = (
+      await tx
+        .select({
+          id: storefrontQuoteRequests.id,
+          requestNumber: storefrontQuoteRequests.requestNumber,
+          customerId: storefrontQuoteRequests.customerId,
+          guestTrackingPublicId: storefrontQuoteRequests.guestTrackingPublicId,
+          guestTrackingTokenHash:
+            storefrontQuoteRequests.guestTrackingTokenHash,
+          guestTrackingExpiresAt:
+            storefrontQuoteRequests.guestTrackingExpiresAt,
+        })
+        .from(storefrontQuoteRequests)
+        .where(eq(storefrontQuoteRequests.clientRequestId, clientRequestId))
+        .limit(1)
+    )[0];
+    if (!replay || replay.customerId == null) return null;
+
+    const owner = (
+      await tx
+        .select({
+          phone: customers.phone,
+          phone2: customers.phone2,
+          phone3: customers.phone3,
+          whatsapp: customers.whatsapp,
+        })
+        .from(customers)
+        .where(eq(customers.id, Number(replay.customerId)))
+        .limit(1)
+    )[0];
+    const ownerPhones = owner
+      ? [owner.phone, owner.phone2, owner.phone3, owner.whatsapp]
+          .filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          )
+          .map(normalizeStorePhone)
+      : [];
+    if (!owner || !ownerPhones.includes(phone)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: QUOTE_REQUEST_KEY_CONFLICT,
+      });
+    }
+    if (
+      input.authenticatedCustomer != null &&
+      Number(replay.customerId) !== input.authenticatedCustomer.customerId
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر عرض طلب السعر",
+          why: "الطلب مسجَّل على حسابٍ غير الحساب الذي سجّلتَ الدخول به",
+          doThis:
+            "سجّل الدخول بالحساب صاحب الطلب، أو تواصل معنا ومعك رقم الطلب للتحقّق",
+        }),
+      });
+    }
+    return quoteRequestGuestTrackingResult(
+      {
+        id: Number(replay.id),
+        requestNumber: replay.requestNumber,
+        guestTrackingPublicId: replay.guestTrackingPublicId,
+        guestTrackingTokenHash: replay.guestTrackingTokenHash,
+        guestTrackingExpiresAt: replay.guestTrackingExpiresAt,
+      },
+      true,
+    );
+  });
+}
+
+export async function createStorefrontQuoteRequest(
+  input: CreateStorefrontQuoteRequestInput,
+): Promise<CreateStorefrontQuoteRequestResult> {
   // قد تصل نقرتان بالمعرّف نفسه قبل التزام الأولى؛ القيد الفريد هو الحكم، وإعادة المحاولة
   // تجعل الثانية تقرأ الطلب الفائز بدلاً من تحويل إعادة الإرسال الطبيعية إلى خطأ للمستخدم.
   return retryOnDup(() => createStorefrontQuoteRequestAttempt(input));
@@ -811,13 +903,7 @@ export async function createStorefrontQuoteRequest(
 
 async function createStorefrontQuoteRequestAttempt(
   input: CreateStorefrontQuoteRequestInput,
-): Promise<{
-  requestId: number;
-  requestNumber: string;
-  guestTrackingToken: string | null;
-  guestTrackingExpiresAt: Date | null;
-  idempotentReplay: boolean;
-}> {
+): Promise<CreateStorefrontQuoteRequestResult> {
   const name = input.customerName.trim();
   const phone = normalizeStorePhone(input.customerPhone);
   const note = input.note.trim();
@@ -865,11 +951,7 @@ async function createStorefrontQuoteRequestAttempt(
       if (Number(replay.customerId) !== customerId) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: appErrorMessage({
-            what: "تعذّر إرسال طلب عرض السعر",
-            why: "رمز الإرسال هذا مستعمل لطلب عميل آخر",
-            doThis: "حدّث الصفحة ثم أعد الإرسال، وسيُنشأ رمز جديد تلقائياً",
-          }),
+          message: QUOTE_REQUEST_KEY_CONFLICT,
         });
       }
       return quoteRequestGuestTrackingResult(

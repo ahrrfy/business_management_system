@@ -33,6 +33,7 @@ import {
   acceptStorefrontOfficialQuotationByGuestToken,
   acceptStorefrontOfficialQuotationForCustomer,
   createStorefrontQuoteRequest,
+  findOwnedStorefrontQuoteRequestReplay,
   trackStorefrontQuoteRequestByGuestToken,
   trackStorefrontQuoteRequestForCustomer,
 } from "../services/storefrontQuoteRequestService";
@@ -42,6 +43,7 @@ import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService"
 import { recordStoreConversionMetric, recordStoreRecommendationClick } from "../services/storeAdmin/storeConversionMetricsService";
 import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
+import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuoteRequestGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
@@ -369,6 +371,7 @@ export const storefrontRouter = router({
         requestType: z.enum(["BULK", "CUSTOM_PRINT", "BUSINESS", "GENERAL"]),
         note: z.string().trim().min(5).max(2_000),
         clientRequestId: z.string().trim().min(8).max(80),
+        turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),
         lines: z.array(
           z.object({
             productUnitId: z.number().int().positive(),
@@ -378,11 +381,19 @@ export const storefrontRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const { customerSessionToken, ...request } = input;
+      const { customerSessionToken, turnstileToken, ...request } = input;
       const authenticatedCustomer = customerSessionToken
         ? await requireActiveStorefrontCustomer(customerSessionToken)
         : null;
-      return createStorefrontQuoteRequest({ ...request, authenticatedCustomer });
+      return createVerifiedStorefrontQuoteRequest(
+        { ...request, authenticatedCustomer },
+        turnstileToken,
+        {
+          findOwnedReplay: findOwnedStorefrontQuoteRequestReplay,
+          verifyTurnstile: verifyStorefrontTurnstile,
+          createQuoteRequest: createStorefrontQuoteRequest,
+        },
+      );
     }),
 
   /** مالك موثق: رقم SRQ مرجع فقط، والهوية تأتي من جلسة الهاتف الموقعة. */

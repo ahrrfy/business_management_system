@@ -12,6 +12,7 @@ import {
 } from "react-native";
 
 import { IraqiPhoneInput } from "@/components/iraqi-phone-input";
+import { NativeTurnstile } from "@/components/native-turnstile";
 import { ScreenContainer } from "@/components/screen-container";
 import { requestIdForFingerprint } from "@/lib/checkout-attempt";
 import { useCart } from "@/lib/cart-context";
@@ -42,6 +43,7 @@ export default function RequestQuoteScreen() {
   const [contactPreference, setContactPreference] = useState<"PHONE" | "WHATSAPP">("WHATSAPP");
   const [note, setNote] = useState("");
   const [session, setSession] = useState<VerifiedCustomerSession | null>(null);
+  const [showVerification, setShowVerification] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [requestNumber, setRequestNumber] = useState<string | null>(null);
@@ -57,7 +59,8 @@ export default function RequestQuoteScreen() {
     return () => { active = false; };
   }, []);
 
-  const submit = async () => {
+  const submitVerifiedQuoteRequest = async (turnstileToken: string) => {
+    setShowVerification(false);
     const customerPhone = normalizeIraqiPhone(phoneLocal);
     if (!name.trim() || !customerPhone || note.trim().length < 5 || requestLines.length === 0) {
       setError("أدخل الاسم ورقم هاتف عراقي ووصف احتياجك، وأضف منتجاً واحداً على الأقل إلى السلة.");
@@ -86,6 +89,7 @@ export default function RequestQuoteScreen() {
         contactPreference,
         note: note.trim(),
         clientRequestId,
+        turnstileToken,
         customerSessionToken:
           session && session.customer.phone === customerPhone ? session.token : undefined,
         lines: requestLines,
@@ -131,9 +135,18 @@ export default function RequestQuoteScreen() {
           <View style={styles.card}><View style={styles.governorates}>{governorates.map((item) => <TouchableOpacity key={item.id} accessibilityRole="button" onPress={() => setGovernorate(item.id)} style={[styles.governorate, governorate === item.id && styles.governorateActive]}><Text style={[styles.governorateText, governorate === item.id && styles.governorateTextActive]}>{item.name}</Text></TouchableOpacity>)}</View><View style={styles.divider} /><TextInput editable={!submitting} multiline placeholder="مثال: نحتاج طباعة شعار على الدفاتر، أو تجهيز 20 مكتباً، مع أي مقاسات أو ملاحظات مهمة." placeholderTextColor="#71817B" style={[styles.input, styles.noteInput]} textAlign="right" value={note} onChangeText={setNote} /></View>
           <View style={styles.notice}><MaterialIcons color="#0C5A4B" name="info-outline" size={20} /><Text style={styles.noticeText}>لا يترتب على طلب العرض دفع أو حجز أو سعر نهائي. يصدر موظف المبيعات عرضاً رسمياً بعد المراجعة، ثم تختار الموافقة عليه.</Text></View>
           {error && <View style={styles.error}><MaterialIcons color="#A34840" name="error-outline" size={19} /><Text style={styles.errorText}>{error}</Text></View>}
-          <TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled: submitting, busy: submitting }} disabled={submitting} onPress={() => void submit()} style={[styles.primary, submitting && styles.primaryDisabled]}>{submitting ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><MaterialIcons color="#FFFFFF" name="send" size={18} /><Text style={styles.primaryText}>إرسال طلب العرض</Text></>}</TouchableOpacity>
+          <TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled: submitting, busy: submitting }} disabled={submitting} onPress={() => setShowVerification(true)} style={[styles.primary, submitting && styles.primaryDisabled]}>{submitting ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><MaterialIcons color="#FFFFFF" name="send" size={18} /><Text style={styles.primaryText}>إرسال طلب العرض</Text></>}</TouchableOpacity>
         </>}
       </ScrollView>
+      <NativeTurnstile
+        visible={showVerification}
+        onCancel={() => setShowVerification(false)}
+        onFailure={() => {
+          setShowVerification(false);
+          setError("تعذر إكمال تحقق الأمان. تحقق من الاتصال ثم حاول مرة أخرى.");
+        }}
+        onVerified={submitVerifiedQuoteRequest}
+      />
     </ScreenContainer>
   );
 }

@@ -208,6 +208,7 @@ export type CreateStorefrontQuoteRequestInput = {
   requestType: "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
   note: string;
   clientRequestId: string;
+  turnstileToken: string;
   customerSessionToken?: string;
   lines: Array<{ productUnitId: number; quantity: number }>;
 };

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -511,4 +511,39 @@ describe("storefront quote requests", () => {
     expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
+  it("يعامل العرض المنتهي في يوم بغداد كمنتهٍ حتى قبل منتصف UTC", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T22:30:00.000Z")); // 01:30 في بغداد من اليوم التالي
+    try {
+      const request = await createStorefrontQuoteRequest({
+        customerName: "مكتب بغداد",
+        customerPhone: "07704567890",
+        contactPreference: "PHONE",
+        requestType: "BULK",
+        note: "نحتاج عرضاً يثبت انتهاءه مع بداية يوم بغداد التالي.",
+        clientRequestId: "quote-baghdad-expiry-request",
+        lines: [{ productUnitId: 1, quantity: 4 }],
+      });
+      const requestRow = (await db()
+        .select({ customerId: s.storefrontQuoteRequests.customerId })
+        .from(s.storefrontQuoteRequests)
+        .where(eq(s.storefrontQuoteRequests.id, request.requestId)))[0]!;
+      const official = await issueSentOfficialQuotation({
+        requestId: request.requestId,
+        customerId: Number(requestRow.customerId),
+        clientRequestId: "quote-baghdad-expiry-official",
+        validUntil: "2026-09-10",
+      });
+
+      await expect(acceptStorefrontOfficialQuotationByGuestToken(request.guestTrackingToken!))
+        .resolves.toMatchObject({ outcome: "REQUOTE_REQUIRED", quoteStatus: "EXPIRED" });
+      expect((await db()
+        .select({ status: s.quotations.status })
+        .from(s.quotations)
+        .where(eq(s.quotations.id, official.quotationId)))[0]?.status).toBe("EXPIRED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
 });
