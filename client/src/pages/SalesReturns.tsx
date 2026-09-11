@@ -33,7 +33,7 @@ const PAGE = 50;
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-export default function SalesReturns() {
+export default function SalesReturns({ embedded = false }: { embedded?: boolean } = {}) {
   // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً.
   // كل القيم نصوص؛ ""=افتراضي يُحذف من الـURL. Numeric filters تُحوَّل عند الاستخدام.
   const [filters, setFilters, resetFilters] = useUrlFilters({
@@ -190,15 +190,17 @@ export default function SalesReturns() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="سجلّ مرتجعات البيع"
-        description="البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد»."
-        actions={
-          <Link href="/returns?tab=purchases">
-            <Button variant="outline" size="sm">مرتجعات الشراء ←</Button>
-          </Link>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="سجلّ مرتجعات البيع"
+          description="البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد»."
+          actions={
+            <Link href="/returns?tab=purchases">
+              <Button variant="outline" size="sm">مرتجعات الشراء ←</Button>
+            </Link>
+          }
+        />
+      )}
 
       {pendingReturns.length > 0 && (
         <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">

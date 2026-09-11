@@ -94,7 +94,6 @@ const StudioCampaignsManager = lazy(() => import("@/pages/StudioCampaignsManager
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
-const PurchaseReturnsGovernance = lazy(() => import("@/pages/PurchaseReturnsGovernance"));
 const SupplierPaymentsGovernance = lazy(() => import("@/pages/SupplierPaymentsGovernance"));
 const PurchaseChargesGovernance = lazy(() => import("@/pages/PurchaseChargesGovernance"));
 const PurchaseIntegrityCases = lazy(() => import("@/pages/PurchaseIntegrityCases"));
@@ -124,7 +123,6 @@ const Account = lazy(() => import("@/pages/Account"));
 const Announcements = lazy(() => import("@/pages/Announcements"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
-const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
 const ChartOfAccounts = lazy(() => import("@/pages/ChartOfAccounts"));
 const StatutoryAccounting = lazy(() => import("@/pages/StatutoryAccounting"));
