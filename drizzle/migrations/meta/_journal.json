@@ -2215,38 +2215,38 @@
 			"breakpoints": true
 		},
 		{
-			"idx": 340,
+			"idx": 346,
 			"version": "5",
-			"when": 1788052413000,
-			"tag": "0340_storefront_pricing_benefit_snapshot",
+			"when": 1788148804000,
+			"tag": "0346_storefront_pricing_benefit_snapshot_rebased",
 			"breakpoints": true
 		},
 		{
-			"idx": 341,
+			"idx": 347,
 			"version": "5",
-			"when": 1788052414000,
-			"tag": "0341_storefront_quote_requests",
+			"when": 1788148805000,
+			"tag": "0347_storefront_quote_requests_rebased",
 			"breakpoints": true
 		},
 		{
-			"idx": 342,
+			"idx": 348,
 			"version": "5",
-			"when": 1788052415000,
-			"tag": "0342_storefront_quote_request_tracking",
+			"when": 1788148806000,
+			"tag": "0348_storefront_quote_request_tracking_rebased",
 			"breakpoints": true
 		},
 		{
-			"idx": 344,
+			"idx": 349,
 			"version": "5",
-			"when": 1788052417000,
-			"tag": "0344_storefront_quote_request_official_quotation_link",
+			"when": 1788148807000,
+			"tag": "0349_storefront_quote_request_official_quotation_link_rebased",
 			"breakpoints": true
 		},
 		{
-			"idx": 345,
+			"idx": 350,
 			"version": "5",
-			"when": 1788052418000,
-			"tag": "0345_storefront_first_order_coupon",
+			"when": 1788148808000,
+			"tag": "0350_storefront_first_order_coupon_rebased",
 			"breakpoints": true
 		}
 	]
