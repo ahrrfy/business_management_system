@@ -785,16 +785,22 @@ export const workOrderRouter = router({
       const whereCond = allConds.length ? and(...allConds) : undefined;
       // «اليوم» بحدود UTC (إطار businessDay) — dueDate عمود DATE فتصلح مقارنته نصّياً بحتمية.
       const todayUtc = new Date().toISOString().slice(0, 10);
+      // أمر الشغل في READY يُعدّ جاهزاً للتسليم/بانتظار العميل ما لم يكن مُسنداً لإرسالية توصيل نشطة
+      const isDispatchedReady = sql<boolean>`(${workOrders.status} = 'READY' AND EXISTS (
+        SELECT 1 FROM deliveryConsignments dc
+        WHERE dc.workOrderId = ${workOrders.id}
+          AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+      ))`;
       const rows = await db
         .select({
           status: workOrders.status,
-          c: sql<number>`count(*)`,
+          c: sql<number>`sum(case when ${isDispatchedReady} then 0 else 1 end)`,
           // الموجة ١: مجموع قيمة العمل الجاري في العمود — «مسحوبٌ منه ٥ملايين» يبيّن التركّز.
           // salePrice decimal ⇒ mysql2 يُرجعه نصّاً؛ نبقيه نصّاً ونحوّله في العرض بـmoney utils.
-          totalValue: sql<string>`COALESCE(SUM(${workOrders.salePrice}), 0)`,
-          lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} then 1 else 0 end)`,
+          totalValue: sql<string>`COALESCE(SUM(case when ${isDispatchedReady} then 0 else ${workOrders.salePrice} end), 0)`,
+          lateC: sql<number>`sum(case when ${workOrders.dueDate} is not null and ${workOrders.dueDate} < ${todayUtc} and not ${isDispatchedReady} then 1 else 0 end)`,
           // إشارةُ الفنّيّ BLOCKED — تُعرض بجانب العدّ لتفسير الاختناق («٩ منها ٤ معطَّلة»).
-          blockedC: sql<number>`sum(case when ${workOrders.kanbanState} = 'BLOCKED' then 1 else 0 end)`,
+          blockedC: sql<number>`sum(case when ${workOrders.kanbanState} = 'BLOCKED' and not ${isDispatchedReady} then 1 else 0 end)`,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
