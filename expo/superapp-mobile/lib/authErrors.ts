@@ -1,8 +1,13 @@
 const INVALID_CREDENTIALS_MESSAGE = "تحقق من بيانات الدخول ثم حاول مرة أخرى.";
 const TWO_FACTOR_MESSAGE = "تعذر التحقق من الرمز. تحقق منه وحاول مرة أخرى.";
-const CONNECTION_MESSAGE = "تعذر إتمام الاتصال المحمي الآن. تحقق من الشبكة أو أعد المحاولة لاحقاً.";
-const LOCAL_PROTECTION_MESSAGE = "فعّل قفل الشاشة أو البصمة في إعدادات الجهاز، ثم أعد المحاولة لحماية جلسة العمل.";
-const GENERIC_MESSAGE = "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.";
+const CONNECTION_MESSAGE =
+  "تعذر إتمام الاتصال المحمي الآن. تحقق من الشبكة أو أعد المحاولة لاحقاً.";
+const LOCAL_PROTECTION_MESSAGE =
+  "فعّل قفل الشاشة أو البصمة في إعدادات الجهاز، ثم أعد المحاولة لحماية جلسة العمل.";
+const LOCAL_UNLOCK_MESSAGE =
+  "لم تُفتح حماية الجهاز. استخدم البصمة أو رمز قفل الجهاز ثم أعد المحاولة.";
+const GENERIC_MESSAGE =
+  "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.";
 
 export function readableAuthError(error: unknown): string {
   const message = collectErrorSignals(error);
@@ -15,13 +20,27 @@ export function readableAuthError(error: unknown): string {
   }
 
   if (
+    /E_LOCAL_PROTECTION_(CANCELLED|FAILED)|E_SECURE_TRANSPORT_SESSION_LOCKED/.test(
+      message,
+    ) ||
+    /أُلغي فتح حماية الجهاز|لم يتم فتح جلسة العمل|protected work session was not unlocked/i.test(
+      message,
+    )
+  ) {
+    return LOCAL_UNLOCK_MESSAGE;
+  }
+
+  if (
     /invalid login (identifier|password)/i.test(message) ||
     /البريد أو كلمة المرور غير صحيحة/.test(message)
   ) {
     return INVALID_CREDENTIALS_MESSAGE;
   }
 
-  if (/two-factor/i.test(message) || /التحقق الثنائي|رمز (التحقق|الاسترداد)/.test(message)) {
+  if (
+    /two-factor/i.test(message) ||
+    /التحقق الثنائي|رمز (التحقق|الاسترداد)/.test(message)
+  ) {
     return TWO_FACTOR_MESSAGE;
   }
 
@@ -45,6 +64,7 @@ function collectErrorSignals(error: unknown, depth = 0): string {
     .map((key) => value[key])
     .filter((part): part is string => typeof part === "string");
 
-  if ("cause" in value) signals.push(collectErrorSignals(value.cause, depth + 1));
+  if ("cause" in value)
+    signals.push(collectErrorSignals(value.cause, depth + 1));
   return signals.filter(Boolean).join(" ");
 }
