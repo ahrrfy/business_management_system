@@ -139,6 +139,7 @@ describe("studio unknown barcode closure", () => {
   it("keeps the visible code literal and wires the successful link to retry", () => {
     const resolver = readFileSync(new URL("./StudioUnknownBarcodeResolver.tsx", import.meta.url), "utf8");
     const captureStation = readFileSync(new URL("./StudioCaptureStation.tsx", import.meta.url), "utf8");
+    const barcodeAliasDialog = readFileSync(new URL("../product/BarcodeAliasDialog.tsx", import.meta.url), "utf8");
     const productEdit = readFileSync(new URL("../../pages/ProductEdit.tsx", import.meta.url), "utf8");
 
     expect(resolver.match(/whitespace-pre-wrap/g)?.length).toBeGreaterThanOrEqual(3);
@@ -146,7 +147,8 @@ describe("studio unknown barcode closure", () => {
     expect(resolver).toContain("await onLinked(barcode)");
     expect(captureStation).toContain("setCode(variables.barcode)");
     expect(captureStation).toContain("shouldSubmitManualBarcode(event.key, event.defaultPrevented)");
-    expect(productEdit).toContain('unitResolutionState === "error"');
-    expect(productEdit).toContain("void unitIdQ.refetch()");
+    expect(barcodeAliasDialog).toContain('unitResolutionState === "error"');
+    expect(barcodeAliasDialog).toContain("void unitIdQ.refetch()");
+    expect(productEdit).toContain("BarcodeAliasDialog");
   });
 });
