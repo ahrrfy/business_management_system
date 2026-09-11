@@ -2,22 +2,20 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync(new URL("../Returns.tsx", import.meta.url), "utf8");
+const hub = readFileSync(new URL("../ReturnsHub.tsx", import.meta.url), "utf8");
 
-describe("واجهة مرتجعات البيع", () => {
-  it("توضح أهلية الفاتورة ودورة الإرجاع والاستبدال دون إنشاء منطق مرتجع موازٍ", () => {
-    expect(page).toContain("دليل الإرجاع والاستبدال");
-    expect(page).toContain("تحقق من الأهلية");
-    expect(page).toContain("الاستبدال للعميل فله مسار مستقل");
-    expect(page).toContain("الطلب المعلّق لا يحرّك المخزون أو المال");
-    expect(page).toContain("ردّ المال لا يتجاوز المقبوض والسقف المتاح");
-    expect(page).toContain("<ReturnComposer");
-    expect(page).not.toContain("refundRails.preflight");
+describe("بوابة المرتجعات الموحدة", () => {
+  it("يبقي مدخل المسار على البوابة الموحدة بدلاً من نسخة مرتجعات قديمة", () => {
+    expect(page).toContain('export { default } from "./ReturnsHub"');
+    expect(hub).toContain("بوابة المرتجعات الموحدة");
+    expect(hub).toContain("مرتجعات المبيعات");
+    expect(hub).toContain("مرتجعات الشراء");
   });
 
-  it("يربط الإرشاد بالحالة الموجودة: اختيار فاتورة أو مراجعة طلب", () => {
-    expect(page).toContain("selectedInvoice={selectedId != null}");
-    expect(page).toContain("approvingRequest={approvingRequestId != null}");
-    expect(page).toContain("وضع مراجعة واعتماد");
-    expect(page).toContain("وضع تسجيل المرتجع");
+  it("يحافظ على منفذي المبيعات والموردين وعلى روابط البدء العميقة", () => {
+    expect(hub).toContain("<SalesReturnPortal");
+    expect(hub).toContain("<PurchaseReturnPortal");
+    expect(hub).toContain('urlParams.get("invoice")');
+    expect(hub).toContain('urlParams.get("po")');
   });
 });
