@@ -19,11 +19,12 @@ import { unlockLocalSession } from "@/lib/localSessionUnlock";
 import { getNativeMobileToday, type MobileToday } from "@/lib/secureTransport";
 
 export type WorkspaceSnapshot = Readonly<{
-  mode: "checking" | "preview" | "signedOut" | "ready" | "error";
+  mode: "checking" | "signedOut" | "ready" | "error";
   today: MobileToday | null;
 }>;
 
 type WorkspaceAccessContextValue = WorkspaceSnapshot & {
+  clearWorkspace(): void;
   refreshWorkspace(): Promise<WorkspaceSnapshot>;
 };
 
@@ -51,6 +52,7 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
   const [unlockFailed, setUnlockFailed] = useState(false);
   const appState = useRef<AppStateStatus>(AppState.currentState);
   const checkingRef = useRef(false);
+  const refreshGenerationRef = useRef(0);
   const snapshotRef = useRef<WorkspaceSnapshot>(checking);
 
   const publish = useCallback((next: WorkspaceSnapshot) => {
@@ -58,14 +60,27 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
     setSnapshot(next);
   }, []);
 
+  const clearWorkspace = useCallback(() => {
+    refreshGenerationRef.current += 1;
+    checkingRef.current = false;
+    publish({ mode: "signedOut", today: null });
+    setUnlocked(true);
+    setUnlockFailed(false);
+  }, [publish]);
+
   const refreshWorkspace = useCallback(async (): Promise<WorkspaceSnapshot> => {
     if (checkingRef.current) return snapshotRef.current;
     checkingRef.current = true;
+    const generation = refreshGenerationRef.current;
+    const isCurrent = () => refreshGenerationRef.current === generation;
     setUnlockFailed(false);
     try {
       const transport = await getSecureTransportRuntimeStatus();
+      if (!isCurrent()) return snapshotRef.current;
       if (transport.kind === "unavailable" || !transport.configured) {
-        const next: WorkspaceSnapshot = { mode: "preview", today: null };
+        // A store build must fail closed. Rendering sample data here hid a
+        // broken native configuration behind a convincing but false product.
+        const next: WorkspaceSnapshot = { mode: "error", today: null };
         publish(next);
         setUnlocked(true);
         return next;
@@ -80,19 +95,23 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
       try {
         await unlockLocalSession();
       } catch {
+        if (!isCurrent()) return snapshotRef.current;
         publish(checking);
         setUnlocked(false);
         setUnlockFailed(true);
         return checking;
       }
 
+      if (!isCurrent()) return snapshotRef.current;
       setUnlocked(true);
       try {
         const today = await getNativeMobileToday();
+        if (!isCurrent()) return snapshotRef.current;
         const next: WorkspaceSnapshot = { mode: "ready", today };
         publish(next);
         return next;
       } catch {
+        if (!isCurrent()) return snapshotRef.current;
         const next: WorkspaceSnapshot = { mode: "error", today: null };
         publish(next);
         return next;
@@ -108,6 +127,8 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
       const wasActive = appState.current === "active";
       appState.current = next;
       if (next !== "active") {
+        refreshGenerationRef.current += 1;
+        checkingRef.current = false;
         publish(checking);
         setUnlocked(false);
         setUnlockFailed(false);
@@ -119,7 +140,7 @@ export function WorkspaceAccessProvider({ children }: PropsWithChildren) {
   }, [publish, refreshWorkspace]);
 
   return (
-    <WorkspaceAccessContext.Provider value={{ ...snapshot, refreshWorkspace }}>
+    <WorkspaceAccessContext.Provider value={{ ...snapshot, clearWorkspace, refreshWorkspace }}>
       {Platform.OS === "web" ? null : <NativeCaptureGuard />}
       {unlocked ? children : (
         <View accessibilityLabel="شاشة حماية سوبر العربية" style={styles.lockedPage}>

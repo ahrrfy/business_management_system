@@ -11,10 +11,9 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const access = useWorkspaceAccess();
-  const preview = access.mode === "preview";
-  const ownerCenter = preview || (access.mode === "ready" && access.today?.navigation.ownerCenter === true);
-  const personal = preview || access.mode === "signedOut" || access.mode === "error" || (access.mode === "ready" && access.today?.navigation.personal === true);
-  const work = preview || (access.mode === "ready" && access.today?.navigation.work === true);
+  const ownerCenter = access.mode === "ready" && access.today?.navigation.ownerCenter === true;
+  const personal = access.mode === "signedOut" || access.mode === "error" || (access.mode === "ready" && access.today?.navigation.personal === true);
+  const work = access.mode === "ready" && access.today?.navigation.work === true;
 
   useEffect(() => {
     const current = segments.at(-1);

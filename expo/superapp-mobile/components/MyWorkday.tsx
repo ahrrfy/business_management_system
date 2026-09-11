@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 
-import { AnimatedReveal } from "@/components/AnimatedReveal";
-import { ExperienceState, SyncStatus } from "@/components/ExperienceState";
-import { AnimatedProgress, AppMasthead, Card, SectionTitle, StatusDot } from "@/components/Ui";
+import { ExperienceState } from "@/components/ExperienceState";
+import { Card, SectionTitle, StatusDot } from "@/components/Ui";
 import { colors, radius, space } from "@/constants/theme";
-import { PreviewBanner } from "@/components/PreviewBanner";
 import { SensitivePayslipCard } from "@/components/SensitivePayslipCard";
 import { SelfLeaveCard } from "@/components/SelfLeaveCard";
 import { FocusedTaskCard } from "@/components/FocusedTaskCard";
@@ -22,7 +18,7 @@ import {
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
 import { exportPersonalAttendancePdf } from "@/lib/attendanceExport";
 
-type WorkdayState = "loading" | "preview" | "signedOut" | "ready" | "error";
+type WorkdayState = "loading" | "signedOut" | "ready" | "error";
 
 function time(value: string | null): string {
   if (!value) return "—";
@@ -62,7 +58,7 @@ export function MyWorkday() {
       const transport = await getSecureTransportRuntimeStatus();
       if (transport.kind === "unavailable" || !transport.configured) {
         setToday(null);
-        setState("preview");
+        setState("error");
         return;
       }
       if (transport.session !== "present") {
@@ -92,7 +88,6 @@ export function MyWorkday() {
   }, [refresh]);
 
   if (state === "loading") return <WorkdayMessage loading onRefresh={refresh} />;
-  if (state === "preview") return <PreviewWorkday onRefresh={refresh} />;
   if (state === "signedOut") return <SignedOutWorkday onRefresh={refresh} />;
   if (state === "error" || !today) return <WorkdayMessage onRefresh={refresh} />;
   return <LiveWorkday attendanceHistory={attendanceHistory} onRefresh={refresh} today={today} />;
@@ -112,126 +107,6 @@ function WorkdayMessage({ loading = false, onRefresh }: { loading?: boolean; onR
         state={loading ? "loading" : "error"}
         title={loading ? "التحقق من الجلسة المحمية" : "تعذر تحديث يوم العمل"}
       />
-    </ScrollView>
-  );
-}
-
-function PreviewWorkday({ onRefresh }: { onRefresh(): Promise<void> }) {
-  const [feedback, setFeedback] = useState<"correction" | "permission" | null>(null);
-
-  const previewAction = (next: "correction" | "permission") => {
-    Haptics.selectionAsync().catch(() => undefined);
-    setFeedback(next);
-  };
-
-  return (
-    <ScrollView
-      accessibilityLabel="يومي"
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl onRefresh={() => void onRefresh()} refreshing={false} tintColor={colors.brand} />}
-      style={styles.page}
-    >
-      <AppMasthead
-        avatar="ع"
-        name="علي حسن"
-        role="موظف مبيعات"
-        subtitle="الخميس، 10 أيلول 2026"
-        title="يومي"
-      >
-        <PreviewBanner tone="dark" />
-        <View style={styles.dayStatusPanel}>
-          <View style={styles.dayStatusIcon}><Ionicons color="#35D796" name="radio-button-on" size={22} /></View>
-          <View style={styles.identityBody}>
-            <Text style={styles.dayStatusTitle}>أنت على رأس العمل</Text>
-            <Text style={styles.dayStatusText}>متبقي 3 ساعات و40 دقيقة · فرع المنصور</Text>
-          </View>
-          <Text style={styles.dayStatusPercent}>40%</Text>
-        </View>
-      </AppMasthead>
-
-      <AnimatedReveal delay={80} style={styles.shiftSummary}>
-        <View style={styles.shiftTimes}>
-          <View style={styles.shiftTimeBlock}>
-            <Text style={styles.shiftTime}>8:00 ص</Text>
-            <Text style={styles.shiftLabel}>بداية الدوام</Text>
-          </View>
-          <View style={styles.shiftTimeBlock}>
-            <Text style={styles.shiftTime}>4:00 م</Text>
-            <Text style={styles.shiftLabel}>نهاية الدوام</Text>
-          </View>
-        </View>
-        <AnimatedProgress label="انقضى 40% من الوردية" tone="light" value={40} />
-        <View style={styles.shiftFacts}>
-          <View style={styles.shiftFact}>
-            <Ionicons color={colors.brand} name="location-outline" size={19} />
-            <View><Text style={styles.shiftFactValue}>فرع المنصور</Text><Text style={styles.shiftFactLabel}>موقع العمل</Text></View>
-          </View>
-          <View style={styles.shiftFact}>
-            <Ionicons color={colors.brand} name="time-outline" size={19} />
-            <View><Text style={styles.shiftFactValue}>8 ساعات</Text><Text style={styles.shiftFactLabel}>مدة الوردية</Text></View>
-          </View>
-        </View>
-        <View style={styles.presenceStatusRow}>
-          <SyncStatus label="داخل نطاق الفرع" state="synced" />
-          <SyncStatus label="مزامن منذ دقيقة" state="synced" />
-        </View>
-      </AnimatedReveal>
-
-      <AnimatedReveal delay={140}>
-      <Pressable
-        accessibilityHint="يعرض رسالة توضيحية فقط في وضع المعاينة"
-        accessibilityRole="button"
-        onPress={() => Alert.alert("تسجيل الانصراف", "هذه معاينة تصميمية؛ لا تُرسل أي بصمة إلى الخادم.")}
-        style={({ pressed }) => [styles.attendanceActionPremium, pressed && styles.previewPressed]}
-      >
-        <View style={styles.attendanceActionIcon}><Ionicons color={colors.surface} name="log-out-outline" size={25} /></View>
-        <View style={styles.identityBody}>
-          <Text style={styles.attendanceActionTitle}>تسجيل الانصراف</Text>
-          <Text style={styles.attendanceActionHint}>سيطلب التطبيق تأكيد الجهاز قبل التسجيل</Text>
-        </View>
-        <Ionicons color="#D8DDFC" name="chevron-back" size={19} />
-      </Pressable>
-      </AnimatedReveal>
-
-      <View style={styles.supportActions}>
-        <Pressable accessibilityRole="button" onPress={() => previewAction("correction")} style={({ pressed }) => [styles.supportAction, pressed && styles.previewPressed]}>
-          <Ionicons color={colors.brand} name="create-outline" size={20} />
-          <Text style={styles.supportActionText}>تصحيح بصمة</Text>
-        </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => previewAction("permission")} style={({ pressed }) => [styles.supportAction, pressed && styles.previewPressed]}>
-          <Ionicons color={colors.brand} name="calendar-outline" size={20} />
-          <Text style={styles.supportActionText}>طلب إذن سريع</Text>
-        </Pressable>
-      </View>
-      {feedback ? (
-        <ExperienceState
-          compact
-          detail={feedback === "correction" ? "ستُرسل الملاحظة للمراجعة بعد الدخول الآمن؛ لم تتغير البصمة الآن." : "ستُستكمل المدة والسبب بعد الدخول الآمن؛ لم يُرسل طلب الآن."}
-          state="pending"
-          title={feedback === "correction" ? "تصحيح الحضور جاهز للمتابعة" : "طلب الإذن جاهز للمتابعة"}
-        />
-      ) : null}
-
-      <View style={styles.sectionRow}>
-        <View><Text style={styles.previewSectionTitle}>مهمتي التالية</Text><Text style={styles.sectionCaption}>خطوتك الأهم في الوردية</Text></View>
-        <View style={styles.taskCountBadge}><Text style={styles.taskCountText}>1 من 1</Text></View>
-      </View>
-      <AnimatedReveal delay={210}>
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => Alert.alert("جرد رف المنتجات", "تفتح المهمة بتفاصيلها بعد تسجيل الدخول الآمن.")}
-        style={({ pressed }) => [styles.taskRowPremium, pressed && styles.previewPressed]}
-      >
-        <View style={styles.taskIcon}><Ionicons color={colors.brand} name="scan-outline" size={23} /></View>
-        <View style={styles.identityBody}>
-          <Text style={styles.taskTitle}>جرد رف المنتجات</Text>
-          <Text style={styles.taskText}>المنطقة B · الطابق الأول</Text>
-          <View style={styles.taskMeta}><Ionicons color={colors.warning} name="time-outline" size={14} /><Text style={styles.taskMetaText}>قبل 3:30 م</Text></View>
-        </View>
-        <Ionicons color={colors.mutedInk} name="chevron-back" size={18} />
-      </Pressable>
-      </AnimatedReveal>
-      <RefreshButton onRefresh={onRefresh} />
     </ScrollView>
   );
 }
