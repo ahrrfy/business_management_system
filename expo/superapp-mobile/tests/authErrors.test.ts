@@ -24,6 +24,12 @@ describe("readableAuthError", () => {
     );
   });
 
+  it("explains when the device itself needs a secure lock", () => {
+    expect(readableAuthError({ code: "E_LOCAL_PROTECTION_REQUIRED" })).toBe(
+      "فعّل قفل الشاشة أو البصمة في إعدادات الجهاز، ثم أعد المحاولة لحماية جلسة العمل.",
+    );
+  });
+
   it("keeps unknown failures generic and never repeats their contents", () => {
     expect(readableAuthError(new Error("sensitive backend detail"))).toBe(
       "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.",

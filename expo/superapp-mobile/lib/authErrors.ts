@@ -1,10 +1,18 @@
 const INVALID_CREDENTIALS_MESSAGE = "تحقق من بيانات الدخول ثم حاول مرة أخرى.";
 const TWO_FACTOR_MESSAGE = "تعذر التحقق من الرمز. تحقق منه وحاول مرة أخرى.";
 const CONNECTION_MESSAGE = "تعذر إتمام الاتصال المحمي الآن. تحقق من الشبكة أو أعد المحاولة لاحقاً.";
+const LOCAL_PROTECTION_MESSAGE = "فعّل قفل الشاشة أو البصمة في إعدادات الجهاز، ثم أعد المحاولة لحماية جلسة العمل.";
 const GENERIC_MESSAGE = "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.";
 
 export function readableAuthError(error: unknown): string {
   const message = collectErrorSignals(error);
+
+  if (
+    /E_LOCAL_PROTECTION_REQUIRED/.test(message) ||
+    /قفلاً آمناً|قفل الشاشة|بصمة|رمز الجهاز/.test(message)
+  ) {
+    return LOCAL_PROTECTION_MESSAGE;
+  }
 
   if (
     /invalid login (identifier|password)/i.test(message) ||
