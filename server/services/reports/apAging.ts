@@ -5,6 +5,27 @@ import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { StatementPeriod } from "./shared";
+import {
+  isSupplierApLedgerEntrySql,
+  isSupplierApRecognitionSql,
+  supplierApEffectSql,
+} from "../ledger/supplierApEffect";
+
+/** أعمدة القيد بالاسم المستعار `ae` للاستعمال في استعلامات SQL الخام أدناه. */
+const AE = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
+
+/** أعمدة القيد كمراجع Drizzle للاستعمال في مُنشئ الاستعلام (getSupplierStatement). */
+const ACCT = {
+  entryType: accountingEntries.entryType,
+  amount: accountingEntries.amount,
+  liabilityAccount: accountingEntries.purchaseLiabilityAccount,
+  dedupeKey: accountingEntries.dedupeKey,
+} as const;
 
 export interface APAgingRow {
   supplierId: number;
@@ -35,11 +56,7 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   const branchBalanceJoin = opts.branchId
     ? sql`LEFT JOIN (
         SELECT ae.supplierId,
-          COALESCE(SUM(CASE
-            WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-            WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','OPENING') THEN ae.amount
-            WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-            ELSE 0 END), 0) AS balance
+          COALESCE(SUM(${supplierApEffectSql(AE)}), 0) AS balance
         FROM accountingEntries ae
         WHERE ae.supplierId IS NOT NULL AND ae.branchId = ${opts.branchId}
         GROUP BY ae.supplierId
@@ -79,17 +96,11 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       ${branchFilter}
     LEFT JOIN (
       SELECT ae.purchaseOrderId,
-        MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
-        COALESCE(SUM(CASE
-          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-          WHEN ae.entryType = 'PURCHASE' THEN ae.amount
-          WHEN ae.entryType = 'RETURN' THEN ae.amount
-          WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount
-          WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-          ELSE 0 END), 0) AS balance
+        MIN(CASE WHEN ${isSupplierApRecognitionSql(AE)} THEN ae.entryDate END) AS recognitionDate,
+        COALESCE(SUM(${supplierApEffectSql(AE, { includeOpening: false })}), 0) AS balance
       FROM accountingEntries ae
       WHERE ae.purchaseOrderId IS NOT NULL AND ae.supplierId IS NOT NULL
-        AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
+        AND ${isSupplierApLedgerEntrySql(AE, { includeOpening: false })}
       GROUP BY ae.purchaseOrderId
     ) gl ON gl.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
@@ -197,21 +208,15 @@ async function supplierOpeningBalance(supplierId: number, from?: string, branchI
   // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد ذمّة المورد عبر بيت صيرفة يُقيَّد EXCHANGE_SETTLE ويخفّض AP
   // (مرآة reconcileSupplierBalances السطر ١٨٠). كان مُغفَلاً من المُرحَّل ⇒ الكشف لا يتّزن مع الرصيد
   // الجاري عند وجود تسديد صيرفة. نُدرجه بإشارة سالبة هنا وفي حركة الفترة أدناه (متماثلاً فلا انحراف).
+  // أثر AP الموحَّد (القديم PURCHASE + الحديث GRNI/ADJUST)، بلا OPENING (يُحسَب منفصلاً أعلاه).
   const entriesRow = await db
     .select({
-      v: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'        THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        ELSE 0 END), 0)`,
+      v: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        inArray(accountingEntries.entryType, ["PURCHASE", "PAYMENT_OUT", "PAYMENT_IN", "RETURN", "EXCHANGE_SETTLE"]),
+        isSupplierApLedgerEntrySql(ACCT, { includeOpening: false }),
         eq(accountingEntries.supplierId, supplierId),
         branchCond,
         sql`${accountingEntries.entryDate} < ${from}`
@@ -276,11 +281,12 @@ export async function getSupplierStatement(
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
-  // نجمع مشتريات كل أمر من GL باستعلام مستقل. الاستعلام الفرعي المرتبط أعاد صفراً
-  // في MySQL/Drizzle في بعض الخطط، بينما التجميع الصريح يثبت أن المصدر هو PURCHASE
-  // الموثّق ويمنع الرجوع إلى purchaseOrders.total الاسمي.
+  // نجمع مشتريات كل أمر من GL باستعلام مستقل. «اعتراف الشراء» يوحّد النموذجين: قيد PURCHASE
+  // القديم، وقيد فاتورة المورّد GRNI/ADJUST الحديث (المصدر: supplierApEffect.ts). بلا هذا التوحيد
+  // كان الأمر الحديث يُسقَط من الكشف لغياب قيد PURCHASE بينما رصيده صحيح.
+  const recognitionSql = isSupplierApRecognitionSql(ACCT);
   const periodPurchasePredicate = sql`
-    ${accountingEntries.entryType} = 'PURCHASE'
+    ${recognitionSql}
     ${from ? sql`AND ${accountingEntries.entryDate} >= ${from}` : sql``}
     ${to ? sql`AND ${accountingEntries.entryDate} <= ${to}` : sql``}
   `;
@@ -288,18 +294,15 @@ export async function getSupplierStatement(
     ? await db
         .select({
           purchaseOrderId: accountingEntries.purchaseOrderId,
-          total: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
-          periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
-          balance: sql<string>`COALESCE(SUM(CASE
-            WHEN ${accountingEntries.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ${accountingEntries.amount}
-            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -${accountingEntries.amount}
-            ELSE 0 END), 0)`,
-          recognitionDate: sql<Date | null>`MIN(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.entryDate} END)`,
+          total: sql<string>`COALESCE(SUM(CASE WHEN ${recognitionSql} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+          periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+          balance: sql<string>`COALESCE(SUM(${supplierApEffectSql(ACCT, { includeOpening: false })}), 0)`,
+          recognitionDate: sql<Date | null>`MIN(CASE WHEN ${recognitionSql} THEN ${accountingEntries.entryDate} END)`,
         })
         .from(accountingEntries)
         .where(
           and(
-            inArray(accountingEntries.entryType, ["PURCHASE", "RETURN", "PAYMENT_IN", "PAYMENT_OUT", "EXCHANGE_SETTLE"]),
+            isSupplierApLedgerEntrySql(ACCT, { includeOpening: false }),
             inArray(accountingEntries.purchaseOrderId, pos.map((p) => Number(p.id))),
           ),
         )

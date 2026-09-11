@@ -29,6 +29,7 @@ import {
 import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
+import { supplierApEffectSql } from "./ledger/supplierApEffect";
 
 export interface ReconcileResult {
   entity: string;
@@ -640,15 +641,13 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
   const entrySum = await db
     .select({
       supplierId: accountingEntries.supplierId,
-      ap: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'OPENING'     THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        ELSE 0 END), 0)`,
+      // مصدر أثر AP الموحَّد: القديم (PURCHASE) + الحديث (GRNI/ADJUST). راجع supplierApEffect.ts.
+      ap: sql<string>`COALESCE(SUM(${supplierApEffectSql({
+        entryType: accountingEntries.entryType,
+        amount: accountingEntries.amount,
+        liabilityAccount: accountingEntries.purchaseLiabilityAccount,
+        dedupeKey: accountingEntries.dedupeKey,
+      })}), 0)`,
     })
     .from(accountingEntries)
     .where(sql`${accountingEntries.supplierId} IS NOT NULL`)

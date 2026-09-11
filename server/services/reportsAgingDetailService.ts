@@ -19,6 +19,19 @@ import { sql } from "drizzle-orm";
 import { openBalanceExpr } from "@shared/predicates/openBalance";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import {
+  isSupplierApLedgerEntrySql,
+  isSupplierApRecognitionSql,
+  supplierApEffectSql,
+} from "./ledger/supplierApEffect";
+
+/** أعمدة القيد بالاسم المستعار `ae` (SQL خام) — أثر AP الموحَّد: القديم PURCHASE + الحديث GRNI. */
+const AE = {
+  entryType: sql`ae.entryType`,
+  amount: sql`ae.amount`,
+  liabilityAccount: sql`ae.purchaseLiabilityAccount`,
+  dedupeKey: sql`ae.dedupeKey`,
+} as const;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -119,16 +132,12 @@ export async function getArApAgingDetail(opts: {
           LEFT JOIN suppliers s ON s.id = po.supplierId
           LEFT JOIN (
             SELECT ae.purchaseOrderId,
-              MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
-              COALESCE(SUM(CASE
-                WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
-                WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
-                WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
-                ELSE 0 END), 0) AS balance
+              MIN(CASE WHEN ${isSupplierApRecognitionSql(AE)} THEN ae.entryDate END) AS recognitionDate,
+              COALESCE(SUM(${supplierApEffectSql(AE, { includeOpening: false })}), 0) AS balance
             FROM accountingEntries ae
             WHERE ae.purchaseOrderId IS NOT NULL
               AND ae.supplierId IS NOT NULL
-              AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
+              AND ${isSupplierApLedgerEntrySql(AE, { includeOpening: false })}
             GROUP BY ae.purchaseOrderId
           ) gl ON gl.purchaseOrderId = po.id
           WHERE po.poStatus IN ('CONFIRMED', 'RECEIVED')
