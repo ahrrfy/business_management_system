@@ -37,6 +37,8 @@ import {
   printPurchaseReturnVoucher,
   type PrintPurchaseReturnData,
 } from "./printThermalReturnReceipt";
+import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
+import type { InvoiceLine } from "@/components/invoice/types";
 
 export interface PurchaseCartItem {
   id: string;
@@ -46,6 +48,8 @@ export interface PurchaseCartItem {
   barcode?: string | null;
   quantity: number;
   unitPrice: string;
+  unit?: string;
+  conversionFactor?: number;
 }
 
 interface PurchaseReturnPortalProps {
@@ -55,9 +59,13 @@ interface PurchaseReturnPortalProps {
 
 export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: PurchaseReturnPortalProps) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const branches = trpc.branches.list.useQuery();
+  const activeBranchId = me.data?.branchId ? Number(me.data.branchId) : Number(branches.data?.[0]?.id || 1);
 
   const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null);
   const [purchaseRef, setPurchaseRef] = useState(initialPoRef ?? "");
+  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialPoRef) {
@@ -85,6 +93,55 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
     return purchaseCart.reduce((sum, item) => sum + item.quantity, 0);
   }, [purchaseCart]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      el?.focus();
+      el?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const handleAddProductFromSearch = (line: InvoiceLine) => {
+    const variantId = line.variantId;
+    const factor = Math.max(1, Number(line.conversionFactor) || 1);
+    const costStr = String(line.price || line.costBase || "0");
+
+    setPurchaseCart((prev) => {
+      const existingIdx = prev.findIndex((i) => i.variantId === variantId);
+      if (existingIdx >= 0) {
+        const target = prev[existingIdx];
+        const updated = [...prev];
+        const newQty = target.quantity + (line.qty || 1);
+        const [moved] = updated.splice(existingIdx, 1);
+        const itemToPlace = { ...moved, quantity: newQty };
+        setLastAddedId(itemToPlace.id);
+        return [itemToPlace, ...updated];
+      }
+      const newId = `${variantId}-${Date.now()}`;
+      setLastAddedId(newId);
+      return [
+        {
+          id: newId,
+          variantId,
+          productUnitId: line.productUnitId,
+          productName: line.name,
+          barcode: line.barcode ?? null,
+          quantity: line.qty || 1,
+          unitPrice: costStr,
+          unit: line.unit || "قطعة",
+          conversionFactor: factor,
+        },
+        ...prev,
+      ];
+    });
+
+    notify.ok(`أُضيف لمرتجع المشتريات: ${line.name}`);
+  };
+
   const [purchaseScanPending, setPurchaseScanPending] = useState(false);
   const handlePurchaseScan = async (barcodeToScan?: string) => {
     const raw = (barcodeToScan ?? purchaseBarcode).trim();
@@ -102,14 +159,18 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
       setPurchaseCart((prev) => {
         const existingIdx = prev.findIndex((i) => i.variantId === variantId);
         if (existingIdx >= 0) {
+          const target = prev[existingIdx];
           const updated = [...prev];
-          updated[existingIdx].quantity += 1;
-          return updated;
+          const [moved] = updated.splice(existingIdx, 1);
+          const itemToPlace = { ...moved, quantity: target.quantity + 1 };
+          setLastAddedId(itemToPlace.id);
+          return [itemToPlace, ...updated];
         }
+        const newId = `${variantId}-${Date.now()}`;
+        setLastAddedId(newId);
         return [
-          ...prev,
           {
-            id: `${variantId}-${Date.now()}`,
+            id: newId,
             variantId,
             productUnitId: res.productUnitId,
             productName: res.productName,
@@ -117,6 +178,7 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
             quantity: 1,
             unitPrice: costStr,
           },
+          ...prev,
         ];
       });
 
@@ -165,13 +227,19 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
       const res = await purchaseReturnMutation.mutateAsync({
         supplierId: selectedSupplierId,
         reference: purchaseRef.trim() || undefined,
-        items: purchaseCart.map((i) => ({
-          variantId: i.variantId,
-          productName: i.productName,
-          barcode: i.barcode,
-          quantity: i.quantity,
-          unitCost: i.unitPrice,
-        })),
+        items: purchaseCart.map((i) => {
+          const factor = Math.max(1, Number(i.conversionFactor) || 1);
+          const baseQty = Math.round(i.quantity * factor);
+          const totalLineCost = Number(i.unitPrice) * i.quantity;
+          const baseUnitCost = (totalLineCost / baseQty).toFixed(2);
+          return {
+            variantId: i.variantId,
+            productName: i.productName,
+            barcode: i.barcode,
+            quantity: baseQty,
+            unitCost: baseUnitCost,
+          };
+        }),
         settlement: {
           method: purchaseSettlement,
           totalAmount: String(purchaseTotal),
@@ -205,26 +273,28 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
       {/* العمود الرئيسي: المورد وسلة مرتجع الشراء */}
-      <div className="lg:col-span-8 space-y-5">
-        {/* بطاقة المورد والبيانات المرجعية */}
+      <div className="lg:col-span-8 space-y-3.5">
+        {/* بطاقة المورد والبيانات المرجعية — تصميم رشيق ومضغوط للأعلى */}
         <Card className="shadow-xs border-blue-500/20">
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-bold flex items-center justify-between text-blue-700 dark:text-blue-400">
-              <div className="flex items-center gap-2">
-                <Building2 className="size-4" aria-hidden />
-                <span>اختيار المورد وكشف الرصيد الحالي</span>
-              </div>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-2 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <CardContent className="p-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 items-end">
               {/* قائمة الموردين */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground">
-                  المورد المطلوب إرجاع البضاعة له *
-                </label>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-foreground">
+                    المورد المطلوب إرجاع البضاعة له *
+                  </label>
+                  {selectedSupplier && (
+                    <Badge
+                      variant={Number(selectedSupplier.currentBalance || 0) > 0 ? "destructive" : "secondary"}
+                      className="font-mono text-[10px] px-1.5 py-0"
+                    >
+                      رصيده: {fmt(String(selectedSupplier.currentBalance || "0"))} د.ع
+                    </Badge>
+                  )}
+                </div>
                 <AppSelect
                   value={selectedSupplierId ? String(selectedSupplierId) : ""}
                   onValueChange={(val) => setSelectedSupplierId(val ? Number(val) : null)}
@@ -240,106 +310,88 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
               </div>
 
               {/* الرقم المرجعي لفاتورة الشراء */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground">
-                  الرقم المرجعي للشراء (اختياري)
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-foreground">
+                  رقم أمر الشراء / المرجع (اختياري)
                 </label>
                 <Input
                   value={purchaseRef}
                   onChange={(e) => setPurchaseRef(e.target.value)}
-                  placeholder="مثال: فاتورة شراء #PO-5432..."
-                  className="h-9 text-xs"
+                  placeholder="PO-5432 أو 5432..."
+                  className="h-8.5 text-xs"
                 />
               </div>
-            </div>
 
-            {/* كارت تفاصيل رصيد المورد المختار */}
-            {selectedSupplier && (
-              <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/50 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs">
-                <div>
-                  <span className="text-muted-foreground">المورد المحدد: </span>
-                  <strong className="text-foreground text-sm">{selectedSupplier.name}</strong>
-                  {selectedSupplier.phone && (
-                    <span className="text-muted-foreground mr-2 font-mono">({selectedSupplier.phone})</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">الرصيد الدفتري الحالي:</span>
-                  <Badge
-                    variant={Number(selectedSupplier.currentBalance || 0) > 0 ? "destructive" : "secondary"}
-                    className="font-mono text-xs px-2 py-0.5"
-                  >
-                    {fmt(String(selectedSupplier.currentBalance || "0"))} د.ع
-                  </Badge>
-                </div>
+              {/* سبب الإرجاع */}
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-foreground">
+                  سبب الإرجاع للمورد
+                </label>
+                <Input
+                  value={purchaseReason}
+                  onChange={(e) => setPurchaseReason(e.target.value)}
+                  placeholder="عيب مصنعي، صلاحية، زائد عن الحاجة..."
+                  className="h-8.5 text-xs"
+                />
               </div>
-            )}
-
-            {/* سبب الإرجاع */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">
-                سبب المردود للمورد
-              </label>
-              <Input
-                value={purchaseReason}
-                onChange={(e) => setPurchaseReason(e.target.value)}
-                placeholder="مثال: عيب مصنعي، انتهاء صلاحية، بضاعة زائدة عن الحاجة..."
-                className="h-9 text-xs"
-              />
             </div>
           </CardContent>
         </Card>
 
         {/* سلة أصناف مرتجع الشراء */}
         <Card className="shadow-xs">
-          <CardHeader className="p-4 pb-2">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+          <CardHeader className="p-3 pb-2 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-sm font-bold flex items-center gap-2">
                 <Package className="size-4 text-blue-600" aria-hidden />
                 <span>أصناف مرتجع المورد ({purchaseCart.length})</span>
+                {purchaseTotalPieces > 0 && (
+                  <Badge variant="secondary" className="text-[11px] font-normal px-2 py-0">
+                    إجمالي القطع: {purchaseTotalPieces}
+                  </Badge>
+                )}
               </CardTitle>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handlePurchaseScan();
-                }}
-                className="flex items-center gap-2 flex-1 sm:max-w-md"
-              >
-                <div className="relative flex-1">
-                  <Input
-                    ref={purchaseBarcodeRef}
-                    value={purchaseBarcode}
-                    onChange={(e) => setPurchaseBarcode(e.target.value)}
-                    placeholder="امسح باركود الصنف واضغط Enter..."
-                    className="h-9 text-xs pr-8 font-mono"
-                  />
-                  <ScanLine className="absolute right-2.5 top-2.5 size-4 text-muted-foreground pointer-events-none" />
-                </div>
+              {purchaseCart.length > 0 && (
                 <Button
-                  type="submit"
+                  type="button"
+                  variant="ghost"
                   size="sm"
-                  disabled={purchaseScanPending || !purchaseBarcode.trim()}
-                  className="h-9 shrink-0 text-xs px-3 bg-blue-600 hover:bg-blue-700 text-white"
+                  onClick={() => setPurchaseCart([])}
+                  className="h-7 text-xs text-muted-foreground hover:text-destructive px-2"
                 >
-                  {purchaseScanPending ? "إضافة..." : "إضافة للمرتجع"}
+                  <Trash2 className="size-3 ml-1" />
+                  تفريغ السلة
                 </Button>
-              </form>
+              )}
             </div>
+
+            {/* المكون الموحد للبحث عن منتجات المورد وإضافتها للسلة كما في الكاشير */}
+            <ProductSearchBar
+              invoiceType="PURCHASE_RETURN"
+              branchId={activeBranchId}
+              tier="RETAIL"
+              onAddProduct={handleAddProductFromSearch}
+              onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+              placeholder="ابحث بالاسم أو SKU أو امسح الباركود لإدراج بضاعة المورد بسعر التكلفة... (F2)"
+              compact={true}
+              autoFocus={true}
+            />
           </CardHeader>
-          <CardContent className="p-4 pt-2">
+
+          <CardContent className="p-3 pt-0">
             {purchaseCart.length === 0 ? (
-              <div className="py-12 border-2 border-dashed rounded-xl text-center flex flex-col items-center justify-center gap-2 text-muted-foreground bg-muted/10">
-                <Building2 className="size-10 text-muted-foreground/40" />
+              <div className="py-10 border-2 border-dashed rounded-xl text-center flex flex-col items-center justify-center gap-2 text-muted-foreground bg-muted/10">
+                <Building2 className="size-9 text-muted-foreground/40" />
                 <p className="font-semibold text-sm">سلة مرتجع الشراء فارغة</p>
                 <p className="text-xs max-w-sm">
-                  امسح باركود الأصناف المراد إرجاعها للمورد لإدراجها بسعر التكلفة وكميتها بدقة
+                  استخدم حقل البحث الموحد أعلاه بالاسم أو مسح الباركود لإدراج أصناف المورد بالتكلفة الأصلية
                 </p>
               </div>
             ) : (
-              <div className="border rounded-xl overflow-hidden">
-                <div className="overflow-x-auto">
+              <div className="border rounded-xl overflow-hidden shadow-2xs">
+                <div className="max-h-[460px] overflow-y-auto overflow-x-auto">
                   <table className="w-full text-xs text-right">
-                    <thead className="bg-muted/60 text-muted-foreground font-semibold border-b">
+                    <thead className="sticky top-0 bg-muted/95 backdrop-blur z-10 text-muted-foreground font-semibold border-b shadow-2xs">
                       <tr>
                         <th className="p-2.5">الصنف</th>
                         <th className="p-2.5 text-center w-36">الكمية</th>
@@ -351,10 +403,26 @@ export function PurchaseReturnPortal({ initialPoRef, onReturnSuccess }: Purchase
                     <tbody className="divide-y divide-border">
                       {purchaseCart.map((item, idx) => {
                         const subtotal = item.quantity * Number(item.unitPrice || 0);
+                        const isRecentlyAdded = item.id === lastAddedId;
                         return (
-                          <tr key={item.id} className="hover:bg-muted/20">
+                          <tr
+                            key={item.id}
+                            className={cn(
+                              "transition-colors duration-700",
+                              isRecentlyAdded
+                                ? "bg-blue-500/20 dark:bg-blue-500/25 font-medium"
+                                : "hover:bg-muted/20"
+                            )}
+                          >
                             <td className="p-2.5">
-                              <div className="font-bold text-foreground">{item.productName}</div>
+                              <div className="font-bold text-foreground flex items-center gap-1.5 flex-wrap">
+                                <span>{item.productName}</span>
+                                {item.unit && item.conversionFactor && item.conversionFactor > 1 && (
+                                  <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-muted text-muted-foreground border">
+                                    {item.unit} ({item.conversionFactor} قطعة)
+                                  </span>
+                                )}
+                              </div>
                               {item.barcode && (
                                 <span className="font-mono text-[10px] text-muted-foreground">
                                   {item.barcode}

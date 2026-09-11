@@ -6,7 +6,7 @@
  *  ٢) مرتجعات الشراء (PurchaseReturnPortal): اختيار المورد ورصيده، الرقم المرجعي، سلة التكلفة، ومعادلة الذمة أو النقد
  * ربط ذري متكامل نقدياً ومخزنياً ومحاسبياً مع الطباعة الحرارية.
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
   Building2,
@@ -70,6 +70,18 @@ export default function ReturnsHub() {
     setLocation(`/returns?${p.toString()}`);
   };
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "F2") return;
+      e.preventDefault();
+      const el = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      el?.focus();
+      el?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // ═════════════════════════════════════════════════════════════════════════
   // العمليات الأخيرة والطباعة (Recent Operations & Printing)
   // ═════════════════════════════════════════════════════════════════════════
@@ -131,7 +143,7 @@ export default function ReturnsHub() {
   };
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-3.5 pb-12">
       {/* الترويسة الرئيسية */}
       <PageHeader
         title="بوابة المرتجعات الموحدة"
@@ -143,40 +155,40 @@ export default function ReturnsHub() {
       {/* ═════════════════════════════════════════════════════════════════════ */}
       {/* المنفذان الرئيسيان: أزرار واضحة وهوية بصرية دالة ومميزة               */}
       {/* ═════════════════════════════════════════════════════════════════════ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
         <button
           type="button"
           onClick={() => switchPortal("sales")}
           className={cn(
-            "relative p-4 rounded-xl border-2 text-right transition-all flex items-start gap-4 text-start cursor-pointer shadow-xs",
+            "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
             portalMode === "sales"
-              ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-md ring-2 ring-primary/20"
+              ? "border-primary bg-primary/5 dark:bg-primary/10 shadow-xs ring-2 ring-primary/20"
               : "border-border hover:border-primary/40 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
           )}
         >
           <div
             className={cn(
-              "p-3 rounded-xl shrink-0 transition-colors",
+              "p-2 rounded-lg shrink-0 transition-colors",
               portalMode === "sales"
-                ? "bg-primary text-primary-foreground shadow-sm"
+                ? "bg-primary text-primary-foreground shadow-xs"
                 : "bg-muted text-muted-foreground"
             )}
           >
-            <ShoppingCart className="size-6" aria-hidden />
+            <ShoppingCart className="size-5" aria-hidden />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <span className="font-bold text-base text-foreground">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold text-sm text-foreground">
                 مرتجعات المبيعات (العملاء والتجزئة)
               </span>
               {portalMode === "sales" && (
-                <Badge className="bg-primary text-primary-foreground text-xs">
+                <Badge className="bg-primary text-primary-foreground text-[10px] px-1.5 py-0">
                   المنفذ النشط
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-muted-foreground line-clamp-2">
-              سلة الباركود والعميل، الفاتورة الاختيارية، إعادة الصنف للرف أو تسجيله تالفاً، والاسترداد المالي أو رصيد المتجر
+            <p className="text-[11px] text-muted-foreground truncate">
+              مسح الباركود، الفاتورة، العميل، فرز السليم والتالف، والاسترداد المالي
             </p>
           </div>
         </button>
@@ -185,35 +197,35 @@ export default function ReturnsHub() {
           type="button"
           onClick={() => switchPortal("purchases")}
           className={cn(
-            "relative p-4 rounded-xl border-2 text-right transition-all flex items-start gap-4 text-start cursor-pointer shadow-xs",
+            "relative p-2.5 rounded-xl border-2 text-right transition-all flex items-center gap-3 text-start cursor-pointer shadow-xs",
             portalMode === "purchases"
-              ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 shadow-md ring-2 ring-blue-500/20"
+              ? "border-blue-500 bg-blue-50/50 dark:bg-blue-950/20 shadow-xs ring-2 ring-blue-500/20"
               : "border-border hover:border-blue-300/80 bg-card hover:bg-muted/30 opacity-80 hover:opacity-100"
           )}
         >
           <div
             className={cn(
-              "p-3 rounded-xl shrink-0 transition-colors",
+              "p-2 rounded-lg shrink-0 transition-colors",
               portalMode === "purchases"
-                ? "bg-blue-600 text-white shadow-sm"
+                ? "bg-blue-600 text-white shadow-xs"
                 : "bg-muted text-muted-foreground"
             )}
           >
-            <Building2 className="size-6" aria-hidden />
+            <Building2 className="size-5" aria-hidden />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <span className="font-bold text-base text-foreground">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold text-sm text-foreground">
                 مرتجعات الشراء (الموردين والشركات)
               </span>
               {portalMode === "purchases" && (
-                <Badge className="bg-blue-600 text-white hover:bg-blue-700 text-xs">
+                <Badge className="bg-blue-600 text-white hover:bg-blue-700 text-[10px] px-1.5 py-0">
                   المنفذ النشط
                 </Badge>
               )}
             </div>
-            <p className="text-xs text-muted-foreground line-clamp-2">
-              اختيار المورد وكشف رصيده الفوري، سلة التكلفة بالباركود، ومعادلة الذمم أو الاسترداد النقدي وطباعة السند
+            <p className="text-[11px] text-muted-foreground truncate">
+              المورد وكشف الرصيد، سلة التكلفة بالباركود، ومعادلة الذمم أو النقد
             </p>
           </div>
         </button>
