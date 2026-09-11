@@ -138,6 +138,7 @@ describe("٤. تدقيق إزالة التشتت وتوحيد الروابط ف�
 
 describe("٥. تدقيق ربط الأدراج النقدية والمطابقة الذرية ومنع أسطر الترحيل الصفرية", () => {
   const routerSrc = readServer("routers/returnRouter.ts");
+  const returnServiceSrc = readServer("services/returnService.ts");
   const salesPortalSrc = readClient("components/returns/SalesReturnPortal.tsx");
   const purchasePortalSrc = readClient(
     "components/returns/PurchaseReturnPortal.tsx",
@@ -153,11 +154,12 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
 
   it("يربط مرتجع المبيعات النقدي بدرج الوردية مع فحص الكفاية وتوليد إيصال DRAWER OUT وقيد PAYMENT_OUT", () => {
     expect(routerSrc).toContain("assertCashOutAvailable(tx");
-    expect(routerSrc).toContain('cashBucket: "DRAWER"');
-    expect(routerSrc).toContain('direction: "OUT"');
+    expect(routerSrc).toContain("recordSalesReturnCartReceipt(tx");
     expect(routerSrc).toContain("PAYMENT_OUT_CUSTOMER_REFUND");
     expect(routerSrc).toContain("roleDebits: { AR: returnTotalDec }");
     expect(routerSrc).toContain("roleCredits: { CASH: returnTotalDec }");
+    expect(returnServiceSrc).toContain('cashBucket: "DRAWER"');
+    expect(returnServiceSrc).toContain('direction: "OUT"');
   });
 
   it("يطهر أسطر الترحيل في PostingIntent من أي أسطر صفرية تسبب خطأ المبلغ الصفري غير مسموح", () => {
@@ -170,9 +172,12 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
   });
 
   it("يربط مرتجع المشتريات النقدي بدرج الوردية مع إيصال DRAWER IN وقيد PAYMENT_IN", () => {
+    expect(routerSrc).toContain("recordPurchaseReturnCartReceipt(tx");
     expect(routerSrc).toContain("PAYMENT_IN_SUPPLIER_REFUND");
     expect(routerSrc).toContain("roleDebits: { CASH: returnTotalDec }");
     expect(routerSrc).toContain("roleCredits: { AP: returnTotalDec }");
+    expect(returnServiceSrc).toContain('cashBucket: "DRAWER"');
+    expect(returnServiceSrc).toContain('direction: "IN"');
   });
 
   it("بوابات المرتجعات SalesReturnPortal وPurchaseReturnPortal تعرض منتقي الأدراج عند اختيار الاسترداد النقدي", () => {
@@ -180,16 +185,14 @@ describe("٥. تدقيق ربط الأدراج النقدية والمطابقة
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",
     );
     expect(salesPortalSrc).toContain("اختيار درج النقدية للصرف (الوردية)");
-    expect(salesPortalSrc).toContain(
-      'shiftId: salesRefundMethod === "CASH" ? (selectedShiftId ?? undefined) : undefined',
-    );
+    expect(salesPortalSrc).toMatch(/shiftId:\s*salesRefundMethod === "CASH"/);
 
     expect(purchasePortalSrc).toContain(
       "openDrawersQ = trpc.returns.getOpenRefundDrawers.useQuery",
     );
     expect(purchasePortalSrc).toContain("اختيار درج الوردية المودع بها النقد:");
-    expect(purchasePortalSrc).toContain(
-      'shiftId: purchaseSettlement === "CASH_IN" ? (selectedShiftId ?? undefined) : undefined',
+    expect(purchasePortalSrc).toMatch(
+      /shiftId:\s*purchaseSettlement === "CASH_IN"/,
     );
   });
 });

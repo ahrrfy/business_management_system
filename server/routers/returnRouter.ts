@@ -18,7 +18,6 @@ import {
   productUnits,
   productVariants,
   products,
-  receipts,
   returnRequests,
   salesControlRequests,
   shifts,
@@ -43,6 +42,9 @@ import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import {
+  recordPurchaseReturnCartReceipt,
+  recordSalesReturnCartCardReceipt,
+  recordSalesReturnCartReceipt,
   returnSaleAsOwner,
   returnSaleDirect,
   returnSaleInTx,
@@ -1695,22 +1697,15 @@ export const returnRouter = router({
             });
 
             // تسجيل سند إخراج نقد من الدرج (OUT) لضبط Z-report وcomputeExpectedCash بالمليم
-            const [insReceipt] = await tx.insert(receipts).values({
+            generatedReceiptId = await recordSalesReturnCartReceipt(tx, {
               branchId: actorBranchId,
               shiftId: targetShiftId,
-              invoiceId: matchedInvoice?.id ?? null,
-              direction: "OUT",
-              amount: toDbMoney(returnTotalDec),
-              paymentMethod: "CASH",
-              cashBucket: "DRAWER",
-              partyType: input.customer?.customerId ? "CUSTOMER" : "OTHER",
-              partyId: input.customer?.customerId ?? null,
-              description: `استرداد نقدي لمرتجع مبيعات [${returnNumber}] — ${customerName} من درج الوردية #${targetShiftId}`,
-              createdBy: ctx.user.id,
-              status: "COMPLETED",
-              approvalStatus: "APPROVED",
+              amount: returnTotalDec,
+              returnNumber,
+              customerName,
+              customerId: input.customer?.customerId,
+              userId: ctx.user.id,
             });
-            generatedReceiptId = Number(insReceipt.insertId);
 
             // قيد صرف النقد من الخزينة/الدرج في الأستاذ العام
             const refundPostingSource = {
@@ -1739,23 +1734,15 @@ export const returnRouter = router({
               postingSourceComponents: refundPostingSource,
             });
           } else if (input.settlement.method === "CARD") {
-            const [insReceipt] = await tx.insert(receipts).values({
+            generatedReceiptId = await recordSalesReturnCartCardReceipt(tx, {
               branchId: actorBranchId,
-              shiftId: null,
-              invoiceId: matchedInvoice?.id ?? null,
-              direction: "OUT",
-              amount: toDbMoney(returnTotalDec),
-              paymentMethod: "CARD",
-              cashBucket: null,
-              referenceNumber: input.settlement.reference?.trim() || null,
-              partyType: input.customer?.customerId ? "CUSTOMER" : "OTHER",
-              partyId: input.customer?.customerId ?? null,
-              description: `استرداد بطاقة لمرتجع مبيعات [${returnNumber}] — ${customerName} (مرجع: ${input.settlement.reference || "—"})`,
-              createdBy: ctx.user.id,
-              status: "COMPLETED",
-              approvalStatus: "APPROVED",
+              amount: returnTotalDec,
+              returnNumber,
+              customerName,
+              customerId: input.customer?.customerId,
+              reference: input.settlement.reference,
+              userId: ctx.user.id,
             });
-            generatedReceiptId = Number(insReceipt.insertId);
 
             const refundPostingSource = {
               roleDebits: { AR: returnTotalDec },
@@ -2076,21 +2063,15 @@ export const returnRouter = router({
               });
             }
 
-            const [insReceipt] = await tx.insert(receipts).values({
+            generatedReceiptId = await recordPurchaseReturnCartReceipt(tx, {
               branchId: actorBranchId,
               shiftId: targetShiftId,
-              direction: "IN",
-              amount: toDbMoney(returnTotalDec),
-              paymentMethod: "CASH",
-              cashBucket: "DRAWER",
-              partyType: "SUPPLIER",
-              partyId: input.supplierId,
-              description: `مردود نقدي لمرتجع مشتريات [${returnNumber}] من المورد (${supplier.name}) إلى درج الوردية #${targetShiftId}`,
-              createdBy: ctx.user.id,
-              status: "COMPLETED",
-              approvalStatus: "APPROVED",
+              amount: returnTotalDec,
+              returnNumber,
+              supplierId: input.supplierId,
+              supplierName: supplier.name,
+              userId: ctx.user.id,
             });
-            generatedReceiptId = Number(insReceipt.insertId);
 
             const paymentInSource = {
               roleDebits: { CASH: returnTotalDec },

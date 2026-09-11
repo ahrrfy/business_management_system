@@ -5,9 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { todayUtcDate } from "../businessDay";
-import {
-  lockMaterializedCashReceiptSourceForWrite,
-} from "../cash/cashAvailability";
+import { lockMaterializedCashReceiptSourceForWrite } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 
 function db() {
@@ -22,7 +20,8 @@ function serviceFiles(dir: string): string[] {
     if (entry.name === "__tests__") continue;
     const absolute = path.join(dir, entry.name);
     if (entry.isDirectory()) result.push(...serviceFiles(absolute));
-    else if (entry.isFile() && entry.name.endsWith(".ts")) result.push(absolute);
+    else if (entry.isFile() && entry.name.endsWith(".ts"))
+      result.push(absolute);
   }
   return result;
 }
@@ -56,7 +55,7 @@ const RECEIPT_INSERT_INVENTORY: Readonly<Record<string, number>> = {
   "purchaseReturnsService.ts": 1,
   "reception/deposits.ts": 3,
   "receptionCheckoutService.ts": 1,
-  "returnService.ts": 1,
+  "returnService.ts": 4,
   // م٢ ق٧: ردُّ إلغاء البيع/المرتجع الكامل وردُّ عكس تسليم أمر الشغل يكتبهما منفّذا محرّك العكس —
   // `sale/cancel.ts` و`workOrder/reverseDelivery.ts` لم يعودا يكتبان إيصالاً (يقفلان المصدر وحسب).
   "reversal/executors/invoiceRefund.ts": 1,
@@ -101,7 +100,9 @@ describe("closed cash-day materialized write gate", () => {
       .insert(s.monthCloseSequence)
       .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
       .onDuplicateKeyUpdate({ set: { id: 1 } });
-    await database.insert(s.branches).values({ id: 1, name: "Main", code: "MAIN", type: "MAIN" });
+    await database
+      .insert(s.branches)
+      .values({ id: 1, name: "Main", code: "MAIN", type: "MAIN" });
     await database.insert(s.users).values({
       id: 91,
       openId: "closed-day-writer",
@@ -183,8 +184,12 @@ describe("closed cash-day writer inventory", () => {
       serviceFiles(root)
         .map((file) => {
           const source = readFileSync(file, "utf8");
-          const count = source.match(/(?:\.|\b)insert\(receipts\)/g)?.length ?? 0;
-          return [path.relative(root, file).replaceAll("\\", "/"), count] as const;
+          const count =
+            source.match(/(?:\.|\b)insert\(receipts\)/g)?.length ?? 0;
+          return [
+            path.relative(root, file).replaceAll("\\", "/"),
+            count,
+          ] as const;
         })
         .filter(([, count]) => count > 0)
         .sort(([left], [right]) => left.localeCompare(right)),
@@ -194,13 +199,15 @@ describe("closed cash-day writer inventory", () => {
     for (const relative of Object.keys(RECEIPT_INSERT_INVENTORY)) {
       const source = readFileSync(path.join(root, relative), "utf8");
       if (NON_PHYSICAL_ONLY_WRITERS.has(relative)) {
-        expect(source, `${relative}: non-physical exemption must remain asserted`).toMatch(
-          /assertNonPhysicalOutReceipt\s*\(/,
-        );
+        expect(
+          source,
+          `${relative}: non-physical exemption must remain asserted`,
+        ).toMatch(/assertNonPhysicalOutReceipt\s*\(/);
       } else {
-        expect(source, `${relative}: material CASH writer must acquire the central source/day gate`).toMatch(
-          CASH_WRITE_GUARD,
-        );
+        expect(
+          source,
+          `${relative}: material CASH writer must acquire the central source/day gate`,
+        ).toMatch(CASH_WRITE_GUARD);
         expect(
           source,
           `${relative}: ordinary writers must never bypass CLOSED; only close/reopen orchestration may opt out`,
@@ -210,13 +217,22 @@ describe("closed cash-day writer inventory", () => {
 
     const receiptWritesOutsideServices = serviceFiles(serverRoot)
       .filter((file) => !file.startsWith(`${root}${path.sep}`))
-      .filter((file) => /(?:\.|\b)(?:insert|update)\(receipts\)/.test(readFileSync(file, "utf8")))
+      .filter((file) =>
+        /(?:\.|\b)(?:insert|update)\(receipts\)/.test(
+          readFileSync(file, "utf8"),
+        ),
+      )
       .map((file) => path.relative(serverRoot, file).replaceAll("\\", "/"))
       .sort();
     expect(receiptWritesOutsideServices).toEqual(["routers/voucherRouter.ts"]);
-    const voucherRouter = readFileSync(path.join(serverRoot, "routers/voucherRouter.ts"), "utf8");
+    const voucherRouter = readFileSync(
+      path.join(serverRoot, "routers/voucherRouter.ts"),
+      "utf8",
+    );
     const routerReceiptMutations = [
-      ...voucherRouter.matchAll(/update\(receipts\)\s*\.set\(\{([\s\S]*?)\}\)/g),
+      ...voucherRouter.matchAll(
+        /update\(receipts\)\s*\.set\(\{([\s\S]*?)\}\)/g,
+      ),
     ].map((match) => match[1]?.trim());
     expect(routerReceiptMutations).toEqual([
       "voucherCategoryId: input.toId",
@@ -229,7 +245,9 @@ describe("closed cash-day writer inventory", () => {
     const transitions = serviceFiles(root)
       .map((file) => {
         const source = readFileSync(file, "utf8");
-        return /update\(receipts\)[\s\S]{0,500}?status:\s*"COMPLETED"/.test(source)
+        return /update\(receipts\)[\s\S]{0,500}?status:\s*"COMPLETED"/.test(
+          source,
+        )
           ? path.relative(root, file).replaceAll("\\", "/")
           : null;
       })
@@ -252,9 +270,10 @@ describe("closed cash-day writer inventory", () => {
         expect(source).toMatch(/refund\.paymentMethod === "CASH"/);
         continue;
       }
-      expect(source, `${relative}: materialization transition must acquire the source/day gate`).toMatch(
-        CASH_WRITE_GUARD,
-      );
+      expect(
+        source,
+        `${relative}: materialization transition must acquire the source/day gate`,
+      ).toMatch(CASH_WRITE_GUARD);
     }
   });
 
@@ -264,18 +283,30 @@ describe("closed cash-day writer inventory", () => {
       path.resolve(process.cwd(), "server/services/cash/cashAvailability.ts"),
       "utf8",
     );
-    const lockStart = source.indexOf("export async function lockCashSourceForUpdate");
+    const lockStart = source.indexOf(
+      "export async function lockCashSourceForUpdate",
+    );
     const drawerSource = source.indexOf(".from(shifts)", lockStart);
     const treasurySource = source.indexOf(".from(branches)", drawerSource);
-    const drawerDay = source.indexOf("await assertCurrentCashDayWritable", drawerSource);
-    const treasuryDay = source.indexOf("await assertCurrentCashDayWritable", treasurySource);
+    const drawerDay = source.indexOf(
+      "await assertCurrentCashDayWritable",
+      drawerSource,
+    );
+    const treasuryDay = source.indexOf(
+      "await assertCurrentCashDayWritable",
+      treasurySource,
+    );
     expect(drawerSource).toBeGreaterThan(lockStart);
     expect(drawerDay).toBeGreaterThan(drawerSource);
     expect(treasurySource).toBeGreaterThan(drawerDay);
     expect(treasuryDay).toBeGreaterThan(treasurySource);
 
-    const closedDayBypassOwners = serviceFiles(path.resolve(process.cwd(), "server"))
-      .filter((file) => readFileSync(file, "utf8").includes("allowClosedCashDay"))
+    const closedDayBypassOwners = serviceFiles(
+      path.resolve(process.cwd(), "server"),
+    )
+      .filter((file) =>
+        readFileSync(file, "utf8").includes("allowClosedCashDay"),
+      )
       .map((file) => path.relative(root, file).replaceAll("\\", "/"))
       .sort();
     expect(closedDayBypassOwners).toEqual([
