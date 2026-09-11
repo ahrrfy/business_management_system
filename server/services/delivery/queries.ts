@@ -70,7 +70,7 @@ const partyHasPortalSql = sql<number>`(
 export async function countReadyForDispatch(branchId: number | null): Promise<number> {
   const db = getDb();
   if (!db) return 0;
-  const conds = [
+  const woConds = [
     eq(workOrders.status, "READY"),
     eq(workOrders.hasDelivery, true),
     sql`NOT EXISTS (
@@ -79,35 +79,49 @@ export async function countReadyForDispatch(branchId: number | null): Promise<nu
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
     )`,
   ];
-  if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
-  const row = (await db
+  if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
+  const woCount = (await db
     .select({ c: sql<number>`COUNT(*)` })
     .from(workOrders)
-    .where(and(...conds))
+    .where(and(...woConds))
   )[0];
-  return Number(row?.c ?? 0);
+
+  const onlineConds = [
+    inArray(onlineOrders.status, ["CONFIRMED", "PROCESSING"]),
+    isNull(onlineOrders.deliveryPartyId),
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.sourceId = ${onlineOrders.id}
+        AND dc.sourceType = 'ONLINE_ORDER'
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+  ];
+  if (branchId != null) onlineConds.push(eq(onlineOrders.branchId, branchId));
+  const onlineCount = (await db
+    .select({ c: sql<number>`COUNT(*)` })
+    .from(onlineOrders)
+    .where(and(...onlineConds))
+  )[0];
+
+  return Number(woCount?.c ?? 0) + Number(onlineCount?.c ?? 0);
 }
 
-/** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
+/** أوامر الشغل وطلبات المتجر الجاهزة القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
 export async function listReadyForDispatch(branchId: number | null) {
   const db = getDb();
   if (!db) return [];
-  // هذه شاشة «الإرسال للتوصيل» فقط؛ الاستلام المباشر يبقى في طابور خدمة العملاء
-  // ولا يجوز أن يظهر هنا كأنه شحنة قابلة للإسناد.
-  const conds = [
+  const woConds = [
     eq(workOrders.status, "READY"),
     eq(workOrders.hasDelivery, true),
-    // ١٨/٨ (بلاغ المالك): الاستبعاد يخصّ الإرسالية **الحيّة** وحدها. كان `NOT EXISTS` غير
-    // مقيَّد بالحالة ⇒ إرساليةٌ ألغاها المدير (أو أُرجعت) تُسقط الأمر من هذا الطابور **إلى
-    // الأبد**: لا يظهر للإسناد ثانيةً ولا يُغلق — يعلق `READY` بلا مخرج.
     sql`NOT EXISTS (
       SELECT 1 FROM deliveryConsignments dc
       WHERE dc.workOrderId = ${workOrders.id}
         AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
     )`,
   ];
-  if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
-  return db
+  if (branchId != null) woConds.push(eq(workOrders.branchId, branchId));
+
+  const woRows = await db
     .select({
       id: workOrders.id,
       orderNumber: workOrders.orderNumber,
@@ -123,16 +137,53 @@ export async function listReadyForDispatch(branchId: number | null) {
       deliveryPhone: workOrders.deliveryPhone,
       hasDelivery: workOrders.hasDelivery,
       dueDate: workOrders.dueDate,
-      // Slice B (٢٩/٨/٢٦) — لعرض «إجمالي ما يدفعه العميل» في DispatchDialog صراحةً:
-      // COURIER ⇒ COD + fee (المندوب يجمعهما)، COUNTER ⇒ COD فقط (الأجرة قُبضت أمانةً في الاستقبال)،
-      // SHOP ⇒ COD فقط (المكتبة تدفع للمندوب). ولحقلٍ اقتراحيّ للأجرة كذلك (deliveryCost سلفاً محدَّد).
       deliveryFeeCollection: workOrders.deliveryFeeCollection,
       deliveryCost: workOrders.deliveryCost,
+      sourceType: sql<"WORK_ORDER" | "ONLINE_ORDER">`'WORK_ORDER'`,
     })
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
-    .where(and(...conds))
+    .where(and(...woConds))
     .orderBy(desc(workOrders.id));
+
+  const onlineConds = [
+    inArray(onlineOrders.status, ["CONFIRMED", "PROCESSING"]),
+    isNull(onlineOrders.deliveryPartyId),
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.sourceId = ${onlineOrders.id}
+        AND dc.sourceType = 'ONLINE_ORDER'
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
+  ];
+  if (branchId != null) onlineConds.push(eq(onlineOrders.branchId, branchId));
+
+  const onlineRows = await db
+    .select({
+      id: onlineOrders.id,
+      orderNumber: onlineOrders.orderNumber,
+      title: sql<string>`CONCAT('طلب متجر #', ${onlineOrders.orderNumber})`,
+      quantity: sql<number>`1`,
+      salePrice: onlineOrders.total,
+      deposit: sql<string>`'0.00'`,
+      branchId: onlineOrders.branchId,
+      customerId: onlineOrders.customerId,
+      customerName: customers.name,
+      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      deliveryAddress: onlineOrders.shippingAddress,
+      deliveryPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''))`,
+      hasDelivery: sql<boolean>`true`,
+      dueDate: sql<Date | null>`NULL`,
+      deliveryFeeCollection: sql<"COURIER" | "COUNTER" | "SHOP">`CASE WHEN ${onlineOrders.deliveryFree} = 1 THEN 'SHOP' ELSE 'COURIER' END`,
+      deliveryCost: sql<string>`CASE WHEN ${onlineOrders.deliveryFree} = 1 THEN ${onlineOrders.deliveryWaivedAmount} ELSE ${onlineOrders.shippingCost} END`,
+      sourceType: sql<"WORK_ORDER" | "ONLINE_ORDER">`'ONLINE_ORDER'`,
+    })
+    .from(onlineOrders)
+    .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+    .where(and(...onlineConds))
+    .orderBy(desc(onlineOrders.id));
+
+  return [...woRows, ...onlineRows];
 }
 
 /** التزامات الجهة القابلة لإجراء موظف: COD مُسلّم للتوريد، طرد غير محصّل للإرجاع، أو أجرة مستحقة للدفع.
