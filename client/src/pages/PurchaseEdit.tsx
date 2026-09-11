@@ -491,6 +491,7 @@ export default function PurchaseEdit() {
   function printOrder() {
     const data = po.data;
     if (!data) return;
+    // Finding 3: السعر يُعتمد من l.price المحفوظ والمعروض (انظر printPurchaseOrderDoc)
     printPurchaseOrderDoc({
       docNum: state.invoiceNumber || null,
       statusLabel: PO_STATUS[data.status] ?? data.status,
