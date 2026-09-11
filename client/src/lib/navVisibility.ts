@@ -52,6 +52,7 @@ export const CASHIER_NAV_PATHS: readonly string[] = Object.freeze([
   "/pos",
   "/price-checker",
   "/invoices",
+  "/returns",
   "/work-orders",
   "/delivery",
   "/tasks",

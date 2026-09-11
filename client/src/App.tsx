@@ -103,8 +103,6 @@ const SupplierInvoiceApprovalGovernance = lazy(() => import("@/pages/SupplierInv
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
-const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
-const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
@@ -393,12 +391,12 @@ export default function App() {
       <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
-      <Route path="/returns"><Shell><Returns /></Shell></Route>
-      <Route path="/sales-returns/new"><Shell><RequireRole roles={["manager", "cashier"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole></Shell></Route>
-      <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
-      <Route path="/purchase-returns/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole></Shell></Route>
+      <Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>
+      <Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>
+      <Route path="/sales-returns"><Redirect to="/returns?tab=sales" /></Route>
+      <Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchase-returns/:id"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole></Shell></Route>
-      <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
+      <Route path="/purchase-returns"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases"><Shell><RequireRole roles={["manager", "purchasing", "warehouse", "accountant", "auditor"]} module="purchases" level="READ"><PurchasesHub /></RequireRole></Shell></Route>
       <Route path="/purchases/new"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseNew /></RequireRole></Shell></Route>
       {/* توافق روابط قديمة فقط: لا توجد عملية استلام مستقلة؛ الاعتماد النهائي يرحّل الفاتورة كاملة. */}
@@ -406,7 +404,7 @@ export default function App() {
       <Route path="/purchases/:id/edit"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseEdit /></RequireRole></Shell></Route>
       <Route path="/purchases/goods-receipts"><Redirect to="/purchases" /></Route>
       <Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>
-      <Route path="/purchases/returns-governance"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnsGovernance /></RequireRole></Shell></Route>
+      <Route path="/purchases/returns-governance"><Redirect to="/returns?tab=purchases" /></Route>
       <Route path="/purchases/supplier-payments"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><SupplierPaymentsGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/charges"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseChargesGovernance /></RequireRole></Shell></Route>
       <Route path="/purchases/integrity"><Shell><RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseIntegrityCases /></RequireRole></Shell></Route>

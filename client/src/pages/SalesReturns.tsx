@@ -194,7 +194,7 @@ export default function SalesReturns() {
         title="سجلّ مرتجعات البيع"
         description="البضاعة المُرتجَعة من العملاء (قيود إرجاع مرتبطة بفواتير البيع). لإنشاء مرتجع جديد استعمل زرّ «مرتجع بيع جديد»."
         actions={
-          <Link href="/purchase-returns">
+          <Link href="/returns?tab=purchases">
             <Button variant="outline" size="sm">مرتجعات الشراء ←</Button>
           </Link>
         }
@@ -299,7 +299,7 @@ export default function SalesReturns() {
                 { key: "returned", header: "القيمة المرتجعة", map: (r) => Number(returned(r.amount)) },
               ],
             }}
-            add={{ href: "/sales-returns/new", label: "مرتجع بيع جديد" }}
+            add={{ href: "/returns?tab=sales", label: "مرتجع بيع جديد" }}
           />
         </CardHeader>
         <CardContent className="p-0">

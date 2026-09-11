@@ -31,7 +31,7 @@ const PAGE = 50;
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-export default function PurchaseReturns() {
+export default function PurchaseReturns({ embedded = false }: { embedded?: boolean } = {}) {
   const utils = trpc.useUtils();
   // فلاتر خادمية محفوظة في querystring (نمط Invoices.tsx/Purchases.tsx) — تعيش مع فتح
   // التفاصيل والرجوع، وتُشارَك رابطاً. أسماء from/to لفترة entryDate.
@@ -213,15 +213,17 @@ export default function PurchaseReturns() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="سجلّ مرتجعات المشتريات"
-        description="البضاعة المُرتجَعة للموردين (قيود إرجاع ذات مورد). لإنشاء مرتجع جديد استعمل زرّ «مرتجع شراء جديد»."
-        actions={
-          <Link href="/returns">
-            <Button variant="outline" size="sm">مرتجعات البيع ←</Button>
-          </Link>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title="سجلّ مرتجعات المشتريات"
+          description="البضاعة المُرتجَعة للموردين (قيود إرجاع ذات مورد). لإنشاء مرتجع جديد استعمل زرّ «مرتجع شراء جديد»."
+          actions={
+            <Link href="/returns">
+              <Button variant="outline" size="sm">مرتجعات البيع ←</Button>
+            </Link>
+          }
+        />
+      )}
 
       <Card>
         <CardHeader>
@@ -282,7 +284,7 @@ export default function PurchaseReturns() {
                 { key: "notes", header: "ملاحظات", map: (r) => noteText(r.notes) },
               ],
             }}
-            add={{ href: "/purchase-returns/new", label: "مرتجع شراء جديد" }}
+            add={{ href: "/returns?tab=purchases", label: "مرتجع شراء جديد" }}
           />
         </CardHeader>
         <CardContent className="p-0">

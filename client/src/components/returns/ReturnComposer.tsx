@@ -19,11 +19,12 @@
  *    وبلا وردية مفتوحة يخرج من **الخزينة** للإداريّ (استثناءٌ مصنَّف خادمياً — الخادم يعلنه رافداً).
  *  · الردّ بالبطاقة يُنفَّذ على الجهاز ثمّ يُوثَّق بمرجعه (إثباتٌ لا إقفال).
  */
-import { AlertTriangle, Clock, Info } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Info, RotateCcw, ScanLine, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -35,8 +36,18 @@ import { computeReturnTotal } from "@/lib/returnTotal";
 import { trpc } from "@/lib/trpc";
 import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineReturn, isOfflineSaleEnabled } from "@/lib/offline/outbox";
 import { notify } from "@/lib/notify";
+import { cn } from "@/lib/utils";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { REFUND_RAIL_LABEL } from "@shared/refundRails";
+
+/** خيارات الأسباب السريعة الذكية لتقليص الطباعة اليدوية والنقرات */
+const QUICK_REASONS = [
+  "تراجع العميل عن الشراء",
+  "عيب مصنعي أو خلل",
+  "استبدال بصنف آخر",
+  "غير مطابق للمواصفات",
+  "تلف أو كسر بالبضاعة",
+];
 
 /** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
 function unitsLabel(base: number, factor: number, unitName: string): string {
@@ -54,13 +65,24 @@ export interface ReturnComposerProps {
    * ثمّ يُنفّذ **نفس** المسار الماليّ — فلا نسخةَ منطقٍ ثانية ولا شاشةَ اعتمادٍ موازية.
    */
   approvingRequestId?: number | null;
+  /** باركود صنف مُمرّر من شريط المسح الخارجي للمعالجة المباشرة */
+  scannedBarcode?: string | null;
+  /** استدعاء عند معالجة الباركود الخارجي بنجاح */
+  onBarcodeHandled?: () => void;
   /** يُستدعى بعد نجاح المرتجع (تحديث قوائم الصفحة المضيفة/التنقّل). */
   onDone?: (result: { fullyReturned: boolean; returnedTotal: string }) => void;
   /** رابط رجوعٍ اختياريّ تعرضه الصفحة المضيفة أسفل الإجراءات. */
   footer?: React.ReactNode;
 }
 
-export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
+export function ReturnComposer({
+  invoiceId,
+  approvingRequestId,
+  scannedBarcode,
+  onBarcodeHandled,
+  onDone,
+  footer,
+}: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
   /** المالك والإداريون والكاشير ينفّذون المرتجع فوراً (محرك المرتجعات الفوري الذري) — الشاشة تعرف ذلك قبل التأكيد لا بعده. */
@@ -77,6 +99,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   );
 
   const [qty, setQty] = useState<Record<number, number>>({});
+  const [fastBarcode, setFastBarcode] = useState("");
   const [restock, setRestock] = useState(true);
   const [manualAmount, setManualAmount] = useState<string | null>(null);
   /**
@@ -95,6 +118,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
   // تبديل الفاتورة يصفّر كل قرارٍ سابق (وإلّا سُجّل مرتجعٌ بكميّات فاتورةٍ أخرى).
   useEffect(() => {
     setQty({});
+    setFastBarcode("");
     setRestock(true);
     setManualAmount(null);
     setRailState(null);
@@ -326,6 +350,48 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     setDone("");
   }
 
+  /** مسح الباركود السريع للأصناف لزيادة الكمية المرتجعة فوراً */
+  function handleFastItemScan(barcodeToMatch?: string) {
+    const code = (barcodeToMatch ?? fastBarcode).trim();
+    if (!code || !inv) return;
+
+    const codeLower = code.toLowerCase();
+    const matched = items.find(
+      (it) =>
+        (it.barcode && String(it.barcode).toLowerCase() === codeLower) ||
+        (it.sku && String(it.sku).toLowerCase() === codeLower) ||
+        it.productName.toLowerCase().includes(codeLower)
+    );
+
+    if (!matched) {
+      notify.err(`الصنف بالرمز "${code}" غير موجود في هذه الفاتورة!`);
+      setFastBarcode("");
+      return;
+    }
+
+    const currentQty = qty[matched.invoiceItemId] ?? 0;
+    const step = matched.conversionFactor > 1 ? matched.conversionFactor : 1;
+    const remaining = matched.remaining;
+
+    if (currentQty >= remaining) {
+      notify.err(`تم استيفاء الحد الأقصى لإرجاع "${matched.productName}" (${remaining} قطعة)`);
+      setFastBarcode("");
+      return;
+    }
+
+    const nextQty = Math.min(remaining, currentQty + step);
+    setQtyClamped(matched.invoiceItemId, nextQty, remaining);
+    notify.ok(`تمت إضافة ${matched.productName} (+${step}) للإرجاع`);
+    setFastBarcode("");
+  }
+
+  useEffect(() => {
+    if (scannedBarcode && items.length > 0) {
+      handleFastItemScan(scannedBarcode);
+      onBarcodeHandled?.();
+    }
+  }, [scannedBarcode, items.length]);
+
   /** الكمّيات غير قابلة للتعديل في وضع الاعتماد: الخادم ينفّذ بنود الطلب لا إدخال المدير. */
   const qtyLocked = !!approvingRequestId;
   const isLocked = inv?.status === "RETURNED" || inv?.status === "CANCELLED";
@@ -450,6 +516,110 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
     });
   }
 
+  /**
+   * ⭐ إرجاع فوري ذكي لكامل الفاتورة بنقرة واحدة (One-Click Express Return)
+   * يملأ كافة البنود، يضع سبباً نظامياً تلقائياً، يحسب التسوية الذرية ويعرض تأكيداً واحداً شاملاً.
+   */
+  async function triggerExpressReturn() {
+    if (isLocked) {
+      notify.err("هذه الفاتورة مقفلة أو مرتجعة بالكامل.");
+      return;
+    }
+    const eligible = items.filter((it) => it.remaining > 0);
+    if (!eligible.length) {
+      notify.err("لا توجد بنود قابلة للإرجاع في هذه الفاتورة.");
+      return;
+    }
+
+    const fullQty: Record<number, number> = {};
+    for (const it of eligible) {
+      fullQty[it.invoiceItemId] = it.remaining;
+    }
+    setQty(fullQty);
+
+    const effectiveReason = reason.trim() || "إرجاع كامل الفاتورة — تسوية سريعة";
+    if (!reason.trim()) {
+      setReason(effectiveReason);
+    }
+
+    const fullReturnValue = inv ? D(computeReturnTotal(inv.items, fullQty, inv)) : D(0);
+    const netAfter = D(inv?.total ?? "0").minus(D(inv?.returnedTotal ?? "0")).minus(fullReturnValue);
+    const over = D(inv?.paidAmount ?? "0").minus(netAfter);
+    const fullCustomerOwedBack = over.gt(0) ? over : D(0);
+    const fullRailCap = fullReturnValue.lte(D(activeOption?.cap ?? "0")) ? fullReturnValue : D(activeOption?.cap ?? "0");
+    const fullSuggestedRefund = isWalkIn ? fullReturnValue : (fullCustomerOwedBack.lt(fullRailCap) ? fullCustomerOwedBack : fullRailCap);
+    const fullRefundAmount = fullSuggestedRefund.gt(0) ? fullSuggestedRefund.toFixed(2) : "0.00";
+    const fullRefundD = D(fullRefundAmount);
+
+    if (!noRefundNeeded && fullRefundD.gt(0) && railState?.blockReason) {
+      notify.err(railState.blockReason);
+      return;
+    }
+
+    const linesToSubmit = eligible.map((it) => ({
+      invoiceItemId: it.invoiceItemId,
+      baseQuantity: it.remaining,
+    }));
+
+    const fullRefund = !isWalkIn && fullRefundD.gt(0)
+      ? {
+          amount: round2(fullRefundD).toFixed(2),
+          method,
+          ...(method === "CASH" && shiftId != null ? { shiftId } : {}),
+          ...(method === "CARD" ? { reference: cardReference.trim() } : {}),
+        }
+      : undefined;
+
+    const fullResolution = isWalkIn
+      ? {
+          kind: "IMMEDIATE_REFUND" as const,
+          method: "CASH" as const,
+          amount: round2(fullReturnValue).toFixed(2),
+          ...(shiftId != null ? { shiftId } : {}),
+          reason: effectiveReason,
+          disposition: restock ? ("RESTOCK" as const) : ("DAMAGED" as const),
+        }
+      : undefined;
+
+    const totalPieces = linesToSubmit.reduce((s, l) => s + l.baseQuantity, 0);
+    const railLabel = pickedRail ? REFUND_RAIL_LABEL[pickedRail] : REFUND_RAIL_LABEL.DRAWER;
+    const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المفتوح";
+    const moneySentence = fullResolution
+      ? `استرداد ${fmt(fullResolution.amount)} د.ع نقداً ${cashSource}`
+      : fullRefund
+        ? `استرداد ${fmt(fullRefund.amount)} د.ع عبر ${railLabel}`
+        : "بلا إرجاع نقد (تسوية ذمة العميل)";
+
+    const confirmed = await confirm({
+      variant: (approvingRequestId || executesImmediately) ? "danger" : "warning",
+      title: `إرجاع فوري لكامل الفاتورة ${inv?.invoiceNumber}`,
+      description: `سيتم إرجاع جميع بنود الفاتورة المتبقية (${linesToSubmit.length} صنف · ${totalPieces} قطعة) مع ${moneySentence}. هل تؤكد التنفيذ الفوري؟`,
+      confirmText: approvingRequestId ? "اعتماد وتنفيذ فوراً" : executesImmediately ? "تنفيذ فوري مباشر" : "إرسال الطلب للاعتماد",
+    });
+
+    if (!confirmed) return;
+
+    if (approvingRequestId) {
+      approve.mutate({
+        requestId: approvingRequestId,
+        refund: fullRefund,
+        resolution: fullResolution,
+        ...(!isWalkIn ? { restock } : {}),
+        clientRequestId,
+      });
+    } else if (inv) {
+      create.mutate({
+        invoiceId: inv.id,
+        lines: linesToSubmit,
+        refund: fullRefund,
+        resolution: fullResolution,
+        ...(!isWalkIn ? { restock } : {}),
+        reason: effectiveReason,
+        clientRequestId,
+      });
+    }
+  }
+
   if (detail.isLoading) return <LoadingState message="جارٍ تحميل بنود الفاتورة…" />;
   if (detail.isError) {
     return (
@@ -472,11 +642,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
 
   return (
     <div className="space-y-4">
-      {/*
-        الطلب المعلّق يُعلَن قبل أيّ شيء (تدقيق ١/٩/٢٦). كانت الشاشة صامتةً عنه فتبدو
-        الفاتورة بكراً؛ فيعيد الموظّف الإرسال فيصطدم بخطأ فهرسٍ خامّ، أو يظنّ أنّ الطلب الأوّل
-        ضاع فيسلّم البضاعة والنقود مرّتين. ونقول له **من** يستطيع اعتماده، لا «انتظر» فقط.
-      */}
+      {/* الطلب المعلق إن وجد */}
       {pending && !approvingRequestId && (
         <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
           <CardContent className="flex items-start gap-2 p-4 text-sm">
@@ -519,18 +685,17 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         </Card>
       )}
 
-      {/* ① رأس الفاتورة — نفس لغة شاشة الفاتورة المتقدّمة: الحقائق أولاً، بلا قرار. */}
+      {/* ① ملخص الفاتورة والمبالغ — شريط مكثف ومباشر */}
       <Card>
-        <CardContent className="grid grid-cols-2 gap-3 p-4 text-sm md:grid-cols-3 xl:grid-cols-5">
+        <CardContent className="grid grid-cols-2 gap-3 p-4 text-xs sm:text-sm md:grid-cols-3 xl:grid-cols-6">
           <div><div className="text-xs text-muted-foreground">رقم الفاتورة</div><div className="font-mono font-bold" dir="ltr">{inv.invoiceNumber}</div></div>
-          <div><div className="text-xs text-muted-foreground">العميل</div><div>{inv.customerName ?? "عميل نقدي"}</div></div>
-          <div><div className="text-xs text-muted-foreground">الإجمالي</div><div className="tabular-nums" dir="ltr">{fmt(inv.total)}</div></div>
+          <div><div className="text-xs text-muted-foreground">العميل</div><div className="font-semibold">{inv.customerName ?? "عميل نقدي"}</div></div>
+          <div><div className="text-xs text-muted-foreground">الإجمالي</div><div className="tabular-nums font-bold" dir="ltr">{fmt(inv.total)}</div></div>
           <div><div className="text-xs text-muted-foreground">المقبوض</div><div className="tabular-nums" dir="ltr">{fmt(inv.paidAmount)}</div></div>
           <div>
             <div className="text-xs text-muted-foreground">المتاح للاسترداد</div>
             <div className="font-bold tabular-nums text-money-positive" dir="ltr">{fmt(inv.refundPool)}</div>
           </div>
-          {/* الرقم الذي كان غائباً عن الشاشة: بدونه لا يملك الموظّف ما يمنعه من ردّ نقدٍ لمدين. */}
           <div>
             <div className="text-xs text-muted-foreground">المتبقّي على العميل بعد المرتجع</div>
             <div
@@ -543,13 +708,66 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         </CardContent>
       </Card>
 
-      {/* ② ماذا يرجع — جدولٌ بأزرار ±، خطوته وحدة البيع فلا يحسب الموظف الوحدة الأساس ذهنياً. */}
+      {/* ② بنود الفاتورة مع مسح الباركود السريع وأزرار الإرجاع الذكي */}
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">ماذا يرجع؟</CardTitle>
-          <Button size="sm" variant="outline" onClick={fillAll} disabled={isLocked || items.every((it) => it.remaining <= 0)}>
-            إرجاع كامل الفاتورة
-          </Button>
+        <CardHeader className="p-3 pb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 space-y-0">
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">بنود الإرجاع</CardTitle>
+            <Badge variant="secondary" className="text-xs font-mono">
+              {selectedLines.length} من {items.length} صنف
+            </Badge>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* مسح باركود الصنف السريع */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleFastItemScan();
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <div className="relative">
+                <ScanLine className="absolute right-2.5 top-2 size-3.5 text-muted-foreground" aria-hidden />
+                <Input
+                  value={fastBarcode}
+                  onChange={(e) => setFastBarcode(e.target.value)}
+                  placeholder="امسح باركود صنف..."
+                  className="h-8 w-44 pr-8 font-mono text-xs"
+                  disabled={isLocked || qtyLocked}
+                />
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                className="h-8 px-2.5 text-xs"
+                disabled={isLocked || qtyLocked || !fastBarcode.trim()}
+              >
+                إضافة
+              </Button>
+            </form>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs font-semibold"
+              onClick={fillAll}
+              disabled={isLocked || items.every((it) => it.remaining <= 0)}
+            >
+              تحديد الكل
+            </Button>
+
+            <Button
+              size="sm"
+              variant="default"
+              className="h-8 gap-1 text-xs font-bold bg-primary hover:bg-primary/90 text-primary-foreground"
+              onClick={triggerExpressReturn}
+              disabled={isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
+            >
+              <Zap className="size-3.5" aria-hidden />
+              <span>إرجاع فوري لكامل الفاتورة</span>
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -570,7 +788,7 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
                   return (
                     <tr key={it.invoiceItemId} className={`border-t ${v > 0 ? "bg-[var(--sem-info-bg)]/40" : ""}`}>
                       <td className="p-2">
-                        {it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}
+                        <div className="font-semibold">{it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}</div>
                         {it.conversionFactor > 1 && (
                           <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} قطعة</div>
                         )}
@@ -608,179 +826,207 @@ export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }
         </CardContent>
       </Card>
 
-      {/* ③ حالة البضاعة — قرارٌ يجب أن يُرى ببطاقتين، لا checkbox صغيراً يُسهى عنه. */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">حالة البضاعة العائدة</CardTitle></CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="حالة البضاعة العائدة">
-            <button type="button" role="radio" aria-checked={restock} disabled={isLocked} onClick={() => setRestock(true)}
-              className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${restock ? "border-primary bg-primary/5" : "bg-card hover:bg-muted"}`}>
-              سليمة — تعود للرفّ
-              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">تُضاف الكمية للمخزون وتُباع مجدداً — عند الاعتماد</div>
-            </button>
-            <button type="button" role="radio" aria-checked={!restock} disabled={isLocked} onClick={() => setRestock(false)}
-              className={`rounded-lg border-2 p-3 text-start text-sm font-bold ${!restock ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]" : "bg-card hover:bg-muted"}`}>
-              تالفة — لا تعود للمخزون
-              <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">خسارةٌ على المكتبة، لا تُضاف للرفّ — عند الاعتماد</div>
-            </button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {isWalkIn && (
-        <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/25">
-          <CardHeader className="pb-2"><CardTitle className="text-base">تسوية زبون عابر — ردّ نقدي كامل</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-start gap-2 text-sm text-[var(--sem-warn)]">
-              <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-              <p>
-                لا حساب عميل يحمل رصيداً أو مطالبة. لذلك لن يُعاد المخزون ولن يُعكس الإيراد
-                إلا مع ردّ <strong>{fmt(returnValue.toFixed(2))} د.ع</strong> نقداً كاملاً الآن من وردية مفتوحة.
-              </p>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="ret-walkin-reason">سبب المرتجع</Label>
-              <Input
-                id="ret-walkin-reason"
-                value={reason}
-                maxLength={500}
-                disabled={isLocked}
-                onChange={(e) => { setReason(e.target.value); setError(""); }}
-                placeholder="مثال: المنتج غير مطابق لطلب الزبون"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                مصير البضاعة موثّق من الاختيار أعلاه: {restock ? "سليمة وتعود للرف" : "تالفة ولا تعود للمخزون"}.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {!isWalkIn && (
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">سبب المرتجع</CardTitle></CardHeader>
-          <CardContent className="space-y-1">
-            <Label htmlFor="ret-reason">السبب التشغيلي *</Label>
-            <Input
-              id="ret-reason"
-              value={reason}
-              maxLength={500}
-              disabled={isLocked}
-              onChange={(event) => { setReason(event.target.value); setError(""); }}
-              placeholder="مثال: صنف خاطئ أو تلف أو رفض العميل"
-            />
-            <p className="text-[11px] text-muted-foreground">يُحفظ السبب مع الحمولة والبصمة ولا يمكن تبديله عند الاعتماد.</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ④ كيف يستلم الزبون ماله — المبلغُ من سقوف الخادم، والرافدُ والدرجُ من المنتقي الموحَّد.
-          بلا مالٍ يخرج (فاتورةٌ لم تُقبض، أو الذمّة تغطّي المرتجع) تُستبدل البطاقةُ كلّها
-          بإفصاحٍ صريح: لا رافد ولا درج ولا مرجع — والحفظ متاح (بلاغ المالك ١٨/٨). */}
-      {noRefundNeeded ? (
-      <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-base">لا يُرَدّ نقد</CardTitle></CardHeader>
-        <CardContent>
-          <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] p-3 text-sm font-bold text-[var(--sem-info)]">
-            <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-            <div>
-              <div>لم يُقبض من هذه الفاتورة ما يُستردّ — قيمة المرتجع تُخصَم من المتبقّي عليها{inv?.customerId != null ? " ومن ذمّة العميل" : ""}.</div>
-              <div className="mt-1 text-[11px] font-normal">
-                المرتجع {fmt(returnValue.toFixed(2))} د.ع · المدفوع على الفاتورة {fmt(D(inv?.paidAmount ?? "0").toFixed(2))} د.ع
-                {customerStillOwes.gt(0) ? ` · يبقى على العميل ${fmt(customerStillOwes.toFixed(2))} د.ع` : ""}
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-      ) : (
-      <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-base">كيف يستلم الزبون ماله؟</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {/* سقوفُ الردّ لكلّ طريقة — من `loadRefundCaps` نفسها التي تحكم على الطلب، والمحجوبُ بسببه. */}
-          <ul className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
-            {visibleRefundOptions.map((o) => (
-              <li key={o.method} className="rounded-md border bg-muted/30 px-2.5 py-1.5">
-                <span className="font-bold text-foreground">{paymentMethodLabel(o.method)}</span>
-                {o.blockedReason ? (
-                  <span> — {o.blockedReason}</span>
-                ) : (
-                  <span dir="ltr" className="ms-1 tabular-nums"> حتى {fmt(o.cap)} د.ع</span>
-                )}
-              </li>
-            ))}
-          </ul>
-
-          <div className="rounded-lg border bg-muted/30 p-3">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div className="text-sm">
-                <span className="font-bold">يُعاد للزبون: </span>
-                <span className="text-lg font-black tabular-nums" dir="ltr">{fmt(refundAmount || "0")}</span>
-                <span className="ms-1 text-sm font-bold">د.ع{pickedRail ? ` — ${REFUND_RAIL_LABEL[pickedRail]}` : ""}</span>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
+      {/* ③ خيارات التسوية والاسترداد الرشيقة في لوحة مدمجة */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* العمود الأيمن: التوثيق السريع وحالة البضاعة */}
+        <div className="lg:col-span-5 space-y-3">
+          <Card>
+            <CardHeader className="p-3 pb-2">
+              <CardTitle className="text-sm font-bold">سبب الإرجاع والتوثيق</CardTitle>
+            </CardHeader>
+            <CardContent className="p-3 pt-0 space-y-3">
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap gap-1">
+                  {QUICK_REASONS.map((qr) => (
+                    <button
+                      key={qr}
+                      type="button"
+                      disabled={isLocked}
+                      onClick={() => {
+                        setReason(qr);
+                        setError("");
+                      }}
+                      className={cn(
+                        "rounded-md border px-2 py-0.5 text-xs transition-colors",
+                        reason === qr
+                          ? "bg-primary text-primary-foreground border-primary font-bold"
+                          : "bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {qr}
+                    </button>
+                  ))}
                 </div>
+                <Input
+                  id="ret-reason"
+                  value={reason}
+                  maxLength={500}
+                  disabled={isLocked}
+                  onChange={(event) => { setReason(event.target.value); setError(""); }}
+                  placeholder="اختر سبباً من الأزرار أو اكتب هنا..."
+                  className="h-9 text-xs"
+                />
               </div>
-              {isWalkIn ? (
-                <div className="rounded-md border border-[var(--sem-info)]/35 bg-[var(--sem-info-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-info)]">
-                  مبلغ ثابت بعد التقريب — لا يقبل الردّ الجزئي
-                </div>
-              ) : (
-                <div className="w-44 space-y-1">
-                  <Label htmlFor="ret-amount" className="text-xs">تعديل المبلغ (اختياري)</Label>
-                  <MoneyInput
-                    id="ret-amount"
-                    value={refundAmount}
-                    onChange={setManualAmount}
-                    ariaLabel="مبلغ الاسترداد"
+
+              {/* حالة البضاعة */}
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold">حالة البضاعة العائدة</Label>
+                <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="حالة البضاعة العائدة">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={restock}
                     disabled={isLocked}
-                    expectedRange={{ max: Number(railCap.toFixed(2)) }}
-                  />
+                    onClick={() => setRestock(true)}
+                    className={`rounded-lg border p-2.5 text-start text-xs font-bold transition-all ${restock ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted text-muted-foreground"}`}
+                  >
+                    سليمة — تعود للرفّ
+                    <div className="mt-0.5 text-[10px] font-normal text-muted-foreground">تُضاف للمخزون للبيع ثانية</div>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={!restock}
+                    disabled={isLocked}
+                    onClick={() => setRestock(false)}
+                    className={`rounded-lg border p-2.5 text-start text-xs font-bold transition-all ${!restock ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)]/60 text-stock-low" : "bg-card hover:bg-muted text-muted-foreground"}`}
+                  >
+                    تالفة — هدر وعزل
+                    <div className="mt-0.5 text-[10px] font-normal text-muted-foreground">خسارة ولا تُضاف للرفّ</div>
+                  </button>
                 </div>
-              )}
-            </div>
-            {overCap && (
-              <p className="mt-2 text-xs font-bold text-destructive">
-                المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))} د.ع.
-              </p>
-            )}
-          </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
-          {/*
-            المنتقي الموحَّد (م٢ ق١٠): الدرجُ موردُ فرعٍ لا مستخدم — يُحدَّد أيُّ درجٍ يخرج منه النقد
-            فعلياً قبل الحفظ، والخزينةُ تُعلَن رافداً حين لا وردية مفتوحة للإداريّ (كما يقرّر
-            `shiftIdForCashTx`)، والبطاقةُ بمرجع جهازها — كلُّها بأرقامٍ من الخادم لا من قائمةٍ محلّية.
-            المبلغُ المطلوب يُمرَّر كي تُقاس به كفايةُ الدرج لا بالوعاء كلّه.
-          */}
-          {refundD.gt(0) ? (
-            <RefundRailPicker
-              context={{
-                sourceDocType: "SALE_RETURN",
-                sourceDocId: invoiceId,
-                amount: round2(refundD).toFixed(2),
-              }}
-              mode="embedded"
-              onStateChange={setRailState}
-              drawerLabel="من أيّ درج يخرج النقد؟"
-              drawerHint="النقد يخرج من الدرج المختار عند تنفيذ المرتجع، ويظهر في تسويته."
-              submitting={create.isPending || approve.isPending}
-            />
-          ) : null}
-        </CardContent>
-      </Card>
-      )}
+        {/* العمود الأيسر: طريقة الاسترداد ومنتقي الرافد والدرج */}
+        <div className="lg:col-span-7 space-y-3">
+          {noRefundNeeded ? (
+            <Card>
+              <CardHeader className="p-3 pb-2"><CardTitle className="text-sm font-bold">تسوية الذمة (لا يُرَدّ نقد)</CardTitle></CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] p-3 text-xs font-semibold text-[var(--sem-info)]">
+                  <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+                  <div>
+                    <div>لم يُقبض من هذه الفاتورة ما يُستردّ — قيمة المرتجع تُخصَم من المتبقّي عليها{inv?.customerId != null ? " ومن ذمّة العميل" : ""}.</div>
+                    <div className="mt-1 text-[11px] font-normal">
+                      المرتجع {fmt(returnValue.toFixed(2))} د.ع · المدفوع على الفاتورة {fmt(D(inv?.paidAmount ?? "0").toFixed(2))} د.ع
+                      {customerStillOwes.gt(0) ? ` · يبقى على العميل ${fmt(customerStillOwes.toFixed(2))} د.ع` : ""}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader className="p-3 pb-2"><CardTitle className="text-sm font-bold">الاسترداد المالي والدرج</CardTitle></CardHeader>
+              <CardContent className="p-3 pt-0 space-y-3">
+                {/* سقوف الرد */}
+                <ul className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
+                  {visibleRefundOptions.map((o) => (
+                    <li key={o.method} className="rounded-md border bg-muted/30 px-2 py-1">
+                      <span className="font-bold text-foreground">{paymentMethodLabel(o.method)}</span>
+                      {o.blockedReason ? (
+                        <span> — {o.blockedReason}</span>
+                      ) : (
+                        <span dir="ltr" className="ms-1 tabular-nums font-semibold"> حتى {fmt(o.cap)} د.ع</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
 
-      {blockReason && !error && <p className="text-sm text-muted-foreground">{blockReason}</p>}
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-money-positive">{done}</p>}
+                <div className="rounded-lg border bg-muted/20 p-2.5">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div className="text-xs sm:text-sm">
+                      <span className="font-bold">يُعاد للزبون: </span>
+                      <span className="text-base sm:text-lg font-black tabular-nums text-primary" dir="ltr">{fmt(refundAmount || "0")}</span>
+                      <span className="ms-1 text-xs font-bold">د.ع{pickedRail ? ` — ${REFUND_RAIL_LABEL[pickedRail]}` : ""}</span>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">
+                        قيمة المرتجع {fmt(returnValue.toFixed(2))} · المسموح {fmt(railCap.toFixed(2))}
+                      </div>
+                    </div>
+                    {isWalkIn ? (
+                      <div className="rounded-md border border-[var(--sem-info)]/35 bg-[var(--sem-info-bg)] px-2.5 py-1.5 text-xs font-bold text-[var(--sem-info)]">
+                        مبلغ ثابت بعد التقريب (زبون عابر)
+                      </div>
+                    ) : (
+                      <div className="w-36 space-y-1">
+                        <Label htmlFor="ret-amount" className="text-[11px]">تعديل المبلغ (اختياري)</Label>
+                        <MoneyInput
+                          id="ret-amount"
+                          value={refundAmount}
+                          onChange={setManualAmount}
+                          ariaLabel="مبلغ الاسترداد"
+                          disabled={isLocked}
+                          expectedRange={{ max: Number(railCap.toFixed(2)) }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  {overCap && (
+                    <p className="mt-2 text-xs font-bold text-destructive">
+                      المبلغ يتجاوز المسموح — الحدّ {fmt(railCap.toFixed(2))} د.ع.
+                    </p>
+                  )}
+                </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={submit} disabled={!!blockReason || create.isPending || approve.isPending}>
-          {create.isPending ? ACTION_LABELS.sending : approvingRequestId ? "اعتماد وتنفيذ المرتجع" : executesImmediately ? "تنفيذ المرتجع" : "إرسال طلب المرتجع"}
+                {refundD.gt(0) ? (
+                  <RefundRailPicker
+                    context={{
+                      sourceDocType: "SALE_RETURN",
+                      sourceDocId: invoiceId,
+                      amount: round2(refundD).toFixed(2),
+                    }}
+                    mode="embedded"
+                    onStateChange={setRailState}
+                    drawerLabel="من أيّ درج يخرج النقد؟"
+                    drawerHint="النقد يخرج من الدرج المختار عند تنفيذ المرتجع، ويظهر في تسويته."
+                    submitting={create.isPending || approve.isPending}
+                  />
+                ) : null}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {blockReason && !error && <p className="text-sm font-semibold text-muted-foreground">{blockReason}</p>}
+      {error && <p className="text-sm font-semibold text-destructive">{error}</p>}
+      {done && <p className="text-sm font-bold text-money-positive">{done}</p>}
+
+      {/* شريط الأوامر والتنفيذ */}
+      <div className="flex flex-wrap items-center gap-2 pt-1 border-t">
+        <Button
+          onClick={submit}
+          disabled={!!blockReason || create.isPending || approve.isPending}
+          className="font-bold text-xs sm:text-sm gap-1.5"
+        >
+          <CheckCircle2 className="size-4" aria-hidden />
+          <span>
+            {create.isPending ? ACTION_LABELS.sending : approvingRequestId ? "اعتماد وتنفيذ المرتجع" : executesImmediately ? "تنفيذ المرتجع الآن" : "إرسال طلب المرتجع"}
+          </span>
         </Button>
-        <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setReason(""); setError(""); setDone(""); }}>
-          إعادة ضبط
+
+        <Button
+          variant="secondary"
+          onClick={triggerExpressReturn}
+          disabled={isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
+          className="font-bold text-xs sm:text-sm gap-1.5"
+        >
+          <Zap className="size-4" aria-hidden />
+          <span>إرجاع سريع لكامل الفاتورة</span>
         </Button>
+
+        <Button
+          variant="outline"
+          onClick={() => { setQty({}); setManualAmount(null); setReason(""); setError(""); setDone(""); setFastBarcode(""); }}
+          className="text-xs sm:text-sm gap-1 text-muted-foreground"
+        >
+          <RotateCcw className="size-3.5" aria-hidden />
+          <span>إعادة ضبط</span>
+        </Button>
+
         {footer}
       </div>
     </div>

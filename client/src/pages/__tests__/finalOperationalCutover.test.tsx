@@ -59,7 +59,10 @@ describe("final operational UI cutover", () => {
       "<RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole>",
     );
     expect(app).toContain(
-      '<RequireRole roles={["manager", "cashier"]} module="sales" level="FULL"><SalesReturnNew /></RequireRole>',
+      '<Route path="/returns"><Shell><RequireRole roles={["admin","manager","cashier","accountant","auditor"]} module="sales" level="READ"><Returns /></RequireRole></Shell></Route>',
+    );
+    expect(app).toContain(
+      '<Route path="/sales-returns/new"><Redirect to="/returns?tab=sales" /></Route>',
     );
     expect(app).toContain(
       "<RequireRole gate={WORK_ORDERS_HUB_GATE}><PrintHub /></RequireRole>",
@@ -74,7 +77,7 @@ describe("final operational UI cutover", () => {
       '<RequireRole roles={["manager"]} module="inventory" level="FULL"><ProductionDetail /></RequireRole>',
     );
     expect(app).toContain(
-      '<RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnNew /></RequireRole>',
+      '<Route path="/purchase-returns/new"><Redirect to="/returns?tab=purchases" /></Route>',
     );
     expect(app).toContain(
       '<RequireRole roles={["manager", "purchasing"]} module="purchases" level="FULL"><PurchaseReturnDetail /></RequireRole>',
@@ -89,6 +92,8 @@ describe("final operational UI cutover", () => {
     expect(app).toContain(
       '<Route path="/purchases/supplier-invoices"><Redirect to="/purchases" /></Route>',
     );
+    expect(app).not.toContain('import("@/pages/SalesReturnNew")');
+    expect(app).not.toContain('import("@/pages/PurchaseReturnNew")');
     expect(app).not.toContain('import("@/pages/PurchaseReceive")');
     expect(app).not.toContain('import("@/pages/PurchaseGoodsReceipts")');
     expect(app).not.toContain('import("@/pages/PurchaseSupplierInvoices")');
