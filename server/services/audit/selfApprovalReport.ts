@@ -641,7 +641,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.reviewedAt ?? row.requestedAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/purchases/returns-governance",
+      href: "/returns?tab=purchases",
     });
   }
 
@@ -659,7 +659,7 @@ export async function listSelfApprovalRecords(
       decidedAt: row.reviewedAt ?? row.requestedAt,
       branchId: row.branchId == null ? null : Number(row.branchId),
       branchName: row.branchId == null ? null : (branchName.get(Number(row.branchId)) ?? null),
-      href: "/purchases/returns-governance",
+      href: "/returns?tab=purchases",
     });
   }
 

@@ -30,7 +30,7 @@ describe("بوابة cutover لمسارات المشتريات القديمة", 
   it("تعلن بديلاً محكوماً لكل مسار كتابة قديم", () => {
     expect(LEGACY_PURCHASE_WRITE_REPLACEMENTS).toMatchObject({
       "purchases.pay": "/purchases/supplier-payments",
-      "purchaseReturns.create": "/purchases/returns-governance",
+      "purchaseReturns.create": "/returns?tab=purchases",
     });
     expect(() =>
       assertLegacyPurchaseWritePathDisabled("purchases.pay"),

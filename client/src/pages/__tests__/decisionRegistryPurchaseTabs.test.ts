@@ -14,14 +14,14 @@ describe("روابط السجل الى تبويبات المشتريات", () =>
   it("يقرأ تبويبات PurchasesHub فعلا (لا قائمة مكتوبة تشيخ)", () => {
     expect(hubTabs.has("goods-receipt-reversals")).toBe(true);
     expect(hubTabs.has("supplier-invoice-approvals")).toBe(true);
-    expect(hubTabs.has("returns-governance")).toBe(true);
+    expect(hubTabs.has("returns-governance")).toBe(false);
   });
 
   it("كل رابط /purchases?tab= في السجل يسمي تبويبا مسجلا", () => {
     const purchaseTabLinks = allDecisions()
       .map((d) => ({ kind: d.kind, href: d.href(1) }))
       .filter((x) => x.href.startsWith("/purchases?tab="));
-    expect(purchaseTabLinks.length).toBeGreaterThanOrEqual(7);
+    expect(purchaseTabLinks.length).toBeGreaterThanOrEqual(6);
     for (const { kind, href } of purchaseTabLinks) {
       const tab = href.slice("/purchases?tab=".length);
       expect(hubTabs.has(tab), `${kind} → ${href}`).toBe(true);
@@ -34,8 +34,8 @@ describe("روابط السجل الى تبويبات المشتريات", () =>
   });
 
   // معرّفُ طلب المرتجع ليس معرّفَ مرتجع: `/purchase-returns/:id` يطلب `purchaseReturns.id` الذي لا يوجد قبل الاعتماد.
-  it("طلب مرتجع الشراء المعلق يقود الى طابور الحوكمة لا الى صفحة مرتجع لا وجود له", () => {
-    expect(decisionSpec("purchase.return.decide")!.href(123)).toBe("/purchases?tab=returns-governance");
+  it("طلب مرتجع الشراء يقود مباشرة الى بوابة المرتجعات المركزية", () => {
+    expect(decisionSpec("purchase.return.decide")!.href(123)).toBe("/returns?tab=purchases");
     // عكسُ المرتجع يحمل معرّفَ مرتجعٍ قائم فعلاً — رابطُه المباشر يبقى.
     expect(decisionSpec("purchase.return.reversal")!.href(123)).toBe("/purchase-returns/123");
   });

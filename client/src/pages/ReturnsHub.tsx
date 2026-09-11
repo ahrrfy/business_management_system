@@ -12,7 +12,6 @@ import {
   Building2,
   Clock,
   Printer,
-  ShieldCheck,
   ShoppingCart,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -137,18 +136,8 @@ export default function ReturnsHub() {
       <PageHeader
         title="بوابة المرتجعات الموحدة"
         description="منظومة متكاملة لمرتجعات المبيعات ومشتريات الموردين بربط ذري فوري ومخزني ومحاسبي وطباعة حرارية"
-        backHref="/invoices"
-        backLabel="المبيعات"
-        actions={
-          <div className="flex items-center gap-2">
-            <Link href="/purchases?tab=returns-governance">
-              <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5 border-dashed">
-                <ShieldCheck className="size-3.5 text-primary" aria-hidden />
-                <span>حوكمة واعتمادات المرتجعات</span>
-              </Button>
-            </Link>
-          </div>
-        }
+        backHref="/"
+        backLabel="الرئيسية"
       />
 
       {/* ═════════════════════════════════════════════════════════════════════ */}

@@ -45,7 +45,7 @@ describe("audited public UX contracts", () => {
     const governance = readPage("PurchaseReturnsGovernance.tsx");
 
     expect(legacyEntry).toContain(
-      '<Redirect to="/purchases/returns-governance" />',
+      '<Redirect to="/returns?tab=purchases" />',
     );
     expect(legacyEntry).not.toContain("PURCHASE_RETURN_ACTIONS");
     expect(legacyEntry).not.toContain("trpc.purchaseReturns.create");
