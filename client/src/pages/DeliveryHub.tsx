@@ -447,7 +447,7 @@ function DispatchTab() {
           parties={parties.data ?? []}
           pending={dispatch.isPending || dispatchByBarcodeMutation.isPending}
           onClose={() => setTarget(null)}
-          onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId, externalTrackingRef }) => {
+          onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
             const ord = target!;
             const party = (parties.data ?? []).find((p) => p.id === partyId);
             const labelWin = preopenShippingLabelWindow();
@@ -458,6 +458,8 @@ function DispatchTab() {
                   barcode: ord.orderNumber,
                   partyId,
                   deliveryFee: fee || undefined,
+                  deliveryAddress: deliveryAddress || ord.deliveryAddress || undefined,
+                  notes: notes || undefined,
                   assignedUserId,
                   externalTrackingRef: externalTrackingRef || undefined,
                   clientRequestId: crypto.randomUUID(),
@@ -475,7 +477,8 @@ function DispatchTab() {
                   deliveryFee: fee,
                   recipientName: recipientName || undefined,
                   recipientPhone: recipientPhone || undefined,
-                  deliveryAddress: ord.deliveryAddress ?? undefined,
+                  deliveryAddress: deliveryAddress || ord.deliveryAddress || undefined,
+                  notes: notes || undefined,
                   clientRequestId: crypto.randomUUID(),
                   assignedUserId,
                   externalTrackingRef: externalTrackingRef || undefined,
@@ -489,7 +492,7 @@ function DispatchTab() {
                 title: ord.title,
                 customerName: recipientName || ord.customerName,
                 customerPhone: recipientPhone || ord.deliveryPhone || ord.customerPhone,
-                deliveryAddress: ord.deliveryAddress,
+                deliveryAddress: deliveryAddress || ord.deliveryAddress,
                 courierName: party?.name ?? "المندوب",
                 courierPhone: party?.phone,
                 codAmount: r.codAmount,

@@ -1114,6 +1114,7 @@ export default function WorkOrderDetail() {
           deliveryPhone: data.deliveryPhone,
           deliveryCost: data.deliveryCost,
           deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
+          notes: (data as { notes?: string | null; customizationText?: string | null }).notes ?? (data as { customizationText?: string | null }).customizationText ?? null,
         } : null}
         parties={dispatchParties.data ?? []}
         pending={dispatchMut.isPending}
@@ -1125,7 +1126,7 @@ export default function WorkOrderDetail() {
          * ولا يطبع يترك الموظّف بطردٍ مُسنَدٍ بلا مستند — فيبحث عن شاشةٍ أخرى ليطبع يدوياً،
          * وهو نقيضُ تقليل النقرات. نفسُ الدالّتين المشتركتين، بلا ازدواج منطق.
          */
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, deliveryAddress, notes, assignedUserId, externalTrackingRef }) => {
           const party = (dispatchParties.data ?? []).find((p) => Number(p.id) === partyId);
           const labelWin = preopenShippingLabelWindow();
           try {
@@ -1135,9 +1136,11 @@ export default function WorkOrderDetail() {
               deliveryFee: fee,
               recipientName: recipientName || undefined,
               recipientPhone: recipientPhone || undefined,
-              deliveryAddress: data.deliveryAddress ?? undefined,
+              deliveryAddress: deliveryAddress || data.deliveryAddress || undefined,
+              notes: notes || undefined,
               clientRequestId: dispatchRequestIdRef.current ?? (dispatchRequestIdRef.current = newClientRequestId()),
               assignedUserId,
+              externalTrackingRef,
             });
             const printable = {
               orderNumber: data.orderNumber,
@@ -1145,9 +1148,9 @@ export default function WorkOrderDetail() {
               quantity: Number(data.quantity),
               salePrice: data.salePrice,
               deposit: data.deposit ?? null,
-              customerName: data.customerName ?? null,
-              customerPhone: data.customerPhone ?? null,
-              deliveryAddress: data.deliveryAddress ?? null,
+              customerName: (recipientName || data.customerName) ?? null,
+              customerPhone: (recipientPhone || data.customerPhone) ?? null,
+              deliveryAddress: (deliveryAddress || data.deliveryAddress) ?? null,
               deliveryCost: data.deliveryCost ?? null,
               deliveryFeeCollection: (data as { deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null }).deliveryFeeCollection ?? null,
             };
@@ -1155,9 +1158,10 @@ export default function WorkOrderDetail() {
               partyName: party?.name ?? null,
               trackingNumber: r.consignmentNumber,
               cod: r.codAmount,
+              externalTrackingRef,
               into: labelWin,
             });
-            printDeliverySlip(printable, party, r);
+            printDeliverySlip(printable, party, { ...r, externalTrackingRef });
           } catch {
             // فشلُ الإسناد يُبلَّغ من `onError`؛ هنا نغلق نافذةً فُتحت لمستندٍ لن يوجد.
             labelWin?.close();

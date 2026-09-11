@@ -26,6 +26,7 @@ export interface DispatchableOrder {
   /** مَن يقبض الأجرة (Slice B، ٢٩/٨/٢٦): يحدّد ما يدفعه الزبون للمندوب صراحةً في المُلخّص. */
   deliveryFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   deliveryCost?: string | null;
+  notes?: string | null;
 }
 
 export interface DispatchParty {
@@ -43,6 +44,8 @@ export interface DispatchConfirmArgs {
   fee: string;
   recipientName: string;
   recipientPhone: string;
+  deliveryAddress?: string;
+  notes?: string;
   assignedUserId?: number;
   /** رقم التتبع / المرجع الخارجي من شركة التوصيل (اختياري). */
   externalTrackingRef?: string;
@@ -69,6 +72,8 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
   const [fee, setFee] = useState<string>("0");
   const [recipientName, setRecipientName] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [notes, setNotes] = useState("");
   const [assignedUserId, setAssignedUserId] = useState("");
   const [externalTrackingRef, setExternalTrackingRef] = useState("");
   const selectedParty = parties.find((p) => String(p.id) === partyId);
@@ -82,6 +87,8 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       setFee(preset > 0 ? String(preset) : "0");
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
+      setDeliveryAddress(order.deliveryAddress?.trim() || "");
+      setNotes(order.notes?.trim() || "");
       setAssignedUserId("");
       setExternalTrackingRef("");
     }
@@ -119,6 +126,8 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
       fee: fee || "0",
       recipientName: recipientName.trim(),
       recipientPhone: recipientPhone.trim(),
+      deliveryAddress: deliveryAddress.trim() || undefined,
+      notes: notes.trim() || undefined,
       assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
       externalTrackingRef: selectedParty?.partyType === "COMPANY" && externalTrackingRef.trim() ? externalTrackingRef.trim() : undefined,
     });
@@ -197,6 +206,14 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm, on
             <label className="mb-1.5 block text-sm font-bold">هاتف المستلم</label>
             <IntlPhoneInput value={recipientPhone} onChange={setRecipientPhone} ariaLabel="هاتف المستلم" className="h-11" />
           </div>
+        </div>
+        <div className="mb-3">
+          <label className="mb-1.5 block text-sm font-bold">عنوان التوصيل</label>
+          <Input value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="المحافظة - المدينة - الحي - أقرب نقطة دالة…" className="h-11" />
+        </div>
+        <div className="mb-3">
+          <label className="mb-1.5 block text-sm font-bold">ملاحظات التوصيل</label>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="أي تعليمات للمندوب أو وقت التسليم المفضل…" className="h-11" />
         </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
