@@ -1,10 +1,12 @@
+import Decimal from "decimal.js";
 import { TRPCError } from "@trpc/server";
 import { appErrorMessage } from "@shared/errors";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
-import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, users, workOrders } from "../../drizzle/schema";
+import { accountingEntries, branchStock, customers, invoiceItems, invoices, productPrices, productUnits, productVariants, products, returnRequests, salesControlRequests, suppliers, users, workOrders } from "../../drizzle/schema";
 import { canCrossBranches } from "../lib/branchAuthority";
+import { adjustSupplierBalance, postEntry } from "../services/ledgerService";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
@@ -904,6 +906,7 @@ export const returnRouter = router({
             productName: products.name,
             variantName: productVariants.variantName,
             sku: productVariants.sku,
+            costPrice: productVariants.costPrice,
           })
           .from(productVariants)
           .innerJoin(products, eq(productVariants.productId, products.id))
@@ -952,6 +955,8 @@ export const returnRouter = router({
         const retailPrice = priceRow?.price ? String(priceRow.price) : "0";
         const lowestHistoricalPrice = lowestRow?.minPrice ? String(lowestRow.minPrice) : retailPrice;
 
+        const costPrice = skuVariant.costPrice ? String(skuVariant.costPrice) : "0";
+
         return {
           productId: Number(skuVariant.productId),
           variantId: Number(skuVariant.variantId),
@@ -962,12 +967,19 @@ export const returnRouter = router({
           barcode: baseUnit?.barcode ?? null,
           sku: skuVariant.sku ?? null,
           retailPrice,
+          costPrice,
           lowestHistoricalPrice,
           currentStock: Number(stockRow?.quantity ?? 0),
         };
       }
 
-      // سعر التجزئة
+      // سعر التكلفة وسعر التجزئة
+      const [variantRow] = await db
+        .select({ costPrice: productVariants.costPrice })
+        .from(productVariants)
+        .where(eq(productVariants.id, owner.variantId))
+        .limit(1);
+
       const [priceRow] = await db
         .select({ price: productPrices.price })
         .from(productPrices)
@@ -990,6 +1002,7 @@ export const returnRouter = router({
         .where(and(eq(invoiceItems.variantId, owner.variantId), gte(invoices.createdAt, sixtyDaysAgo)));
 
       const retailPrice = priceRow?.price ? String(priceRow.price) : "0";
+      const costPrice = variantRow?.costPrice ? String(variantRow.costPrice) : "0";
       const lowestHistoricalPrice = lowestRow?.minPrice ? String(lowestRow.minPrice) : retailPrice;
 
       return {
@@ -1002,6 +1015,7 @@ export const returnRouter = router({
         barcode: owner.primaryBarcode ?? code,
         sku: owner.sku ?? null,
         retailPrice,
+        costPrice,
         lowestHistoricalPrice,
         currentStock: Number(stockRow?.quantity ?? 0),
       };
@@ -1140,6 +1154,295 @@ export const returnRouter = router({
             year: "numeric",
             month: "long",
             day: "numeric",
+          }),
+        };
+      }, { gate: "NONE" });
+    }),
+
+  /**
+   * تنفيذ مرتجع مبيعات فوري عبر سلة المنتجات الذكية
+   * يدعم: إدخال رقم فاتورة اختياري، ربط عميل CRM أو زبون عابر، تحديد مسار الصنف (رجوع للرف أو تالف مسجل خسارة)
+   * طرق الاسترداد: نقدي، بطاقة، رصيد متجر
+   */
+  executeSalesReturnCart: salesCashierProcedure
+    .input(
+      z.object({
+        invoiceNumber: z.string().trim().max(64).nullish(),
+        customer: z.object({
+          customerId: z.number().int().positive().nullish(),
+          name: z.string().trim().max(120).nullish(),
+          phone: z.string().trim().max(40).nullish(),
+        }).nullish(),
+        disposition: z.enum(["RESTOCK", "DAMAGED"]).default("RESTOCK"),
+        items: z.array(
+          z.object({
+            variantId: z.number().int().positive(),
+            productUnitId: z.number().int().positive().optional(),
+            productName: z.string().min(1),
+            barcode: z.string().nullish(),
+            quantity: z.number().int().positive(),
+            unitPrice: nonNegMoneyString,
+          })
+        ).min(1, "يجب تحديد صنف واحد على الأقل للإرجاع"),
+        settlement: z.object({
+          method: z.enum(["CASH", "CARD", "STORE_CREDIT"]),
+          totalAmount: nonNegMoneyString,
+          shiftId: z.number().int().positive().nullish(),
+          reference: z.string().trim().max(120).nullish(),
+        }),
+        reason: z.string().trim().max(500).nullish(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر تنفيذ مرتجع المبيعات",
+            why: "لا يوجد فرع مُسنَد لحسابك الحالي",
+            doThis: "تواصل مع مدير النظام لإسناد الفرع التشغيلي لحسابك",
+          }),
+        });
+      }
+      const actorBranchId = Number(ctx.user.branchId ?? 1);
+
+      return withTx(async (tx) => {
+        await assertPeriodOpen(tx, new Date());
+
+        const now = new Date();
+        const randSuffix = Math.floor(1000 + Math.random() * 9000);
+        const returnNumber = `SR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
+
+        const customerName = input.customer?.name?.trim() || "زبون عابر";
+        const customerPhone = input.customer?.phone?.trim() || null;
+        const returnReason = input.reason?.trim() || (input.disposition === "RESTOCK" ? "مرتجع مبيعات — إعادة للرف" : "مرتجع مبيعات — إتلاف وتسجيل خسارة");
+
+        // ١) تنفيذ حركة المخزون لكل بند
+        for (const itm of input.items) {
+          if (input.disposition === "RESTOCK") {
+            // إعادة للرف/المخزون
+            await applyMovement(tx, {
+              variantId: itm.variantId,
+              branchId: actorBranchId,
+              baseQuantity: itm.quantity,
+              movementType: "RETURN",
+              referenceType: "SALES_RETURN",
+              notes: `إرجاع للرف [${returnNumber}] — ${itm.productName} (${customerName})`,
+              createdBy: ctx.user.id,
+            });
+          }
+          // إذا كان تالفاً (DAMAGED) لا يُعاد إلى مخزون الرف الصالح للبيع، ويُكتفى بتوثيقه محاسبياً ورقابياً
+        }
+
+        // ٢) توثيق قيد محاسبي في دفتر الأستاذ العام
+        const returnTotalDec = new Decimal(input.settlement.totalAmount);
+        await postEntry(tx, {
+          entryType: "RETURN",
+          branchId: actorBranchId,
+          customerId: input.customer?.customerId ?? null,
+          amount: returnTotalDec.neg(),
+          revenue: returnTotalDec.neg(),
+          cost: new Decimal(0),
+          profit: returnTotalDec.neg(),
+          notes: `مرتجع مبيعات سلة [${returnNumber}] — ${customerName} (${input.settlement.method === "CASH" ? "نقدي" : input.settlement.method === "CARD" ? "بطاقة" : "رصيد متجر"})`,
+          createdBy: ctx.user.id,
+          createdByNameSnapshot: ctx.user.name ?? "كاشير",
+        });
+
+        // ٣) توثيق التدقيق الرقابي
+        await logAudit(ctx, {
+          action: "sale.return_cart",
+          entityType: "sale",
+          entityId: null,
+          newValue: {
+            returnNumber,
+            customerName,
+            customerPhone,
+            originalInvoiceNumber: input.invoiceNumber,
+            disposition: input.disposition,
+            totalAmount: input.settlement.totalAmount,
+            method: input.settlement.method,
+            itemsCount: input.items.length,
+            reason: returnReason,
+          },
+        });
+
+        return {
+          ok: true as const,
+          returnNumber,
+          customerName,
+          customerPhone,
+          originalInvoiceNumber: input.invoiceNumber,
+          disposition: input.disposition,
+          totalAmount: input.settlement.totalAmount,
+          method: input.settlement.method,
+          reference: input.settlement.reference,
+          itemsCount: input.items.length,
+          items: input.items.map((i) => ({
+            name: i.productName,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            barcode: i.barcode,
+          })),
+          dateStr: now.toLocaleDateString("ar-IQ", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+          timeStr: now.toLocaleTimeString("ar-IQ", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        };
+      }, { gate: "NONE" });
+    }),
+
+  /**
+   * تنفيذ مرتجع مشتريات فوري للمورد عبر سلة المنتجات
+   * يدعم: اختيار المورد، رقم مرجعي اختياري، سلة الأصناف بتكلفة الشراء
+   * طرق التسوية:
+   *   - CREDIT_OFFSET: معادلة على الحساب نفسه يقلل الذمم علينا
+   *   - CASH_IN: مردود نقدي (توريد نقد)
+   *   - CARD_TRANSFER: تحويل بنكي / بطاقة
+   */
+  executePurchaseReturnCart: salesManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive("يجب اختيار المورد"),
+        reference: z.string().trim().max(64).nullish(),
+        items: z.array(
+          z.object({
+            variantId: z.number().int().positive(),
+            productUnitId: z.number().int().positive().optional(),
+            productName: z.string().min(1),
+            barcode: z.string().nullish(),
+            quantity: z.number().int().positive(),
+            unitCost: nonNegMoneyString,
+          })
+        ).min(1, "يجب تحديد صنف واحد على الأقل للمرتجع"),
+        settlement: z.object({
+          method: z.enum(["CREDIT_OFFSET", "CASH_IN", "CARD_TRANSFER"]),
+          totalAmount: nonNegMoneyString,
+          shiftId: z.number().int().positive().nullish(),
+          reference: z.string().trim().max(120).nullish(),
+        }),
+        reason: z.string().trim().max(500).nullish(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذر تنفيذ مرتجع المشتريات",
+            why: "لا يوجد فرع مُسنَد لحسابك الحالي",
+            doThis: "تواصل مع مدير النظام لإسناد الفرع التشغيلي لحسابك",
+          }),
+        });
+      }
+      const actorBranchId = Number(ctx.user.branchId ?? 1);
+
+      return withTx(async (tx) => {
+        await assertPeriodOpen(tx, new Date());
+
+        // التحقق من وجود المورد
+        const [supplier] = await tx
+          .select()
+          .from(suppliers)
+          .where(eq(suppliers.id, input.supplierId))
+          .limit(1);
+
+        if (!supplier) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: appErrorMessage({
+              what: "المورد غير موجود",
+              why: "لم يتم العثور على سجل المورد المحدد في قاعدة البيانات",
+              doThis: "اختر مورداً صالحاً من القائمة",
+            }),
+          });
+        }
+
+        const now = new Date();
+        const randSuffix = Math.floor(1000 + Math.random() * 9000);
+        const returnNumber = `PR-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}-${randSuffix}`;
+        const returnReason = input.reason?.trim() || "مرتجع مشتريات للمورد بالسلة";
+        const returnTotalDec = new Decimal(input.settlement.totalAmount);
+
+        // ١) خصم الأصناف من مخزون الفرع (حركة OUT / PURCHASE_RETURN)
+        for (const itm of input.items) {
+          await applyMovement(tx, {
+            variantId: itm.variantId,
+            branchId: actorBranchId,
+            baseQuantity: itm.quantity,
+            movementType: "OUT",
+            referenceType: "PURCHASE_RETURN",
+            notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${itm.productName} للمورد (${supplier.name})`,
+            createdBy: ctx.user.id,
+          });
+        }
+
+        // ٢) الأثر المالي بحسب طريقة التسوية
+        if (input.settlement.method === "CREDIT_OFFSET") {
+          // معادلة على الحساب نفسه يقلل الذمم علينا: AP يقل بالقيمة السالبة
+          await adjustSupplierBalance(tx, input.supplierId, returnTotalDec.neg());
+        }
+
+        // ٣) توثيق قيد محاسبي في دفتر الأستاذ العام
+        await postEntry(tx, {
+          entryType: "PURCHASE",
+          branchId: actorBranchId,
+          supplierId: input.supplierId,
+          amount: returnTotalDec.neg(),
+          cost: returnTotalDec.neg(),
+          profit: new Decimal(0),
+          notes: `مرتجع مشتريات للمورد [${returnNumber}] — ${supplier.name} (${input.settlement.method === "CREDIT_OFFSET" ? "معادلة ذمة" : input.settlement.method === "CASH_IN" ? "مردود نقدي" : "تحويل بنكي"})`,
+          createdBy: ctx.user.id,
+          createdByNameSnapshot: ctx.user.name ?? "مدير",
+        });
+
+        // ٤) توثيق التدقيق الرقابي
+        await logAudit(ctx, {
+          action: "purchase.return_cart",
+          entityType: "purchase",
+          entityId: null,
+          newValue: {
+            returnNumber,
+            supplierId: input.supplierId,
+            supplierName: supplier.name,
+            reference: input.reference,
+            totalAmount: input.settlement.totalAmount,
+            method: input.settlement.method,
+            itemsCount: input.items.length,
+            reason: returnReason,
+          },
+        });
+
+        return {
+          ok: true as const,
+          returnNumber,
+          supplierName: supplier.name,
+          supplierPhone: supplier.phone,
+          reference: input.reference,
+          totalAmount: input.settlement.totalAmount,
+          method: input.settlement.method,
+          itemsCount: input.items.length,
+          items: input.items.map((i) => ({
+            name: i.productName,
+            quantity: i.quantity,
+            unitCost: i.unitCost,
+            barcode: i.barcode,
+          })),
+          dateStr: now.toLocaleDateString("ar-IQ", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+          timeStr: now.toLocaleTimeString("ar-IQ", {
+            hour: "2-digit",
+            minute: "2-digit",
           }),
         };
       }, { gate: "NONE" });
