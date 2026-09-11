@@ -30,6 +30,8 @@ export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
   partyId: number;
   externalTrackingRef?: string | null;
+  deliveryAddress?: string | null;
+  notes?: string | null;
 }
 
 export interface DispatchOnlineOrderResult {
@@ -233,7 +235,8 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         ? String(cur.deliveryWaivedAmount ?? "0")
         : String(cur.shippingCost ?? "0"),
       feeCollection: cur.deliveryFree === true ? "SHOP" : "COURIER",
-      deliveryAddress: cur.shippingAddress ?? null,
+      deliveryAddress: input.deliveryAddress ?? cur.shippingAddress ?? null,
+      notes: input.notes ?? null,
       governorate: cur.governorate ?? null,
       latitude: cur.latitude ?? null,
       longitude: cur.longitude ?? null,
@@ -241,7 +244,11 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       clientRequestId: `online-parcel:${cur.id}`,
       externalTrackingRef: input.externalTrackingRef ?? null,
     }, actor);
-    await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
+    await tx.update(onlineOrders).set({
+      deliveryPartyId: input.partyId,
+      status: "SHIPPED",
+      ...(input.deliveryAddress?.trim() ? { shippingAddress: input.deliveryAddress.trim() } : {}),
+    }).where(eq(onlineOrders.id, cur.id));
     await enqueueStorefrontOrderStatusPush(tx, {
       orderId: Number(cur.id),
       orderNumber: cur.orderNumber,

@@ -11,7 +11,7 @@ import { fmtDateTime } from "../date";
 export interface DispatchSlipData {
   consignmentNumber: string;
   orderNumber: string;
-  orderKind?: "workOrder" | "invoice";
+  orderKind?: "workOrder" | "invoice" | "onlineOrder";
   partyName: string;
   recipientName: string;
   recipientPhone: string;
@@ -81,7 +81,7 @@ export function printDeliveryDispatchSlip(d: DispatchSlipData): boolean {
       <span style="font-weight:900;direction:ltr;font-size:12px;">${esc(d.consignmentNumber)}</span>
     </div>
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">
-      <span style="font-weight:800;">رقم ${d.orderKind === "invoice" ? "الفاتورة" : "الطلب"}:</span>
+      <span style="font-weight:800;">رقم ${d.orderKind === "invoice" ? "الفاتورة" : d.orderKind === "onlineOrder" ? "طلب المتجر" : "الطلب"}:</span>
       <span style="font-weight:900;font-size:12px;">#${esc(d.orderNumber)}</span>
     </div>
     <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1.5px dashed #000;">

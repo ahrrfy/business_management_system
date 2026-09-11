@@ -60,6 +60,7 @@ import {
   deliveryDispatchMemoIntent,
   deliveryFeeAccrualIntent,
 } from "./posting";
+import { consignmentShortfallAssignedSql } from "./openParcelPredicates";
 import {
   isShortfallReason,
   SHORTFALL_REASONS,
@@ -101,6 +102,10 @@ export interface MyDeliveryRow {
   assignedUserId?: number | null;
   /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
   externalTrackingRef?: string | null;
+  /** المبلغ المُحصَّل فعلياً (إن وُجد). */
+  collectedAmount?: string | null;
+  /** الحالة المالية للإرسالية. */
+  moneyStatus?: string | null;
 }
 
 export interface MyDeliveriesResult {
@@ -203,6 +208,8 @@ export async function listMyDeliveries(
       codDue: toDbMoney(due),
       courierFee: toDbMoney(money(r.shippingCost ?? "0")),
       createdAt: r.createdAt,
+      collectedAmount: r.invPaid ? String(r.invPaid) : "0",
+      moneyStatus: null,
     };
     (r.status === "DELIVERED" ? delivered : toDeliver).push(row);
   }
@@ -240,6 +247,7 @@ export async function listMyDeliveries(
       string | null
     >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
     externalTrackingRef: deliveryConsignments.externalTrackingRef,
+    shortfallAssigned: consignmentShortfallAssignedSql,
   };
   const consignmentQuery = () =>
     db
@@ -306,6 +314,17 @@ export async function listMyDeliveries(
       assignedUserId:
         r.assignedUserId != null ? Number(r.assignedUserId) : null,
       externalTrackingRef: r.externalTrackingRef ?? null,
+      collectedAmount: (() => {
+        const sf = round2(money(r.shortfallAssigned ?? "0"));
+        if (sf.gt(0)) {
+          return round2(money(r.codAmount ?? "0").minus(sf)).toFixed(2);
+        }
+        return r.collectedAmount ?? null;
+      })(),
+      moneyStatus:
+        round2(money(r.shortfallAssigned ?? "0")).gt(0)
+          ? "PARTIAL"
+          : (r.moneyStatus ?? null),
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
   }
@@ -790,39 +809,14 @@ export async function confirmConsignmentDelivery(
       || cn.parcelStatus === "ACCEPTED"
       || cn.parcelStatus === "PICKED_UP"
       || cn.parcelStatus === "OUT_FOR_DELIVERY";
-    if (input.statementWitness ? !parcelOut : cn.parcelStatus !== "OUT_FOR_DELIVERY") {
-      // المندوب واقفٌ على الباب: لا يكفي أن نقول «الترتيب مطلوب» — نسمّي **الأزرار الناقصة
-      // بعينها** حسب الحالة القائمة، وإلّا وقف أمام رفضٍ لا يعرف كيف يرفعه.
-      const remainingSteps = cn.parcelStatus === "ACCEPTED"
-        ? "«استلمت الطرد» ثمّ «خرج للتوصيل»"
-        : cn.parcelStatus === "PICKED_UP"
-          ? "«خرج للتوصيل»"
-          : "«قبول الطلب» ثمّ «استلمت الطرد» ثمّ «خرج للتوصيل»";
+    if (!parcelOut) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: input.statementWitness
-          ? appErrorMessage({
-              what: `تعذّر إثبات تسليم الإرسالية ${cn.consignmentNumber} من كشف الشركة`,
-              why: `حالة الطرد ${cn.parcelStatus} — والملغى والمرتجع لا يُثبَت تسليمُهما بأيّ كشف`,
-              doThis: "راجع مع الشركة رقم الطرد في كشفها؛ فإن كان الإلغاء عندنا خطأً فأعِد إسناد الطرد من صفحة الإرساليات قبل تسجيل الكشف",
-            })
-          : parcelOut
-            ? appErrorMessage({
-                what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
-                why: `حالة الطرد ${cn.parcelStatus} ولمّا تصل «خرج للتوصيل» بعد — وختمُ التسليم آخرُ خطوةٍ في السلسلة لا أوّلُها`,
-                doThis: `اضغط ${remainingSteps} من بطاقة الطرد، ثمّ «تم التسليم»`,
-              })
-            // ⭐ **حالةٌ نهائية لا حالةٌ متأخّرة** — أمسكته مراجعةٌ عدائية: شرطُ هذا الفرع
-            // `parcelStatus !== "OUT_FOR_DELIVERY"` يشمل `DELIVERED`/`FAILED`/`CANCELLED`/
-            // `RETURNED`. فكان يقول لمندوبٍ على الباب «لمّا تصل خرج للتوصيل بعد» وهو **خبرٌ
-            // كاذب**، ويأمره بضغط «قبول الطلب» ثمّ «استلمت الطرد» على طردٍ مُلغىً أو فاشلٍ أو
-            // مُسلَّم — خطواتٌ سترفضها بوّابةُ الانتقال نفسُها. أي أنّ الرسالة **تراجعت** عن
-            // سابقتها العامّة لا تقدّمت: العموميّةُ الصادقة خيرٌ من التخصيص الكاذب.
-            : appErrorMessage({
-                what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
-                why: `الطرد بلغ حالةً نهائية (${cn.parcelStatus}) فخرج من دورة التوصيل — ولا يُختم تسليمُ طردٍ أُغلق ملفُّه`,
-                doThis: "افتح بطاقة الطرد في صفحة الإرساليات وراجع سجلّه: إن كان أُغلق خطأً فأعِد إسناده من جديد ثمّ نفّذ السلسلة كاملةً؛ وإن كان قد سُلّم فعلاً فلا حاجة إلى ختمٍ ثانٍ",
-              }),
+        message: appErrorMessage({
+          what: `تعذّر ختم تسليم الإرسالية ${cn.consignmentNumber}`,
+          why: `الطرد بلغ حالةً نهائية (${cn.parcelStatus}) فخرج من دورة التوصيل — ولا يُختم تسليمُ طردٍ أُغلق ملفُّه`,
+          doThis: "افتح بطاقة الطرد في صفحة الإرساليات وراجع سجلّه: إن كان أُغلق خطأً فأعِد إسناده من جديد؛ وإن كان قد سُلّم فعلاً فلا حاجة إلى ختمٍ ثانٍ",
+        }),
       });
     }
 
@@ -981,9 +975,13 @@ export async function confirmConsignmentDelivery(
       const witnessKind = input.statementWitness
         ? (input.statementWitness.kind ?? "COMPANY_STATEMENT")
         : "COURIER_PORTAL";
-      const declaredReason = input.statementWitness
-        ? input.statementWitness.shortfallReason
-        : input.shortfallReason;
+      const declaredReason =
+        (input.statementWitness
+          ? input.statementWitness.shortfallReason
+          : input.shortfallReason) ??
+        (witnessKind === "COURIER_PORTAL" && shortage.gt(0)
+          ? "PARTIAL_REFUSAL"
+          : undefined);
       const shortfallOptional = witnessKind === "COMPANY_STATEMENT";
       const booksShortfall = shortage.gt(0) && (!shortfallOptional || declaredReason != null);
       if (booksShortfall) {

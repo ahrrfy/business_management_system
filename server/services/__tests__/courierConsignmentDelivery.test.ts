@@ -387,6 +387,65 @@ describe("courier «توصيلاتي» — تسليم إرسالية وتحوي�
       confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 1 }), // المدير بلا جهة
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
+
+  it("تسليم مباشر من حالة ASSIGNED (بلا الحاجة للمرور بـ ACCEPTED أو OUT_FOR_DELIVERY)", async () => {
+    const { partyA } = await seedParties();
+    const disp = await dispatchReception(partyA); // parcelStatus = ASSIGNED
+    const cnBefore = await consignment(disp.consignmentId);
+    expect(cnBefore.parcelStatus).toBe("ASSIGNED");
+
+    // التسليم مباشرة دون استدعاء advanceToOutForDelivery
+    const res = await confirmConsignmentDelivery({ consignmentId: disp.consignmentId }, { userId: 3 });
+    expect(res.consignmentId).toBe(disp.consignmentId);
+
+    const cnAfter = await consignment(disp.consignmentId);
+    expect(cnAfter.parcelStatus).toBe("DELIVERED");
+    expect(await partyBalance(partyA)).toBe("10000.00");
+  });
+
+  it("تسليم جزئي مع تسجيل عجز: يوثق المقبوض والعجز ويظهر كـ PARTIAL في listMyDeliveries", async () => {
+    const { partyA } = await seedParties();
+    const disp = await dispatchReception(partyA); // 10000.00 COD
+
+    // تسليم جزئي: قبض 7000 من أصل 10000 مع سبب رفض جزئي
+    const res = await confirmConsignmentDelivery(
+      {
+        consignmentId: disp.consignmentId,
+        collectedAmount: "7000.00",
+        shortfallReason: "PARTIAL_REFUSAL",
+      },
+      { userId: 3 },
+    );
+    expect(res.consignmentId).toBe(disp.consignmentId);
+
+    const cnAfter = await consignment(disp.consignmentId);
+    expect(cnAfter.parcelStatus).toBe("DELIVERED");
+
+    // العهدة تصعد بالمجموع (7000 نقد + 3000 عجز على المندوب)
+    expect(await partyBalance(partyA)).toBe("10000.00");
+
+    // قيود دفتر التوصيل تحوي التحصيل والعجز
+    const d = db();
+    const ledgers = await d
+      .select()
+      .from(s.deliveryLedgerEntries)
+      .where(eq(s.deliveryLedgerEntries.consignmentId, disp.consignmentId));
+    const codCollected = ledgers.find((l) => l.entryType === "COD_COLLECTED");
+    const shortfall = ledgers.find((l) => l.entryType === "SHORTFALL_ASSIGNED");
+    expect(codCollected).toBeTruthy();
+    expect(codCollected!.amount).toBe("7000.00");
+    expect(shortfall).toBeTruthy();
+    expect(shortfall!.amount).toBe("3000.00");
+    expect(shortfall!.shortfallReason).toBe("PARTIAL_REFUSAL");
+
+    // listMyDeliveries يعيد المقبوض عند الباب 7000 وحالة PARTIAL
+    const mine = await listMyDeliveries(3);
+    const deliveredRow = mine.delivered.find((r) => r.id === disp.consignmentId);
+    expect(deliveredRow).toBeTruthy();
+    expect(deliveredRow!.collectedAmount).toBe("7000.00");
+    expect(deliveredRow!.moneyStatus).toBe("PARTIAL");
+    expect(deliveredRow!.codDue).toBe("10000.00");
+  });
 });
 
 // يعيد partyIds من بذرة beforeEach بقراءتها بالاسم/المستخدم (تفادي حالة مشتركة).
