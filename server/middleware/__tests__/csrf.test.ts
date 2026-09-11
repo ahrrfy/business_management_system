@@ -175,9 +175,28 @@ describe("csrfGuard — متصفحات تحجب Origin/Referer (علّة الل�
     expect(nextCalled).toBe(true);
   });
 
-  it("يقبل عميل Android الأصلي عند غياب ترويسات المتصفح", () => {
-    const { nextCalled } = run(mockReq({ headers: { "x-alrueya-client": "android-native" } }));
+  it("يقبل عميل Android الأصلي الحالي عند غياب ترويسات المتصفح", () => {
+    const { nextCalled } = run(mockReq({ headers: {
+      "x-alrueya-client": "android-native",
+      "x-alrueya-client-version": "2",
+      "x-alrueya-device-proof-version": "1",
+    } }));
     expect(nextCalled).toBe(true);
+  });
+
+  it("يقبل تطبيق Super Arabia Expo الحالي عند غياب ترويسات المتصفح", () => {
+    const { nextCalled } = run(mockReq({ headers: {
+      "x-alrueya-client": "superapp-expo",
+      "x-alrueya-client-version": "1",
+      "x-alrueya-device-proof-version": "1",
+    } }));
+    expect(nextCalled).toBe(true);
+  });
+
+  it("يرفض اسماً أصلياً معروفاً بلا نسخ العقد الحالية", () => {
+    const { res, nextCalled } = run(mockReq({ headers: { "x-alrueya-client": "superapp-expo" } }));
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(403);
   });
 
   it("يرفض Sec-Fetch-Site: same-site (نطاق شقيق ليس نفس الأصل)", () => {

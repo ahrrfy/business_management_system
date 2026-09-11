@@ -39,7 +39,7 @@ const config = {
   // identity intentionally uses a different scheme so it cannot intercept the
   // future production app's links.
   scheme: identity.scheme,
-  version: "1.1.0",
+  version: "1.1.1",
   orientation: "portrait",
   userInterfaceStyle: "light",
   newArchEnabled: true,
@@ -60,7 +60,7 @@ const config = {
     },
   },
   android: {
-    versionCode: 18,
+    versionCode: 19,
     package: identity.androidPackage,
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,

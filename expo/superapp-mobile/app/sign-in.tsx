@@ -13,6 +13,7 @@ import { router } from "expo-router";
 
 import { Card } from "@/components/Ui";
 import { colors, radius, space } from "@/constants/theme";
+import { readableAuthError } from "@/lib/authErrors";
 import {
   completeNativeTwoFactor,
   signInWithNativeTransport,
@@ -21,16 +22,6 @@ import { unlockLocalSession } from "@/lib/localSessionUnlock";
 import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 
 type Step = "credentials" | "twoFactor";
-
-function readableError(error: unknown): string {
-  const message = error instanceof Error ? error.message : "";
-  if (/invalid login (identifier|password)/i.test(message)) return "تحقق من بيانات الدخول ثم حاول مرة أخرى.";
-  if (/two-factor/i.test(message)) return "تعذر التحقق من الرمز. تحقق منه وحاول مرة أخرى.";
-  if (/session|required|network|connection|unavailable/i.test(message)) {
-    return "تعذر إتمام الاتصال المحمي الآن. تحقق من الشبكة أو أعد المحاولة لاحقاً.";
-  }
-  return "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.";
-}
 
 export default function SignInScreen() {
   const { refreshWorkspace } = useWorkspaceAccess();
@@ -77,7 +68,7 @@ export default function SignInScreen() {
       }
       await openAllowedWorkspace();
     } catch (caught) {
-      setError(readableError(caught));
+      setError(readableAuthError(caught));
     } finally {
       setBusy(false);
     }
@@ -101,7 +92,7 @@ export default function SignInScreen() {
       setRecoveryCode("");
       await openAllowedWorkspace();
     } catch (caught) {
-      setError(readableError(caught));
+      setError(readableAuthError(caught));
     } finally {
       setBusy(false);
     }

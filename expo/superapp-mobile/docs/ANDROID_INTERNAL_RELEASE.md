@@ -8,7 +8,7 @@
 2. يشغّل المشغل `Expo Super Arabia Android release artifact` يدوياً من `main`.
 3. يستعيد المسار مفتاح الرفع و`google-services.json` من GitHub Secrets، ولا يطبعهما أو يرفعهما ضمن الأثر.
 4. يعيد prebuild للإنتاج، ثم TypeScript وVitest وLint وExpo Doctor واختبارات وحدة النقل الأصلية وAndroid Lint.
-5. لا يقبل الأثر إلا إذا طابقت الحزمة `online.alarabiya.store` والإصدار `1.1.0` ورمز الإصدار `18` وABI `arm64-v8a` وبصمة مفتاح الرفع المعتمدة.
+5. لا يقبل الأثر إلا إذا طابقت الحزمة `online.alarabiya.store` والإصدار `1.1.1` ورمز الإصدار `19` وABI `arm64-v8a` وبصمة مفتاح الرفع المعتمدة، وأعاد مورد النقل المجمّع عنوان الخادم والمسامير المراجعة حرفياً.
 
 ## الرفع المسموح
 
