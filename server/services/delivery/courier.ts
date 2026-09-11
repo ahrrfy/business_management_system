@@ -975,13 +975,9 @@ export async function confirmConsignmentDelivery(
       const witnessKind = input.statementWitness
         ? (input.statementWitness.kind ?? "COMPANY_STATEMENT")
         : "COURIER_PORTAL";
-      const declaredReason =
-        (input.statementWitness
-          ? input.statementWitness.shortfallReason
-          : input.shortfallReason) ??
-        (witnessKind === "COURIER_PORTAL" && shortage.gt(0)
-          ? "PARTIAL_REFUSAL"
-          : undefined);
+      const declaredReason = input.statementWitness
+        ? input.statementWitness.shortfallReason
+        : input.shortfallReason;
       const shortfallOptional = witnessKind === "COMPANY_STATEMENT";
       const booksShortfall = shortage.gt(0) && (!shortfallOptional || declaredReason != null);
       if (booksShortfall) {
