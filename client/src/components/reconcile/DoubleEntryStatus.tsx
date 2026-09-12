@@ -58,14 +58,16 @@ export function DoubleEntryStatus({
   onStop: () => void;
 }) {
   const modeLabel =
-    activation.mode === "ACTIVE"
-      ? "ACTIVE (معتمد)"
+    activation.mode === "OFF"
+      ? "متوقف"
       : activation.mode === "SHADOW"
-        ? "SHADOW (ظل)"
-        : "OFF (متوقف)";
+        ? "ظل"
+        : "فعّال";
   const modeClass =
     activation.mode === "ACTIVE"
-      ? "badge-status-active"
+      ? activation.blockers.length === 0
+        ? "badge-status-active"
+        : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"
       : activation.mode === "SHADOW"
         ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
         : "bg-muted text-muted-foreground";

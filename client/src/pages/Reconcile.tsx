@@ -232,7 +232,7 @@ export default function Reconcile() {
         for (const role of OPENING_ALLOCATION_ROLES) {
           const raw = (openingAllocationAmounts[allocationKey(scope.branchId, role)] ?? "").trim();
           if (!raw) continue;
-          if (!/^\\d+(?:\\.\\d{1,2})?$/.test(raw) || !D(raw).isPositive()) {
+          if (!/^\d+(?:\.\d{1,2})?$/.test(raw) || !D(raw).isPositive()) {
             notify.warn("كل مبلغ تخصيص يجب أن يكون موجباً وبدقة منزلتين كحد أقصى.");
             return;
           }
