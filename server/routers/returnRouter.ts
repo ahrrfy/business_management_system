@@ -42,6 +42,7 @@ import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import {
+  postPurchaseReturnCartCardRefund,
   recordPurchaseReturnCartReceipt,
   recordSalesReturnCartCardReceipt,
   recordSalesReturnCartReceipt,
@@ -2096,6 +2097,24 @@ export const returnRouter = router({
                 paymentInSource,
               ),
               postingSourceComponents: paymentInSource,
+            });
+          } else if (input.settlement.method === "CARD_TRANSFER") {
+            // مردود بحوالة: المال يدخل حساب البنك (CARD_BANK) لا الدرج. العملية الكاملة (إيصال IN
+            // غيرُ نقديّ + قيد PAYMENT_IN عاكسٌ يُصافر خفضَ RETURN لِـAP) تعيش في الخدمة احتراماً
+            // لعقد الطبقات. صافي AP صفرٌ على الدفتر و currentBalance ⇒ reconcile نظيف، وللمال مسارٌ
+            // وطرفٌ (المورد). كان المسار بلا أثرٍ ماليّ إطلاقاً — RETURN وحده يخصم AP بلا نظير ⇒
+            // انحراف reconcile بقيمة المرتجع + مردودٌ بلا إيصالٍ ولا قيد (يخالف مبدأ المالك §٥).
+            // المرجع: الواجهة لا تُرسل settlement.reference، فنُمرّر مرجعَ المستند (input.reference)
+            // كي لا يُخزَّن مرجعٌ فارغ يُعجز مطابقة كشف البنك (الخدمة تقصّه لطول عمود varchar(100)).
+            generatedReceiptId = await postPurchaseReturnCartCardRefund(tx, {
+              branchId: actorBranchId,
+              amount: returnTotalDec,
+              returnNumber,
+              supplierId: input.supplierId,
+              supplierName: supplier.name,
+              reference: input.settlement.reference ?? input.reference,
+              userId: ctx.user.id,
+              userName: ctx.user.name,
             });
           }
 
