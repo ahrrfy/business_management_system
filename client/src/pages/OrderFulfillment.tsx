@@ -20,6 +20,7 @@ import {
   ORDER_NEXT_STEP,
   orderStatusChipClass,
   orderStatusLabel,
+  orderStatusLabelForCustomer,
   type OnlineOrderStatus,
 } from "@shared/onlineOrderStatus";
 import { PageHeader } from "@/components/PageHeader";
@@ -160,6 +161,7 @@ export default function OrderFulfillment() {
         // — يُخفي COD؛ مراجعة عدائية ١٢/٧). النقل اليدوي لـDELIVERED محجوبٌ خادمياً أيضاً.
         const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
         const next = courierShipped ? undefined : ORDER_NEXT_STEP[st];
+        const canPrintPreparation = st === "CONFIRMED" || st === "PROCESSING";
         const isBusy = setStatusM.isPending || printingId === o.id;
         return (
           <RowActions
@@ -202,8 +204,10 @@ export default function OrderFulfillment() {
                 label: "طباعة ورقة تجهيز A4",
                 icon: FileText,
                 gate: { module: "store", level: "READ" },
-                disabled: isBusy,
-                disabledReason: "هناك عملية جارية على الطلب",
+                disabled: isBusy || !canPrintPreparation,
+                disabledReason: !canPrintPreparation
+                  ? "ثبّت الطلب أولاً قبل طباعة ورقة التجهيز"
+                  : "هناك عملية جارية على الطلب",
                 onSelect: () => printPreparationA4(o.id),
               },
               {
@@ -374,6 +378,13 @@ export default function OrderFulfillment() {
         icon={<Store aria-hidden className="size-5" />}
         actions={<ShippingLabelSizeSelect />}
       />
+
+      <div role="note" className="flex gap-2 rounded-lg border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
+        <p>
+          <span className="font-bold text-foreground">سير العمل:</span> ثبّت الطلب أولاً، ثم اطبع ورقة التجهيز وابدأ العمل. حدّث العميل عبر واتساب: «{orderStatusLabelForCustomer("CONFIRMED")}» بعد التثبيت و«{orderStatusLabelForCustomer("SHIPPED")}» عند إسناده لمندوب؛ ويؤكّد المندوب التسليم والتحصيل من «توصيلاتي».
+        </p>
+      </div>
 
       {/* بطاقات الحالة */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">

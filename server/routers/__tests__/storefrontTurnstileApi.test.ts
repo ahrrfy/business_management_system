@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { storefrontRouter } from "../storefrontRouter";
+import { appRouter } from "../../routers";
 
-const caller = storefrontRouter.createCaller({
+const caller = appRouter.createCaller({
   req: { headers: {} },
   res: {},
   user: null,
@@ -18,17 +18,37 @@ const validOrder = {
   clientRequestId: "sf-request-123",
 };
 
+const validQuoteRequest = {
+  customerName: "شركة الرافدين",
+  customerPhone: "07700000000",
+  contactPreference: "WHATSAPP" as const,
+  requestType: "BUSINESS" as const,
+  note: "نحتاج تجهيز قرطاسية وطباعة لمكتب جديد.",
+  clientRequestId: "sf-quote-request-123",
+  lines: [{ productUnitId: 1, quantity: 12 }],
+};
+
 describe("storefront Turnstile API boundary", () => {
   it("requires a Turnstile token for every new createOrder call", async () => {
-    await expect(caller.createOrder(validOrder as never)).rejects.toMatchObject({
+    await expect(caller.storefront.createOrder(validOrder as never)).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
   });
 
   it("rejects tokens over 2048 characters before service or network work", async () => {
-    await expect(caller.createOrder({
+    await expect(caller.storefront.createOrder({
       ...validOrder,
       turnstileToken: "x".repeat(2049),
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("requires the same Turnstile boundary for every new createQuoteRequest call", async () => {
+    await expect(caller.storefront.createQuoteRequest(validQuoteRequest as never)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    await expect(caller.storefront.createQuoteRequest({
+      ...validQuoteRequest,
+      turnstileToken: "x".repeat(2049),
+    } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

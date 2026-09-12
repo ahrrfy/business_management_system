@@ -2224,6 +2224,8 @@ export const couponPrograms = mysqlTable(
     validTo: date("validTo"),
     perCouponLimit: int("perCouponLimit").default(1).notNull(),
     perCustomerLimit: int("perCustomerLimit").default(1).notNull(),
+    /** برنامج اختياري يطلبه العميل الموثق قبل أول طلب متجر؛ لا يصدر تلقائياً. */
+    isFirstOrderSelfService: boolean("isFirstOrderSelfService").default(false).notNull(),
     codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
     // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
     designJson: json("designJson"),
@@ -2325,6 +2327,32 @@ export const couponRedemptions = mysqlTable(
 export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
+/** قفل دائمي لطلب كوبون أول طلب: برنامج واحد × عميل واحد، حتى مع الضغط المتزامن. */
+export const storefrontFirstOrderCouponClaims = mysqlTable(
+  "storefrontFirstOrderCouponClaims",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    programId: bigint("programId", { mode: "number" })
+      .notNull()
+      .references(() => couponPrograms.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    couponId: bigint("couponId", { mode: "number" }).references(
+      () => coupons.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    programCustomerUq: unique("uq_store_first_coupon_program_customer").on(
+      table.programId,
+      table.customerId,
+    ),
+    couponUq: unique("uq_store_first_coupon_claim_coupon").on(table.couponId),
+  }),
+);
 
 /* ============================ متجر العملاء — الولاء والنقاط ============================ */
 
@@ -2513,6 +2541,8 @@ export const quotationItems = mysqlTable(
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    /** سعر الكتالوج عند إصدار العرض؛ يميز التفاوض اليدوي عن تغيّر الكتالوج لاحقاً. */
+    catalogUnitPrice: decimal("catalogUnitPrice", { precision: 15, scale: 2 }),
     discountAmount: decimal("discountAmount", {
       precision: 15,
       scale: 2,
@@ -7786,6 +7816,23 @@ export const onlineOrders = mysqlTable(
     // كوبون المتجر المحقق خادمياً؛ يُستهلك عند إصدار الفاتورة الحقيقية.
     couponCode: varchar("couponCode", { length: 64 }),
     couponDiscount: decimal("couponDiscount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // لقطة منفعة التسعير الوحيدة التي اختارها الخادم (جملة أو عرض أو كوبون، بلا تراكب).
+    // لا تُشتق من أسعار اليوم حتى يبقى طلب PENDING قابلاً للتدقيق بعد تغيير حملة أو سعر.
+    pricingBenefitType: mysqlEnum("pricingBenefitType", [
+      "NONE",
+      "WHOLESALE",
+      "OFFER",
+      "COUPON",
+    ])
+      .default("NONE")
+      .notNull(),
+    pricingBenefitLabel: varchar("pricingBenefitLabel", { length: 160 }),
+    pricingBenefitDiscount: decimal("pricingBenefitDiscount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
     // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
@@ -7901,6 +7948,122 @@ export const onlineOrderItems = mysqlTable(
 
 export type OnlineOrderItem = typeof onlineOrderItems.$inferSelect;
 export type InsertOnlineOrderItem = typeof onlineOrderItems.$inferInsert;
+
+/**
+ * طلب عرض سعر من المتجر: استفسار مبيعات فقط، لا يحجز مخزوناً ولا يثبت سعراً ولا يصدر فاتورة.
+ * يحوّله الموظف بعد المراجعة إلى quotations الرسمي المستقل عندما يتفق مع العميل.
+ */
+export const storefrontQuoteRequests = mysqlTable(
+  "storefrontQuoteRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestNumber: varchar("requestNumber", { length: 50 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(
+      () => customers.id,
+      { onDelete: "set null" },
+    ),
+    requestType: mysqlEnum("requestType", [
+      "BULK",
+      "CUSTOM_PRINT",
+      "BUSINESS",
+      "GENERAL",
+    ]).notNull(),
+    status: mysqlEnum("status", [
+      "PENDING",
+      "CONTACTED",
+      "QUOTED",
+      "CLOSED",
+      "CANCELLED",
+    ])
+      .default("PENDING")
+      .notNull(),
+    companyName: varchar("companyName", { length: 255 }),
+    governorate: varchar("governorate", { length: 40 }),
+    contactPreference: mysqlEnum("contactPreference", [
+      "PHONE",
+      "WHATSAPP",
+    ])
+      .default("WHATSAPP")
+      .notNull(),
+    customerNote: text("customerNote").notNull(),
+    staffNote: text("staffNote"),
+    /** العرض الرسمي الصادر بعد مراجعة الموظف؛ الطلب نفسه لا يحمل سعراً أو أثراً مالياً. */
+    officialQuotationId: bigint("officialQuotationId", { mode: "number" }).references(
+      () => quotations.id,
+    ),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // صلاحية ضيف قصيرة العمر لتتبع طلب العرض من دون جعل رقم SRQ قابلاً للاستكشاف.
+    guestTrackingPublicId: char("guestTrackingPublicId", { length: 32 }),
+    guestTrackingTokenHash: char("guestTrackingTokenHash", { length: 64 }),
+    guestTrackingExpiresAt: timestamp("guestTrackingExpiresAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    requestNumberUq: unique("uq_store_quote_request_number").on(
+      table.requestNumber,
+    ),
+    branchStatusCreatedIdx: index("idx_store_quote_request_branch_status_created").on(
+      table.branchId,
+      table.status,
+      table.createdAt,
+    ),
+    customerCreatedIdx: index("idx_store_quote_request_customer_created").on(
+      table.customerId,
+      table.createdAt,
+    ),
+    officialQuotationUq: unique("uq_store_quote_request_official_quotation").on(
+      table.officialQuotationId,
+    ),
+    clientRequestUq: unique("uq_store_quote_request_client_request").on(
+      table.clientRequestId,
+    ),
+    guestTrackingPublicIdUq: unique("uq_store_quote_request_guest_tracking_public_id").on(
+      table.guestTrackingPublicId,
+    ),
+    guestTrackingTokenHashUq: unique("uq_store_quote_request_guest_tracking_hash").on(
+      table.guestTrackingTokenHash,
+    ),
+  }),
+);
+
+export type StorefrontQuoteRequest = typeof storefrontQuoteRequests.$inferSelect;
+export type InsertStorefrontQuoteRequest =
+  typeof storefrontQuoteRequests.$inferInsert;
+
+/** لقطة طلب العميل حتى لو تغيّر الكتالوج أو حُذفت وحدة البيع لاحقاً. */
+export const storefrontQuoteRequestItems = mysqlTable(
+  "storefrontQuoteRequestItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    quoteRequestId: bigint("quoteRequestId", { mode: "number" }).notNull(),
+    productUnitId: bigint("productUnitId", { mode: "number" }),
+    productName: varchar("productName", { length: 255 }).notNull(),
+    variantLabel: varchar("variantLabel", { length: 255 }),
+    unitName: varchar("unitName", { length: 40 }).notNull(),
+    quantity: int("quantity").notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestIdx: index("idx_store_quote_request_item_request").on(
+      table.quoteRequestId,
+    ),
+    requestFk: foreignKey({
+      columns: [table.quoteRequestId],
+      foreignColumns: [storefrontQuoteRequests.id],
+      name: "fk_store_quote_request_item_request",
+    }).onDelete("cascade"),
+  }),
+);
+
+export type StorefrontQuoteRequestItem =
+  typeof storefrontQuoteRequestItems.$inferSelect;
+export type InsertStorefrontQuoteRequestItem =
+  typeof storefrontQuoteRequestItems.$inferInsert;
 
 /** مراجعة المنتج من عميل استلم طلباً يحتويه؛ تبقى معلّقة إلى اعتماد المتجر. */
 export const storefrontProductReviews = mysqlTable(

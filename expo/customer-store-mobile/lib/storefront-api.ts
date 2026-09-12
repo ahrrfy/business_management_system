@@ -61,6 +61,9 @@ export type OnlineOrderTracking = {
   orderNumber: string;
   status: string;
   subtotal: string;
+  pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
   deliveryFee: string;
   deliveryFree?: boolean;
   deliveryWaivedAmount?: string;
@@ -84,6 +87,17 @@ export type StorefrontOrderQuote = {
   couponCode: string | null;
   couponProgramName: string | null;
   couponDiscount: string;
+  pricingBenefitType: "NONE" | "WHOLESALE" | "OFFER" | "COUPON";
+  pricingBenefitLabel: string | null;
+  pricingBenefitDiscount: string;
+  couponSuperseded: boolean;
+  wholesaleProgress: Array<{
+    productId: number;
+    productName: string;
+    currentBaseQuantity: number;
+    minimumBaseQuantity: number;
+    remainingBaseQuantity: number;
+  }>;
   lines: Array<{
     productUnitId: number;
     quantity: number;
@@ -93,11 +107,14 @@ export type StorefrontOrderQuote = {
     unitPrice: string;
     lineTotal: string;
   }>;
+  retailSubtotal: string;
   subtotal: string;
   deliveryFee: string;
   total: string;
   deliveryFree?: boolean;
   deliveryWaivedAmount?: string;
+  freeShippingThreshold?: string | null;
+  freeShippingRemaining?: string | null;
 };
 export type StorefrontOrderResult = {
   orderId: number;
@@ -181,6 +198,55 @@ export type CreateStorefrontOrderInput = {
   clientRequestId: string;
   turnstileToken: string;
   customerSessionToken?: string;
+};
+export type CreateStorefrontQuoteRequestInput = {
+  customerName: string;
+  customerPhone: string;
+  companyName?: string;
+  governorate?: string;
+  contactPreference: "PHONE" | "WHATSAPP";
+  requestType: "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
+  note: string;
+  clientRequestId: string;
+  turnstileToken: string;
+  customerSessionToken?: string;
+  lines: Array<{ productUnitId: number; quantity: number }>;
+};
+export type StorefrontQuoteRequestResult = {
+  requestId: number;
+  requestNumber: string;
+  guestTrackingToken: string | null;
+  guestTrackingExpiresAt: string | null;
+  idempotentReplay: boolean;
+};
+export type StorefrontQuoteRequestTracking = {
+  requestNumber: string;
+  status: "PENDING" | "CONTACTED" | "QUOTED" | "CLOSED" | "CANCELLED";
+  requestType: "BULK" | "CUSTOM_PRINT" | "BUSINESS" | "GENERAL";
+  companyName: string | null;
+  governorate: string | null;
+  contactPreference: "PHONE" | "WHATSAPP";
+  /** مرجع العرض المرسل من الموظف فقط؛ لا تُحمّل الأسعار الحساسة في شاشة التتبع. */
+  officialQuotation: {
+    quoteNumber: string;
+    validUntil: string | null;
+    /** لا يكشف التتبع سعر العرض؛ الحالة تكفي لعرض إجراء القبول الآمن. */
+    status: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+  items: Array<{
+    productName: string;
+    variantLabel: string | null;
+    unitName: string;
+    quantity: number;
+  }>;
+};
+export type StorefrontFirstOrderCouponResult = {
+  outcome: "ISSUED" | "ALREADY_ISSUED";
+  code: string;
+  programName: string;
+  validTo: string | null;
 };
 
 export type ApiProduct = {
@@ -729,6 +795,32 @@ export function trackStorefrontOrder(input: SecureTrackingInput) {
   return storefrontMutation<OnlineOrderTracking | null>(request.procedure, request.input);
 }
 
+/** يختار مسار الإلغاء بنفس دليل الملكية المستخدم للتتبّع؛ لا يُرسل رقم الطلب وحده للضيف. */
+export function secureOrderCancellationRequest(input: SecureTrackingInput) {
+  const orderNumber = input.orderNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return {
+      procedure: "storefront.cancelOrderByToken" as const,
+      input: { trackingToken: input.guestTrackingToken },
+    };
+  }
+  if (input.customerSessionToken) {
+    return {
+      procedure: "storefront.cancelOrderPrivate" as const,
+      input: { customerSessionToken: input.customerSessionToken, orderNumber },
+    };
+  }
+  throw new Error("لا توجد صلاحية محفوظة لإلغاء هذا الطلب. تحقق من هاتفك أو استخدم الجهاز الذي أُنشئ منه الطلب.");
+}
+
+export function cancelStorefrontOrder(input: SecureTrackingInput) {
+  const request = secureOrderCancellationRequest(input);
+  return storefrontMutation<{ orderNumber: string; status: "CANCELLED" }>(
+    request.procedure,
+    request.input,
+  );
+}
+
 export function quoteStorefrontOrder(
   governorate: string,
   lines: Array<{ productUnitId: number; quantity: number }>,
@@ -760,6 +852,77 @@ export function createStorefrontOrder(input: CreateStorefrontOrderInput) {
     "storefront.createOrder",
     input,
   );
+}
+
+/** طلب مبيعات بلا تسعير أو حجز؛ العرض الرسمي يصدره الموظف بعد مراجعة التوفر والتخصيص. */
+export function createStorefrontQuoteRequest(input: CreateStorefrontQuoteRequestInput) {
+  return storefrontMutation<StorefrontQuoteRequestResult>(
+    "storefront.createQuoteRequest",
+    input,
+  );
+}
+
+export type SecureQuoteRequestTrackingInput = {
+  requestNumber: string;
+  customerSessionToken?: string | null;
+  guestTrackingToken?: string | null;
+};
+
+export type StorefrontOfficialQuotationAcceptance =
+  | {
+      outcome: "ACCEPTED";
+      quoteNumber: string;
+      quoteStatus: "ACCEPTED";
+      alreadyAccepted: boolean;
+      nextStep: "STAFF_CONFIRMATION";
+    }
+  | {
+      outcome: "REQUOTE_REQUIRED";
+      quoteNumber: string;
+      quoteStatus: "SENT" | "EXPIRED";
+      reasons: Array<"EXPIRED" | "PRICE_CHANGED" | "UNAVAILABLE">;
+      nextStep: "CONTACT_STAFF";
+    };
+
+/** رقم SRQ ليس دليلاً للضيف؛ يستعمل الرمز المحفوظ أو جلسة الهاتف الموثقة فقط. */
+export function secureQuoteRequestTrackingRequest(input: SecureQuoteRequestTrackingInput) {
+  const requestNumber = input.requestNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return {
+      procedure: "storefront.trackQuoteRequestByToken" as const,
+      input: { trackingToken: input.guestTrackingToken },
+    };
+  }
+  if (input.customerSessionToken) {
+    return {
+      procedure: "storefront.trackQuoteRequestPrivate" as const,
+      input: { customerSessionToken: input.customerSessionToken, requestNumber },
+    };
+  }
+  throw new Error("لا توجد صلاحية محفوظة لتتبع طلب عرض السعر. افتحه من جهاز الإرسال أو سجّل الدخول بالحساب المرتبط به.");
+}
+
+export function trackStorefrontQuoteRequest(input: SecureQuoteRequestTrackingInput) {
+  const request = secureQuoteRequestTrackingRequest(input);
+  return storefrontMutation<StorefrontQuoteRequestTracking>(request.procedure, request.input);
+}
+
+/** القبول يعيد استعمال صلاحية التتبع نفسها؛ رقم SRQ وحده لا يصلح أبداً لقبول عرض. */
+export function acceptStorefrontOfficialQuotation(input: SecureQuoteRequestTrackingInput) {
+  const requestNumber = input.requestNumber.trim().toUpperCase();
+  if (input.guestTrackingToken) {
+    return storefrontMutation<StorefrontOfficialQuotationAcceptance>(
+      "storefront.acceptQuoteRequestByToken",
+      { trackingToken: input.guestTrackingToken },
+    );
+  }
+  if (input.customerSessionToken) {
+    return storefrontMutation<StorefrontOfficialQuotationAcceptance>(
+      "storefront.acceptQuoteRequestPrivate",
+      { customerSessionToken: input.customerSessionToken, requestNumber },
+    );
+  }
+  throw new Error("لا توجد صلاحية محفوظة لقبول عرض السعر. افتحه من جهاز الإرسال أو سجّل الدخول بالحساب المرتبط به.");
 }
 
 /** يسجّل رمز Expo Push؛ جلسة الهاتف الاختيارية تُحل إلى هوية العميل على الخادم ولا تُرسل customerId خاماً. */
@@ -802,6 +965,14 @@ export function claimStorefrontFirebaseCustomer(input: {
 export function getStorefrontCustomerBenefits(customerSessionToken: string) {
   return storefrontMutation<StorefrontCustomerBenefits>(
     "storefront.customerBenefitsPrivate",
+    { customerSessionToken },
+  );
+}
+
+/** طلب صريح من العميل الموثق؛ الخادم وحده يفحص كونه قبل أول طلب ويصدر مرة واحدة. */
+export function requestStorefrontFirstOrderCoupon(customerSessionToken: string) {
+  return storefrontMutation<StorefrontFirstOrderCouponResult>(
+    "storefront.requestFirstOrderCoupon",
     { customerSessionToken },
   );
 }

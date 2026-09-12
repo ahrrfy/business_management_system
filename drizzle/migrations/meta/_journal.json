@@ -2213,6 +2213,48 @@
 			"when": 1788148803000,
 			"tag": "0343_superapp_expo_push_devices",
 			"breakpoints": true
+		},
+		{
+			"idx": 346,
+			"version": "5",
+			"when": 1788148804000,
+			"tag": "0346_storefront_pricing_benefit_snapshot_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 347,
+			"version": "5",
+			"when": 1788148805000,
+			"tag": "0347_storefront_quote_requests_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 348,
+			"version": "5",
+			"when": 1788148806000,
+			"tag": "0348_storefront_quote_request_tracking_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 349,
+			"version": "5",
+			"when": 1788148807000,
+			"tag": "0349_storefront_quote_request_official_quotation_link_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 350,
+			"version": "5",
+			"when": 1788148808000,
+			"tag": "0350_storefront_first_order_coupon_rebased",
+			"breakpoints": true
+		},
+		{
+			"idx": 351,
+			"version": "5",
+			"when": 1788148809000,
+			"tag": "0351_quotation_item_catalog_unit_price",
+			"breakpoints": true
 		}
 	]
 }

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 
 import { onlineOrderItems, onlineOrders, productVariants, storefrontProductReviews, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -35,12 +35,24 @@ export async function listStorefrontProductReviews(productId: number) {
 export async function submitStorefrontProductReview(input: { customerId: number; productId: number; rating: number; comment: string }) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة بيانات المتجر غير متاحة" });
+  // لا نلتقط «آخر طلب» فقط: قد يكون العميل قد قيّمه سابقاً بينما يملك طلباً مُسلّماً
+  // أقدم لم يقيّمه بعد. الـLEFT JOIN يحافظ على عقد «مراجعة واحدة لكل منتج×طلب» بلا
+  // حرمان العميل من تجربة شراء موثقة أخرى.
   const deliveredOrder = (await db
     .select({ id: onlineOrders.id })
     .from(onlineOrders)
     .innerJoin(onlineOrderItems, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
     .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
-    .where(and(eq(onlineOrders.customerId, input.customerId), eq(onlineOrders.status, "DELIVERED"), eq(productVariants.productId, input.productId)))
+    .leftJoin(storefrontProductReviews, and(
+      eq(storefrontProductReviews.onlineOrderId, onlineOrders.id),
+      eq(storefrontProductReviews.productId, input.productId),
+    ))
+    .where(and(
+      eq(onlineOrders.customerId, input.customerId),
+      eq(onlineOrders.status, "DELIVERED"),
+      eq(productVariants.productId, input.productId),
+      isNull(storefrontProductReviews.id),
+    ))
     .orderBy(desc(onlineOrders.orderDate))
     .limit(1))[0];
   if (!deliveredOrder) throw new TRPCError({ code: "FORBIDDEN", message: "يمكن إرسال مراجعة بعد استلام طلب يتضمن هذا المنتج" });

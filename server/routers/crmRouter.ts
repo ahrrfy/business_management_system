@@ -1,7 +1,8 @@
 import { randomBytes, createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { appErrorMessage } from "../../shared/errors";
 import {
   auditLogs,
   couponPrograms,
@@ -9,6 +10,7 @@ import {
   coupons,
   crmCampaigns,
   promotions,
+  storeSettings,
   users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
@@ -214,6 +216,7 @@ export const crmRouter = router({
         validTo: couponPrograms.validTo,
         perCouponLimit: couponPrograms.perCouponLimit,
         perCustomerLimit: couponPrograms.perCustomerLimit,
+        isFirstOrderSelfService: couponPrograms.isFirstOrderSelfService,
         codePrefix: couponPrograms.codePrefix,
         designJson: couponPrograms.designJson,
         createdAt: couponPrograms.createdAt,
@@ -252,10 +255,21 @@ export const crmRouter = router({
       validTo: ymd.nullish(),
       perCouponLimit: z.number().int().min(1).max(1000).default(1),
       perCustomerLimit: z.number().int().min(1).max(1000).default(1),
+      isFirstOrderSelfService: z.boolean().default(false),
       codePrefix: z.string().trim().min(1).max(12).default("CRM"),
       design: z.object({ title: z.string().max(80).optional(), subtitle: z.string().max(140).optional(), terms: z.string().max(500).optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }).optional(),
     })).mutation(async ({ input, ctx }) => {
       if (input.validTo && input.validTo < input.validFrom) throw new TRPCError({ code: "BAD_REQUEST", message: "نهاية الصلاحية أقدم من البداية" });
+      if (input.isFirstOrderSelfService && (input.perCustomerLimit !== 1 || input.perCouponLimit !== 1)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appErrorMessage({
+            what: "تعذر إنشاء برنامج كوبون الطلب الأول",
+            why: "هذا البرنامج يجب أن يسمح باستخدام واحد وكوبون واحد للعميل",
+            doThis: "اضبط حدي الاستخدام لكل كوبون ولكل عميل على 1 ثم احفظ البرنامج",
+          }),
+        });
+      }
       const branchId = ownBranch(ctx, input.branchId);
       const programId = await withTx(async (tx) => {
         const promotion = (await tx.select().from(promotions).where(eq(promotions.id, input.promotionId)).limit(1))[0];
@@ -272,6 +286,7 @@ export const crmRouter = router({
           validTo: input.validTo ? new Date(input.validTo) : null,
           perCouponLimit: input.perCouponLimit,
           perCustomerLimit: input.perCustomerLimit,
+          isFirstOrderSelfService: input.isFirstOrderSelfService,
           codePrefix: input.codePrefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CRM",
           designJson: input.design ?? null,
           createdBy: ctx.user.id,
@@ -300,6 +315,50 @@ export const crmRouter = router({
               throw new TRPCError({ code: "BAD_REQUEST", message: "اعتمد الحملة أولاً قبل تفعيل برنامج الكوبونات" });
             }
           }
+          if (program.isFirstOrderSelfService) {
+            // لا يوجد قيد فريد جزئي في MySQL. صف الإعدادات الوحيد هو قفل نطاق ثابت
+            // لهذه العملية النادرة فقط؛ ينتظر المفعّل الثاني ثم يرى البرنامج الأول ACTIVE.
+            const activationLock = (await tx.select({ id: storeSettings.id })
+              .from(storeSettings)
+              .where(eq(storeSettings.id, 1))
+              .for("update")
+              .limit(1))[0];
+            if (!activationLock) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                  why: "لا يوجد صف إعدادات المتجر الذي يحمي التفعيل المتزامن",
+                  doThis: "أكمل إعدادات المتجر ثم أعد محاولة التفعيل",
+                }),
+              });
+            }
+            const anotherFirstOrderProgram = (await tx.select({ id: couponPrograms.id })
+              .from(couponPrograms)
+              .where(and(
+                eq(couponPrograms.status, "ACTIVE"),
+                eq(couponPrograms.isFirstOrderSelfService, true),
+                ne(couponPrograms.id, input.programId),
+                program.branchId == null
+                  ? undefined
+                  : or(
+                      isNull(couponPrograms.branchId),
+                      eq(couponPrograms.branchId, program.branchId),
+                    ),
+              ))
+              .for("update")
+              .limit(1))[0];
+            if (anotherFirstOrderProgram) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: appErrorMessage({
+                  what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                  why: "يوجد برنامج فعّال آخر يخدم الفرع نفسه أو يغطي كل الفروع",
+                  doThis: "أوقف البرنامج الحالي أولاً، ثم فعّل هذا البرنامج",
+                }),
+              });
+            }
+          }
         }
         await tx.update(couponPrograms).set({ status: input.status }).where(eq(couponPrograms.id, input.programId));
       });
@@ -315,10 +374,20 @@ export const crmRouter = router({
       const issuedAt = new Date();
       const batchReference = `CP-${input.programId}-${issuedAt.toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(2).toString("hex").toUpperCase()}`;
       const issued = await withTx(async (tx) => {
-        const program = (await tx.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
+        const program = (await tx.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).for("update").limit(1))[0];
         if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
         ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
         if (program.status === "ENDED") throw new TRPCError({ code: "BAD_REQUEST", message: "البرنامج منتهٍ" });
+        if (program.isFirstOrderSelfService) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: appErrorMessage({
+              what: "لا يمكن إصدار دفعة يدوية لكوبون الطلب الأول",
+              why: "هذا البرنامج يصدر رمزاً شخصياً فقط عندما يطلبه العميل قبل أول طلب متجر",
+              doThis: "دع العميل يطلب الكوبون من صفحة الولاء، أو أنشئ برنامجاً عادياً للإصدار الإداري",
+            }),
+          });
+        }
         const uniqueCodes = new Set<string>();
         while (uniqueCodes.size < input.count) uniqueCodes.add(makeCode(program.codePrefix));
         const rows = Array.from(uniqueCodes, (code) => {

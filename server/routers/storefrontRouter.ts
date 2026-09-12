@@ -21,22 +21,34 @@ import {
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
 import {
   createOnlineOrder,
+  cancelOnlineOrderByGuestToken,
+  cancelOnlineOrderForCustomer,
   findOwnedOnlineOrderReplay,
   quoteOnlineOrder,
   readOnlineOrderLabel,
   trackOnlineOrderByGuestToken,
   trackOnlineOrderForCustomer,
 } from "../services/onlineOrderService";
+import {
+  acceptStorefrontOfficialQuotationByGuestToken,
+  acceptStorefrontOfficialQuotationForCustomer,
+  createStorefrontQuoteRequest,
+  findOwnedStorefrontQuoteRequestReplay,
+  trackStorefrontQuoteRequestByGuestToken,
+  trackStorefrontQuoteRequestForCustomer,
+} from "../services/storefrontQuoteRequestService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric, recordStoreRecommendationClick } from "../services/storeAdmin/storeConversionMetricsService";
 import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
+import { createVerifiedStorefrontQuoteRequest } from "../services/storefrontQuoteRequestGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, requireActiveStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
+import { requestStorefrontFirstOrderCoupon } from "../services/storefrontFirstOrderCouponService";
 import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 import { createStorefrontCartShare, resolveStorefrontCartShare } from "../services/storefrontCartShareService";
 
@@ -134,6 +146,14 @@ export const storefrontRouter = router({
   customerBenefitsPrivate: storefrontPublicWriteProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
     .mutation(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
+  /** لا يصدر إلا بطلب صاحب جلسة الهاتف، مرة واحدة وقبل أي طلب متجر سابق. */
+  requestFirstOrderCoupon: storefrontPublicWriteProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return requestStorefrontFirstOrderCoupon(customer.customerId);
+    }),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure
@@ -338,6 +358,79 @@ export const storefrontRouter = router({
       return result;
     }),
 
+  /** مسار الشركات/الكميات/الطباعة: استفسار فقط، بلا حجز مخزون أو سعر أو فاتورة. */
+  createQuoteRequest: storefrontPublicWriteProcedure
+    .input(
+      z.object({
+        customerSessionToken: z.string().trim().min(40).max(4_000).nullish(),
+        customerName: z.string().trim().min(1).max(255),
+        customerPhone: z.string().trim().min(5).max(20),
+        companyName: z.string().trim().max(255).nullish(),
+        governorate: z.string().trim().max(40).nullish(),
+        contactPreference: z.enum(["PHONE", "WHATSAPP"]),
+        requestType: z.enum(["BULK", "CUSTOM_PRINT", "BUSINESS", "GENERAL"]),
+        note: z.string().trim().min(5).max(2_000),
+        clientRequestId: z.string().trim().min(8).max(80),
+        turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),
+        lines: z.array(
+          z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive().max(10_000),
+          }),
+        ).min(1).max(30),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { customerSessionToken, turnstileToken, ...request } = input;
+      const authenticatedCustomer = customerSessionToken
+        ? await requireActiveStorefrontCustomer(customerSessionToken)
+        : null;
+      return createVerifiedStorefrontQuoteRequest(
+        { ...request, authenticatedCustomer },
+        turnstileToken,
+        {
+          findOwnedReplay: findOwnedStorefrontQuoteRequestReplay,
+          verifyTurnstile: verifyStorefrontTurnstile,
+          createQuoteRequest: createStorefrontQuoteRequest,
+        },
+      );
+    }),
+
+  /** مالك موثق: رقم SRQ مرجع فقط، والهوية تأتي من جلسة الهاتف الموقعة. */
+  trackQuoteRequestPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      requestNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return trackStorefrontQuoteRequestForCustomer(input.requestNumber, customer.customerId);
+    }),
+
+  /** الضيف لا يرسل SRQ أو هاتفاً؛ رمز تتبع طلب العرض هو الصلاحية الوحيدة. */
+  trackQuoteRequestByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => trackStorefrontQuoteRequestByGuestToken(input.trackingToken)),
+
+  /** قبول المالك للعرض الرسمي: الجلسة تثبت العميل، ورقم SRQ مرجع فقط لا يصلح للتخمين. */
+  acceptQuoteRequestPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      requestNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return acceptStorefrontOfficialQuotationForCustomer(
+        input.requestNumber,
+        customer.customerId,
+      );
+    }),
+
+  /** الضيف لا يرسل رقم SRQ أو رقم العرض: رمز التتبع opaque هو التفويض الوحيد للقبول. */
+  acceptQuoteRequestByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => acceptStorefrontOfficialQuotationByGuestToken(input.trackingToken)),
+
   /** تتبّع مالك موثّق؛ رقم الطلب selector فقط وcustomerId يأتي من جلسة Firebase الموقعة. */
   trackOrderPrivate: storefrontPublicWriteProcedure
     .input(z.object({
@@ -353,6 +446,22 @@ export const storefrontRouter = router({
   trackOrderByToken: storefrontPublicWriteProcedure
     .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
     .mutation(({ input }) => trackOnlineOrderByGuestToken(input.trackingToken)),
+
+  /** الإلغاء الذاتي يحمي العميل قبل أن يعتمد الموظف الطلب فقط؛ لا يسمح بتخطي دورة التجهيز. */
+  cancelOrderPrivate: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      orderNumber: z.string().trim().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      const customer = await requireActiveStorefrontCustomer(input.customerSessionToken);
+      return cancelOnlineOrderForCustomer(input.orderNumber, customer.customerId);
+    }),
+
+  /** الضيف لا يقدّم رقم طلب قابل للتخمين؛ رمز تتبّعه الموقّع هو الصلاحية الوحيدة للإلغاء. */
+  cancelOrderByToken: storefrontPublicWriteProcedure
+    .input(z.object({ trackingToken: z.string().trim().min(60).max(160) }))
+    .mutation(({ input }) => cancelOnlineOrderByGuestToken(input.trackingToken)),
 
   /** تظهر عند مسح QR الملصق: صفحة عامة محدودة الوصول بتوقيع خاص بالملصق. */
   labelSummary: labelSummaryProcedure

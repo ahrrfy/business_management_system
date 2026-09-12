@@ -97,6 +97,45 @@ beforeEach(async () => {
 });
 
 describe("createOnlineOrder availability guards", () => {
+  it("يعيد تقدم التوصيل المجاني من العتبة التي فعّلتها الإدارة، بلا أي اعتماد على الكوبون", async () => {
+    await db().update(s.storeSettings).set({ freeShippingThreshold: "2500.00" }).where(eq(s.storeSettings.id, 1));
+
+    const belowThreshold = await quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    expect(belowThreshold).toMatchObject({
+      subtotal: "1000.00",
+      deliveryFree: false,
+      freeShippingThreshold: "2500.00",
+      freeShippingRemaining: "1500.00",
+    });
+
+    const qualified = await quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    expect(qualified).toMatchObject({
+      subtotal: "3000.00",
+      deliveryFee: "0.00",
+      deliveryFree: true,
+      freeShippingThreshold: "2500.00",
+      freeShippingRemaining: "0.00",
+    });
+    expect(Number(qualified.deliveryWaivedAmount)).toBeGreaterThan(0);
+
+    await db().update(s.storeSettings).set({ freeShippingThreshold: "0.00" }).where(eq(s.storeSettings.id, 1));
+    const disabled = await quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    expect(disabled).toMatchObject({
+      deliveryFree: false,
+      freeShippingThreshold: null,
+      freeShippingRemaining: null,
+    });
+  });
+
   it("persists one immutable 24-hour reservation deadline and replays the same snapshot", async () => {
     const before = Date.now();
     const request = {

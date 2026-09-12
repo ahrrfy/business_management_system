@@ -52,6 +52,13 @@ function toYmd(v: unknown): string {
 
 const CHANNEL_LABEL: Record<string, string> = { POS: "نقطة البيع", STORE: "المتجر الإلكتروني" };
 const APPLICATION_LABEL: Record<string, string> = { AUTO: "تلقائي", COUPON: "بكوبون" };
+function offerActivationState(offer: OfferRow, today: string) {
+  if (!offer.isActive) return { label:"معطَّل", variant:"secondary" as const, note:"لا يُطبّق" };
+  const startsOn = toYmd(offer.effectiveFrom); const endsOn = offer.effectiveTo ? toYmd(offer.effectiveTo) : "";
+  if (startsOn > today) return { label:"يبدأ لاحقاً", variant:"secondary" as const, note:`من ${startsOn}` };
+  if (endsOn && endsOn < today) return { label:"انتهى تاريخياً", variant:"destructive" as const, note:`انتهى في ${endsOn}` };
+  return { label:"سارٍ الآن", variant:"default" as const, note:"مفعل وضمن نافذته" };
+}
 
 function Kpi({ label, value, note }: { label: string; value: string | number; note?: string }) {
   return <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-xl font-bold tabular-nums">{value}</div>{note && <div className="mt-1 text-xs text-muted-foreground">{note}</div>}</CardContent></Card>;
@@ -65,6 +72,7 @@ export default function Offers() {
   const listQ = trpc.salesPromotions.list.useQuery({ includeInactive });
   const performanceQ = trpc.salesPromotions.performance.useQuery();
   const campaignsQ = trpc.crm.campaigns.list.useQuery();
+  const campaignById = useMemo(() => new Map((campaignsQ.data ?? []).map((campaign) => [campaign.id, campaign])), [campaignsQ.data]);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
   // فلاتر عميلية على القائمة (channel/validity) — لا تحتاج استدعاءً خادمياً جديداً؛ list يعيد كل
@@ -91,6 +99,7 @@ export default function Offers() {
   const [channel, setChannel] = useState<"POS" | "STORE">("POS");
   const [targets, setTargets] = useState<TargetPick[]>([]);
   const [productPicker, setProductPicker] = useState("");
+  const today = todayYmd();
 
   const productSearchQ = trpc.bundles.searchComponents.useQuery(
     { q: productPicker, limit: 20 },
@@ -231,7 +240,6 @@ export default function Offers() {
     [performanceQ.data?.rows],
   );
   const operationalSignals = useMemo(() => {
-    const today = todayYmd();
     const rows = listQ.data ?? [];
     const activeNow = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) <= today && (!p.effectiveTo || toYmd(p.effectiveTo) >= today));
     const scheduled = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) > today);
@@ -239,10 +247,9 @@ export default function Offers() {
     const unusedActive = activeNow.filter((p) => (performanceById.get(p.id)?.invoiceCount ?? 0) === 0);
     const negative = rows.filter((p) => D(performanceById.get(p.id)?.grossProfit).isNegative());
     return { activeNow, scheduled, expiredActive, unusedActive, negative };
-  }, [listQ.data, performanceById]);
+  }, [listQ.data, performanceById, today]);
 
   const list = useMemo(() => {
-    const today = todayYmd();
     const needle = searchQuery.trim().toLocaleLowerCase("ar");
     return (listQ.data ?? [])
       .map((p: any) => p)
@@ -254,13 +261,13 @@ export default function Offers() {
           const to = p.effectiveTo ? toYmd(p.effectiveTo) : null;
           const scheduled = from > today;
           const expired = to != null && to < today;
-          if (validityFilter === "SCHEDULED" && !scheduled) return false;
+          if (validityFilter === "SCHEDULED" && (!p.isActive || !scheduled)) return false;
           if (validityFilter === "EXPIRED" && !expired) return false;
-          if (validityFilter === "CURRENT" && (scheduled || expired)) return false;
+          if (validityFilter === "CURRENT" && (!p.isActive || scheduled || expired)) return false;
         }
         return true;
       });
-  }, [listQ.data, channelFilter, validityFilter, searchQuery]);
+  }, [listQ.data, channelFilter, validityFilter, searchQuery, today]);
 
   /** هامشُ العرض نسبةً مئوية — null حين لا مبيعات مرتبطة (لا قسمة على صفر). */
   const marginOf = (promotionId: number): string | null => {
@@ -339,7 +346,13 @@ export default function Offers() {
         id: "scope",
         header: "النطاق",
         accessorFn: (p) => (p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"),
-        cell: ({ row }) => (row.original.scope === "ALL" ? "الكل" : row.original.scope === "CATEGORIES" ? "فئات" : "منتجات"),
+        cell: ({ row }) => <div><div>{row.original.scope === "ALL" ? "الكل" : row.original.scope === "CATEGORIES" ? "فئات" : "منتجات"}</div><div className="text-xs text-muted-foreground">{row.original.scope === "ALL" ? "كل المنتجات المؤهلة" : "أهداف محفوظة عند الإنشاء"}</div></div>,
+      },
+      {
+        id: "campaign",
+        header: "الحملة",
+        accessorFn: (p) => p.campaignId == null ? "عرض مستقل" : campaignById.get(Number(p.campaignId))?.name ?? "حملة مرتبطة",
+        cell: ({ row }) => <span className="text-xs">{row.original.campaignId == null ? "عرض مستقل" : campaignById.get(Number(row.original.campaignId))?.name ?? "حملة مرتبطة"}</span>,
       },
       {
         id: "channel",
@@ -418,16 +431,15 @@ export default function Offers() {
       {
         id: "status",
         header: "الحالة",
-        accessorFn: (p) => (p.isActive ? "نشط" : "معطَّل"),
+        accessorFn: (p) => offerActivationState(p, today).label,
         meta: { kind: "status" },
-        cell: ({ row }) =>
-          row.original.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>,
+        cell: ({ row }) => { const state = offerActivationState(row.original, today); return <div><Badge variant={state.variant}>{state.label}</Badge><div className="mt-1 text-xs text-muted-foreground">{state.note}</div></div>; },
       },
       // عمودُ الأفعال مشروطٌ بالصلاحية — كان محتواه محجوباً بـ`canManage` في الجدول الخامّ.
       ...(canManage ? [offerActionsColumn] : []),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [performanceById, canManage, deactivateM.isPending, reactivateM.isPending],
+    [performanceById, canManage, deactivateM.isPending, reactivateM.isPending, campaignById, today],
   );
 
   return (
@@ -449,6 +461,8 @@ export default function Offers() {
         <Kpi label="إجمالي الخصومات" value={formatIqd(performanceQ.data?.summary.discount ?? "0")} />
         <Kpi label="الربح الإجمالي المرتبط" value={formatIqd(performanceQ.data?.summary.grossProfit ?? "0")} note="بعد تكلفة البضاعة والمرتجعات" />
       </div>
+
+      <Card><CardContent className="p-4 text-sm"><div className="font-medium">ترتيب تطبيق العرض على سطر البيع</div><ol className="mt-2 grid gap-1 text-muted-foreground md:grid-cols-2"><li><span className="font-medium text-foreground">1.</span> السعر التعاقدي يفوز دائماً؛ لا يُطبّق معه أي عرض.</li><li><span className="font-medium text-foreground">2.</span> يجب أن يكون العرض مفعلاً وضمن التاريخ والقناة والفئة والنطاق والحد الأدنى المؤهلة.</li><li><span className="font-medium text-foreground">3.</span> العرض التلقائي ينافس العروض التلقائية فقط؛ عرض الكوبون يحتاج كوبوناً صالحاً.</li><li><span className="font-medium text-foreground">4.</span> عند التعارض: الأعلى أولوية، ثم الأكبر خصماً للوحدة، ثم أصغر رقم عرض.</li></ol></CardContent></Card>
 
       {(operationalSignals.negative.length > 0 || operationalSignals.unusedActive.length > 0 || operationalSignals.expiredActive.length > 0) && (
         <Card className="border-[var(--sem-warn)]/40">
@@ -488,16 +502,16 @@ export default function Offers() {
                 <MoneyInput value={discountAmount} onChange={setDiscountAmount} placeholder="500" />
               </Field>
             )}
-            <Field label="أولوية" hint="الأعلى يفوز عند تعارض عروض">
+            <Field label="أولوية" hint="الأعلى يفوز؛ ثم الأكبر خصماً للوحدة، ثم أصغر رقم عرض">
               <Input type="number" min={0} max={999} value={priority} onChange={(e) => setPriority(e.target.value)} />
             </Field>
-            <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : undefined}>
+            <Field label="الحملة (اختياري)" hint={editingId != null ? "ثابتة منذ الإنشاء" : "للتنظيم والمتابعة؛ لا تغيّر تفعيل العرض"}>
               <AppSelect value={campaignId} onValueChange={(next) => setCampaignId(next)} disabled={editingId != null} className="h-9 border-input px-3 py-1 text-sm disabled:opacity-60">
                 <option value="">عرض مستقل</option>
                 {(campaignsQ.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
               </AppSelect>
             </Field>
-            <Field label="طريقة التطبيق" hint="الكوبون لا يعمل تلقائياً">
+            <Field label="طريقة التطبيق" hint="التلقائي ينافس التلقائي فقط؛ الكوبون لا يعمل تلقائياً">
               <AppSelect value={applicationMode} onValueChange={(next) => setApplicationMode(next as ApplicationMode)} className="h-9 border-input px-3 py-1 text-sm">
                 <option value="AUTO">تلقائي</option>
                 <option value="COUPON">بكوبون صالح فقط</option>
@@ -527,7 +541,7 @@ export default function Offers() {
               <MoneyInput value={minLineAmount} onChange={setMinLineAmount} placeholder="0" />
             </Field>
             <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-              قاعدة الحماية: السعر التعاقدي لا يتأثر، وعند تعارض عروض تلقائية يفوز الأعلى أولوية. راقب الربح الفعلي بعد التشغيل من الجدول أدناه؛ الأثر محسوب من لقطات الفواتير والمرتجعات لا من تعريف العرض.
+              قاعدة الحماية: السعر التعاقدي لا يتأثر، وعند تعارض عروض تلقائية يفوز الأعلى أولوية ثم الأكبر خصماً للوحدة ثم أصغر رقم عرض. ربط العرض بحملة لا يشغّله ولا يوقفه. راقب الربح الفعلي بعد التشغيل من الجدول أدناه؛ الأثر محسوب من لقطات الفواتير والمرتجعات لا من تعريف العرض.
             </div>
             {editingId != null ? (
               <Field label="النطاق" className="md:col-span-3" hint="ثابت منذ الإنشاء — أنشئ عرضاً جديداً لتغيير النطاق أو أهدافه">
@@ -577,6 +591,7 @@ export default function Offers() {
                     ))}
                   </div>
                 )}
+                <div className="md:col-span-3 rounded-md border border-border p-3 text-xs text-muted-foreground"><span className="font-medium text-foreground">ملخص الاستهداف: </span>{scope === "ALL" ? "كل المنتجات المؤهلة" : `${targets.length} ${scope === "CATEGORIES" ? "فئة" : "منتج"} محدد`}؛ القناة: {CHANNEL_LABEL[channel]}؛ التطبيق: {APPLICATION_LABEL[applicationMode]}.{scope !== "ALL" && " يتطلب الحفظ هدفاً واحداً على الأقل."}</div>
               </>
             )}
             {error && (
@@ -611,7 +626,7 @@ export default function Offers() {
             <AppSelect value={validityFilter} onValueChange={(v) => setValidityFilter(v as ValidityFilter)} className="h-8 w-36" size="sm">
               <option value="ALL">كل الحالات</option>
               <option value="CURRENT">ساري الآن</option>
-              <option value="SCHEDULED">مجدول لاحقاً</option>
+              <option value="SCHEDULED">يبدأ لاحقاً</option>
               <option value="EXPIRED">منتهٍ تاريخياً</option>
             </AppSelect>
             <label className="text-xs text-muted-foreground flex items-center gap-2">

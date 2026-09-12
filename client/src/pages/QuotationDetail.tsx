@@ -158,6 +158,12 @@ export default function QuotationDetail() {
     onSuccess: async () => { setDone("تم تحديث الحالة."); setError(""); await refresh(); },
     onError: (e) => { setError(e.message); setDone(""); },
   });
+  // «مُرسَل» يصف تسليم العرض للعميل فعلاً، لا فتح نافذة واتساب أو إنشاء PDF فقط.
+  // هذا يظل انتقالَ حالةٍ وثائقيّاً فقط؛ البيع/المخزون لا يبدأان إلا من convert الصريح لاحقاً.
+  const markQuotationSentAfterDelivery = () => {
+    if (q.data?.status !== "DRAFT" || !canManage) return;
+    setStatus.mutate({ quotationId, status: "SENT" });
+  };
   const convert = trpc.quotations.convert.useMutation({
     onSuccess: async (r) => {
       setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل إلى الفاتورة رقم ${r.invoiceNumber ?? r.invoiceId}.`,
@@ -343,6 +349,9 @@ export default function QuotationDetail() {
         <Card>
           <CardHeader><CardTitle className="text-base">تحويل لفاتورة</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <p className="md:col-span-3 text-sm text-muted-foreground">
+              قبول العرض يثبت موافقة العميل فقط؛ لا ينشئ فاتورة ولا يحجز مخزوناً. أنشئ البيع صراحةً من هذا القسم عند الجاهزية.
+            </p>
             <div className="space-y-1">
               <Label>دفعة عند التحويل (اختياري)</Label>
               <MoneyInput value={payAmount} onChange={setPayAmount} placeholder={data.customerName ? "اتركه فارغاً = آجل" : `أقل من ${fmt(data.total)} يتطلّب عميلاً`} />
@@ -553,6 +562,7 @@ export default function QuotationDetail() {
           customerName={data.customerName}
           defaultPhone={data.customerPhone}
           autoOpen={new URLSearchParams(search).get("share") === "1"}
+          onDocumentSent={markQuotationSentAfterDelivery}
           fallbackMessage={buildQuotationMessage({
             quoteNumber: data.quoteNumber,
             quoteDate: data.quoteDate ? String(data.quoteDate) : undefined,
