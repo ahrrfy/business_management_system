@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ImageBackground, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ImageBackground, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,6 +25,12 @@ const severityColor = {
   critical: colors.danger,
   warning: colors.warning,
   info: colors.info,
+} as const;
+
+const severityLabel = {
+  critical: "عاجل",
+  warning: "تنبيه",
+  info: "للمراجعة",
 } as const;
 
 type OwnerCenterState = "loading" | "preview" | "signedOut" | "ready" | "error";
@@ -70,12 +76,15 @@ export function OwnerDecisionCenter() {
   const [liveCenter, setLiveCenter] = useState<OwnerDecisionCenterData | null>(null);
 
   const refresh = useCallback(async () => {
+    // A refreshed or unavailable dataset must never retain a modal pointing to
+    // a decision from the previous server response.
+    setSelected(null);
     setState("loading");
     try {
       const transport = await getSecureTransportRuntimeStatus();
       if (transport.kind === "unavailable" || !transport.configured) {
         setLiveCenter(null);
-        setState("preview");
+        setState(Platform.OS === "web" && __DEV__ ? "preview" : "error");
         return;
       }
       if (transport.session !== "present") {
@@ -220,12 +229,25 @@ export function OwnerDecisionCenter() {
           </AnimatedReveal>
 
           {primaryDecision ? (
-            <AnimatedReveal delay={180} style={styles.priorityCard}>
+            <AnimatedReveal
+              delay={180}
+              style={{
+                ...styles.priorityCard,
+                backgroundColor: `${severityColor[primaryDecision.severity]}10`,
+                borderColor: `${severityColor[primaryDecision.severity]}45`,
+              }}
+            >
               <View style={styles.priorityTop}>
-                <View style={styles.priorityIcon}><Ionicons color={colors.danger} name="document-text-outline" size={23} /></View>
+                <View style={[styles.priorityIcon, { backgroundColor: `${severityColor[primaryDecision.severity]}18` }]}><Ionicons color={severityColor[primaryDecision.severity]} name="document-text-outline" size={23} /></View>
                 <View style={styles.priorityCopy}>
                   <View style={styles.priorityLabelRow}>
-                    <Text style={styles.urgentLabel}>عاجل</Text>
+                    <Text style={[
+                      styles.urgentLabel,
+                      {
+                        backgroundColor: `${severityColor[primaryDecision.severity]}18`,
+                        color: severityColor[primaryDecision.severity],
+                      },
+                    ]}>{severityLabel[primaryDecision.severity]}</Text>
                     <Text style={styles.priorityTitle}>{primaryDecision.title}</Text>
                   </View>
                   <Text style={styles.priorityContext}>{primaryDecision.context}</Text>

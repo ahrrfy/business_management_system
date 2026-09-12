@@ -18,6 +18,7 @@ import {
   signInWithNativeTransport,
 } from "@/lib/secureTransport";
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
+import { completeTwoFactorSignIn } from "@/lib/signInFlow";
 import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 
 type Step = "credentials" | "twoFactor";
@@ -44,8 +45,9 @@ export default function SignInScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const openAllowedWorkspace = async () => {
-    const next = await refreshWorkspace();
+  const openAllowedWorkspace = (
+    next: Awaited<ReturnType<typeof refreshWorkspace>>,
+  ) => {
     if (next.mode === "ready" && next.today?.navigation.ownerCenter) {
       router.replace("/(tabs)");
     } else if (next.mode === "ready" && next.today?.navigation.personal) {
@@ -75,7 +77,7 @@ export default function SignInScreen() {
         setStep("twoFactor");
         return;
       }
-      await openAllowedWorkspace();
+      openAllowedWorkspace(await refreshWorkspace({ localProtectionAlreadyConfirmed: true }));
     } catch (caught) {
       setError(readableError(caught));
     } finally {
@@ -91,15 +93,13 @@ export default function SignInScreen() {
     setBusy(true);
     setError(null);
     try {
-      await unlockLocalSession();
-      await completeNativeTwoFactor({
-        ticket,
-        code: twoFactorCode,
-        recoveryCode,
-      });
+      const next = await completeTwoFactorSignIn(
+        { ticket, code: twoFactorCode, recoveryCode },
+        { completeNativeTwoFactor, refreshWorkspace, unlockLocalSession },
+      );
       setTwoFactorCode("");
       setRecoveryCode("");
-      await openAllowedWorkspace();
+      openAllowedWorkspace(next);
     } catch (caught) {
       setError(readableError(caught));
     } finally {

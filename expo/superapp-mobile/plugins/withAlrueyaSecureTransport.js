@@ -3,10 +3,12 @@ const {
   withInfoPlist,
   withStringsXml,
 } = require("expo/config-plugins");
+const { Buffer } = require("node:buffer");
 
 const PLUGIN_NAME = "with-alrueya-secure-transport";
 const RESOURCE_NAME = "alrueya_secure_transport_configuration";
 const INFO_PLIST_KEY = "AlrueyaSecureTransportConfiguration";
+const ANDROID_ENCODING_PREFIX = "base64url-v1:";
 const PIN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const DEVELOPMENT_HTTP_HOSTS = new Set(["10.0.2.2", "127.0.0.1", "localhost"]);
 
@@ -46,6 +48,19 @@ function normalize(options = {}) {
   return JSON.stringify({ environment, baseUrl, spkiPins });
 }
 
+// Android resources interpret raw quote characters. A versioned base64url
+// envelope preserves the reviewed JSON bytes after AAPT compilation.
+function encodeAndroidConfiguration(value) {
+  return `${ANDROID_ENCODING_PREFIX}${Buffer.from(value, "utf8").toString("base64url")}`;
+}
+
+function decodeAndroidConfiguration(value) {
+  if (!value.startsWith(ANDROID_ENCODING_PREFIX)) {
+    throw new Error("Unsupported Android secure transport configuration encoding.");
+  }
+  return Buffer.from(value.slice(ANDROID_ENCODING_PREFIX.length), "base64url").toString("utf8");
+}
+
 function upsertAndroidString(resources, value) {
   const strings = Array.isArray(resources.string) ? resources.string : [];
   const next = strings.filter((item) => item?.$?.name !== RESOURCE_NAME);
@@ -57,16 +72,16 @@ function upsertAndroidString(resources, value) {
 }
 
 function withAlrueyaSecureTransport(config, options) {
-  const encoded = normalize(options);
+  const normalized = normalize(options);
 
   config = withStringsXml(config, (mod) => {
     mod.modResults.resources ??= {};
-    upsertAndroidString(mod.modResults.resources, encoded);
+    upsertAndroidString(mod.modResults.resources, encodeAndroidConfiguration(normalized));
     return mod;
   });
 
   return withInfoPlist(config, (mod) => {
-    mod.modResults[INFO_PLIST_KEY] = encoded;
+    mod.modResults[INFO_PLIST_KEY] = normalized;
     return mod;
   });
 }
@@ -79,5 +94,5 @@ const plugin = createRunOncePlugin(
 
 // Kept non-public and used only by the local contract test; the Expo runtime
 // still receives the run-once config plugin function above.
-plugin.__testing = { normalize };
+plugin.__testing = { decodeAndroidConfiguration, encodeAndroidConfiguration, normalize };
 module.exports = plugin;

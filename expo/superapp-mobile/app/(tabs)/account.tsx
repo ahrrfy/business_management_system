@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -16,12 +16,14 @@ import {
 } from "@/lib/deviceProof";
 import { signOutFromNativeTransport } from "@/lib/secureTransport";
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
+import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 import {
   disableSecureSuperAppNotifications,
   enableSecureSuperAppNotifications,
 } from "@/lib/pushNotifications";
 
 export default function AccountScreen() {
+  const access = useWorkspaceAccess();
   const [deviceProof, setDeviceProof] = useState<DeviceProofRuntimeStatus | null>(null);
   const [transport, setTransport] = useState<SecureTransportRuntimeStatus | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -58,8 +60,13 @@ export default function AccountScreen() {
       // Logout invalidates all sessions; remove this device's push binding
       // first when the protected network path is available.
       await disableSecureSuperAppNotifications().catch(() => undefined);
-      await signOutFromNativeTransport();
-      await refreshDeviceProof();
+      try {
+        await signOutFromNativeTransport();
+      } finally {
+        // Clear employee data even if remote revocation cannot be confirmed.
+        access.clearWorkspace();
+        await refreshDeviceProof().catch(() => undefined);
+      }
     } catch {
       setActionError("تعذر تأكيد الخروج من الخادم، لكن أزيلت الجلسة المحلية من الجهاز. أعد المحاولة عند توفر الشبكة إذا لزم الأمر.");
     } finally {
@@ -95,10 +102,17 @@ export default function AccountScreen() {
           ? "مفتاح إثبات الجهاز موجود محليًا. تسجيله وربط الجلسة لا يتمان إلا داخل تدفق الدخول الموقّع."
           : "لا يوجد مفتاح بعد. ينشأ المفتاح داخل الحماية الأصلية عند إتمام تدفق الدخول، وليس من هذه الشاشة.";
 
-  const isPreview = !isChecking && (
+  const isPreview = !isChecking && Platform.OS === "web" && __DEV__ && (
     transport?.kind === "unavailable" || (transport?.kind === "available" && !transport.configured)
   );
-  const trustedDevice = deviceProof?.kind === "available" && deviceProof.keyExists;
+  const connectionReady = transport?.kind === "available" && transport.configured;
+  const employee = access.mode === "ready" && access.today?.personal.state === "READY"
+    ? access.today.personal.employee
+    : null;
+  const accountName = employee?.displayName || "حسابي";
+  const accountRole = employee?.position || employee?.department || "حساب مؤسسي";
+  const trustedDevice = connectionReady && transport?.session === "present" &&
+    deviceProof?.kind === "available" && deviceProof.keyExists;
   const menuSections = [
     {
       title: "بيانات العمل",
@@ -131,10 +145,10 @@ export default function AccountScreen() {
       style={styles.page}
     >
       <AppMasthead
-        avatar="م"
-        name="مصطفى كريم"
-        role="موظف مبيعات"
-        subtitle="بياناتك وخدماتك الشخصية في مكان آمن"
+        avatar={accountName.trim().charAt(0) || "ح"}
+        name={accountName}
+        role={accountRole}
+        subtitle={employee ? "بياناتك وخدماتك الشخصية من النظام الأساسي" : "الحساب والجهاز والجلسة الآمنة"}
         title="حسابي"
       >
         {isPreview ? <PreviewBanner tone="dark" /> : null}
@@ -157,7 +171,7 @@ export default function AccountScreen() {
       </View>
 
       <View style={styles.statusRow}>
-        <SyncStatus label={trustedDevice ? "جهاز موثوق" : isPreview ? "معاينة آمنة" : "التحقق مطلوب"} state={trustedDevice ? "synced" : isPreview ? "offline" : "pending"} />
+        <SyncStatus label={trustedDevice ? "متصل بجهاز موثوق" : isPreview ? "معاينة محلية" : connectionReady ? "التحقق مطلوب" : "الاتصال غير متاح"} state={trustedDevice ? "synced" : isPreview ? "offline" : connectionReady ? "pending" : "offline"} />
         <Text style={styles.lastVerification}>{trustedDevice ? "تم التحقق الآن" : "لا بيانات حساسة مكشوفة"}</Text>
       </View>
 

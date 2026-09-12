@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const plugin = require("../plugins/withAlrueyaSecureTransport");
-const { normalize } = plugin.__testing as {
+const { decodeAndroidConfiguration, encodeAndroidConfiguration, normalize } = plugin.__testing as {
+  decodeAndroidConfiguration(value: string): string;
+  encodeAndroidConfiguration(value: string): string;
   normalize(input: { environment?: string; baseUrl?: string; spkiPins?: string[] }): string;
 };
 
@@ -23,5 +25,17 @@ describe("compiled secure transport configuration", () => {
       spkiPins: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     })).toThrow("HTTPS");
     expect(() => normalize({ environment: "production", baseUrl: "https://erp.example.test", spkiPins: [] })).toThrow("SPKI pin");
+  });
+
+  it("round-trips Android configuration through a resource-safe envelope", () => {
+    const normalized = normalize({
+      environment: "production",
+      baseUrl: "https://erp.example.test",
+      spkiPins: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    });
+    const encoded = encodeAndroidConfiguration(normalized);
+
+    expect(encoded).toMatch(/^base64url-v1:[A-Za-z0-9_-]+$/);
+    expect(decodeAndroidConfiguration(encoded)).toBe(normalized);
   });
 });

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -35,6 +36,12 @@ internal class SecureNativeSessionStore(private val context: Context) {
       }
       cipher.doFinal(cipherText).toString(Charsets.UTF_8).takeIf(::isSessionCookie)
         ?: throw IllegalArgumentException("Unexpected session cookie")
+    } catch (error: UserNotAuthenticatedException) {
+      throw SecureTransportException(
+        "E_SECURE_TRANSPORT_SESSION_LOCKED",
+        "The protected work session was not unlocked.",
+        error,
+      )
     } catch (_: Exception) {
       clear()
       null
@@ -43,12 +50,20 @@ internal class SecureNativeSessionStore(private val context: Context) {
 
   fun saveCookie(cookie: String) {
     require(isSessionCookie(cookie)) { "Invalid session cookie" }
-    val iv = ByteArray(IV_BYTES).also(SecureRandom()::nextBytes)
-    val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-      init(Cipher.ENCRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+    try {
+      val iv = ByteArray(IV_BYTES).also(SecureRandom()::nextBytes)
+      val cipher = Cipher.getInstance(TRANSFORMATION).apply {
+        init(Cipher.ENCRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_BITS, iv))
+      }
+      val payload = iv + cipher.doFinal(cookie.toByteArray(Charsets.UTF_8))
+      preferences.edit().putString(COOKIE_PAYLOAD, Base64Url.encode(payload)).apply()
+    } catch (error: UserNotAuthenticatedException) {
+      throw SecureTransportException(
+        "E_SECURE_TRANSPORT_SESSION_LOCKED",
+        "The protected work session was not unlocked.",
+        error,
+      )
     }
-    val payload = iv + cipher.doFinal(cookie.toByteArray(Charsets.UTF_8))
-    preferences.edit().putString(COOKIE_PAYLOAD, Base64Url.encode(payload)).apply()
   }
 
   fun clear() {
