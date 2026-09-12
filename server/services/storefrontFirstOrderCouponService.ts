@@ -7,11 +7,13 @@ import {
   couponPrograms,
   coupons,
   onlineOrders,
+  promotions,
   storefrontFirstOrderCouponClaims,
 } from "../../drizzle/schema";
 import { appErrorMessage } from "../../shared/errors";
 import { extractInsertId } from "../lib/insertId";
 import { hashCouponCode } from "./couponService";
+import { baghdadToday } from "./businessDay";
 import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
 
@@ -41,6 +43,7 @@ export async function requestStorefrontFirstOrderCoupon(
       lock: true,
       branchLock: "share",
     });
+    const today = baghdadToday();
     const programs = await tx
       .select({
         id: couponPrograms.id,
@@ -51,12 +54,18 @@ export async function requestStorefrontFirstOrderCoupon(
         perCustomerLimit: couponPrograms.perCustomerLimit,
       })
       .from(couponPrograms)
+      .innerJoin(promotions, eq(couponPrograms.promotionId, promotions.id))
       .where(and(
         eq(couponPrograms.isFirstOrderSelfService, true),
         eq(couponPrograms.status, "ACTIVE"),
         or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, storefront.branchId)),
-        sql`${couponPrograms.validFrom} <= CURRENT_DATE()`,
-        or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= CURRENT_DATE()`),
+        sql`${couponPrograms.validFrom} <= ${today}`,
+        or(isNull(couponPrograms.validTo), sql`${couponPrograms.validTo} >= ${today}`),
+        eq(promotions.isActive, true),
+        eq(promotions.applicationMode, "COUPON"),
+        or(isNull(promotions.branchId), eq(promotions.branchId, storefront.branchId)),
+        sql`${promotions.effectiveFrom} <= ${today}`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= ${today}`),
       ))
       .orderBy(couponPrograms.id)
       .limit(2)

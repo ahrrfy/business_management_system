@@ -2541,6 +2541,8 @@ export const quotationItems = mysqlTable(
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    /** سعر الكتالوج عند إصدار العرض؛ يميز التفاوض اليدوي عن تغيّر الكتالوج لاحقاً. */
+    catalogUnitPrice: decimal("catalogUnitPrice", { precision: 15, scale: 2 }),
     discountAmount: decimal("discountAmount", {
       precision: 15,
       scale: 2,

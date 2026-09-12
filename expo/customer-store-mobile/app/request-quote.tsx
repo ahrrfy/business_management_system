@@ -1,5 +1,5 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -32,9 +32,27 @@ const quoteTypes: { value: QuoteType; label: string }[] = [
   { value: "GENERAL", label: "طلب مبيعات" },
 ];
 
+function firstValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 export default function RequestQuoteScreen() {
+  const params = useLocalSearchParams<{
+    productUnitId?: string | string[];
+    productTitle?: string | string[];
+    selection?: string | string[];
+  }>();
   const { isRestoring, lines } = useCart();
-  const requestLines = useMemo(() => checkoutRequestLines(lines), [lines]);
+  const directProductUnitId = Number(firstValue(params.productUnitId));
+  const directProductTitle = firstValue(params.productTitle)?.trim().slice(0, 120) ?? "";
+  const directSelection = firstValue(params.selection)?.trim().slice(0, 500) ?? "";
+  const requestLines = useMemo(() => {
+    const merged = new Map(checkoutRequestLines(lines).map((line) => [line.productUnitId, line.quantity]));
+    if (Number.isSafeInteger(directProductUnitId) && directProductUnitId > 0) {
+      merged.set(directProductUnitId, Math.max(1, merged.get(directProductUnitId) ?? 0));
+    }
+    return Array.from(merged, ([productUnitId, quantity]) => ({ productUnitId, quantity }));
+  }, [directProductUnitId, lines]);
   const [name, setName] = useState("");
   const [phoneLocal, setPhoneLocal] = useState("");
   const [companyName, setCompanyName] = useState("");
@@ -47,6 +65,14 @@ export default function RequestQuoteScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [requestNumber, setRequestNumber] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!Number.isSafeInteger(directProductUnitId) || directProductUnitId <= 0) return;
+    setRequestType("CUSTOM_PRINT");
+    if (directSelection) {
+      setNote((current) => current || `تفاصيل التخصيص: ${directSelection}`);
+    }
+  }, [directProductUnitId, directSelection]);
 
   useEffect(() => {
     let active = true;
@@ -124,7 +150,7 @@ export default function RequestQuoteScreen() {
           <View style={styles.intro}><MaterialIcons color="#0C5A4B" name="business-center" size={25} /><View style={styles.introCopy}><Text style={styles.introTitle}>للكميات والطباعة وتجهيز الشركات</Text><Text style={styles.introText}>أرسل احتياجك مرة واحدة، وسيراجع الفريق التوفر والمواصفات ويعود إليك بعرض سعر واضح.</Text></View></View>
           <View style={styles.process}><Text style={styles.processTitle}>مراحل طلب الشركات والمكاتب</Text><View style={styles.processRow}><MaterialIcons color="#0C5A4B" name="info-outline" size={18} /><Text style={styles.processText}>طلب العرض استفسار وليس طلب شراء أو حجز مخزون.</Text></View><View style={styles.processRow}><MaterialIcons color="#0C5A4B" name="fact-check" size={18} /><Text style={styles.processText}>يراجع موظف المبيعات التفاصيل ثم يصدر العرض الرسمي قبل موافقتك.</Text></View><View style={styles.processRow}><MaterialIcons color="#0C5A4B" name="sync" size={18} /><Text style={styles.processText}>عند الموافقة على العرض، يُعاد التحقق من السعر والتوفر قبل تسجيلها.</Text></View></View>
           <Text style={styles.section}>المنتجات المطلوبة</Text>
-          <View style={styles.card}>{lines.map((line) => <View key={line.lineId} style={styles.line}><View style={styles.lineCopy}><Text numberOfLines={1} style={styles.lineTitle}>{line.product.title}</Text><Text numberOfLines={2} style={styles.lineSub}>{selectionDescription(line.selectionDetails)}</Text></View><Text style={styles.lineQty}>× {line.quantity}</Text></View>)}</View>
+          <View style={styles.card}>{lines.map((line) => <View key={line.lineId} style={styles.line}><View style={styles.lineCopy}><Text numberOfLines={1} style={styles.lineTitle}>{line.product.title}</Text><Text numberOfLines={2} style={styles.lineSub}>{selectionDescription(line.selectionDetails)}</Text></View><Text style={styles.lineQty}>× {line.quantity}</Text></View>)}{directProductTitle ? <View style={styles.line}><View style={styles.lineCopy}><Text numberOfLines={1} style={styles.lineTitle}>{directProductTitle}</Text><Text numberOfLines={2} style={styles.lineSub}>{directSelection || "منتج مخصص — يراجع الموظف تفاصيل التجهيز والتسعير"}</Text></View><Text style={styles.lineQty}>طلب عرض</Text></View> : null}</View>
           <Text style={styles.section}>نوع الطلب</Text>
           <View style={styles.choices}>{quoteTypes.map((item) => <TouchableOpacity key={item.value} accessibilityRole="button" onPress={() => setRequestType(item.value)} style={[styles.choice, requestType === item.value && styles.choiceActive]}><Text style={[styles.choiceText, requestType === item.value && styles.choiceTextActive]}>{item.label}</Text></TouchableOpacity>)}</View>
           <Text style={styles.section}>بيانات التواصل</Text>

@@ -1055,6 +1055,7 @@ async function totalOnlineOrderQuote(
   items: Array<{ lineTotal: string }>,
   governorate: string,
   freeShippingThreshold: string | null | undefined,
+  deliveryEligibilitySubtotal?: string,
 ): Promise<
   Pick<
     OnlineOrderQuoteResult,
@@ -1068,13 +1069,16 @@ async function totalOnlineOrderQuote(
   >
 > {
   const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  const eligibilitySubtotal = deliveryEligibilitySubtotal == null
+    ? subtotal
+    : round2(money(deliveryEligibilitySubtotal));
   const actualDeliveryFee = await resolveDeliveryFee(tx, governorate);
   let customerDeliveryFee = actualDeliveryFee;
   const configuredThreshold = freeShippingThreshold
     ? money(freeShippingThreshold)
     : null;
   const freeThreshold = configuredThreshold?.gt(0) ? configuredThreshold : null;
-  const deliveryFree = Boolean(freeThreshold && subtotal.gte(freeThreshold));
+  const deliveryFree = Boolean(freeThreshold && eligibilitySubtotal.gte(freeThreshold));
   if (deliveryFree) customerDeliveryFee = round2(money(0));
   return {
     subtotal: subtotal.toFixed(2),
@@ -1083,7 +1087,7 @@ async function totalOnlineOrderQuote(
     deliveryWaivedAmount: deliveryFree ? actualDeliveryFee.toFixed(2) : "0.00",
     freeShippingThreshold: freeThreshold?.toFixed(2) ?? null,
     freeShippingRemaining: freeThreshold
-      ? (subtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(subtotal)).toFixed(2)
+      ? (eligibilitySubtotal.gte(freeThreshold) ? money(0) : freeThreshold.minus(eligibilitySubtotal)).toFixed(2)
       : null,
     total: round2(subtotal.plus(customerDeliveryFee)).toFixed(2),
   };
@@ -1151,18 +1155,19 @@ export async function quoteOnlineOrder(
               "أزِل الكوبون لإتمام الطلب بالسعر المعروض، أو أضِف صنفاً يشمله العرض",
           }),
         });
-      const totals = await totalOnlineOrderQuote(
-        tx,
-        pricing.items,
-        input.governorate,
-        settings?.freeShippingThreshold,
-      );
       const retailSubtotal = round2(
         pricing.items.reduce(
           (sum, item) =>
             sum.plus(money(item.retailUnitPrice).times(item.quantity)),
           money(0),
         ),
+      );
+      const totals = await totalOnlineOrderQuote(
+        tx,
+        pricing.items,
+        input.governorate,
+        settings?.freeShippingThreshold,
+        retailSubtotal.toFixed(2),
       );
       return {
         couponCode:
@@ -1532,11 +1537,16 @@ async function createOnlineOrderAttempt(
             "أزِل الكوبون لإتمام الطلب بالسعر المعروض، أو أضِف صنفاً يشمله العرض",
         }),
       });
+    const retailSubtotal = round2(items.reduce(
+      (sum, item) => sum.plus(money(item.retailUnitPrice).times(item.quantity)),
+      money(0),
+    ));
     const quoteTotals = await totalOnlineOrderQuote(
       tx,
       items,
       input.governorate,
       storeSettings?.freeShippingThreshold,
+      retailSubtotal.toFixed(2),
     );
     const subtotal = money(quoteTotals.subtotal);
     const deliveryFee = money(quoteTotals.deliveryFee);

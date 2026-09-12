@@ -2077,6 +2077,9 @@ function StorefrontContent() {
   const quotedDeliveryFee = quoteQ.data?.deliveryFee ?? effectiveDeliveryFee.toFixed(2);
   const quotedTotal = quoteQ.data?.total ?? cartTotal.toFixed(2);
   const quotedCouponDiscount = quoteQ.data?.couponDiscount ?? "0.00";
+  const couponSuperseded = Boolean(quoteQ.data?.couponSuperseded);
+  const couponForCheckout = couponSuperseded ? null : appliedCouponCode;
+  const quotedDeliveryFree = quoteQ.data?.deliveryFree ?? qualifiesFree;
   const quoteReady = !!quoteQ.data && !quoteQ.isFetching && !quoteQ.isError;
 
   function applyCoupon() {
@@ -2313,7 +2316,7 @@ function StorefrontContent() {
       setCheckoutSafetyError("أكمل التحقق الأمني قبل تأكيد الطلب.");
       return;
     }
-    const fingerprint = storefrontCheckoutFingerprint(cart, form, appliedCouponCode);
+    const fingerprint = storefrontCheckoutFingerprint(cart, form, couponForCheckout);
     const previous = checkoutAttemptRef.current;
     const acceptedQuote = acceptedQuoteRef.current?.fingerprint === fingerprint
       ? acceptedQuoteRef.current
@@ -2342,7 +2345,7 @@ function StorefrontContent() {
       .join("\n");
     const orderNotes = [form.notes.trim(), customizationNotes].filter(Boolean).join("\n");
     createOrder.mutate({
-      couponCode: appliedCouponCode || undefined,
+      couponCode: couponForCheckout || undefined,
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
@@ -3246,7 +3249,7 @@ function StorefrontContent() {
                 </button>
               </div>
               <p id="storefront-coupon-feedback" className="mt-2 text-xs font-bold text-slate-600" role="status" aria-live="polite">
-                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
+                {quoteQ.isFetching && appliedCouponCode ? "جارٍ التحقق من الكوبون…" : quoteQ.isError && appliedCouponCode ? (quoteQ.error?.message ?? "تعذّر التحقق من الكوبون") : couponSuperseded ? `لم يُستخدم الكوبون؛ طُبقت منفعة ${quoteQ.data?.pricingBenefitLabel ?? "أفضل سعر متاح"} بدلاً منه.` : appliedCouponCode && quoteQ.data ? `تم تطبيق ${quoteQ.data.couponProgramName ?? "الكوبون"} — التوفير ${money(quotedCouponDiscount)} د.ع` : couponFeedback ?? "يمكنك إدخال رمز العرض قبل تأكيد الطلب"}
               </p>
             </div>
 
@@ -3276,7 +3279,7 @@ function StorefrontContent() {
               </div>
               <div className="mt-1.5 flex items-center justify-between text-slate-500">
                 <span className="flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> أجرة التوصيل (تقديري)</span>
-                {qualifiesFree ? (
+                {quotedDeliveryFree ? (
                   <span className="font-bold text-emerald-600 dark:text-emerald-400">مجاني</span>
                 ) : (
                   <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(quotedDeliveryFee)} د.ع</span>

@@ -47,19 +47,35 @@ export function validateProductSelection(
   product: Product,
   input: ProductSelectionInput,
 ): { errors: string[]; details: ProductSelectionDetails | null } {
+  return validateSelection(product, input, false);
+}
+
+/** طلب العرض يلتقط اختيار العميل للتسعير اليدوي، لكنه لا يفتح مسار الشراء المباشر. */
+export function validateProductQuoteSelection(
+  product: Product,
+  input: ProductSelectionInput,
+): { errors: string[]; details: ProductSelectionDetails | null } {
+  return validateSelection(product, input, true);
+}
+
+function validateSelection(
+  product: Product,
+  input: ProductSelectionInput,
+  forQuote: boolean,
+): { errors: string[]; details: ProductSelectionDetails | null } {
   const onlineOrderingIssue = productOnlineOrderingIssue(product);
-  if (onlineOrderingIssue) {
+  if (onlineOrderingIssue && !forQuote) {
     return { errors: [onlineOrderingIssue], details: null };
   }
   const errors: string[] = [];
   const variants = product.variants ?? [];
   const variant = variants.find((candidate) => candidate.variantId === input.variantId);
   if (!variant) errors.push("اختر اللون أو البديل المطلوب.");
-  else if (!variant.inStock) errors.push("الخيار المحدد نافد حالياً.");
+  else if (!variant.inStock && !forQuote) errors.push("الخيار المحدد نافد حالياً.");
 
   const unit = variant?.units.find((candidate) => candidate.productUnitId === input.productUnitId);
   if (variant && !unit) errors.push("اختر وحدة البيع المطلوبة.");
-  else if (unit && !unit.inStock && !errors.includes("الخيار المحدد نافد حالياً.")) {
+  else if (unit && !unit.inStock && !forQuote && !errors.includes("الخيار المحدد نافد حالياً.")) {
     errors.push("وحدة البيع المحددة نافدة حالياً.");
   }
 
@@ -69,7 +85,7 @@ export function validateProductSelection(
   for (const field of activeCustomizationFields(product, input.customizationValues)) {
     const value = (input.customizationValues[field.fieldKey] ?? "").trim();
     if (field.fieldType === "FILE") {
-      if (field.isRequired) errors.push(`رفع ملف «${field.label}» غير متاح حتى يجهّز الخادم قناة رفع آمنة.`);
+      if (field.isRequired && !forQuote) errors.push(`رفع ملف «${field.label}» غير متاح حتى يجهّز الخادم قناة رفع آمنة.`);
       continue;
     }
     if (field.isRequired && !value) {
@@ -92,7 +108,7 @@ export function validateProductSelection(
       continue;
     }
     const priceDelta = Number(field.priceDelta || 0) + Number(option?.priceDelta || 0);
-    if (Number.isFinite(priceDelta) && priceDelta !== 0) {
+    if (!forQuote && Number.isFinite(priceDelta) && priceDelta !== 0) {
       errors.push(`لا يمكن تسعير «${field.label}» بأمان في هذا الإصدار. تواصل مع المكتبة لإكماله.`);
       continue;
     }

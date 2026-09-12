@@ -2248,6 +2248,13 @@
 			"when": 1788148808000,
 			"tag": "0350_storefront_first_order_coupon_rebased",
 			"breakpoints": true
+		},
+		{
+			"idx": 351,
+			"version": "5",
+			"when": 1788148809000,
+			"tag": "0351_quotation_item_catalog_unit_price",
+			"breakpoints": true
 		}
 	]
 }

@@ -192,4 +192,20 @@ describe("online storefront pricing benefit", () => {
     });
     expect(await db().select().from(s.couponReservations)).toHaveLength(0);
   });
+
+  it("يحافظ على التوصيل المجاني عندما تبلغ قيمة المنتجات قبل منفعة الجملة العتبة", async () => {
+    await db().update(s.storeSettings)
+      .set({ freeShippingThreshold: "10000.00" })
+      .where(eq(s.storeSettings.id, 1));
+
+    const quote = await quoteOnlineOrder({ governorate: "baghdad", lines: mixedColorLines });
+
+    expect(quote).toMatchObject({
+      retailSubtotal: "12000.00",
+      subtotal: "9000.00",
+      deliveryFree: true,
+      deliveryFee: "0.00",
+      freeShippingRemaining: "0.00",
+    });
+  });
 });

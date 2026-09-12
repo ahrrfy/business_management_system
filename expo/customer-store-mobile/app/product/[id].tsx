@@ -22,6 +22,8 @@ import {
   CUSTOMIZABLE_ORDERING_UNAVAILABLE_MESSAGE,
   DEFAULT_CUSTOMIZATION_VALUE_MAX_LENGTH,
   productOnlineOrderingIssue,
+  selectionDescription,
+  validateProductQuoteSelection,
   validateProductSelection,
 } from "@/lib/product-selection";
 import {
@@ -154,6 +156,24 @@ export default function ProductDetailScreen() {
     addSelection(product, next.details);
     setSelectionErrors([]);
     router.push("/checkout" as never);
+  };
+  const requestQuote = () => {
+    const next = validateProductQuoteSelection(product, {
+      variantId: selectedVariantId,
+      productUnitId: selectedUnitId,
+      customizationValues,
+    });
+    setSelectionErrors(next.errors);
+    if (!next.details) return;
+    setSelectionErrors([]);
+    router.push({
+      pathname: "/request-quote",
+      params: {
+        productUnitId: String(next.details.productUnitId),
+        productTitle: product.title.slice(0, 120),
+        selection: selectionDescription(next.details).slice(0, 500),
+      },
+    } as never);
   };
 
   return (
@@ -298,7 +318,7 @@ export default function ProductDetailScreen() {
           <Text style={styles.description}>{product.description}</Text>
         </View>
 
-        {onlineOrderingIssue ? (
+        {onlineOrderingIssue && (
           <View
             accessibilityLiveRegion="polite"
             accessibilityRole="alert"
@@ -314,8 +334,8 @@ export default function ProductDetailScreen() {
               </Text>
             </View>
           </View>
-        ) : (
-          <View style={styles.card}>
+        )}
+        <View style={styles.card}>
             <Text style={styles.sectionTitle}>
               {product.hasAlternatives ? "اختر البديل" : "اختر اللون أو القياس"}
             </Text>
@@ -328,7 +348,7 @@ export default function ProductDetailScreen() {
                     checked: selectedVariantId === variant.variantId,
                     disabled: !variant.inStock,
                   }}
-                  disabled={!variant.inStock}
+                    disabled={!variant.inStock && !onlineOrderingIssue}
                   key={variant.variantId}
                   onPress={() => {
                     setSelectedVariantId(variant.variantId);
@@ -378,7 +398,7 @@ export default function ProductDetailScreen() {
                         checked: selectedUnitId === unit.productUnitId,
                         disabled: !unit.inStock,
                       }}
-                      disabled={!unit.inStock}
+                    disabled={!unit.inStock && !onlineOrderingIssue}
                       key={unit.productUnitId}
                       onPress={() => {
                         setSelectedUnitId(unit.productUnitId);
@@ -419,10 +439,9 @@ export default function ProductDetailScreen() {
                 المتبقي المعلن: {formatLatinNumber(selectedUnit.stockLeft)} فقط.
               </Text>
             )}
-          </View>
-        )}
+        </View>
 
-        {!onlineOrderingIssue && product.customizationTemplate && (
+        {product.customizationTemplate && (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>
               {product.customizationTemplate.title}
@@ -516,6 +535,21 @@ export default function ProductDetailScreen() {
               ]}
             >
               <Text style={styles.buyNowText}>اشتر الآن</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        {onlineOrderingIssue && (
+          <View style={styles.purchaseActions}>
+            <TouchableOpacity
+              accessibilityHint="يرسل اللون ووحدة البيع وتفاصيل التخصيص لفريق المبيعات، من دون إضافة المنتج إلى السلة"
+              accessibilityLabel="اطلب عرض سعر لهذا المنتج المخصص"
+              accessibilityRole="button"
+              disabled={!selectedUnit}
+              onPress={requestQuote}
+              style={[styles.addButton, !selectedUnit && styles.addDisabled]}
+            >
+              <Text style={styles.addButtonText}>اطلب عرض سعر للتخصيص</Text>
+              <MaterialIcons color="#FFFFFF" name="request-quote" size={19} />
             </TouchableOpacity>
           </View>
         )}

@@ -10,6 +10,7 @@ import {
   coupons,
   crmCampaigns,
   promotions,
+  storeSettings,
   users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
@@ -315,6 +316,23 @@ export const crmRouter = router({
             }
           }
           if (program.isFirstOrderSelfService) {
+            // لا يوجد قيد فريد جزئي في MySQL. صف الإعدادات الوحيد هو قفل نطاق ثابت
+            // لهذه العملية النادرة فقط؛ ينتظر المفعّل الثاني ثم يرى البرنامج الأول ACTIVE.
+            const activationLock = (await tx.select({ id: storeSettings.id })
+              .from(storeSettings)
+              .where(eq(storeSettings.id, 1))
+              .for("update")
+              .limit(1))[0];
+            if (!activationLock) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message: appErrorMessage({
+                  what: "تعذر تفعيل برنامج كوبون الطلب الأول",
+                  why: "لا يوجد صف إعدادات المتجر الذي يحمي التفعيل المتزامن",
+                  doThis: "أكمل إعدادات المتجر ثم أعد محاولة التفعيل",
+                }),
+              });
+            }
             const anotherFirstOrderProgram = (await tx.select({ id: couponPrograms.id })
               .from(couponPrograms)
               .where(and(
@@ -328,6 +346,7 @@ export const crmRouter = router({
                       eq(couponPrograms.branchId, program.branchId),
                     ),
               ))
+              .for("update")
               .limit(1))[0];
             if (anotherFirstOrderProgram) {
               throw new TRPCError({
@@ -355,7 +374,7 @@ export const crmRouter = router({
       const issuedAt = new Date();
       const batchReference = `CP-${input.programId}-${issuedAt.toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(2).toString("hex").toUpperCase()}`;
       const issued = await withTx(async (tx) => {
-        const program = (await tx.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
+        const program = (await tx.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).for("update").limit(1))[0];
         if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
         ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
         if (program.status === "ENDED") throw new TRPCError({ code: "BAD_REQUEST", message: "البرنامج منتهٍ" });

@@ -214,10 +214,11 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId,
       );
+      const catalogUnitPrice = await getUnitPrice(tx, l.productUnitId, tier);
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
-          : await getUnitPrice(tx, l.productUnitId, tier);
+          : catalogUnitPrice;
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -229,6 +230,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         productUnitId: l.productUnitId,
         baseQuantity,
         unitPrice: lineRes.unitPrice,
+        catalogUnitPrice: catalogUnitPrice.toFixed(2),
         quantity: lineRes.quantity,
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
@@ -267,6 +269,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor,
         quantity: c.quantity,
         baseQuantity: c.baseQuantity,
         unitPrice: c.unitPrice,
+        catalogUnitPrice: c.catalogUnitPrice,
         discountAmount: c.discountAmount,
         total: c.total,
       });
@@ -346,6 +349,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
       productUnitId: number;
       baseQuantity: number;
       unitPrice: string;
+      catalogUnitPrice: string;
       quantity: string;
       discountAmount: string;
       total: string;
@@ -357,10 +361,11 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         line.quantity,
         line.variantId,
       );
+      const catalogUnitPrice = await getUnitPrice(tx, line.productUnitId, tier);
       const unitPrice =
         line.unitPriceOverride != null && line.unitPriceOverride !== ""
           ? money(line.unitPriceOverride)
-          : await getUnitPrice(tx, line.productUnitId, tier);
+          : catalogUnitPrice;
       const result = computeLineTotal({
         unitPrice,
         quantity: money(line.quantity),
@@ -372,6 +377,7 @@ export async function updateQuotation(input: UpdateQuotationInput, actor: Actor 
         productUnitId: line.productUnitId,
         baseQuantity,
         unitPrice: result.unitPrice,
+        catalogUnitPrice: catalogUnitPrice.toFixed(2),
         quantity: result.quantity,
         discountAmount: result.discountAmount,
         total: result.total,

@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   bundleComponents,
+  categories,
   customers,
   productUnits,
   productVariants,
@@ -29,6 +30,7 @@ import {
 import { baghdadToday } from "./businessDay";
 import { money, toDateStr } from "./money";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
+import { storefrontPublishableCondition } from "./storefrontEligibilityService";
 import {
   lockOrCreateOnlineCustomer,
   normalizeStorePhone,
@@ -195,22 +197,30 @@ async function loadRequestItems(
       productUnitId: productUnits.id,
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
-      unitActive: productUnits.isActive,
       variantName: productVariants.variantName,
       color: productVariants.color,
       size: productVariants.size,
-      variantActive: productVariants.isActive,
       productName: products.name,
-      productActive: products.isActive,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productUnits.id, lines.map((line) => line.productUnitId)));
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .leftJoin(
+      productPrices,
+      and(
+        eq(productPrices.productUnitId, productUnits.id),
+        eq(productPrices.priceTier, "RETAIL"),
+      ),
+    )
+    .where(and(
+      inArray(productUnits.id, lines.map((line) => line.productUnitId)),
+      storefrontPublishableCondition(),
+    ));
   const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
   return lines.map((line) => {
     const row = byUnit.get(line.productUnitId);
-    if (!row || !row.productActive || !row.variantActive || !row.unitActive) {
+    if (!row) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: appErrorMessage({
@@ -537,6 +547,7 @@ async function acceptLockedOfficialQuotation(
       productUnitId: quotationItems.productUnitId,
       baseQuantity: quotationItems.baseQuantity,
       unitPrice: quotationItems.unitPrice,
+      catalogUnitPrice: quotationItems.catalogUnitPrice,
     })
     .from(quotationItems)
     .where(eq(quotationItems.quotationId, Number(quote.id)))
@@ -598,7 +609,9 @@ async function acceptLockedOfficialQuotation(
     }
     if (
       catalog.currentUnitPrice == null ||
-      !money(catalog.currentUnitPrice).eq(money(line.unitPrice))
+      !money(catalog.currentUnitPrice).eq(
+        money(line.catalogUnitPrice ?? line.unitPrice),
+      )
     ) {
       reasons.add("PRICE_CHANGED");
     }

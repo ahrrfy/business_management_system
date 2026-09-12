@@ -94,6 +94,7 @@ async function issueSentOfficialQuotation(input: {
   customerId: number;
   clientRequestId: string;
   validUntil?: string | null;
+  unitPriceOverride?: string;
 }) {
   await updateStorefrontQuoteRequestStatus({
     requestId: input.requestId,
@@ -106,7 +107,7 @@ async function issueSentOfficialQuotation(input: {
     storefrontQuoteRequestId: input.requestId,
     clientRequestId: input.clientRequestId,
     validUntil: input.validUntil ?? null,
-    lines: [{ variantId: 1, productUnitId: 1, quantity: "4" }],
+    lines: [{ variantId: 1, productUnitId: 1, quantity: "4", unitPriceOverride: input.unitPriceOverride }],
   }, { userId: 1, branchId: 1, role: "manager" });
   await setQuotationStatus(
     official.quotationId,
@@ -360,6 +361,7 @@ describe("storefront quote requests", () => {
       customerId: Number(requestRow.customerId),
       clientRequestId: "quote-customer-acceptance-official",
       validUntil: "2099-12-31",
+      unitPriceOverride: "2300.00",
     });
     await db().insert(s.branchStock).values({ branchId: 1, variantId: 1, quantity: 3_000 });
 
