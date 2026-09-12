@@ -20,6 +20,7 @@ import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth
 import { logAudit } from "../services/auditService";
 import { kioskBanner, kioskLookup, kioskPromotions } from "../services/kioskService";
 import { barcodeString } from "../lib/schemas";
+import { appErrorMessage } from "@shared/errors";
 import {
   createKioskDevice,
   deleteKioskDevice,
@@ -28,6 +29,7 @@ import {
   resolveKioskDevice,
   rotateKioskDevice,
   setKioskDeviceActive,
+  updateKioskDevice,
 } from "../services/kioskDeviceService";
 import { adminProcedure, middleware, publicProcedure, router } from "../trpc";
 
@@ -127,6 +129,24 @@ export const kioskRouter = router({
     };
   }),
 
+  /** تجديد كوكي الجهاز دورياً لمنع انتهائه في الأجهزة التي تعمل شهوراً بلا إقلاع. */
+  deviceRefresh: publicProcedure.mutation(async ({ ctx }) => {
+    const device = await resolveKioskDevice(ctx.req);
+    if (!device) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "تعذّر تجديد جلسة جهاز قارئ الأسعار",
+          why: "جلسة الجهاز منتهية أو غير صالحة في النظام",
+          doThis: "أعد تفعيل الجهاز برمز جديد من لوحة الإدارة",
+        }),
+      });
+    }
+    const token = await signKioskSession(device.deviceId, device.branchId, device.label);
+    ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
+    return { ok: true as const };
+  }),
+
   /** خروج الجهاز: مسح كوكي الجهاز فقط (لا يمسّ كوكي جلسة النظام). */
   deviceLogout: publicProcedure.mutation(async ({ ctx }) => {
     ctx.res.clearCookie(KIOSK_COOKIE_NAME, getSessionCookieOptions(ctx.req));
@@ -151,6 +171,26 @@ export const kioskRouter = router({
           newValue: { branchId: input.branchId, label: input.label, tokenPrefix: r.tokenPrefix },
         });
         return { id: r.id, rawToken: r.rawToken, tokenPrefix: r.tokenPrefix };
+      }),
+
+    /** تعديل اسم الجهاز أو فرعه المربوط. */
+    update: adminProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          label: z.string().trim().min(1).max(120).optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        await updateKioskDevice(input.id, { label: input.label, branchId: input.branchId });
+        await logAudit(ctx, {
+          action: "kiosk.device.update",
+          entityType: "kioskDevice",
+          entityId: input.id,
+          newValue: { label: input.label, branchId: input.branchId },
+        });
+        return { ok: true as const };
       }),
 
     /** تدوير الرمز ⇒ رمز خام جديد (يُبطل القديم فوراً). */

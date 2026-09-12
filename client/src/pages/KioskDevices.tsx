@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { DataTable } from "@/components/data-table/DataTable";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { downloadInstallerCmd, kioskUrl } from "@/lib/kioskLauncher";
@@ -23,6 +24,7 @@ import { Download, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ListToolbar, RowActions, FilterField } from "@/components/list";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { ACTION_LABELS } from "@shared/actionLabels";
 
 /** فرزٌ زمنيّ على الطابع الخامّ: نصّ العرض «21/06/2026» يُفرَز باليوم لا بالتاريخ. */
 const cmpTime = (a: DateInput, b: DateInput) => {
@@ -67,6 +69,9 @@ export default function KioskDevices() {
 
   const [label, setLabel] = useState("");
   const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [editingDevice, setEditingDevice] = useState<{ id: number; label: string; branchId: number | null } | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editBranchId, setEditBranchId] = useState<number | "">("");
 
   const create = trpc.kiosk.devices.create.useMutation({
     onSuccess: (data) => {
@@ -99,6 +104,15 @@ export default function KioskDevices() {
     onError: (e) => notify.err(e.message),
   });
 
+  const updateDevice = trpc.kiosk.devices.update.useMutation({
+    onSuccess: () => {
+      notify.ok("تم تحديث بيانات الجهاز بنجاح");
+      setEditingDevice(null);
+      void utils.kiosk.devices.list.invalidate();
+    },
+    onError: (e) => notify.err(e.message),
+  });
+
   // أعمدة الأجهزة — داخل المكوّن (وقبل الخروج المبكّر للصلاحية) لأنّ الإجراءات تستدعي الطفرات.
   const deviceColumns = useMemo<ColumnDef<KioskDeviceRow, unknown>[]>(() => [
     { id: "label", header: "الجهاز", accessorFn: (d) => d.label, meta: { width: "wide" }, cell: ({ row }) => <span className="font-medium">{row.original.label}</span> },
@@ -116,8 +130,39 @@ export default function KioskDevices() {
           <span className="inline-flex items-center gap-1 text-destructive"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />مُلغى</span>
         ),
     },
-    // «آخر ظهور» يُفرَز لاصطياد الأجهزة الميتة ⇒ الفرز على الطابع الخامّ لا على نصّ العرض.
-    { id: "lastSeenAt", header: "آخر ظهور", accessorFn: (d) => fmtDateTime(d.lastSeenAt), meta: { kind: "datetime" }, sortingFn: (a, b) => cmpTime(a.original.lastSeenAt, b.original.lastSeenAt), cell: ({ row }) => <span className="text-xs text-muted-foreground">{fmtDateTime(row.original.lastSeenAt)}</span> },
+    // «آخر ظهور» مع مؤشّر الاتصال الحيّ
+    {
+      id: "lastSeenAt",
+      header: "آخر ظهور والاتصال",
+      accessorFn: (d) => fmtDateTime(d.lastSeenAt),
+      meta: { kind: "datetime" },
+      sortingFn: (a, b) => cmpTime(a.original.lastSeenAt, b.original.lastSeenAt),
+      cell: ({ row }) => {
+        const d = row.original;
+        const isOnline = d.lastSeenAt ? (Date.now() - new Date(d.lastSeenAt).getTime() < 15 * 60 * 1000) : false;
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground">{d.lastSeenAt ? fmtDateTime(d.lastSeenAt) : "لم يظهر بعد"}</span>
+            {d.isActive && (
+              isOnline ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--status-active)]">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--status-active)] opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-active)]"></span>
+                  </span>
+                  متصل الآن
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
+                  غير متصل
+                </span>
+              )
+            )}
+          </div>
+        );
+      },
+    },
     {
       id: "actions",
       header: "إجراءات",
@@ -129,6 +174,19 @@ export default function KioskDevices() {
           <RowActions
             mode="menu"
             actions={[
+              {
+                key: "edit",
+                kind: "edit",
+                label: "تعديل بيانات الجهاز",
+                disabled: updateDevice.isPending,
+                disabledReason: "توجد عملية تعديل قيد التنفيذ",
+                onSelect: () => {
+                  setEditingDevice({ id: d.id, label: d.label, branchId: d.branchId });
+                  setEditLabel(d.label);
+                  setEditBranchId(d.branchId ?? "");
+                },
+                gate: { adminOnly: true },
+              },
               {
                 key: "rotate",
                 kind: "approve",
@@ -169,7 +227,7 @@ export default function KioskDevices() {
         );
       },
     },
-  ], [rotate, setActive, remove]);
+  ], [rotate, setActive, remove, updateDevice]);
 
   if (me.data && me.data.role !== "admin") {
     return <div className="p-10 text-center text-muted-foreground">هذه الشاشة للمدير فقط.</div>;
@@ -232,7 +290,7 @@ export default function KioskDevices() {
           <ol className="list-decimal pr-5 space-y-1.5 text-sm text-muted-foreground marker:text-foreground/70">
             <li>نزّل الملف مرّةً واحدة أدناه ← انسخه على كل جهاز شاشة.</li>
             <li>شغّله على الجهاز ← الصق <b>رمز الجهاز</b> (من أدناه) ← Enter.</li>
-            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير 120 ثانية بعد كل تشغيل للوندوز).</li>
+            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير 5 ثوانٍ بعد كل تشغيل للوندوز).</li>
           </ol>
           <div className="flex flex-wrap items-center gap-2">
             <Button className="inline-flex items-center gap-1.5" onClick={() => downloadInstallerCmd({ origin })}>
@@ -365,6 +423,53 @@ export default function KioskDevices() {
           />
         </CardContent>
       </Card>
+
+      {/* حوار تعديل بيانات الجهاز */}
+      <Dialog open={!!editingDevice} onOpenChange={(open) => { if (!open) setEditingDevice(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>تعديل بيانات الجهاز</DialogTitle>
+            <DialogDescription>تعديل اسم الجهاز أو الفرع التابع له دون إبطال رمزه أو انقطاع اتصاله.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs">اسم الجهاز</Label>
+              <Input
+                value={editLabel}
+                onChange={(e) => setEditLabel(e.target.value)}
+                placeholder="اسم الجهاز..."
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">الفرع</Label>
+              <AppSelect
+                value={String(editBranchId)}
+                onValueChange={(next) => setEditBranchId(next ? Number(next) : "")}
+                className="h-9 border-input px-3 text-sm w-full"
+              >
+                <option value="">— اختر الفرع —</option>
+                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </AppSelect>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setEditingDevice(null)}>إلغاء</Button>
+            <Button
+              disabled={!editLabel.trim() || updateDevice.isPending}
+              onClick={() => {
+                if (!editingDevice) return;
+                updateDevice.mutate({
+                  id: editingDevice.id,
+                  label: editLabel.trim(),
+                  branchId: editBranchId ? Number(editBranchId) : undefined,
+                });
+              }}
+            >
+              {updateDevice.isPending ? ACTION_LABELS.saving : "حفظ التعديلات"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

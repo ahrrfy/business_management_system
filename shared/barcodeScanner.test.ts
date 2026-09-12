@@ -43,6 +43,13 @@ describe("barcodeScanner", () => {
     expect(looksLikeSystemBarcode("UNKNOWN-123")).toBe(false);
   });
 
+  it("strips ISO/IEC 15424 AIM symbology identifiers (]E0, ]C1, etc.)", () => {
+    expect(normalizeKnownSystemBarcode("]E06281001234567")).toBe("6281001234567");
+    expect(normalizeKnownSystemBarcode("]C1INV-2026-0105")).toBe("INV-2026-0105");
+    expect(normalizeKnownSystemBarcode("]e01234567890123")).toBe("1234567890123");
+    expect(normalizeKnownSystemBarcode("]A0ORD-2026-0001")).toBe("ORD-2026-0001");
+  });
+
   it("includes all known system prefixes", () => {
     for (const p of ["ORD", "CN", "INV", "WO", "RES", "PO", "QUO"]) {
       expect(KNOWN_SYSTEM_PREFIXES).toContain(p);

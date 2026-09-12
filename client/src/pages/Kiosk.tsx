@@ -99,6 +99,17 @@ export default function Kiosk() {
     },
   });
 
+  const refresh = trpc.kiosk.deviceRefresh.useMutation();
+
+  // تجديد دوري لكوكي جلسة الجهاز كل ٢٤ ساعة حتى لا تنتهي الجلسة ما دام الجهاز يعمل
+  useEffect(() => {
+    if (!deviceMe.data) return;
+    const interval = setInterval(() => {
+      refresh.mutate();
+    }, 24 * 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [deviceMe.data, refresh]);
+
   // إقلاع: قراءة الرمز من الـfragment أو من التخزين المحلي الآمن.
   useEffect(() => {
     const hashToken = readHashToken();

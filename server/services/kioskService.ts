@@ -11,6 +11,9 @@ import { branchStock, categories, productImages, productPrices, productUnits, pr
 import { getDb } from "../db";
 import { decodeDataUrl, kioskProductImageUrl } from "../imageRoute";
 import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
+import { resolvePromotionForLine } from "./salesPromotionService";
+import { money, toDbMoney } from "./money";
+import Decimal from "decimal.js";
 
 /** شريحة ترويجية وإعلانية آمنة للزبون على شاشة الكشك. */
 export interface KioskPromo {
@@ -19,6 +22,14 @@ export interface KioskPromo {
   subtitle: string | null;
   imageUrl: string | null;
   ctaLabel: string | null;
+}
+
+/** خيار وحدة بديلة (عبوة/درزن/كرتون) للسلعة المعروضة. */
+export interface KioskUnitOption {
+  unitName: string;
+  conversionFactor: number;
+  price: string | null;
+  barcode: string | null;
 }
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون. */
@@ -31,9 +42,15 @@ export interface KioskProduct {
   unitName: string;
   /** سعر هذه الوحدة بفئة المفرد (RETAIL)؛ null = لا سعر مفرد مُعرَّف. */
   price: string | null;
+  /** السعر الأصلي قبل الخصم إن كان هناك تخفيض فعّال. */
+  originalPrice?: string | null;
+  discountPercent?: string | null;
+  promotionName?: string | null;
   barcode: string | null;
   /** صورة المنتج الرئيسية (data URL أو رابط)؛ null = لا صورة ⇒ تُعرض خانة بديلة. */
   imageUrl: string | null;
+  /** عبوات ووحدات الصنف الأخرى وأسعارها. */
+  availableUnits?: KioskUnitOption[];
 }
 
 const RETAIL = "RETAIL" as const;
@@ -53,6 +70,7 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
   return db
     .select({
       productId: products.id,
+      categoryId: products.categoryId,
       productName: products.name,
       brand: products.brand,
       category: categories.name,
@@ -149,7 +167,72 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
   const rows = await kioskSelect(db, branchId)
     .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
-  return rows.length ? toKioskProduct(rows[0]) : null;
+  if (!rows.length) return null;
+
+  const prod = toKioskProduct(rows[0]);
+
+  // ١. فحص العروض والخصومات النشطة لفئة المفرد (نقطة العرض = نقطة الفرض)
+  if (prod.price) {
+    try {
+      const todayYmd = new Date().toISOString().slice(0, 10);
+      const promo = await resolvePromotionForLine(db as any, {
+        branchId,
+        customerTier: RETAIL,
+        todayYmd,
+        productId: owner.productId,
+        variantId: owner.variantId,
+        categoryId: rows[0].categoryId != null ? Number(rows[0].categoryId) : null,
+        unitPrice: prod.price,
+        lineAmount: prod.price,
+        hasContractPrice: false,
+      });
+      if (promo) {
+        const original = money(prod.price);
+        const discount = money(promo.discountForUnit);
+        if (discount.gt(0)) {
+          prod.originalPrice = prod.price;
+          const effective = original.minus(discount);
+          prod.price = toDbMoney(effective.isNegative() ? new Decimal(0) : effective);
+          const pct = discount.div(original).mul(100).round();
+          prod.discountPercent = String(pct.toNumber());
+          prod.promotionName = promo.promotionName;
+        }
+      }
+    } catch {
+      // إخفاق صامت لحساب الخصم لضمان عرض السعر الأساسي دائماً
+    }
+  }
+
+  // ٢. جلب خيارات العبوات والوحدات المتعددة لنفس المتغير (قطعة/درزن/كرتون)
+  try {
+    const sisterUnits = await db
+      .select({
+        unitName: productUnits.unitName,
+        conversionFactor: productUnits.conversionFactor,
+        price: productPrices.price,
+        barcode: productUnits.barcode,
+      })
+      .from(productUnits)
+      .leftJoin(
+        productPrices,
+        and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL))
+      )
+      .where(and(eq(productUnits.variantId, owner.variantId), eq(productUnits.isActive, true)))
+      .orderBy(asc(productUnits.conversionFactor));
+
+    if (sisterUnits.length > 1) {
+      prod.availableUnits = sisterUnits.map((u) => ({
+        unitName: u.unitName,
+        conversionFactor: Number(u.conversionFactor ?? 1),
+        price: u.price ?? null,
+        barcode: u.barcode ?? null,
+      }));
+    }
+  } catch {
+    // إخفاق صامت للوحدات البديلة
+  }
+
+  return prod;
 }
 
 /**
