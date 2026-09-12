@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ScanBurstDetector, type FeedAction } from "./barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, type FeedAction, type FlushResult } from "./barcodeScanTiming";
 import type { ScannerKeyEvent } from "@shared/barcodeKeyDecode";
 
 /** يبني ضغطةً بموقعٍ فيزيائيّ مشتقٍّ من الرقم/الحرف (لتبسيط الاختبار على مدخلٍ لاتينيّ). */
@@ -105,6 +105,32 @@ describe("ScanBurstDetector — الفكّ الفيزيائيّ تحت التخ�
     const { accepted, code } = det.flush();
     expect(accepted).toBe(true);
     expect(code).toBe("INV-1");
+  });
+});
+
+describe("resolveScanSettle — صون البادئة والكتابة البشرية (ملاحظتا مراجعة #1107)", () => {
+  const mk = (accepted: boolean, code: string, text: string): FlushResult => ({ accepted, code, text });
+
+  it("ومضةٌ مقبولة: يمسح الحقل ويُصدر الباركود", () => {
+    expect(resolveScanSettle(mk(true, "6281001234567", "6281001234567"), "قلم", 3)).toEqual({
+      scan: "6281001234567",
+      fieldValue: "",
+    });
+  });
+
+  it("ومضةٌ قصيرة مرفوضة بلا بادئة: يعيد الحروف الخام (لا بحثٌ فارغ عند Enter)", () => {
+    // كتابةٌ بشرية سريعة «de» (طولها 2 < 3) — يجب ألّا تضيع.
+    expect(resolveScanSettle(mk(false, "de", "de"), "", 3)).toEqual({ scan: null, fieldValue: "de" });
+  });
+
+  it("ومضةٌ قصيرة مرفوضة فوق بحثٍ قائم: يصون البادئة + يُلحق الخام", () => {
+    // الحقل فيه «abc»، ثمّ «de» سريعتان ثمّ سكون ⇒ لا تضيع «abc».
+    expect(resolveScanSettle(mk(false, "de", "de"), "abc", 3)).toEqual({ scan: null, fieldValue: "abcde" });
+  });
+
+  it("رمزٌ مقبولٌ لكنّه أقصر من الحدّ الأدنى: يُعامَل كرفضٍ فيُستعاد", () => {
+    // حاجزٌ ثانٍ: لو قصّ تجريدُ AIM الرمز دون الحدّ، لا نُطلق استعلاماً بمُدخلٍ ناقص.
+    expect(resolveScanSettle(mk(true, "ab", "ab"), "x", 3)).toEqual({ scan: null, fieldValue: "xab" });
   });
 });
 

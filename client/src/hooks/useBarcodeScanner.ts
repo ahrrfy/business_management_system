@@ -78,9 +78,10 @@ export function useBarcodeScanner(
       const inField = target != null && INPUT_TAGS.has(target.tagName);
       const inputEl = inField ? (target as HTMLInputElement | HTMLTextAreaElement) : null;
 
-      // Enter: لا نبتلعه إلّا حين تكون ومضةٌ مؤكَّدة جاهزة — وإلّا نتركه للنموذج/الحقل.
+      // Enter: نعترضه حين تكون ومضةٌ نشطة — إمّا نُصدر الباركود (بلغ الحدّ الأدنى) وإمّا نستعيد
+      // النصّ القصير عبر finish (يعيد البادئة + الخام) بلا فقد. غير النشط يمرّ للنموذج/الحقل.
       if (e.key === "Enter") {
-        if (detector.isActive && detector.length >= minLength) {
+        if (detector.isActive) {
           e.preventDefault();
           e.stopPropagation();
           finish();

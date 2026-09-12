@@ -3,9 +3,13 @@
  * يفوّض كلّ منطق التوقيت والفكّ الفيزيائيّ (المستقلّ عن تخطيط لوحة المفاتيح) إلى `ScanBurstDetector`
  * الموحَّد — فلا ينجرف عن الخطّاف العالميّ ولا خطّاف الكاشير، ويرث تصحيح الرموز العربية والمناعة
  * لتذبذب التوقيت. راجع `client/src/lib/barcodeScanTiming.ts`.
+ *
+ * صون البحث القائم (ملاحظتا مراجعة #1107): نتتبّع **بادئة** الحقل (قيمته قبل الحرف المرشّح)، فحين
+ * تنكسر الومضة قصيرةً (كتابةٌ بشرية) نستعيد **البادئة + الحروف الخام** بدل مسحها — سواءٌ عند السكون
+ * أو عند Enter.
  */
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
-import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle } from "@/lib/barcodeScanTiming";
 
 type SetInputValue = (value: string) => void;
 
@@ -26,6 +30,8 @@ export function useBarcodeInput(
 ) {
   const onScanRef = useRef(onScan);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // قيمة الحقل قبل الحرف المرشّح الحاليّ — تُستعاد إن انكسرت الومضة قصيرة.
+  const prefixRef = useRef("");
   onScanRef.current = onScan;
 
   // كاشفٌ مستقرّ لكلّ تركيبة خيارات؛ يُعاد بناؤه فقط عند تغيّرها (نادر، لا يقع وسط مسح).
@@ -37,27 +43,26 @@ export function useBarcodeInput(
   const reset = useCallback(() => {
     clearTimeout(timerRef.current);
     detector.reset();
+    prefixRef.current = "";
   }, [detector]);
 
-  const flush = useCallback((setValue: SetInputValue) => {
+  const settle = useCallback((setValue: SetInputValue) => {
     clearTimeout(timerRef.current);
-    const { accepted, code, text } = detector.flush();
-    if (accepted && barcodeInputAcceptsScan(code, minLength)) {
-      setValue("");
-      onScanRef.current(code);
-    } else if (text) {
-      // تسلسلٌ بشريٌّ قصير صُنّف سريعاً بالخطأ: لا نبتلعه — نعيد الحروف الخام.
-      setValue(text);
-    }
+    const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength);
+    prefixRef.current = "";
+    setValue(decision.fieldValue);
+    if (decision.scan) onScanRef.current(decision.scan);
   }, [detector, minLength]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>, setValue: SetInputValue) => {
     if (!enabled) return;
 
     if (event.key === "Enter") {
-      if (detector.isActive && detector.length >= minLength) {
+      // نعترض Enter فقط حين تكون ومضةٌ نشطة (≥ حرفين سريعين): إمّا نُصدر الباركود، وإمّا نستعيد
+      // النصّ القصير بلا فقد. الحرف المفرد أو السكون يترك Enter للنموذج/الحقل بقيمته الظاهرة.
+      if (detector.isActive) {
         event.preventDefault();
-        flush(setValue);
+        settle(setValue);
       } else {
         reset();
       }
@@ -72,12 +77,16 @@ export function useBarcodeInput(
     if (event.ctrlKey || event.altKey || event.metaKey || event.key.length < 1 || event.key.length > 2) return;
 
     const action = detector.feed({ code: event.code, key: event.key, shiftKey: event.shiftKey }, Date.now());
-    if (action === "pass") return; // حرفٌ مرشّح: يظهر في الحقل طبيعياً (كتابةٌ بشرية محتملة)
+    if (action === "pass") {
+      // حرفٌ مرشّح يظهر في الحقل؛ سجّل قيمة الحقل قبله (قبل إدراج هذا الحرف) لاستعادةٍ محتملة.
+      prefixRef.current = event.currentTarget.value;
+      return;
+    }
     event.preventDefault();
-    if (action === "startBurst") setValue(""); // امسح الحرف المرشّح المتسرّب قبل تجميع الومضة
+    if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، وأبقِ البادئة
     clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => flush(setValue), Math.max(250, Math.min(thresholdMs * 6, 600)));
-  }, [enabled, flush, minLength, reset, detector, thresholdMs]);
+    timerRef.current = setTimeout(() => settle(setValue), Math.max(250, Math.min(thresholdMs * 6, 600)));
+  }, [enabled, settle, minLength, reset, detector, thresholdMs]);
 
   useEffect(() => reset, [reset]);
 

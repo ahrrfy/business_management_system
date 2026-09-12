@@ -118,3 +118,26 @@ export class ScanBurstDetector {
     this.active = false;
   }
 }
+
+/** قرار تسوية ومضةٍ على حقلٍ نصّيّ: باركودٌ يُصدَر (إن قُبِل)، وقيمةُ الحقل النهائية. */
+export interface SettleDecision {
+  /** الباركود المُصدَر عند القبول، وإلّا `null`. */
+  scan: string | null;
+  /** ما يجب أن يحمله الحقل بعد التسوية. */
+  fieldValue: string;
+}
+
+/**
+ * يقرّر تسوية الومضة على حقلٍ نصّيّ بحسب نتيجة الإفراغ والبادئة (قيمة الحقل قبل الومضة):
+ * - **مقبولة** (ومضةٌ نشطة بلغت الحدّ الأدنى وطولُ الرمز كافٍ): امسح الحقل ثم استعلم بالباركود.
+ * - **مرفوضة** (كتابةٌ بشرية قصيرة صُنّفت خطأً كمسح): أعِد **البادئة + الحروف الخام** — فلا يضيع
+ *   البحث القائم في الحقل ولا ما كتبه المستخدم (يعالج ملاحظتَي مراجعة #1107).
+ *
+ * نقيّة كي تُختبَر بلا DOM/React — الخطّافات تترجم القرار إلى `setValue`/`onScan`.
+ */
+export function resolveScanSettle(result: FlushResult, prefix: string, minLength: number): SettleDecision {
+  if (result.accepted && result.code.length >= minLength) {
+    return { scan: result.code, fieldValue: "" };
+  }
+  return { scan: null, fieldValue: prefix + result.text };
+}
