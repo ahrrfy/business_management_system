@@ -6,18 +6,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table/DataTable";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CopyInline } from "@/components/CopyButton";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import type { ImageItem } from "@/components/form/ImageUploader";
+import { VoucherRejectDialog } from "@/components/vouchers/VoucherRejectDialog";
+import { VoucherSummaryCards } from "@/components/vouchers/VoucherSummaryCards";
+import { getVoucherExportColumns } from "@/components/vouchers/voucherExport";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { FilterField, RowActions } from "@/components/list";
@@ -71,7 +64,6 @@ import {
 import { DigitalStampOverlay } from "@/components/vouchers/DigitalStampOverlay";
 import { ResubmitVoucherDialog } from "@/components/vouchers/ResubmitVoucherDialog";
 import { selectClsFull } from "@/lib/ui/formStyles";
-import { ACTION_LABELS } from "@shared/actionLabels";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -437,129 +429,7 @@ export default function Vouchers() {
       );
       exportRows(fetched, {
         filename: "السندات",
-        columns: [
-          { key: "voucherNumber", header: "رقم السند" },
-          {
-            key: "voucherDate",
-            header: "تاريخ السند",
-            map: (r) => fmtDate(r.voucherDate),
-          },
-          {
-            key: "createdAt",
-            header: "تاريخ الإدخال",
-            map: (r) => fmtDate(r.createdAt),
-          },
-          {
-            key: "branchId",
-            header: "الفرع",
-            map: (r) =>
-              r.branchId != null
-                ? (branchMap.get(Number(r.branchId)) ?? String(r.branchId))
-                : "—",
-          },
-          {
-            key: "direction",
-            header: "النوع",
-            map: (r) => TYPE_LABEL[r.direction] ?? r.direction,
-          },
-          {
-            key: "partyType",
-            header: "نوع الطرف",
-            map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—",
-          },
-          {
-            key: "partyName",
-            header: "اسم الطرف",
-            map: (r) => r.partyName ?? r.counterpartyName ?? "",
-          },
-          {
-            key: "createdByName",
-            header: "المنفذ",
-            map: (r) =>
-              r.createdByName ??
-              (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق"),
-          },
-          {
-            key: "voucherCategoryId",
-            header: "الفئة",
-            map: (r) =>
-              r.voucherCategoryId
-                ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—")
-                : "—",
-          },
-          { key: "description", header: "الوصف" },
-          {
-            key: "amount",
-            header: "المبلغ",
-            map: (r) => fmt(r.amount ?? "0"),
-          },
-          {
-            key: "paymentMethod",
-            header: "الدفع",
-            map: (r) => paymentMethodLabel(r.paymentMethod),
-          },
-          { key: "referenceNumber", header: "الرقم المرجعي" },
-          { key: "checkNumber", header: "مرجع التحويل/الصكّ" },
-          { key: "cardLastFour", header: "آخر ٤ بطاقة" },
-          {
-            key: "approvalStatus",
-            header: "حالة الاعتماد",
-            map: (r) => voucherApprovalLabel(r),
-          },
-          {
-            key: "status",
-            header: "الحالة",
-            map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل"),
-          },
-          // attachment-upload (٥/٧): المُرفق أصبح data URL صورة (~٩٣٣ك حرفاً) — تصديره خاماً يُفسد
-          // الخلية (حدّ Excel ~٣٢،٧٦٧ حرفاً) ⇒ نعم/لا فقط؛ المُلَفّ نفسه يُفتَح من الشاشة مباشرةً.
-          {
-            key: "attachmentUrl",
-            header: "مُرفَق؟",
-            map: (r) => (r.attachmentUrl ? "نعم" : "لا"),
-          },
-          {
-            key: "invoiceNumber",
-            header: "الفاتورة المرتبطة",
-            map: (r) => r.invoiceNumber ?? "—",
-          },
-          {
-            key: "signatureHash",
-            header: "بَصمة",
-            map: (r) => shortHash(r.signatureHash),
-          },
-          {
-            key: "cashBucket",
-            header: "نوع النَقد",
-            map: (r) =>
-              r.cashBucket === "DRAWER"
-                ? "درج كاشير"
-                : r.cashBucket === "TREASURY"
-                  ? "خزينة إدارية"
-                  : "—",
-          },
-          {
-            key: "resubmitAttempt",
-            header: "محاولة إعادة الإصدار",
-            map: (r) =>
-              r.resubmitAttempt == null ? "—" : `A${r.resubmitAttempt}`,
-          },
-          {
-            key: "resubmitRootReceiptId",
-            header: "سند أصل السلسلة",
-            map: (r) => r.resubmitRootReceiptId ?? "—",
-          },
-          {
-            key: "resubmitPriorReceiptId",
-            header: "السند السابق",
-            map: (r) => r.resubmitPriorReceiptId ?? "—",
-          },
-          {
-            key: "resubmitReason",
-            header: "سبب إعادة الإصدار",
-            map: (r) => r.resubmitReason ?? "—",
-          },
-        ],
+        columns: getVoucherExportColumns({ branchMap, categoryMap }),
       });
     } catch (e) {
       notify.err(e);
@@ -851,75 +721,15 @@ export default function Vouchers() {
       </Card>
 
       {/* البطاقات من aggregate الخادمي — كامل النطاق المفلتر لا صفوف الصفحة الحالية. */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">
-              إجمالي القبض (مُعتمَد)
-            </div>
-            <div
-              className="text-xl font-bold text-money-positive tabular-nums"
-              dir="ltr"
-            >
-              {fmt(totalIn)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">
-              إجمالي الصرف (معتمد ومصروف)
-            </div>
-            <div
-              className="text-xl font-bold text-money-negative tabular-nums"
-              dir="ltr"
-            >
-              {fmt(totalOut)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">الصافي</div>
-            <div
-              className={`text-xl font-bold tabular-nums ${netTotal.gte(0) ? "text-money-positive" : "text-money-negative"}`}
-              dir="ltr"
-            >
-              {fmt(netTotal.toFixed(2))}
-            </div>
-            {(agg.data?.reversedCount ?? 0) > 0 && (
-              <div className="text-[11px] text-muted-foreground mt-0.5">
-                {(agg.data?.reversedCount ?? 0).toLocaleString(
-                  "ar-IQ-u-nu-latn",
-                )}{" "}
-                سند مُلغى في النطاق
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
-              <ShieldQuestion aria-hidden className="size-3.5" />
-              {f.type === "PAYMENT"
-                ? "بانتظار اعتماد وصرف (بلا أَثَر)"
-                : f.type === "RECEIPT"
-                  ? "بانتظار اعتماد (بلا أَثَر)"
-                  : "بانتظار اعتماد / صرف (بلا أَثَر)"}
-            </div>
-            <div
-              className="text-xl font-bold text-[var(--sem-warn)] tabular-nums"
-              dir="ltr"
-            >
-              {fmt(agg.data?.pendingTotal ?? "0")}
-            </div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">
-              {(agg.data?.pendingCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
-              سند معلّق
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <VoucherSummaryCards
+        totalIn={totalIn}
+        totalOut={totalOut}
+        netTotal={netTotal}
+        filterType={f.type}
+        reversedCount={agg.data?.reversedCount ?? 0}
+        pendingTotal={agg.data?.pendingTotal ?? "0"}
+        pendingCount={agg.data?.pendingCount ?? 0}
+      />
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">
@@ -1338,65 +1148,14 @@ export default function Vouchers() {
       </Card>
 
       {/* حوار سبب الرفض — بديل window.prompt: السبب سجلّ تدقيقي إلزامي. */}
-      <Dialog
-        open={rejectTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !rejectMut.isPending) setRejectTarget(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              رفض السند {rejectTarget?.voucherNumber ?? ""}
-            </DialogTitle>
-            <DialogDescription>
-              {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
-                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
-                : isPurchaseSupplierPaymentReference(
-                      rejectTarget?.referenceNumber,
-                    )
-                  ? "سبب الرفض إلزامي. لا تتغير ذمة المورد أو أمر الشراء، ويمكن إعادة تقديم الطلب مرتبطاً بالأمر نفسه بعد التصحيح."
-                  : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
-                    ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
-                    : rejectTarget?.referenceNumber &&
-                        (rejectTarget.referenceNumber.startsWith("SHIP-") ||
-                          rejectTarget.referenceNumber.startsWith(
-                            "ASSET-MAINT-",
-                          ))
-                      ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                      : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-1">
-            <Label htmlFor="voucher-reject-reason">سبب الرفض *</Label>
-            <Textarea
-              id="voucher-reject-reason"
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="مَثلاً: المبلغ لا يطابق المستند المُرفَق"
-              rows={3}
-              maxLength={500}
-              autoFocus
-            />
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setRejectTarget(null)}
-              disabled={rejectMut.isPending}
-            >
-              تراجع
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={submitReject}
-              disabled={!rejectReason.trim() || rejectMut.isPending}
-            >
-              {rejectMut.isPending ? ACTION_LABELS.rejecting : "رفض السند"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <VoucherRejectDialog
+        rejectTarget={rejectTarget}
+        rejectReason={rejectReason}
+        setRejectReason={setRejectReason}
+        isPending={rejectMut.isPending}
+        onClose={() => setRejectTarget(null)}
+        onSubmit={submitReject}
+      />
 
       <ResubmitVoucherDialog
         resubmitTarget={resubmitTarget}

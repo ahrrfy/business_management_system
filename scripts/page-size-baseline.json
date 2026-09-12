@@ -3,7 +3,6 @@
   "client/src/pages/Expenses.tsx": 2576,
   "client/src/pages/HrDevices.tsx": 1560,
   "client/src/pages/InstallmentPlans.tsx": 1375,
-  "client/src/pages/IntegrationsSettings.tsx": 1348,
   "client/src/pages/InvoiceDetail.tsx": 1416,
   "client/src/pages/POS.tsx": 1430,
   "client/src/pages/PrintPOS.tsx": 1421,
@@ -13,6 +12,5 @@
   "client/src/pages/Shifts.tsx": 1500,
   "client/src/pages/StocktakeReview.tsx": 2271,
   "client/src/pages/Storefront.tsx": 3273,
-  "client/src/pages/Vouchers.tsx": 1344,
   "client/src/pages/WorkOrders.tsx": 1693
 }
