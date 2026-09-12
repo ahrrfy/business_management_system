@@ -58,6 +58,7 @@ export default defineConfig({
       "client/src/components/table/TablePager.test.ts",
       "client/src/components/ui/MobileDataCard.test.ts",
       "client/src/components/storefront/TurnstileWidget.test.ts",
+      "client/src/components/quran/__tests__/quranAudio.test.ts",
       "client/src/components/storefront/ConsentChoice.test.ts",
       "client/src/pages/Storefront.test.ts",
       "client/src/pages/ExchangeStatement.test.ts",

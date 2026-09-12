@@ -66,4 +66,30 @@ describe("Quran Audio & Catalog Contracts", () => {
     expect(keys.surah).toBe("erp.quran.lastSurahId");
     expect(keys.position).toBe("erp.quran.lastPositionSeconds");
   });
+
+  it("enforces root-level QuranAudioProvider and persistent playback across page navigation", async () => {
+    const fs = await import("node:fs");
+    const appSource = fs.readFileSync("client/src/App.tsx", "utf8");
+    const layoutSource = fs.readFileSync("client/src/components/AppLayout.tsx", "utf8");
+    const contextSource = fs.readFileSync("client/src/components/quran/QuranAudioContext.tsx", "utf8");
+    const posSource = fs.readFileSync("client/src/pages/PointOfSale.tsx", "utf8");
+
+    // 1. App.tsx must wrap the application tree in QuranAudioProvider
+    expect(appSource).toContain("<QuranAudioProvider>");
+    expect(appSource).toContain("</QuranAudioProvider>");
+    expect(appSource).toContain("<QuranStationDrawer");
+
+    // 2. AppLayout must NOT wrap its children in QuranAudioProvider (preventing tear-down on navigation)
+    expect(layoutSource).not.toContain("<QuranAudioProvider>");
+    expect(layoutSource).toContain("<QuranHeaderButton");
+
+    // 3. QuranAudioContext must use persistent singleton audio and not pause on unmount
+    expect(contextSource).toContain("globalAudioInstance");
+    expect(contextSource).toContain("getGlobalAudio");
+    expect(contextSource).not.toContain("audio.pause();\n      audio.src = \"\";");
+
+    // 4. POS must include QuranHeaderButton for cashier access
+    expect(posSource).toContain("<QuranHeaderButton");
+  });
 });
+

@@ -37,6 +37,18 @@ const STORAGE_SURAH_KEY = "erp.quran.lastSurahId";
 const STORAGE_VOLUME_KEY = "erp.quran.volume";
 const STORAGE_POSITION_KEY = "erp.quran.lastPositionSeconds";
 
+let globalAudioInstance: HTMLAudioElement | null = null;
+
+function getGlobalAudio(initialVolume = 0.85): HTMLAudioElement | null {
+  if (typeof window === "undefined") return null;
+  if (!globalAudioInstance) {
+    globalAudioInstance = new Audio();
+    globalAudioInstance.preload = "none";
+    globalAudioInstance.volume = initialVolume;
+  }
+  return globalAudioInstance;
+}
+
 export function QuranAudioProvider({ children }: { children: React.ReactNode }) {
   const [currentReciter, setCurrentReciterState] = useState<QuranReciter>(() => {
     try {
@@ -58,10 +70,25 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
     }
   });
 
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(() => {
+    if (typeof window !== "undefined" && globalAudioInstance) {
+      return !globalAudioInstance.paused && !globalAudioInstance.ended;
+    }
+    return false;
+  });
   const [isLoading, setIsLoading] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(() => {
+    if (typeof window !== "undefined" && globalAudioInstance) {
+      return globalAudioInstance.currentTime;
+    }
+    return 0;
+  });
+  const [duration, setDuration] = useState(() => {
+    if (typeof window !== "undefined" && globalAudioInstance) {
+      return globalAudioInstance.duration || 0;
+    }
+    return 0;
+  });
   const [volume, setVolumeState] = useState(() => {
     try {
       const savedVol = localStorage.getItem(STORAGE_VOLUME_KEY);
@@ -72,7 +99,12 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
   });
   const [isMuted, setIsMuted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [hasStartedOnce, setHasStartedOnce] = useState(false);
+  const [hasStartedOnce, setHasStartedOnce] = useState(() => {
+    if (typeof window !== "undefined" && globalAudioInstance) {
+      return Boolean(globalAudioInstance.src);
+    }
+    return false;
+  });
   const [savedPosition, setSavedPosition] = useState<number>(() => {
     try {
       const pos = Number(localStorage.getItem(STORAGE_POSITION_KEY));
@@ -101,13 +133,52 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const currentSurahRef = useRef<QuranSurah>(currentSurah);
+  currentSurahRef.current = currentSurah;
+  const currentReciterRef = useRef<QuranReciter>(currentReciter);
+  currentReciterRef.current = currentReciter;
 
-  // تهيئة عنصر الصوت الوحيد
+  // تحديث مصدر الصوت عند تغير السورة أو القارئ إذا كان مشغلاً
+  const playTrack = useCallback((surah: QuranSurah, reciter: QuranReciter) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const url = getSurahAudioUrl(reciter.serverUrl, surah.id);
+    setIsLoading(true);
+    setCurrentTime(0);
+    audio.src = url;
+    audio.play().catch(() => {
+      setIsLoading(false);
+      setIsPlaying(false);
+    });
+    setHasStartedOnce(true);
+    setSavedPosition(0);
+    lastSavedTimeRef.current = 0;
+    try {
+      localStorage.setItem(STORAGE_SURAH_KEY, String(surah.id));
+      localStorage.setItem(STORAGE_RECITER_KEY, reciter.id);
+      localStorage.setItem(STORAGE_POSITION_KEY, "0");
+    } catch {
+      // تجاهل أخطاء التخزين
+    }
+  }, []);
+
+  const playTrackRef = useRef(playTrack);
+  playTrackRef.current = playTrack;
+
+  // تهيئة عنصر الصوت الوحيد الدائم
   useEffect(() => {
-    const audio = new Audio();
-    audio.preload = "none";
+    const audio = getGlobalAudio(volume);
+    if (!audio) return;
     audio.volume = volume;
     audioRef.current = audio;
+
+    // مزامنة فورية في حال كان المشغل يعمل مسبقاً
+    if (!audio.paused && !audio.ended) {
+      setIsPlaying(true);
+      setCurrentTime(audio.currentTime);
+      setDuration(audio.duration || 0);
+    }
 
     const onTimeUpdate = () => {
       const t = audio.currentTime;
@@ -145,12 +216,12 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
       } catch {
         // ignore
       }
-      // الانتقال التلقائي للسورة التالية
-      setCurrentSurah((prev) => {
-        const nextId = prev.id >= 114 ? 1 : prev.id + 1;
-        const next = QURAN_SURAHS.find((s) => s.id === nextId) || QURAN_SURAHS[0];
-        return next;
-      });
+      // الانتقال التلقائي للسورة التالية واستمرار البث الإذاعي بلا توقف
+      const curr = currentSurahRef.current;
+      const nextId = curr.id >= 114 ? 1 : curr.id + 1;
+      const next = QURAN_SURAHS.find((s) => s.id === nextId) || QURAN_SURAHS[0];
+      setCurrentSurah(next);
+      playTrackRef.current(next, currentReciterRef.current);
     };
     const onError = () => {
       setIsLoading(false);
@@ -173,35 +244,10 @@ export function QuranAudioProvider({ children }: { children: React.ReactNode }) 
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("error", onError);
-      audio.pause();
-      audio.src = "";
+      // ملاحظة معمارية حاسمة: لا نوقف الصوت بـ pause() ولا نفرغ src هنا أبداً؛
+      // لضمان استمرار البث أثناء تنقل المستخدم بين الشاشات والوحدات.
     };
-  }, []);
-
-  // تحديث مصدر الصوت عند تغير السورة أو القارئ إذا كان مشغلاً
-  const playTrack = useCallback((surah: QuranSurah, reciter: QuranReciter) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const url = getSurahAudioUrl(reciter.serverUrl, surah.id);
-    setIsLoading(true);
-    setCurrentTime(0);
-    audio.src = url;
-    audio.play().catch(() => {
-      setIsLoading(false);
-      setIsPlaying(false);
-    });
-    setHasStartedOnce(true);
-    setSavedPosition(0);
-    lastSavedTimeRef.current = 0;
-    try {
-      localStorage.setItem(STORAGE_SURAH_KEY, String(surah.id));
-      localStorage.setItem(STORAGE_RECITER_KEY, reciter.id);
-      localStorage.setItem(STORAGE_POSITION_KEY, "0");
-    } catch {
-      // تجاهل أخطاء التخزين
-    }
-  }, []);
+  }, [volume]);
 
   const playSurah = useCallback((surahId: number, reciterId?: string) => {
     const surah = QURAN_SURAHS.find((s) => s.id === surahId) || QURAN_SURAHS[0];
