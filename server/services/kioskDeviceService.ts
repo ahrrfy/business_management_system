@@ -219,7 +219,7 @@ const LAST_SEEN_THROTTLE_MS = 5 * 60 * 1000;
  */
 export async function resolveKioskDevice(
   req: Request
-): Promise<{ deviceId: number; branchId: number; branchName: string | null; label: string } | null> {
+): Promise<{ deviceId: number; branchId: number; branchName: string | null; label: string; tokenPrefix: string } | null> {
   const cookies = parseCookie(req.headers.cookie ?? "");
   const session = await verifyKioskSession(cookies[KIOSK_COOKIE_NAME]);
   if (!session) return null;
@@ -257,5 +257,5 @@ export async function resolveKioskDevice(
   }
 
   // الفرع من القاعدة (المصدر الموثوق) — لا من التوكن.
-  return { deviceId: d.id, branchId: d.branchId, branchName: d.branchName ?? null, label: d.label };
+  return { deviceId: d.id, branchId: d.branchId, branchName: d.branchName ?? null, label: d.label, tokenPrefix: d.tokenPrefix };
 }

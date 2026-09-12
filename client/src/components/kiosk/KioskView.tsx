@@ -560,7 +560,7 @@ export default function KioskView({
   const staffBranchId = settings.branchId ?? branches[0]?.id ?? null;
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
-  // البنر: كامل الكتالوج بلا سقف. مع الاحتفاظ بالبيانات السابقة ضد انقطاع الشبكة المؤقت.
+  // البنر: كامل الكتالوج بلا سقف. وضع الجهاز مفروض خادمياً من التوكن (بدون تمرير فرع من العميل).
   const cachedProductsRef = useRef<KProduct[]>([]);
   const bannerQ = trpc.kiosk.banner.useQuery(
     isDevice ? {} : { branchId: staffBranchId ?? 0 },
@@ -578,6 +578,12 @@ export default function KioskView({
   );
   const promos = (promosQ.data ?? []) as KPromo[];
 
+  // إن ألغى المدير الجهاز من الخادم، يُرفض الاستعلام بـUNAUTHORIZED ونُنهي الجلسة فوراً بلا انتظار
+  useEffect(() => {
+    if (isDevice && bannerQ.error?.data?.code === "UNAUTHORIZED") {
+      onDeviceLogout?.();
+    }
+  }, [isDevice, bannerQ.error, onDeviceLogout]);
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();
@@ -608,13 +614,17 @@ export default function KioskView({
         if (settings.enableSound) playScanNotFound();
         setScan({ mode: "notfound", code: clean, token: Date.now() });
       }
-    } catch {
+    } catch (err: any) {
+      if (isDevice && err?.data?.code === "UNAUTHORIZED") {
+        onDeviceLogout?.();
+        return;
+      }
       if (!localMatch) {
         if (settings.enableSound) playScanNotFound();
         setScan({ mode: "neterror", code: clean, token: Date.now() });
       }
     }
-  }, [isDevice, staffBranchId, utils, products, settings.enableSound]);
+  }, [isDevice, onDeviceLogout, staffBranchId, utils, products, settings.enableSound]);
 
   // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
   // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.
