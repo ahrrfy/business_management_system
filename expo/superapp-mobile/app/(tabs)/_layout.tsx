@@ -11,14 +11,10 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const segments = useSegments();
   const access = useWorkspaceAccess();
-  const ownerCenter =
-    access.mode === "ready" && access.today?.navigation.ownerCenter === true;
-  const personal =
-    access.mode === "signedOut" ||
-    access.mode === "error" ||
-    (access.mode === "ready" && access.today?.navigation.personal === true);
-  const work =
-    access.mode === "ready" && access.today?.navigation.work === true;
+  const preview = access.mode === "preview";
+  const ownerCenter = preview || (access.mode === "ready" && access.today?.navigation.ownerCenter === true);
+  const personal = preview || access.mode === "signedOut" || access.mode === "error" || (access.mode === "ready" && access.today?.navigation.personal === true);
+  const work = preview || (access.mode === "ready" && access.today?.navigation.work === true);
 
   useEffect(() => {
     const current = segments.at(-1);
@@ -27,13 +23,7 @@ export default function TabLayout() {
     } else if (current === "my-day" && !personal) {
       router.replace(ownerCenter ? "/(tabs)" : "/(tabs)/account");
     } else if (current === "work" && !work) {
-      router.replace(
-        personal
-          ? "/(tabs)/my-day"
-          : ownerCenter
-            ? "/(tabs)"
-            : "/(tabs)/account",
-      );
+      router.replace(personal ? "/(tabs)/my-day" : ownerCenter ? "/(tabs)" : "/(tabs)/account");
     }
   }, [ownerCenter, personal, segments, work]);
 
@@ -51,9 +41,8 @@ export default function TabLayout() {
           backgroundColor: colors.surface,
           borderTopColor: colors.outline,
           direction: "rtl",
-          height: Platform.OS === "web" ? 82 : 68 + insets.bottom,
-          paddingBottom:
-            Platform.OS === "web" ? 12 : Math.max(insets.bottom, 8),
+          height: Platform.OS === "web" ? 74 : 68 + insets.bottom,
+          paddingBottom: Platform.OS === "web" ? 9 : Math.max(insets.bottom, 8),
           paddingTop: 7,
         },
       }}
@@ -63,9 +52,7 @@ export default function TabLayout() {
         options={{
           href: ownerCenter ? undefined : null,
           title: "الرئيسية",
-          tabBarIcon: ({ focused }) => (
-            <AppTabsIcon focused={focused} name="home-outline" />
-          ),
+          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="home-outline" />,
         }}
       />
       <Tabs.Screen
@@ -73,9 +60,7 @@ export default function TabLayout() {
         options={{
           href: personal ? undefined : null,
           title: "يومي",
-          tabBarIcon: ({ focused }) => (
-            <AppTabsIcon focused={focused} name="calendar-outline" />
-          ),
+          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="calendar-outline" />,
         }}
       />
       <Tabs.Screen
@@ -83,18 +68,14 @@ export default function TabLayout() {
         options={{
           href: work ? undefined : null,
           title: "العمل",
-          tabBarIcon: ({ focused }) => (
-            <AppTabsIcon focused={focused} name="checkmark-circle-outline" />
-          ),
+          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="checkmark-circle-outline" />,
         }}
       />
       <Tabs.Screen
         name="account"
         options={{
           title: "حسابي",
-          tabBarIcon: ({ focused }) => (
-            <AppTabsIcon focused={focused} name="person-outline" />
-          ),
+          tabBarIcon: ({ focused }) => <AppTabsIcon focused={focused} name="person-outline" />,
         }}
       />
     </Tabs>

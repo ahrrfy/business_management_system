@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { AppMasthead, Card } from "@/components/Ui";
 import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { ExperienceState, SyncStatus } from "@/components/ExperienceState";
+import { PreviewBanner } from "@/components/PreviewBanner";
 import { colors, radius, space } from "@/constants/theme";
 import {
   getDeviceProofRuntimeStatus,
@@ -15,14 +16,12 @@ import {
 } from "@/lib/deviceProof";
 import { signOutFromNativeTransport } from "@/lib/secureTransport";
 import { unlockLocalSession } from "@/lib/localSessionUnlock";
-import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 import {
   disableSecureSuperAppNotifications,
   enableSecureSuperAppNotifications,
 } from "@/lib/pushNotifications";
 
 export default function AccountScreen() {
-  const access = useWorkspaceAccess();
   const [deviceProof, setDeviceProof] = useState<DeviceProofRuntimeStatus | null>(null);
   const [transport, setTransport] = useState<SecureTransportRuntimeStatus | null>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -59,15 +58,8 @@ export default function AccountScreen() {
       // Logout invalidates all sessions; remove this device's push binding
       // first when the protected network path is available.
       await disableSecureSuperAppNotifications().catch(() => undefined);
-      try {
-        await signOutFromNativeTransport();
-      } finally {
-        // Native logout always destroys the local cookie, including when the
-        // remote revocation fails. Remove the matching in-memory employee data
-        // in the same guaranteed path so another user can never inherit it.
-        access.clearWorkspace();
-        await refreshDeviceProof().catch(() => undefined);
-      }
+      await signOutFromNativeTransport();
+      await refreshDeviceProof();
     } catch {
       setActionError("تعذر تأكيد الخروج من الخادم، لكن أزيلت الجلسة المحلية من الجهاز. أعد المحاولة عند توفر الشبكة إذا لزم الأمر.");
     } finally {
@@ -103,12 +95,9 @@ export default function AccountScreen() {
           ? "مفتاح إثبات الجهاز موجود محليًا. تسجيله وربط الجلسة لا يتمان إلا داخل تدفق الدخول الموقّع."
           : "لا يوجد مفتاح بعد. ينشأ المفتاح داخل الحماية الأصلية عند إتمام تدفق الدخول، وليس من هذه الشاشة.";
 
-  const connectionReady = transport?.kind === "available" && transport.configured;
-  const employee = access.mode === "ready" && access.today?.personal.state === "READY"
-    ? access.today.personal.employee
-    : null;
-  const accountName = employee?.displayName || "حسابي";
-  const accountRole = employee?.position || employee?.department || "حساب مؤسسي";
+  const isPreview = !isChecking && (
+    transport?.kind === "unavailable" || (transport?.kind === "available" && !transport.configured)
+  );
   const trustedDevice = deviceProof?.kind === "available" && deviceProof.keyExists;
   const menuSections = [
     {
@@ -142,12 +131,13 @@ export default function AccountScreen() {
       style={styles.page}
     >
       <AppMasthead
-        avatar={accountName.trim().charAt(0) || "ح"}
-        name={accountName}
-        role={accountRole}
-        subtitle={employee ? "بياناتك وخدماتك الشخصية من النظام الأساسي" : "الحساب والجهاز والجلسة الآمنة"}
+        avatar="م"
+        name="مصطفى كريم"
+        role="موظف مبيعات"
+        subtitle="بياناتك وخدماتك الشخصية في مكان آمن"
         title="حسابي"
       >
+        {isPreview ? <PreviewBanner tone="dark" /> : null}
         <View style={styles.accountStatus}>
           <View style={styles.accountStatusIcon}><Ionicons color="#35D796" name="shield-checkmark" size={23} /></View>
           <View style={styles.identityBody}>
@@ -158,16 +148,6 @@ export default function AccountScreen() {
         </View>
       </AppMasthead>
 
-      {!isChecking && !connectionReady ? (
-        <ExperienceState
-          actionLabel="إعادة الفحص"
-          detail="هذا الإصدار لم ينجح في تهيئة الاتصال الآمن بالنظام الأساسي؛ لذلك أوقفنا عرض أي بيانات بديلة."
-          onAction={() => void refreshDeviceProof()}
-          state="error"
-          title="الاتصال بالنظام الأساسي غير جاهز"
-        />
-      ) : null}
-
       <View style={styles.privacyStrip}>
         <View style={styles.privacyBody}>
           <Text style={styles.privacyTitle}>لا تظهر بياناتك إلا لك</Text>
@@ -177,7 +157,7 @@ export default function AccountScreen() {
       </View>
 
       <View style={styles.statusRow}>
-        <SyncStatus label={trustedDevice && connectionReady ? "متصل بجهاز موثوق" : connectionReady ? "التحقق مطلوب" : "الاتصال غير متاح"} state={trustedDevice && connectionReady ? "synced" : connectionReady ? "pending" : "offline"} />
+        <SyncStatus label={trustedDevice ? "جهاز موثوق" : isPreview ? "معاينة آمنة" : "التحقق مطلوب"} state={trustedDevice ? "synced" : isPreview ? "offline" : "pending"} />
         <Text style={styles.lastVerification}>{trustedDevice ? "تم التحقق الآن" : "لا بيانات حساسة مكشوفة"}</Text>
       </View>
 
@@ -235,7 +215,7 @@ export default function AccountScreen() {
                 ? transport.session === "present"
                   ? "النقل الأصلي محمي وجلسة التطبيق محفوظة داخل الطبقة الأصلية."
                   : "النقل الأصلي مهيأ؛ لا توجد جلسة عمل حالياً."
-                : "إعداد الاتصال الآمن غير صالح في هذا البناء. لا تُعرض أي بيانات تشغيلية حتى يُصحح الإصدار."}
+                : "النقل الأصلي غير مهيأ في هذا البناء، لذلك تبقى البيانات المعروضة معاينة محلية."}
             </Text>
           ) : null}
           <View style={styles.actions}>

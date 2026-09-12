@@ -4,11 +4,13 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 
+import { PreviewBanner } from "@/components/PreviewBanner";
 import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { ExperienceState, SyncStatus } from "@/components/ExperienceState";
 import { AnimatedProgress, StatusDot } from "@/components/Ui";
 import { colors, radius, space } from "@/constants/theme";
 import {
+  ownerDecisionCenterPreview,
   type ExecutiveDecision,
   type OwnerDecisionCenter as OwnerDecisionCenterData,
 } from "@/lib/executive";
@@ -25,7 +27,7 @@ const severityColor = {
   info: colors.info,
 } as const;
 
-type OwnerCenterState = "loading" | "signedOut" | "ready" | "error";
+type OwnerCenterState = "loading" | "preview" | "signedOut" | "ready" | "error";
 
 function metric(value: string | null, label: string, detail: string): OwnerDecisionCenterData["metrics"][number] {
   return value === null
@@ -50,6 +52,18 @@ function commandCenterToView(value: MobileCommandCenter): OwnerDecisionCenterDat
   };
 }
 
+const previewEvents = [
+  { icon: "cash-outline" as const, title: "تمت تسوية الصندوق", branch: "فرع الكرادة", detail: "أُغلقت وردية الصباح بمبلغ 2,350,000 د.ع", time: "منذ 20 دقيقة", tone: colors.success },
+  { icon: "construct-outline" as const, title: "طلب دعم فني", branch: "فرع زيونة", detail: "تنبيه من جهاز نقاط البيع رقم 3", time: "منذ ساعة", tone: colors.warning },
+];
+
+const quickActions = [
+  { icon: "add-circle-outline" as const, label: "طلب جديد" },
+  { icon: "receipt-outline" as const, label: "الفواتير" },
+  { icon: "people-outline" as const, label: "العملاء" },
+  { icon: "cube-outline" as const, label: "المخزون" },
+];
+
 export function OwnerDecisionCenter() {
   const [selected, setSelected] = useState<ExecutiveDecision | null>(null);
   const [state, setState] = useState<OwnerCenterState>("loading");
@@ -61,7 +75,7 @@ export function OwnerDecisionCenter() {
       const transport = await getSecureTransportRuntimeStatus();
       if (transport.kind === "unavailable" || !transport.configured) {
         setLiveCenter(null);
-        setState("error");
+        setState("preview");
         return;
       }
       if (transport.session !== "present") {
@@ -80,40 +94,18 @@ export function OwnerDecisionCenter() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  if (state === "loading") {
-    return <OwnerCenterMessage detail="نتحقق من الجلسة ونقرأ مؤشرات المنشأة من النظام الأساسي." state="loading" title="تحديث مركز القرار" />;
-  }
-  if (state === "signedOut") {
-    return (
-      <OwnerCenterMessage
-        actionLabel="تسجيل الدخول"
-        detail="تظهر بيانات المنشأة بعد فتح جلسة مخولة على هذا الجهاز."
-        onAction={() => router.push("/sign-in")}
-        state="offline"
-        title="الجلسة غير مفتوحة"
-      />
-    );
-  }
-  if (state === "error" || !liveCenter) {
-    return (
-      <OwnerCenterMessage
-        actionLabel="المحاولة مجدداً"
-        detail="تعذر الاتصال بالنظام الأساسي. لم نعرض أرقاماً أو قرارات بديلة."
-        onAction={() => void refresh()}
-        state="error"
-        title="تعذر جلب مركز القرار"
-      />
-    );
-  }
-
-  const center = liveCenter;
+  const isLive = state === "ready" && liveCenter !== null;
+  const showWorkspace = state === "preview" || isLive;
+  const center = liveCenter ?? ownerDecisionCenterPreview;
   const asOf = formatBaghdadTime(center.asOf) ?? "وقت التحديث غير متاح";
   const primaryDecision = center.decisions[0] ?? null;
   const secondaryDecisions = center.decisions.slice(1, 3);
   const availableSources = center.metrics.filter((item) => item.available).length;
   const sourceRatio = availableSources / Math.max(center.metrics.length, 1);
-  const operatingScore = Math.round(sourceRatio * 100);
-  const operatingReason = `${availableSources} من ${center.metrics.length} مصادر متاحة · ${center.health === "healthy" ? "لا توجد أعطال مؤثرة" : "توجد مصادر تحتاج متابعة"}`;
+  const operatingScore = isLive ? Math.round(sourceRatio * 100) : 78;
+  const operatingReason = isLive
+    ? `${availableSources} من ${center.metrics.length} مصادر متاحة · ${center.health === "healthy" ? "لا توجد أعطال مؤثرة" : "توجد مصادر تحتاج متابعة"}`
+    : "المبيعات +12% عن أمس · 5 من 6 فروع نشطة";
 
   const openDecision = (decision: ExecutiveDecision | null) => {
     if (!decision) return;
@@ -121,45 +113,55 @@ export function OwnerDecisionCenter() {
     setSelected(decision);
   };
 
+  const closeDecision = () => {
+    setSelected(null);
+  };
+
   return (
     <>
       <ScrollView
         accessibilityLabel="مركز قرار المالك"
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl onRefresh={() => void refresh()} refreshing={false} tintColor={colors.brand} />}
+        refreshControl={<RefreshControl onRefresh={() => void refresh()} refreshing={state === "loading"} tintColor={colors.brand} />}
         style={styles.page}
       >
-        <ImageBackground imageStyle={styles.heroImage} resizeMode="cover" source={branchHero} style={styles.hero}>
+        <ImageBackground
+          imageStyle={styles.heroImage}
+          resizeMode="cover"
+          source={branchHero}
+          style={styles.hero}
+        >
           <View style={styles.heroOverlay} />
           <View style={styles.heroContent}>
+            {state === "preview" ? <PreviewBanner tone="dark" /> : null}
             <View style={styles.topRow}>
               <View style={styles.wordmarkRow}>
                 <View style={styles.brandMark}><Ionicons color={colors.surface} name="cart" size={25} /></View>
                 <View>
                   <Text style={styles.wordmark}>سوبر العربية</Text>
-                  <Text style={styles.tagline}>مركز الإدارة المتصل</Text>
+                  <Text style={styles.tagline}>معك في كل فرع</Text>
                 </View>
               </View>
-              <Pressable accessibilityLabel="الإشعارات" accessibilityRole="button" onPress={() => router.push("/(tabs)/account")} style={styles.notificationButton}>
+              <Pressable accessibilityHint="يفتح إعدادات الإشعارات الخاصة بالحساب" accessibilityLabel="الإشعارات" accessibilityRole="button" onPress={() => router.push("/(tabs)/account")} style={styles.notificationButton}>
                 <Ionicons color={colors.surface} name="notifications" size={21} />
-                {center.decisions.length > 0 ? <View style={styles.notificationDot} /> : null}
+                {state === "preview" ? <View style={styles.notificationDot} /> : null}
               </Pressable>
             </View>
 
             <View style={styles.greetingRow}>
               <View style={styles.greetingCopy}>
-                <Text style={styles.greeting}>مركز القرار</Text>
-                <Text style={styles.role}>{center.scopeLabel}</Text>
+                <Text style={styles.greeting}>{isLive ? "مركز القرار" : state === "preview" ? "صباح الخير، أحمد" : "مركز القرار"}</Text>
+                <Text style={styles.role}>{showWorkspace ? (isLive ? center.scopeLabel : "مالك المنشأة") : "تظهر بيانات الإدارة بعد فتح الجلسة المخولة"}</Text>
               </View>
-              <View accessibilityLabel={`نطاق البيانات: ${center.scopeLabel}`} accessibilityRole="text" style={styles.branchSelector}>
+              {showWorkspace ? <View accessibilityLabel={`نطاق البيانات: ${center.scopeLabel}`} accessibilityRole="text" style={styles.branchSelector}>
                 <Ionicons color="#DCE4FF" name="storefront-outline" size={17} />
                 <Text style={styles.branchText}>{center.scopeLabel}</Text>
-              </View>
+              </View> : null}
             </View>
 
-            <AnimatedReveal delay={90} style={styles.performancePanel}>
+            {showWorkspace ? <AnimatedReveal delay={90} style={styles.performancePanel}>
               <View
-                accessibilityLabel={`توفر بيانات التشغيل ${operatingScore}%`}
+                accessibilityLabel={`صحة التشغيل اليوم ${operatingScore}%`}
                 accessibilityRole="progressbar"
                 accessibilityValue={{ max: 100, min: 0, now: operatingScore, text: `${operatingScore}%` }}
                 style={styles.scoreMeter}
@@ -168,25 +170,33 @@ export function OwnerDecisionCenter() {
                 <Text style={styles.scoreTrend}>{center.health === "healthy" ? "مستقر" : "انتبه"}</Text>
               </View>
               <View style={styles.scoreCopy}>
-                <Text style={styles.scoreTitle}>توفر بيانات التشغيل</Text>
+                <Text style={styles.scoreTitle}>{isLive ? "توفر بيانات التشغيل" : "صحة التشغيل اليوم"}</Text>
                 <View style={styles.scoreStatusRow}>
                   <StatusDot color={center.health === "healthy" ? "#35D796" : "#FFB44A"} />
-                  <Text style={styles.scoreStatus}>{center.health === "healthy" ? "المصادر المتاحة تعمل بصورة طبيعية" : "توجد مصادر تحتاج متابعة"}</Text>
+                  <Text style={styles.scoreStatus}>{center.health === "healthy" ? "سير العمل يسير بشكل جيد" : "توجد مؤشرات تحتاج متابعة"}</Text>
                 </View>
-                <AnimatedProgress label="نسبة توفر المصادر" value={operatingScore} />
+                <AnimatedProgress label="نسبة صحة التشغيل" value={operatingScore} />
                 <Text style={styles.scoreDetail}>{operatingReason}</Text>
               </View>
               <Pressable accessibilityLabel="تحديث مؤشرات التشغيل" accessibilityRole="button" onPress={() => void refresh()} style={styles.scoreMore}>
                 <Text style={styles.scoreMoreText}>تحديث</Text>
-                <Ionicons color={colors.surface} name="refresh-outline" size={17} />
+                <Ionicons color={colors.surface} name="chevron-back" size={17} />
               </Pressable>
-            </AnimatedReveal>
+            </AnimatedReveal> : null}
           </View>
         </ImageBackground>
 
         <View style={styles.bodyContent}>
-          <SyncStatus label={`مزامن مع النظام الأساسي · ${asOf}`} state="synced" />
-
+          {state === "loading" ? (
+            <ExperienceState compact detail="نتأكد من جلسة الجهاز ومصادر اليوم قبل العرض." state="loading" title="تحديث مركز القرار" />
+          ) : state === "signedOut" ? (
+            <ExperienceState actionLabel="إعادة الفحص" compact detail="افتح جلسة الجهاز الموثق لقراءة بيانات المنشأة." onAction={() => void refresh()} state="offline" title="الجلسة غير مفتوحة" />
+          ) : state === "error" ? (
+            <ExperienceState actionLabel="المحاولة مجدداً" compact detail="لم نعرض نسخة مخزنة؛ تحقق من الشبكة ثم أعد التحديث." onAction={() => void refresh()} state="error" title="تعذر جلب المؤشرات" />
+          ) : (
+            <SyncStatus label={isLive ? `مزامن · ${asOf}` : "بيانات تجريبية محلية"} state={isLive ? "synced" : "offline"} />
+          )}
+          {showWorkspace ? <>
           <AnimatedReveal delay={110} style={styles.metricStrip}>
             {center.metrics.map((item) => (
               <View accessibilityLabel={`${item.label}: ${item.value}. ${item.detail}`} key={item.label} style={styles.metricItem}>
@@ -196,41 +206,50 @@ export function OwnerDecisionCenter() {
               </View>
             ))}
           </AnimatedReveal>
-
           <AnimatedReveal delay={130}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
-                <View style={styles.targetIcon}><Ionicons color={colors.coral} name="radio-button-on" size={19} /></View>
-                <View>
-                  <Text style={styles.sectionTitle}>أولوية الآن</Text>
-                  <Text style={styles.sectionSubtitle}>قرارات مصدرها النظام الأساسي</Text>
-                </View>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionTitleRow}>
+              <View style={styles.targetIcon}><Ionicons color={colors.coral} name="radio-button-on" size={19} /></View>
+              <View>
+                <Text style={styles.sectionTitle}>أولوية الآن</Text>
+                <Text style={styles.sectionSubtitle}>مهمة تحتاج إلى قرارك الآن</Text>
               </View>
-              <View style={styles.countBadge}><Text style={styles.countBadgeText}>{center.decisions.length}</Text></View>
             </View>
+            <View style={styles.countBadge}><Text style={styles.countBadgeText}>{center.decisions.length}</Text></View>
+          </View>
           </AnimatedReveal>
 
           {primaryDecision ? (
             <AnimatedReveal delay={180} style={styles.priorityCard}>
               <View style={styles.priorityTop}>
-                <View style={styles.priorityIcon}><Ionicons color={severityColor[primaryDecision.severity]} name="document-text-outline" size={23} /></View>
+                <View style={styles.priorityIcon}><Ionicons color={colors.danger} name="document-text-outline" size={23} /></View>
                 <View style={styles.priorityCopy}>
-                  <Text style={styles.priorityTitle}>{primaryDecision.title}</Text>
+                  <View style={styles.priorityLabelRow}>
+                    <Text style={styles.urgentLabel}>عاجل</Text>
+                    <Text style={styles.priorityTitle}>{primaryDecision.title}</Text>
+                  </View>
                   <Text style={styles.priorityContext}>{primaryDecision.context}</Text>
                 </View>
+                {!isLive ? <View style={styles.deadlinePill}>
+                  <Ionicons color={colors.danger} name="time-outline" size={15} />
+                  <Text style={styles.deadlineText}>قبل 4:30 م</Text>
+                </View> : null}
               </View>
+              {!isLive ? <View style={styles.priorityFacts}>
+                <View style={styles.fact}><Text style={styles.factLabel}>مقدم الطلب</Text><Text style={styles.factValue}>سارة كريم</Text></View>
+                <View style={styles.fact}><Text style={styles.factLabel}>الفرع</Text><Text style={styles.factValue}>فرع المنصور</Text></View>
+                <View style={styles.fact}><Text style={styles.factLabel}>المبلغ</Text><Text style={styles.factValue}>4,800 د.ع</Text></View>
+              </View> : null}
               <View style={styles.priorityActions}>
                 <Pressable accessibilityRole="button" onPress={() => openDecision(primaryDecision)} style={({ pressed }) => [styles.approveAction, pressed && styles.pressed]}>
                   <Ionicons color={colors.surface} name="document-text-outline" size={20} />
-                  <Text style={styles.approveText}>{primaryDecision.actionLabel}</Text>
+                  <Text style={styles.approveText}>{isLive ? primaryDecision.actionLabel : "مراجعة الطلب"}</Text>
                 </Pressable>
               </View>
             </AnimatedReveal>
-          ) : (
-            <ExperienceState compact detail="لم يرجع النظام الأساسي قراراً يحتاج تدخلك الآن." state="empty" title="لا توجد قرارات معلقة" />
-          )}
+          ) : null}
 
-          {secondaryDecisions.length > 0 ? (
+          {secondaryDecisions.length ? (
             <View style={styles.secondaryDecisionList}>
               {secondaryDecisions.map((decision, index) => (
                 <Pressable accessibilityHint="يفتح تفاصيل القرار للقراءة" accessibilityLabel={`${decision.title}. ${decision.context}`} accessibilityRole="button" key={decision.id} onPress={() => openDecision(decision)} style={({ pressed }) => [styles.secondaryDecisionRow, index > 0 && styles.rowDivider, pressed && styles.pressed]}>
@@ -244,54 +263,60 @@ export function OwnerDecisionCenter() {
             </View>
           ) : null}
 
-          <ExperienceState compact detail="يعرض الهاتف القرار ونطاقه فقط. التنفيذ المالي أو التشغيلي يتم داخل الوحدة المعتمدة في النظام الأساسي مع سجل التدقيق." state="pending" title="التنفيذ محمي في النظام الأساسي" />
+          {!isLive ? <>
+          <AnimatedReveal delay={240} style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>آخر الأحداث</Text>
+              <Text style={styles.sectionSubtitle}>مباشر من فروعك اليوم</Text>
+            </View>
+            <Ionicons color={colors.brand} name="pulse-outline" size={22} />
+          </AnimatedReveal>
+          <View style={styles.eventList}>
+            {previewEvents.map((event, index) => (
+              <View key={event.title} style={[styles.eventRow, index > 0 && styles.rowDivider]}>
+                <View style={[styles.eventIcon, { backgroundColor: `${event.tone}18` }]}><Ionicons color={event.tone} name={event.icon} size={20} /></View>
+                <View style={styles.flex}><Text style={styles.eventTitle}>{event.title}</Text><Text style={styles.eventBranch}>{event.branch}</Text><Text style={styles.eventDetail}>{event.detail}</Text></View>
+                <View style={styles.eventTimeRow}><StatusDot color={event.tone} /><Text style={styles.eventTime}>{event.time}</Text></View>
+              </View>
+            ))}
+          </View>
+
+          <Text style={styles.quickTitle}>إجراءات سريعة</Text>
+          <View style={styles.quickBar}>
+            {quickActions.map((action) => (
+              <View accessibilityLabel={`${action.label}، عنصر معاينة غير تشغيلي`} accessibilityRole="text" key={action.label} style={styles.quickAction}>
+                <Ionicons color={colors.brand} name={action.icon} size={22} />
+                <Text style={styles.quickText}>{action.label}</Text>
+              </View>
+            ))}
+          </View>
+          </> : (
+            <ExperienceState compact detail="يعرض الهاتف القرار ونطاقه فقط. التنفيذ المالي أو التشغيلي يتم داخل الوحدة المعتمدة في النظام الأساسي مع سجل التدقيق." state="pending" title="التنفيذ محمي في النظام الأساسي" />
+          )}
+          </> : null}
         </View>
       </ScrollView>
 
-      <Modal animationType="slide" onRequestClose={() => setSelected(null)} transparent visible={selected !== null}>
-        <Pressable onPress={() => setSelected(null)} style={styles.modalBackdrop}>
+      <Modal animationType="slide" onRequestClose={closeDecision} transparent visible={selected !== null}>
+        <Pressable onPress={closeDecision} style={styles.modalBackdrop}>
           <Pressable onPress={(event) => event.stopPropagation()} style={styles.sheet}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetLabel}>تفاصيل القرار</Text>
+            <Text style={styles.sheetLabel}>{isLive ? "تفاصيل القرار" : "معاينة تفاصيل القرار"}</Text>
             <Text style={styles.sheetTitle}>{selected?.title}</Text>
             <Text style={styles.sheetBody}>{selected?.context}</Text>
             <View style={styles.reviewFacts}>
-              <View style={styles.reviewFact}><Text style={styles.sheetLabel}>المصدر</Text><Text style={styles.reviewFactValue}>النظام الأساسي</Text></View>
+              <View style={styles.reviewFact}><Text style={styles.sheetLabel}>المصدر</Text><Text style={styles.reviewFactValue}>{isLive ? "النظام الأساسي" : "بيانات المعاينة"}</Text></View>
               <View style={styles.reviewFact}><Text style={styles.sheetLabel}>آخر تحديث</Text><Text style={styles.reviewFactValue}>{asOf}</Text></View>
             </View>
             <View style={styles.sheetNoticeRow}>
               <Ionicons color={colors.info} name="shield-checkmark-outline" size={20} />
-              <Text style={styles.sheetNotice}>هذه الشاشة للقراءة فقط. التنفيذ يبقى في الوحدة المعتمدة داخل النظام الأساسي.</Text>
+              <Text style={styles.sheetNotice}>{isLive ? "هذه الشاشة للقراءة فقط. لا ترسل اعتماداً أو حركة مالية؛ التنفيذ يبقى في الوحدة المعتمدة داخل النظام الأساسي." : "هذه معاينة تصميمية ولا تغيّر أي بيانات."}</Text>
             </View>
-            <Pressable accessibilityRole="button" onPress={() => setSelected(null)} style={styles.closeButton}><Text style={styles.closeButtonText}>إغلاق</Text></Pressable>
+            <Pressable accessibilityRole="button" onPress={closeDecision} style={styles.closeButton}><Text style={styles.closeButtonText}>إغلاق</Text></Pressable>
           </Pressable>
         </Pressable>
       </Modal>
     </>
-  );
-}
-
-function OwnerCenterMessage({
-  actionLabel,
-  detail,
-  onAction,
-  state,
-  title,
-}: {
-  actionLabel?: string;
-  detail: string;
-  onAction?: () => void;
-  state: "loading" | "offline" | "error";
-  title: string;
-}) {
-  return (
-    <ScrollView accessibilityLabel="مركز قرار المالك" contentContainerStyle={styles.content} style={styles.page}>
-      <View style={styles.bodyContent}>
-        <Text style={styles.wordmark}>سوبر العربية</Text>
-        <Text style={styles.sectionTitle}>مركز القرار</Text>
-        <ExperienceState actionLabel={actionLabel} detail={detail} onAction={onAction} state={state} title={title} />
-      </View>
-    </ScrollView>
   );
 }
 

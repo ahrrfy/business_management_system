@@ -4,7 +4,6 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
-import java.nio.charset.StandardCharsets
 
 /**
  * Build-time configuration injected by the Expo config plugin. It is not a
@@ -30,7 +29,6 @@ internal data class SecureTransportConfiguration(
 
   companion object {
     private const val RESOURCE_NAME = "alrueya_secure_transport_configuration"
-    private const val ENCODED_PREFIX = "base64url-v1:"
     private val loopbackHosts = setOf("10.0.2.2", "127.0.0.1", "localhost")
     private val pinPattern = Regex("^[A-Za-z0-9_-]{43}$")
 
@@ -43,15 +41,7 @@ internal data class SecureTransportConfiguration(
     fun parse(raw: String?): SecureTransportConfiguration {
       if (raw.isNullOrBlank()) return SecureTransportConfiguration("", "development", emptySet())
       return try {
-        val json = if (raw.startsWith(ENCODED_PREFIX)) {
-          val payload = raw.removePrefix(ENCODED_PREFIX)
-          String(Base64Url.decode(payload), StandardCharsets.UTF_8)
-        } else {
-          // Backward-compatible only for unit tests and development builds.
-          // Store artifacts are emitted with the versioned envelope above.
-          raw
-        }
-        val source = JSONObject(json)
+        val source = JSONObject(raw)
         val environment = if (source.optString("environment") == "production") "production" else "development"
         val baseUrl = source.optString("baseUrl").trim()
         val pins = source.optJSONArray("spkiPins")
