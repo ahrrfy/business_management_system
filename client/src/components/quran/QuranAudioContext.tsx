@@ -49,6 +49,13 @@ function getGlobalAudio(initialVolume = 0.85): HTMLAudioElement | null {
   return globalAudioInstance;
 }
 
+/** إيقاف صريح لعنصر الصوت عند عبور حدود المصادقة (تسجيل الخروج أو الانتقال لشاشة الدخول). */
+export function pauseGlobalQuranAudio(): void {
+  if (globalAudioInstance && !globalAudioInstance.paused) {
+    globalAudioInstance.pause();
+  }
+}
+
 export function QuranAudioProvider({ children }: { children: React.ReactNode }) {
   const [currentReciter, setCurrentReciterState] = useState<QuranReciter>(() => {
     try {

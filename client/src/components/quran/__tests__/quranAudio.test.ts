@@ -90,6 +90,16 @@ describe("Quran Audio & Catalog Contracts", () => {
 
     // 4. POS must include QuranHeaderButton for cashier access
     expect(posSource).toContain("<QuranHeaderButton");
+
+    // 5. Auth boundary & session reset contracts
+    const sessionBoundarySource = fs.readFileSync("client/src/lib/offline/sessionBoundary.ts", "utf8");
+    expect(contextSource).toContain("export function pauseGlobalQuranAudio");
+    expect(sessionBoundarySource).toContain("pauseGlobalQuranAudio()");
+    expect(appSource).toContain("QuranAuthBoundary");
+    expect(appSource).toContain("pauseGlobalQuranAudio()");
+
+    // 6. Cold studio gate in mobile header
+    expect(layoutSource).toContain("{!coldStudio && <QuranHeaderButton />}");
   });
 });
 

@@ -521,7 +521,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-1">
-            <QuranHeaderButton />
+            {!coldStudio && <QuranHeaderButton />}
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />

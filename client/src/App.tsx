@@ -35,7 +35,7 @@ import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
-import { QuranAudioProvider } from "@/components/quran/QuranAudioContext";
+import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
 const QuranStationDrawer = lazy(() =>
   import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
@@ -334,9 +334,20 @@ function GlobalPrinterAutoConnect() {
   return null;
 }
 
+function QuranAuthBoundary() {
+  const [location] = useLocation();
+  useEffect(() => {
+    if (location === "/login") {
+      pauseGlobalQuranAudio();
+    }
+  }, [location]);
+  return null;
+}
+
 export default function App() {
   return (
     <QuranAudioProvider>
+      <QuranAuthBoundary />
       <ErrorBoundary>
       <HostPolicy />
       <GlobalPrinterAutoConnect />
