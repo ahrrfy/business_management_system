@@ -7,12 +7,12 @@
 import { confirm } from "@/lib/confirm";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
-import { D, formatIqd, roundCashIQD } from "@/lib/money";
+import { D, roundCashIQD, formatIqd } from "@/lib/money";
 import {
   printDoc, printReceipt, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
   getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData,
 } from "@/lib/printing/print";
-import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
+import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
@@ -29,19 +29,21 @@ import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Flame } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
-import { MoneyInput } from "@/components/form/MoneyInput";
-import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
+import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
+import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
+import { PrintShiftCloseDialog } from "@/components/printPos/PrintShiftCloseDialog";
 import { createPortal } from "react-dom";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -57,7 +59,6 @@ type ExternalPaymentDraft = {
   deviceId?: string;
 };
 
-type CartLine = { uid: number; svc: Svc; qty: number; price: number };
 type Tab = {
   id: number;
   label: string;
@@ -850,7 +851,7 @@ export default function PrintPOS() {
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
           addTick={addTick}
         />
-        <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
+        <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
       {receipt && <ReceiptOverlay C={C} receipt={receipt} onDismiss={() => {
@@ -861,9 +862,9 @@ export default function PrintPOS() {
       }} onPrint={() => printReceipt(brandedReceipt(receipt)).then((printed) => {
         if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
       }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }))} />}
-      {shifting && <ShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
+      {shifting && <PrintShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
       {creditPrompt && (
-        <CreditApprovalDialog C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
+        <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
           isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
       )}
     </div>
@@ -983,217 +984,7 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, lastInv }: 
   );
 }
 
-// ─── ServiceGrid ─────────────────────────────────────────────────────────────
-/** بطاقة خدمة موحّدة — مستعملة في الشبكة الرئيسية وشريط «الأكثر استعمالاً» (نفس التصميم بحواف
- *  ملوّنة إن كانت «أكثر استعمالاً»). كبيرة (‎١٢٠px‎) بأيقونةٍ بارزة وسعرٍ ملوّن. */
-function ServiceCard({ C, s, onAdd, hot }: { C: C; s: Svc; onAdd: (s: Svc) => void; hot?: boolean }) {
-  const custom = isCustomPriceSku(s.sku);
-  const accent = hot ? C.amber : C.primary;
-  const accentSoft = hot ? `color-mix(in oklch, ${C.amber} 12%, transparent)` : C.primarySoft;
-  return (
-    <button onClick={() => onAdd(s)}
-      title={`${s.productName} — ${s.unitName}${s.price == null ? "" : ` — ${fmt(Number(s.price))} د.ع`}`}
-      style={{
-        height: 120, display: "flex", flexDirection: "column", alignItems: "flex-start", justifyContent: "space-between",
-        padding: "10px 12px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "right",
-        background: hot ? `linear-gradient(180deg, ${accentSoft} 0%, ${C.card} 60%)` : C.card,
-        border: `${hot ? 2 : 1.5}px solid ${hot ? accent : C.border}`,
-        transition: "transform .07s, border-color .1s, box-shadow .1s",
-        boxShadow: hot ? `0 2px 10px ${accentSoft}` : "none",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.borderColor = accent; e.currentTarget.style.boxShadow = `0 6px 18px ${accentSoft}`; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = hot ? accent : C.border; e.currentTarget.style.boxShadow = hot ? `0 2px 10px ${accentSoft}` : "none"; }}
-      onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
-      onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 8, background: accentSoft, color: accent, flexShrink: 0 }}>
-          {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={20} strokeWidth={1.8} />; })()}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}>
-          {hot && <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "2px 6px", borderRadius: 20 }}><Flame aria-hidden size={10} />الأكثر</span>}
-          {custom && <span style={{ fontSize: 9.5, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "1px 6px", borderRadius: 20 }}>يدوي</span>}
-        </div>
-      </div>
-      <div style={{ width: "100%" }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.fg, lineHeight: 1.25, marginBottom: 3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>{s.productName}</div>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 10, color: C.mutedFg }}>/ {s.unitName}</span>
-          <span style={{ fontSize: 16, fontWeight: 900, color: accent, direction: "ltr" }}>{s.price == null ? "—" : fmt(Number(s.price))}<span style={{ fontSize: 9.5, color: C.mutedFg, fontWeight: 600 }}> د.ع</span></span>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAdd, recentIds }: {
-  C: C; services: Svc[]; loading: boolean; cats: { id: number; name: string }[]; catId: number | null;
-  setCatId: (id: number) => void; search: string; onAdd: (s: Svc) => void; recentIds: number[];
-}) {
-  const q = search.trim();
-  const list = useMemo(() => {
-    // تطبيع عربي موحّد (همزات/تاء مربوطة/مقصورة/أرقام هندية) — «استنساخ» يجد «إستنساخ»،
-    // نفس فضاء البحث الخادمي (shared/searchNormalize) بدل includes الخام الحسّاس للهمزة.
-    if (q) {
-      const nq = normalizeSearchText(q);
-      return services.filter((s) => normalizeSearchText(s.productName).includes(nq));
-    }
-    // print-catalog: catId=0 هو تبويب «أخرى» (الخدمات بلا فئة، categoryId == null).
-    return services.filter((s) => (catId === 0 ? s.categoryId == null : s.categoryId === catId));
-  }, [services, q, catId]);
-
-  // ٢٥/٨ (بلاغ المالك): «الأكثر استعمالاً» — يعرض حتى ٦ خدمات بترتيب الاستعمال الأخير للكاشير+فرع
-  // في شريطٍ بارزٍ بحواف كهرمانية وأيقونة لهب، أعلى شبكة الفئة. تختفي إن لم يكن هناك سجلّ.
-  const recentSvcs = useMemo(() => {
-    if (q || !recentIds.length) return [];
-    const byId = new Map(services.map((s) => [s.productUnitId, s] as const));
-    const out: Svc[] = [];
-    for (const id of recentIds) {
-      const s = byId.get(id);
-      if (s && !out.includes(s)) out.push(s);
-      if (out.length >= 6) break;
-    }
-    return out;
-  }, [q, recentIds, services]);
-
-  return (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      {!q && (
-        <div style={{ display: "flex", gap: 5, padding: "7px 9px", overflowX: "auto", borderBottom: `1px solid ${C.border}`, flexShrink: 0, background: C.muted }}>
-          {cats.map((ct) => {
-            const active = ct.id === catId;
-            return (
-              <button key={ct.id} onClick={() => setCatId(ct.id)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "0 12px", height: 38, borderRadius: 9, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, flexShrink: 0, touchAction: "manipulation", background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}` }}>
-                {(() => { const CIcon = categoryIcon(ct.name); return <CIcon aria-hidden size={15} />; })()}
-                {ct.name}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {q && <div style={{ padding: "11px 14px", borderBottom: `1px solid ${C.border}`, fontSize: 13, color: C.mutedFg, background: C.muted }}>نتائج البحث عن «<strong style={{ color: C.fg }}>{q}</strong>» — {list.length} خدمة</div>}
-      <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
-        {loading ? (
-          <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل الخدمات…</div>
-        ) : list.length === 0 ? (
-          <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><Search aria-hidden size={40} strokeWidth={1.5} /></div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? "لا توجد خدمة بهذا الاسم" : "لا خدمات في هذه الفئة"}</div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {recentSvcs.length > 0 && (
-              <div style={{ borderRadius: 12, border: `1.5px dashed ${C.amber}`, background: `color-mix(in oklch, ${C.amber} 4%, transparent)`, padding: "10px 12px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, color: C.amber, fontSize: 12, fontWeight: 800 }}>
-                  <Flame aria-hidden size={14} />
-                  الأكثر استعمالاً <span style={{ color: C.mutedFg, fontWeight: 600 }}>({recentSvcs.length})</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
-                  {recentSvcs.map((s) => <ServiceCard key={`hot-${s.productUnitId}`} C={C} s={s} onAdd={onAdd} hot />)}
-                </div>
-              </div>
-            )}
-            {/* الشبكة الرئيسية — بلاطات كبيرة (١٥٨px) لبروزٍ أوضح بعد توسّع عمود السلّة. */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(158px, 1fr))", gap: 8 }}>
-              {list.map((s) => <ServiceCard key={s.productUnitId} C={C} s={s} onAdd={onAdd} />)}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * منتقي عميل مضغوط ببحثٍ **خادميّ** — بديل `<select>` كان يُغذّى من `customers.list` المقصوصة
- * عند ٥٠٠ صفّاً: العميل رقم ٥٠١ لم يكن يظهر في القائمة إطلاقاً ⇒ **يتعذّر بيعه آجلاً** من هذه
- * الشاشة (البيع الآجل يشترط عميلاً — انظر حارس `isCredit && customerId == null`)، بلا أيّ مؤشّر.
- * مُنسَّق بـinline styles على توكنات `C` لأن هذه الشاشة لمسية بتصميمها الخاص (لا Tailwind).
- */
-function CustomerCombo({ C, customerId, setCustomerId }: { C: C; customerId: number | null; setCustomerId: (id: number | null) => void }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const boxRef = useRef<HTMLDivElement | null>(null);
-  const dq = useDebouncedValue(q.trim(), 250);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
-  // البحث لا يُطلَق إلا والقائمة مفتوحة ⇒ صفر تحميل عند الإقلاع (كان يجلب ٥٠٠ عميل دائماً).
-  const search = trpc.customers.search.useQuery(
-    { q: dq || undefined, limit: 20 },
-    { enabled: open, staleTime: 30_000 },
-  );
-  // اسم المختار بـid مستقلاً عن نتائج البحث (قد يكون خارجها أو خارج أيّ سقف).
-  const picked = trpc.customers.get.useQuery(
-    { customerId: customerId ?? 0 },
-    { enabled: customerId != null, staleTime: 60_000 },
-  );
-  const rows = search.data?.rows ?? [];
-  const label = customerId == null ? "عميل نقدي" : (picked.data?.name ?? `#${customerId}`);
-  const active = customerId != null;
-
-  return (
-    <div ref={boxRef} style={{ position: "relative" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="اختيار العميل"
-        style={{ height: 36, borderRadius: 9, border: `1.5px solid ${active ? C.primary : C.border}`, background: active ? C.primarySoft : C.card, color: active ? C.primary : C.mutedFg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", cursor: "pointer", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-      >
-        {label}
-      </button>
-      {open && (
-        <div role="listbox" style={{ position: "absolute", top: 40, left: 0, minWidth: 240, zIndex: 50, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,.18)", overflow: "hidden" }}>
-          <div style={{ padding: 7 }}>
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="ابحث بالاسم أو الهاتف…"
-              style={{ width: "100%", height: 32, borderRadius: 7, border: `1px solid ${C.border}`, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 12.5, padding: "0 8px", outline: "none" }}
-            />
-          </div>
-          <div style={{ maxHeight: 210, overflowY: "auto" }}>
-            <div
-              role="option"
-              aria-selected={customerId == null}
-              onClick={() => { setCustomerId(null); setOpen(false); setQ(""); }}
-              style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.mutedFg, borderBottom: `1px solid ${C.border}` }}
-            >
-              عميل نقدي
-            </div>
-            {search.isFetching && rows.length === 0 && (
-              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>جارٍ البحث…</div>
-            )}
-            {!search.isFetching && rows.length === 0 && (
-              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>لا نتائج</div>
-            )}
-            {rows.map((c) => (
-              <div
-                key={c.id}
-                role="option"
-                aria-selected={c.id === customerId}
-                onClick={() => { setCustomerId(c.id); setOpen(false); setQ(""); }}
-                style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, background: c.id === customerId ? C.primarySoft : "transparent", color: C.fg }}
-              >
-                <div style={{ fontWeight: 700 }}>{c.name}</div>
-                <div style={{ fontSize: 11, color: C.mutedFg }}>{c.phone || "بلا هاتف"}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── CheckoutColumn = CartList (فوق) + PaymentBlock (تحت) ─────────────────────
+// ─── CheckoutColumn = PrintCartList (فوق) + PaymentBlock (تحت) ───────────────
 interface CheckoutProps {
   C: C; cart: CartLine[]; total: number; selUid: number | null; setSelUid: (id: number | null) => void;
   changeQty: (uid: number, q: number) => void; removeRow: (uid: number) => void; onClear: () => void;
@@ -1208,127 +999,13 @@ interface CheckoutProps {
   addTick: number;
 }
 
-// الاحتواء الديناميكي: زوم المتصفح لا يُكبّر الشاشة بل يُقلّص المساحة بوحدات CSS.
-// الارتفاعات الثابتة كانت تُفيض لوحة الدفع فتُقصّ أزرارها بصمت تحت overflow:hidden.
-// ارتفاع اللوحة هنا يحدّده محتواها (لا الشبكة) ⇒ نقيس بالشاشة (vh) لا بالحاوية.
-// الحدود الدنيا مرفوعة عمداً: شاشة الكاشير الصغيرة تحتاج أزراراً **كبيرة وواضحة**،
-// فيُحذف الثانويّ عند الضيق (رقائق المبالغ) بدل تصغير الأساسيّ — الحدّ 42px فأعلى.
 const fluid = (min: number, ratio: number, max: number) => `clamp(${min}px, ${ratio}vh, ${max}px)`;
 
 function CheckoutColumn(props: CheckoutProps) {
-  const { C } = props;
-  // ٢٥/٨ (بلاغ المالك «مساحة أكبر للسلة طولاً وعرضاً»): توسيع العمود من ٤٠٠ إلى ٤٨٠px + إزالة
-  // الحاسبة كاملةً (numpad + رقائق المبالغ + زرّ التبديل) — الحقلُ نصّيٌّ يقبل الكتابة المباشرة
-  // فلا حاجة للنمباد على أجهزة الديسك، والقبول اللمسيّ عبر الكيبورد الافتراضي (inputMode="decimal").
-  // الفضاءُ المُحرَّر يقسَّم بين السلّة (ارتفاعاً) وأزرار الدفع/التحصيل/الطباعة (بروزاً).
   return (
     <div style={{ width: 480, flexShrink: 0, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
-      <CartList {...props} />
+      <PrintCartList {...props} />
       <PaymentBlock {...props} />
-    </div>
-  );
-}
-
-function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId, addTick }: CheckoutProps) {
-  const items = cart.reduce((s, c) => s + c.qty, 0);
-  // ٢٤/٨ — تمرير تلقائيّ إلى السطر المُضاف/المزاد بعد كلّ نقرةٍ على بلاطة خدمة (مرآة POS/Reception).
-  const selectedRowRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (selUid == null) return;
-    const raf = requestAnimationFrame(() => {
-      selectedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-    });
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addTick]);
-  return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 11px", height: 48, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}><ReceiptIcon aria-hidden size={17} /> الفاتورة</span>
-          {cart.length > 0 && <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 11.5, fontWeight: 700 }}>{cart.length} · {items}</span>}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: customerId != null ? C.primary : C.mutedFg }} aria-hidden><User size={14} /></span>
-          <CustomerCombo C={C} customerId={customerId} setCustomerId={setCustomerId} />
-          {cart.length > 0 && <button onClick={onClear} style={{ height: 36, padding: "0 11px", background: "none", border: `1px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>تفريغ</button>}
-        </div>
-      </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: cart.length ? 9 : 0 }}>
-        {cart.length === 0 ? (
-          <div style={{ padding: "50px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><ReceiptIcon aria-hidden size={40} strokeWidth={1.5} /></div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>الفاتورة فارغة</div>
-            {/* ٢٤/٨ (تدقيق ذاتيّ): إرشادُ فعلٍ صريحٌ بدل «اضغط على خدمة من اليسار» — الاختصار يفتحه فوراً. */}
-            <div style={{ fontSize: 12, marginTop: 6, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
-              اضغط <kbd style={{ background: C.muted, borderRadius: 4, padding: "1px 6px", fontFamily: "monospace", fontSize: 10.5, fontWeight: 700, color: C.fg }}>F2</kbd> للبحث السريع، أو اختر خدمة من الشبكة
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-            {cart.map((c) => {
-              const sel = selUid === c.uid;
-              const editing = editPriceUid === c.uid;
-              return (
-                <div key={c.uid} ref={sel ? selectedRowRef : undefined} onClick={() => setSelUid(c.uid)}
-                  style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 19, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
-                      {(() => { const SIcon = serviceIcon(c.svc.sku); return <SIcon aria-hidden size={16} />; })()}
-                      {c.svc.productName}
-                      <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
-                    </div>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 44, height: 44, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <div onClick={(e) => { e.stopPropagation(); setSelUid(c.uid); setEditPriceUid(c.uid); }} style={{ minWidth: 78 }}>
-                      {editing ? (
-                        <input autoFocus dir="ltr" inputMode="numeric" defaultValue={c.price}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setPrice(c.uid, Math.max(0, parseInt(e.target.value.replace(/[^0-9]/g, ""), 10) || 0))}
-                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") setEditPriceUid(null); }}
-                          onBlur={() => setEditPriceUid(null)}
-                          style={{ width: 84, height: 36, textAlign: "center", border: `1.5px solid ${C.primary}`, borderRadius: 8, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, fontWeight: 800, outline: "none", direction: "ltr" }} />
-                      ) : (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, direction: "ltr", color: isCustomPriceSku(c.svc.sku) ? C.amber : C.mutedFg, fontWeight: isCustomPriceSku(c.svc.sku) ? 800 : 600, fontSize: 13.5, padding: "5px 9px", borderRadius: 8, border: `1px dashed ${isCustomPriceSku(c.svc.sku) ? C.amber : C.border}` }}>
-                          {fmt(c.price)}<Pencil aria-hidden size={10} style={{ opacity: 0.7 }} />
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty - 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>−</button>
-                      {/* ٢٥/٨ (بلاغ المالك): الكمية حقلٌ قابل للكتابة (الافتراضي ١ من addService).
-                          الكاشير يكتب مباشرةً «5»/«12»/إلخ بدل ضغط + خمس مرّات. onFocus يحدّد النصّ
-                          ⇒ أوّل ضغطة رقم تستبدل القيمة الحاليّة. onChange يقبل فقط الأرقام ويطبّع
-                          الأصفار البادئة. onBlur يُصلح الفراغ إلى ١ (السطر يُحذف على 0 عبر changeQty). */}
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={c.qty}
-                        onClick={(e) => e.stopPropagation()}
-                        onFocus={(e) => { e.stopPropagation(); e.currentTarget.select(); }}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          const raw = e.target.value.replace(/[^\d]/g, "");
-                          if (raw === "") return;
-                          const n = parseInt(raw, 10);
-                          if (!Number.isFinite(n) || n < 0) return;
-                          changeQty(c.uid, n);
-                        }}
-                        onBlur={(e) => { if (e.currentTarget.value === "" || Number(e.currentTarget.value) < 1) changeQty(c.uid, 1); }}
-                        aria-label="الكمية"
-                        style={{ width: 56, height: 40, textAlign: "center", fontWeight: 900, fontSize: 18, direction: "ltr", color: C.fg, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, outline: "none", fontFamily: "inherit" }}
-                      />
-                      <button onClick={(e) => { e.stopPropagation(); changeQty(c.uid, c.qty + 1); }} style={{ width: 40, height: 40, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", touchAction: "manipulation" }}>+</button>
-                    </div>
-                    <span style={{ direction: "ltr", fontWeight: 900, fontSize: 16, color: C.fg, minWidth: 64, textAlign: "left" }}>{fmt(c.price * c.qty)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -1499,167 +1176,3 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   );
 }
 
-
-
-// ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
-function ShiftCloseDialog({ C, shift, isElevatedRole, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; isElevatedRole: boolean; onClose: () => void; onClosed: () => void }) {
-  const [counted, setCounted] = useState("");
-  const [countEntered, setCountEntered] = useState(false);
-  const utils = trpc.useUtils();
-  const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
-  const report = reportQ.data;
-
-  const closeShift = trpc.shifts.close.useMutation({
-    onSuccess: async (r) => {
-      // أكواد الطرق تُعرَّب في Z المطبوع (paymentMethodLabel) — كان يُطبع CARD/TRANSFER خاماً.
-      const payRows: [string, string, string][] = (report?.payments ?? []).map((p) => [`${paymentMethodLabel(p.method)} ${p.direction === "IN" ? "وارد" : "صادر"}`, String(p.count), String(p.total)]);
-      await printDoc({
-        kind: "zreport", title: SHOP, subtitle: "تقرير نهاية الوردية (Z) — قسم الطباعة",
-        meta: [`وردية #${r.shiftId}`, fmtDateTime(new Date())],
-        columns: ["الحركة", "عدد", "مبلغ"], rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
-        totals: [
-          { label: "عدد الفواتير", value: String(report?.invoiceCount ?? 0) },
-          { label: "إجمالي المبيعات", value: String(report?.salesTotal ?? "0.00") },
-          { label: "الرصيد الافتتاحي", value: r.openingBalance },
-          { label: "النقد المتوقع", value: r.expectedCash },
-          { label: "النقد المعدود", value: r.countedCash },
-          { label: "الفرق", value: r.variance },
-          ...(r.treasuryReturn ? [
-            { label: "رُحّل إلى", value: "الخزينة" },
-            { label: "رقم سند الترحيل", value: r.treasuryReturn.handoverNumber },
-          ] : []),
-        ],
-        footer: r.treasuryReturn
-          ? "تم ترحيل النقد إلى الخزينة تلقائياً"
-          : "نهاية الوردية — شكراً",
-      });
-      if (r.treasuryReturn) {
-        notify.ok(
-          `أُغلقت الوردية ورُحّل ${formatIqd(r.countedCash)} إلى الخزينة تلقائياً`,
-          `سند الترحيل ${r.treasuryReturn.handoverNumber}`,
-        );
-      }
-      await utils.shifts.current.invalidate();
-      onClosed();
-    },
-    onError: (e) => notify.err(e),
-  });
-
-  const openingBal = D(shift.openingBalance ?? 0).toNumber();
-  const expected = report != null ? D(report.expectedCash).toNumber() : null;
-  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
-  const showExpected = isElevatedRole || countEntered;
-  const diff = showExpected && expected != null && counted ? Number(counted) - expected : null;
-  const hasVariance = diff != null && Math.abs(diff) >= 0.01;
-  const closeDisabled = !counted || closeShift.isPending || hasVariance;
-  const closeLabel = closeShift.isPending
-    ? ACTION_LABELS.closing
-    : hasVariance
-      ? "الإغلاق مرفوض لوجود فرق"
-      : "إغلاق وطباعة Z";
-
-  return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 18, padding: "24px 28px", width: 460, maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 64px rgb(0 0 0/.32)" }}>
-        <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 3, color: C.fg }}>إغلاق الوردية #{shift.id}</div>
-        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 16 }}>{fmtDate(new Date())}</div>
-        {reportQ.isLoading ? (
-          <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
-        ) : (
-          <>
-            {([["عدد الفواتير", `${report?.invoiceCount ?? 0} فاتورة`], ["إجمالي المبيعات", `${fmt(Number(report?.salesTotal ?? 0))} د.ع`], ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`], ...(expected != null && showExpected ? [["النقد المتوقع بالصندوق", `${fmt(expected)} د.ع`] as [string, string]] : [])] as [string, string][]).map(([l, v]) => (
-              <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "7px 0", borderBottom: `1px solid ${C.border}` }}><span style={{ color: C.mutedFg }}>{l}</span><span style={{ fontWeight: 700, color: C.fg }}>{v}</span></div>
-            ))}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).length > 0 && <div style={{ margin: "10px 0 4px", fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>تفصيل طرق الدفع:</div>}
-            {(report?.payments ?? []).filter((p) => Number(p.total) > 0).map((p) => (
-              <div key={`${p.method}-${p.direction}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "4px 0", borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.mutedFg }}>{paymentMethodLabel(p.method)} {p.direction === "IN" ? "وارد" : "صادر"} ({p.count})</span><span style={{ fontWeight: 600, color: p.direction === "OUT" ? C.danger : C.fg }}>{fmt(Number(p.total))} د.ع</span></div>
-            ))}
-            <div
-              style={{ marginTop: 16 }}
-              onBlur={() => setCountEntered(counted.trim() !== "")}
-            >
-              <label htmlFor="print-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
-                النقد المعدود (د.ع)
-              </label>
-              <MoneyInput
-                id="print-counted-cash"
-                value={counted}
-                onChange={(value) => {
-                  setCounted(value);
-                  setCountEntered(false);
-                }}
-                placeholder="0"
-                ariaLabel="النقد المعدود عند إغلاق وردية الطباعة"
-                className="h-12 text-center text-lg font-extrabold"
-              />
-              {!showExpected && (
-                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
-                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
-                </div>
-              )}
-              {diff !== null && (
-                <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                  <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
-                  {diff === 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><Check aria-hidden size={14} strokeWidth={3} /> مطابق</span>}
-                  {diff > 0 && <span>(زيادة)</span>}
-                  {diff < 0 && <span>(عجز)</span>}
-                </div>
-              )}
-            </div>
-            {hasVariance && (
-              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.danger}`, borderRadius: 9, background: C.muted }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.danger }}>
-                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
-                </div>
-                <div style={{ marginTop: 6, fontSize: 12.5, color: C.mutedFg }}>
-                  أعد العد وراجع الفواتير والمرتجعات. لا يستطيع المدير اعتماد مال بلا مصدر من شاشة الإغلاق.
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-              <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={closeDisabled}
-                onClick={() => closeShift.mutate({
-                  shiftId: shift.id,
-                  countedCash: counted,
-                })}
-                style={{ flex: 1, height: 46, background: closeDisabled ? C.muted : C.danger, color: closeDisabled ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: closeDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeLabel}</button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── CreditApprovalDialog ────────────────────────────────────────────────────
-function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMgrPwd, isPending, onApprove, onCancel }: {
-  C: C; message: string; mgrEmail: string; setMgrEmail: (s: string) => void; mgrPwd: string; setMgrPwd: (s: string) => void;
-  isPending: boolean; onApprove: () => void; onCancel: () => void;
-}) {
-  return (
-    <div onClick={onCancel} style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgb(0 0 0/.45)", display: "flex", alignItems: "center", justifyContent: "center", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)" }}>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
-        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>بريد المدير</label>
-          <input type="email" dir="ltr" value={mgrEmail} placeholder="manager@alroya.local" onChange={(e) => setMgrEmail(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}
-            style={{ width: "100%", height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 14, padding: "0 12px", outline: "none", boxSizing: "border-box" }} />
-        </div>
-        {/* PasswordInput الموحّد (عين إظهار/إخفاء — نفس مكوّن شاشة الدخول) بدل input نصيّ عارٍ.
-            Enter يعتمد ويُكمل — يُلتقط على الحاوية لأن المكوّن لا يكشف onKeyDown. */}
-        <div style={{ marginBottom: 12 }} onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPwd) onApprove(); }}>
-          <label style={{ fontSize: 13, fontWeight: 700, display: "block", marginBottom: 5, color: C.fg }}>كلمة المرور</label>
-          <PasswordInput value={mgrPwd} onChange={setMgrPwd} autoComplete="current-password" />
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-          <button disabled={!mgrEmail || !mgrPwd || isPending} onClick={onApprove}
-            style={{ flex: 1, height: 46, background: !mgrEmail || !mgrPwd || isPending ? C.muted : C.primary, color: !mgrEmail || !mgrPwd || isPending ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: !mgrEmail || !mgrPwd || isPending ? "not-allowed" : "pointer" }}>{isPending ? "جارٍ…" : "اعتمد وأكمل البيع"}</button>
-          <button onClick={onCancel} style={{ height: 46, padding: "0 18px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 8, fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer", color: C.fg }}>إلغاء</button>
-        </div>
-      </div>
-    </div>
-  );
-}

@@ -2,54 +2,50 @@
  * نقطة البيع — الرؤية العربية
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
-import { AppSelect } from "@/components/ui/AppSelect";
-import { CashDropDialog } from "@/components/pos/CashDropDialog";
-import { discardLegacyPosDrafts, loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify, errMsg } from "@/lib/notify";
-import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, getServerBridgeStatus, serverPrintTest, openCashDrawer } from "@/lib/printing/print";
-import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { D, round2 } from "@/lib/money";
+import { printReceipt, printShiftOpen } from "@/lib/printing/print";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
-import { getLastSyncAt, offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled, OFFLINE_CACHE_MAX_AGE_MS, subscribeOutbox } from "@/lib/offline/outbox";
-import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
-import { getMeta, setMeta } from "@/lib/offline/db";
+import { useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, getDeviceCode, isOfflineSaleEnabled } from "@/lib/offline/outbox";
+import { setMeta } from "@/lib/offline/db";
 import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { digitalCheckoutReceiptLines } from "@/lib/printing/digitalReceiptLines";
-import { parseScan } from "@/lib/scanRouter";
 import { trpc } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
-import { Printer, Check } from "lucide-react";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
-import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
+import { reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { applyPosQuantityKey } from "@/lib/posQuantityEntry";
 import { priceTierLabel } from "@/lib/labels";
-import { applyCustomerIdentity, buildDeliveryPayload, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
+import { applyCustomerIdentity, deliveryBlocksOfflineCapture, deliveryModeUnavailableReason, deliverySendsPayment, OFFLINE_DELIVERY_BLOCK, saleReceiptAmounts } from "@/components/pos/deliveryMode";
 import { createPortal } from "react-dom";
 import {
   type Tier, type PaymentMethod, type NumMode, type PosRow, type CartItem, type POSTab, type Receipt, type ShiftData,
   type PosColors as C,
-  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, CASHIER_INVOICE_DISCOUNT_MAX_PCT, buildBrandedReceipt, computeInvoiceDiscount,
+  lineIdOf, POS_COLORS, fmt, money, effectivePrice, itemTotal, buildSaleLine, createTab, buildBrandedReceipt,
 } from "@/components/pos/posShared";
-import { useSmartScanInput } from "@/components/pos/useSmartScanInput";
 import { POSHeader } from "@/components/pos/POSHeader";
 import { TabBar } from "@/components/pos/TabBar";
 import { CartPanel } from "@/components/pos/CartPanel";
 import { PaymentPanel } from "@/components/pos/PaymentPanel";
-import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
-import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
-import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { POSOverlays } from "@/components/pos/POSOverlays";
 import { RetailPosHeaderActions } from "@/components/pos/RetailPosHeaderActions";
 import { POSFundingBanner } from "@/components/pos/POSFundingBanner";
+import { POSShiftOpenScreen } from "@/components/pos/POSShiftOpenScreen";
+import { usePOSTabsDraft } from "@/components/pos/usePOSTabsDraft";
+import { usePOSPrinter } from "@/components/pos/usePOSPrinter";
+import { usePOSKeyboardShortcuts } from "@/components/pos/usePOSKeyboardShortcuts";
+import { computePOSTotals } from "@/components/pos/posTotals";
+import { usePOSOfflineBoot } from "@/components/pos/usePOSOfflineBoot";
+import { usePOSCatalogSearch } from "@/components/pos/usePOSCatalogSearch";
+import { usePOSTabHelpers } from "@/components/pos/usePOSTabHelpers";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Main POS Component ───────────────────────────────────────────────────────
@@ -70,52 +66,15 @@ export default function POS() {
   const connState = useConnectivity();
   const offline = isDisconnected(connState);
 
-  // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة (ملف الجهاز +
-  // كاش آخر وردية مفتوحة) ⇒ الكاشير يواصل البيع بعد إعادة تشغيل الجهاز والقطع مستمر.
-  const [offlineBoot, setOfflineBoot] = useState<{ userId: number | null; branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
-  useEffect(() => {
-    if (me.data) { setOfflineBoot(null); return; }
-    void (async () => {
-      const profile = await getOfflineProfile();
-      let cachedShiftId: number | null = null;
-      try {
-        const raw = await getMeta("lastOpenShift");
-        if (raw) cachedShiftId = Number((JSON.parse(raw) as { id?: number }).id) || null;
-      } catch { /* كاش تالف ⇒ بلا وردية بديلة */ }
-      setOfflineBoot({ userId: profile?.userId ?? null, branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
-    })();
-  }, [me.data]);
-
-  // الأدمن/المدير **بلا فرع مُسنَد** (نظريّ عادةً — الأدمن المبذور مُسنَد لفرع MAIN): بدل إسناد
-  // مبيعاته صامتاً للفرع ١، نطلب اختيار الفرع صراحةً قبل فتح الوردية (الوردية تحمل الفرع، والبيع
-  // يتبعها). لا يمسّ كاشيراً/مستخدماً له فرع (الشرط أدناه يسقط فوراً فيبقى branchId = فرعه).
+  // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const { offlineBoot, offlineSaleOn } = usePOSOfflineBoot(me.data);
   const branchId = me.data?.branchId ?? offlineBoot?.branchId ?? pickedBranch ?? 1;
   const activeBranchName = (branches.data ?? []).find((branch) => Number(branch.id) === branchId)?.name ?? `فرع #${branchId}`;
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
   const noAssignedBranch = me.data != null && me.data.branchId == null && offlineBoot?.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   useOfflineCatalogSync(me.data ? branchId : null);
-
-  // ش٥: حفظ ملف الجهاز عند كل جلسة أونلاين — وقود بوابة PIN والإقلاع الأوفلايني.
-  useEffect(() => {
-    if (me.data) {
-      void saveOfflineProfile({
-        id: me.data.id,
-        name: me.data.name ?? "",
-        role: me.data.role ?? "",
-        branchId: me.data.branchId ?? null,
-      });
-    }
-  }, [me.data]);
-
-  // ش٥: مفتاح تجربة البيع الأوفلايني (لكل جهاز، افتراضياً معطَّل — قرار مالك).
-  const [offlineSaleOn, setOfflineSaleOn] = useState(false);
-  useEffect(() => {
-    void isOfflineSaleEnabled().then(setOfflineSaleOn);
-    const off = subscribeOutbox(() => void isOfflineSaleEnabled().then(setOfflineSaleOn));
-    return off;
-  }, []);
 
   // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة العملاء RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
@@ -199,10 +158,8 @@ export default function POS() {
   const [creditPrompt,   setCreditPrompt]   = useState<string | null>(null);
   const [mgrEmail,       setMgrEmail]       = useState("");
   const [mgrPwd,         setMgrPwd]         = useState("");
-  const [printerReady,   setPrinterReady]   = useState(isPaired());
-  const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
+  const { printerReady, setPrinterReady, bridge, connectPrinter, testServerPrint } = usePOSPrinter();
   const [showCustPicker, setShowCustPicker] = useState(false);
-  const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
   const [headerActionsNode, setHeaderActionsNode] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -216,126 +173,51 @@ export default function POS() {
 
   const searchRef = useRef<HTMLInputElement>(null);
   const qtyEntryRef = useRef({ tabId: activeId, lineId: null as number | null, replaceNextDigit: true });
+  // تثبيت سياق الطلب: تبديل تبويب أثناء الشبكة لا يمسح سلة أخرى ولا يغيّر المبلغ.
+  const digitalCheckoutRef = useRef<{
+    tabId: number; requestId: string; total: string; received: string;
+    method: "CASH" | "CARD"; customerId: number | null; customerName?: string; shiftId: number;
+  } | null>(null);
 
   // ── Tab helpers ───────────────────────────────────────────────────────────
-  // كل التعديلات على التبويب النشط تمرّ عبر activeIdRef.current (لا activeId المُغلَق عليه)
-  // ⇒ تصيب التبويب الصحيح دائماً حتى من إغلاق قديم (مسح باركود/HID) — عزل تبويبات تام.
-  function patchTab(id: number, patch: Partial<POSTab>) {
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  }
-  function patchActive(patch: Partial<POSTab>) {
-    patchTab(activeIdRef.current, patch);
-  }
-  function setCart(updater: CartItem[] | ((c: CartItem[]) => CartItem[])) {
-    const id = activeIdRef.current;
-    if (digitalCheckoutRef.current?.tabId === id) return;
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id !== id ? t :
-        { ...t, cart: typeof updater === "function" ? updater(t.cart) : updater }
-      )
-    );
-  }
-  function setPayInput(updater: string | ((s: string) => string)) {
-    const id = activeIdRef.current;
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id !== id ? t :
-        { ...t, payInput: typeof updater === "function" ? updater(t.payInput) : updater }
-      )
-    );
-  }
-  const setSelId = (v: number | null) => {
-    qtyEntryRef.current = { tabId: activeIdRef.current, lineId: v, replaceNextDigit: true };
-    patchActive({ selId: v });
-  };
-  const setNumMode = (v: NumMode) => {
-    if (v === "QTY") {
-      qtyEntryRef.current = { tabId: activeIdRef.current, lineId: activeTab.selId, replaceNextDigit: true };
-    }
-    patchActive({ numMode: v });
-  };
-  const setMethod  = (v: PaymentMethod)  => patchActive({ method: v, externalPayment: null });
-  const resetCouponItems = (items: CartItem[]) => items.map((item) => item.preCouponRow ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined } : item);
-  const clearAppliedCoupon = () => {
-    setCart((items) => resetCouponItems(items));
-    patchActive({ couponCode: null, couponLabel: null });
-  };
-  const setCustId  = (v: number | null)  => {
-    clearAppliedCoupon();
-    patchActive({ customerId: v, tierOverride: null });
-  };
-  const setTierOvr = (v: Tier | null)    => patchActive({ tierOverride: v });
-
-  function addTab() {
-    // معرّف فريد مشتقّ من التبويبات الحالية (لا عدّاد وحدة يُصفَّر عند إعادة التحميل) ⇒ لا تصادم
-    // معرّفات بعد استرجاع المسوّدة (تصادم المعرّف يخلط تبويبين).
-    const id = (tabs.length ? Math.max(...tabs.map((t) => t.id)) : 0) + 1;
-    setTabs((prev) => [...prev, createTab(id)]);
-    setActiveId(id);
-    setSearch(""); setShowDrop(false);
-    setTimeout(() => searchRef.current?.focus(), 80);
-  }
-  function closeTab(id: number) {
-    if (tabs.length <= 1) return;
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id);
-      if (activeId === id) setActiveId(next[next.length - 1].id);
-      return next;
-    });
-  }
+  const {
+    patchTab,
+    patchActive,
+    setCart,
+    setPayInput,
+    setSelId,
+    setNumMode,
+    setMethod,
+    resetCouponItems,
+    clearAppliedCoupon,
+    setCustId,
+    setTierOvr,
+    addTab,
+    closeTab,
+  } = usePOSTabHelpers({
+    tabs,
+    setTabs,
+    activeId,
+    setActiveId,
+    activeIdRef,
+    qtyEntryRef,
+    digitalCheckoutRef,
+    activeTab,
+    setSearch,
+    setShowDrop,
+    searchRef,
+  });
 
   // ── Cart draft — عزل صريح بالفرع + المستخدم + الوردية ───────────────────
-  const draftScope: PosDraftScope | null = shift?.id && (me.data?.id ?? offlineBoot?.userId)
-    ? { branchId, userId: (me.data?.id ?? offlineBoot!.userId)!, shiftId: shift.id }
-    : null;
-  const DRAFT_KEY = draftScope ? posTabsDraftKey(draftScope) : null;
-
-  useEffect(() => {
-    if (!draftScope || !DRAFT_KEY) {
-      // إغلاق الوردية/تبديل الهوية يزيل الفاتورة من الذاكرة فوراً؛ لا تنتظر فتح
-      // الوردية التالية كي تُصفّر حالة React القديمة.
-      if (restoredDraftKey !== null) {
-        setTabs([createTab(1, "طلب 1")]);
-        setActiveId(1);
-        setRestoredDraftKey(null);
-      }
-      return;
-    }
-    if (restoredDraftKey === DRAFT_KEY) return;
-
-    // الصيغ الفرعية القديمة مجهولة المالك، ولذلك تُتلف ولا تُهاجر إلى النطاق الجديد.
-    discardLegacyPosDrafts(localStorage, branchId);
-    const saved = loadPosTabsDraft<POSTab>(localStorage, draftScope);
-    if (saved) {
-      const hadLegacyDigital = saved.tabs.some((t) => t.cart.some((c) => c.digital && (!c.digital.providerReference || !c.digital.providerId)));
-      // المسوّدات الأقدم لا تحمل paymentRef/dueDate — تُستكمل بفراغ كي لا تُرسَل undefined.
-      setTabs(markPosTabsStockStale(saved.tabs.map((t) => ({
-        ...t,
-        cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
-        clientRequestId: t.clientRequestId ?? newClientRequestId(),
-        // لا نُعيد إحياء طريقة/محاولة خارجية قديمة من localStorage بعد إغلاق السطح.
-        method: "CASH" as PaymentMethod,
-        paymentRef: "",
-        externalPayment: null,
-        dueDate: t.dueDate ?? "",
-      }))));
-      if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
-      setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
-    } else {
-      setTabs([createTab(1, "طلب 1")]);
-      setActiveId(1);
-    }
-    setRestoredDraftKey(DRAFT_KEY);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [DRAFT_KEY]);
-
-  useEffect(() => {
-    // لا تحفظ حالة الوردية السابقة تحت مفتاح الوردية الجديدة أثناء رسم الانتقال.
-    if (!draftScope || !DRAFT_KEY || restoredDraftKey !== DRAFT_KEY) return;
-    savePosTabsDraft(localStorage, draftScope, tabs, activeId);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs, activeId, DRAFT_KEY, restoredDraftKey]);
+  usePOSTabsDraft({
+    shiftId: shift?.id,
+    userId: me.data?.id ?? offlineBoot?.userId,
+    branchId,
+    tabs,
+    setTabs,
+    activeId,
+    setActiveId,
+  });
 
   // ── Derived ───────────────────────────────────────────────────────────────
   // S5 (٢٩/٦): العميل المختار = قراءة فورية من القائمة المحمَّلة (الشائع ≤٥٠٠ ⇒ بلا وميض تسعير)،
@@ -358,121 +240,43 @@ export default function POS() {
     (selectedCustomer?.defaultPriceTier as Tier | undefined) ??
     "RETAIL";
 
-  // §٥: حساب الإجمالي/المدفوع/الباقي/الفكّة بدقّة Decimal (لا JS Number) — يصون المبالغ
-  // على المطبوعات (إيصال + شاشة) ويلغي انجراف 0.1+0.2=0.30000000000000004.
-  const subtotalD = cart.reduce((s, c) => s.plus(D(itemTotal(c))), D(0));
-  // البطاقات الرقميّة (§٧) — لا يُطبَّق خصم رأس فاتورة على سلّة كروتٍ أصلاً:
-  // مسار `startDigitalFulfillment` يمرّ عبر `digitalCards.sales.finalize` الذي **لا يعرف
-  // `invoiceDiscount`** — لو مرّرناه محلياً لأعرض الكاشير 2,520 وينفَّذ 2,800 (درج ناقص + رفض
-  // مطابقة `expectedTotal` على البطاقات المدفوعة). البوّابة تفصل الحالتين قبل الإرسال.
-  const cartHasDigital = cart.some((c) => c.digital);
+  // §٥: حساب الإجمالي/المدفوع/الباقي/الفكّة بدقّة Decimal (لا JS Number) عبر computePOSTotals
+  const {
+    subtotalD,
+    subtotal,
+    cartHasDigital,
+    cartAllDigital,
+    invoiceDiscountAllowed,
+    referenceGrossD,
+    effectiveHeaderCapPctD,
+    discountCalc,
+    invoiceDiscountAmountD,
+    invoiceDiscountAmount,
+    invoiceDiscountPctD,
+    maxDiscountAmount,
+    netAfterHeaderD,
+    codMode,
+    deliveryPayload,
+    paidD,
+    cashRoundedTotalD,
+    cashRoundedPaidD,
+    cashRoundedTotal,
+    cashRoundedPaid,
+    isCredit,
+    isChange,
+    effectiveTotalD,
+    total,
+    paid,
+    change,
+    credit,
+    cashRoundingDelta,
+    externalPaymentAmount,
+    externalPaymentFingerprint,
+    externalPaymentConfirmed,
+  } = computePOSTotals({ cart, activeTab });
   // الاستجابات المتأخرة للكوبونات يجب ألا تغيّر أسعار سلة صار فيها رقميّ.
   const cartHasDigitalRef = useRef(cartHasDigital);
   cartHasDigitalRef.current = cartHasDigital;
-  const cartAllDigital = cart.length > 0 && cart.every((c) => c.digital);
-  const invoiceDiscountAllowed = !cartAllDigital && !cartHasDigital;
-  // خصم رأس الفاتورة (٢٢/٨) — نسبة يُدخلها الكاشير، مقصوصة إلى [0, CASHIER_INVOICE_DISCOUNT_MAX_PCT].
-  // قصٌّ محلّي أمام العين (ما فوق ١٥٪ يُرفض خادمياً بلا اعتماد مدير) + قصّ ثانٍ إلى subtotal
-  // كي لا يُنشئ صافياً سالباً لو أُدخلت نسبة كبيرة على سلة تتبدّل. مساوٍ لعقد الخادم
-  // (`computeInvoiceTotals` يقصّ الخصم إلى `[0, subtotal]` ويرفض السالب صراحةً).
-  // كذلك — نطرح **الانحرافَ الأصليّ للأسطر** من سقفنا: بوّابة الخادم `invoiceDiscountExceedsThreshold`
-  // تقيس (refGross − invoiceNet)/refGross مقابل ١٥٪، وترى انحراف السطر (عرض/خصم يدويّ) والرأس معاً.
-  // لولا هذا: سلّةٌ عليها عرضٌ ١٠٪ + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير.
-  const referenceGrossD = cart.reduce((s, c) => {
-    // بدون خصم يدويّ = سعرُ القائمة (سعر السطر الأصل) × الكمية. البطاقات الرقمية مستثناةٌ من الحساب
-    // مثلها في الخادم (بوابةُ الرأس تتخطّى `digital` أصلاً — التسعير عقدٌ خارجيّ لا انحرافٌ يدويّ).
-    if (c.digital) return s;
-    const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
-    return s.plus(refUnit.times(c.qty));
-  }, D(0));
-  const priorDeviationRatioD = referenceGrossD.gt(0)
-    ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
-    : D(0);
-  const remainingHeaderAuthorityFractionD = D(0.15).minus(priorDeviationRatioD);
-  const remainingHeaderPctOnSubtotalD = (subtotalD.gt(0) && referenceGrossD.gt(0))
-    ? remainingHeaderAuthorityFractionD.times(referenceGrossD).div(subtotalD).times(100)
-    : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
-  const effectiveHeaderCapPctD = (remainingHeaderPctOnSubtotalD.lt(0)
-    ? D(0)
-    : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
-      : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
-  const discountCalc = computeInvoiceDiscount({
-    subtotalD, effectiveHeaderCapPctD, invoiceDiscountAllowed,
-    type: activeTab.invoiceDiscountType ?? "percent",
-    value: activeTab.invoiceDiscountValue ?? (activeTab.invoiceDiscountPct || ""),
-  });
-  const { discountAmountD: invoiceDiscountAmountD, discountAmount: invoiceDiscountAmount, discountPctD: invoiceDiscountPctD, maxDiscountAmount } = discountCalc;
-  const subtotal = round2(subtotalD).toNumber();
-  // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
-  // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
-  const netAfterHeaderD = subtotalD.minus(invoiceDiscountAmountD);
-  // م١ PR-B — وضع «توصيل» (COD): الحمولة تُبنى من مسوّدة التبويب؛ المتبقّي عهدةُ مندوب لا آجلٌ ولا تقريب نقديّ.
-  // ⛔ صفر فحص ائتمانٍ هنا وصفر تعطيلِ حارس — الخادم يشتقّ paymentMode=COD من وجود `delivery`.
-  const codMode = activeTab.delivery != null;
-  const deliveryPayload = activeTab.delivery ? buildDeliveryPayload(activeTab.delivery) : null;
-  const paidD   = D(activeTab.payInput || 0);
-  // §٩ IQD denomination rounding: البيع النقديّ الكامل يُقرَّب على أقرب ٢٥٠ د.ع (سياسة المالك).
-  // effectiveTotalD = ما **يقبضه الكاشير فعلياً** (ما تظهره الشاشة، ما يُرسَل payment.amount).
-  // الفرق `netAfterHeaderD − effectiveTotalD` قيدُ ADJUST_ROUNDING خادمياً (§ ٥ من دليل النظام).
-  const cashRoundedTotalD = activeTab.method === "CASH" && !cartHasDigital && !codMode
-    ? roundCashIQD(netAfterHeaderD.toFixed(2))
-    : netAfterHeaderD;
-  const cashRoundedPaidD = activeTab.method === "CASH" && !cartHasDigital && !codMode ? roundCashIQD(paidD.toFixed(2)) : paidD;
-  const cashRoundedTotal = cashRoundedTotalD.toNumber();
-  const cashRoundedPaid = cashRoundedPaidD.toNumber();
-  // isCredit يُقاس على **الإجمالي الفعّال** (المقرَّب حين النقد الكامل) — مطابقاً لحساب الخادم.
-  // قبل الآن كان يُقاس على غير المقرَّب، فمبلغٌ يغطّي المقرَّب لكنّه دون غير المقرَّب صار «آجلاً» صامتاً.
-  const isCredit = paidD.gt(0) && paidD.lt(cashRoundedTotalD);
-  const isChange = paidD.gt(0) && paidD.gte(cashRoundedTotalD);
-  // effectiveTotalD = ما **يعرضه الكاشير للعميل**. للنقد الكامل: المقرَّب. غير ذلك: غير المقرَّب.
-  const effectiveTotalD = (activeTab.method === "CASH" && !isCredit) ? cashRoundedTotalD : netAfterHeaderD;
-  const total   = round2(effectiveTotalD).toNumber();
-  const paid    = round2(paidD).toNumber();
-  const change  = round2(paidD.minus(effectiveTotalD)).toNumber();
-  const credit  = round2(effectiveTotalD.minus(paidD)).toNumber();
-  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(netAfterHeaderD).toNumber() : 0;
-  const externalPaymentAmount = money(isCredit ? paid : total);
-  const externalPaymentFingerprint = `${activeTab.method}|${externalPaymentAmount}|${(activeTab.paymentRef ?? "").trim().toUpperCase()}`;
-  const externalPaymentConfirmed = activeTab.method === "CASH"
-    || (activeTab.externalPayment?.state === "CONFIRMED"
-      && activeTab.externalPayment.fingerprint === externalPaymentFingerprint
-      && activeTab.externalPayment.attemptId != null);
-
-  // ── Search ────────────────────────────────────────────────────────────────
-  // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
-  // السابقة أثناء الجلب (لا وميض) + التفعيل من حرفين (التطبيع/الترتيب على الخادم).
-  const debouncedSearch = useDebouncedValue(search, 180);
-  const searchResults = trpc.catalog.posList.useQuery(
-    // بند 12ب (٧/٧): تمرير العميل — صاحب سعر تعاقدي يرى سعره (يثبَّت لاحقاً override بمسار POS-ROUND القائم).
-    { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20, customerId: activeTab.customerId },
-    {
-      enabled: !offline && debouncedSearch.trim().length >= 2,
-      placeholderData: keepPreviousData,
-      staleTime: 0,
-    }
-  );
-  // ش٢ أوفلاين: أثناء الانقطاع يُخدَم البحث من النموذج المحلي (Dexie) بنفس شكل PosRow —
-  // بقية الشاشة (addRow/السلة/الأسعار) لا تعرف الفرق. العروض/التعاقدي معطّلة أوفلاين بالخطة.
-  const [offlineResults, setOfflineResults] = useState<PosRow[]>([]);
-  const [offlineSearching, setOfflineSearching] = useState(false);
-  useEffect(() => {
-    if (!offline || debouncedSearch.trim().length < 2) {
-      setOfflineResults([]);
-      setOfflineSearching(false);
-      return;
-    }
-    let cancelled = false;
-    setOfflineSearching(true);
-    void offlineSearchCatalog(debouncedSearch, effectiveTier, branchId, { limit: 20 }).then((rows) => {
-      if (cancelled) return;
-      setOfflineResults(rows as PosRow[]);
-      setOfflineSearching(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [offline, debouncedSearch, effectiveTier]);
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
   function addRow(row: PosRow) {
@@ -552,11 +356,7 @@ export default function POS() {
   const [cardsOpen, setCardsOpen] = useState(false);
   /** النيّة قيد التنفيذ الخارجيّ (ش٧) — تُفتح بها نافذة خطوات إصدار الكروت. */
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
-  // تثبيت سياق الطلب: تبديل تبويب أثناء الشبكة لا يمسح سلة أخرى ولا يغيّر المبلغ.
-  const digitalCheckoutRef = useRef<{
-    tabId: number; requestId: string; total: string; received: string;
-    method: "CASH" | "CARD"; customerId: number | null; customerName?: string; shiftId: number;
-  } | null>(null);
+
 
   const digitalLines = cart.filter((c) => c.digital);
 
@@ -744,54 +544,24 @@ export default function POS() {
     setSearch(""); setShowDrop(false);
   }
 
-  // ── Barcode ───────────────────────────────────────────────────────────────
-  const lookupBarcode = useCallback(async (code: string) => {
-    if (!code) return;
-    try {
-      // ش٢ أوفلاين: أثناء الانقطاع أو تذبذب الشبكة تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
-      let row;
-      if (offline) {
-        row = await offlineFindByBarcode(code, effectiveTier, branchId);
-      } else {
-        try {
-          row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
-        } catch (fetchErr) {
-          if (!activeTab.customerId) {
-            const lastSync = await getLastSyncAt();
-            const isFresh = Boolean(lastSync && Date.now() - new Date(lastSync).getTime() <= OFFLINE_CACHE_MAX_AGE_MS);
-            if (isFresh) {
-              row = await offlineFindByBarcode(code, effectiveTier, branchId);
-            }
-          }
-          if (!row) throw fetchErr;
-        }
-      }
-      if (!row) notify.err(`باركود غير معروف: ${code}`);
-      else addRow(row as PosRow);
-    } catch (e: unknown) {
-      notify.err(e, "خطأ في المسح");
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, effectiveTier, activeTab.customerId, offline]);
-
-  const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
-
-  const handleHidScan = useCallback(async (raw: string) => {
-    const result = parseScan(raw);
-    if (result.type === "product") {
-      await lookupBarcode(result.barcode);
-      setSearch("");
-    } else if (result.type === "customer") {
-      setCustId(result.id);
-      notify.ok(`تم تحديد العميل #${result.id}`);
-    } else if (result.type === "employee" || result.type === "user") {
-      // كود موظف/مستخدم لا ينطبق على نقطة البيع — أبلغ بدل ابتلاع المسح صامتاً.
-      notify.err("كود موظف/مستخدم — افتح البحث الشامل (Ctrl+K) لعرضه؛ لا ينطبق على نقطة البيع.");
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookupBarcode]);
-
-  useBarcodeScanner(handleHidScan, { enabled: !receipt && !shifting && !creditPrompt && !cashDropping });
+  // ── Barcode & Catalog Search ───────────────────────────────────────────────
+  const {
+    debouncedSearch,
+    searchResults,
+    offlineResults,
+    offlineSearching,
+    handleScanKeyDown,
+  } = usePOSCatalogSearch({
+    search,
+    setSearch,
+    branchId,
+    effectiveTier,
+    customerId: activeTab.customerId,
+    offline,
+    addRow,
+    setCustId,
+    scannerEnabled: !receipt && !shifting && !creditPrompt && !cashDropping,
+  });
 
   // ── Numpad ────────────────────────────────────────────────────────────────
   function numPress(k: string) {
@@ -1360,138 +1130,53 @@ export default function POS() {
   const submitSaleRef = useRef(submitSale); submitSaleRef.current = submitSale;
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (digitalCheckoutRef.current) return;
-      if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
-      if (receipt)      { if (e.key === "Escape" || e.key === "Enter") { setReceipt(null); setTimeout(() => searchRef.current?.focus(), 0); } return; }
-      if (shifting)     { if (e.key === "Escape") setShifting(false); return; }
-      if (cashDropping) { if (e.key === "Escape") setCashDropping(false); return; }
-      // نافذة البطاقات مفتوحة: Escape تُغلقها وتتكفّل هي بمفاتيحها (لا تصل الاختصارات العامة).
-      if (cardsOpen) { if (e.key === "Escape") setCardsOpen(false); return; }
-      switch (e.key) {
-        case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
-        // §٨.٧: مفتاح فتح شبكة الكروت. F4 محجوز للدفع وF9 للطباعة وF12 للتفريغ ⇒ F3.
-        case "F3":  e.preventDefault(); if (!offline) setCardsOpen(true); break;
-        case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSaleRef.current(); break;
-        case "F9":  e.preventDefault(); if (receipt) void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
-          if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-        }).catch((error) => notify.err(error)); break;
-        case "F10": e.preventDefault(); void openCashDrawer().then((res) => { if (res.ok) notify.ok("تم فتح درج النقود"); else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها"); }); break;
-        case "F12": e.preventDefault();
-          if (cart.length) {
-            void (async () => {
-              if (!(await confirm({
-                variant: "warning",
-                title: "تفريغ السلّة",
-                description: "ستُفقد كل المنتجات المُضافة في هذه السلّة. هل تتابع؟",
-                confirmText: "تفريغ",
-              }))) return;
-              setCart([]); setPayInput(""); setSelId(null); patchActive({ invoiceDiscountPct: "" });
-            })();
-          }
-          break;
-        case "Escape": setShowDrop(false); break;
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping, cardsOpen, offline, externalPaymentConfirmed]);
-
-  const connectPrinter = async () => {
-    try { await pairPrinter(); setPrinterReady(true); notify.ok("تم ربط الطابعة"); }
-    catch (e: unknown) { notify.err(e, "تعذّر ربط الطابعة"); }
-  };
-
-  // حالة جسر الطباعة على الخادم (إن ضُبط PRINT_TARGET ⇒ طباعة صامتة لأي طابعة، بلا WebUSB).
-  useEffect(() => {
-    getServerBridgeStatus().then(setBridge).catch(() => { /* تجاهل */ });
-  }, []);
-
-  // ربط تلقائي صامت بالطابعة الافتراضية: إن سبق ربطها (إذن WebUSB محفوظ للأصل) يُعاد
-  // الربط بلا نافذة اختيار عند فتح الكاشير، وكذلك عند توصيلها لاحقاً (حدث connect).
-  useEffect(() => {
-    if (!isWebUsbSupported()) return;
-    tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
-    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
-    if (!usb) return;
-    const onConnect = () => {
-      tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
-    };
-    usb.addEventListener("connect", onConnect);
-    return () => usb.removeEventListener("connect", onConnect);
-  }, []);
-
-  const testServerPrint = async () => {
-    const r = await serverPrintTest();
-    if (r.ok) notify.ok("أُرسلت تذكرة اختبار للطابعة عبر الخادم");
-    else notify.err(r.error ?? "فشل اختبار الطباعة");
-  };
+  usePOSKeyboardShortcuts({
+    isDigitalCheckoutPending: () => Boolean(digitalCheckoutRef.current),
+    creditPrompt,
+    setCreditPrompt,
+    receipt,
+    setReceipt,
+    shifting,
+    setShifting,
+    cashDropping,
+    setCashDropping,
+    cardsOpen,
+    setCardsOpen,
+    cart,
+    isSalePending: sale.isPending,
+    offline,
+    externalPaymentConfirmed,
+    searchRef,
+    onSubmitSale: () => submitSaleRef.current(),
+    onClearCart: () => {
+      setCart([]);
+      setPayInput("");
+      setSelId(null);
+      patchActive({ invoiceDiscountPct: "" });
+    },
+    setShowDrop,
+  });
 
   // ── Shift open screen ─────────────────────────────────────────────────────
-  if (shiftQ.isLoading) {
+  if (shiftQ.isLoading || !shift) {
     return (
-      <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.mutedFg, fontFamily: "'Cairo', system-ui, sans-serif", direction: "rtl" }}>
-        {ACTION_LABELS.loading}
-      </div>
-    );
-  }
-
-  if (!shift) {
-    return (
-      <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: "32px 36px", width: 380, boxShadow: "0 8px 32px rgb(0 0 0/.16)" }}>
-          <div style={{ fontWeight: 900, fontSize: 22, marginBottom: 6, color: C.fg }}>افتح وردية للبدء</div>
-          <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 22 }}>لا يمكن البيع بدون وردية مفتوحة</div>
-          {noAssignedBranch && isElevatedRole && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ marginBottom: 8, padding: "8px 12px", background: C.amberSoft, border: `1px solid ${C.amber}`, borderRadius: 9, fontSize: 12, color: C.fg, fontWeight: 700 }}>
-                حسابك بلا فرعٍ مُسنَد — اختر الفرع الذي تعمل منه كي لا تُنسَب المبيعات لفرعٍ خاطئ.
-              </div>
-              <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الفرع</label>
-              <AppSelect
-                value={String(pickedBranch ?? "")}
-                onValueChange={(value) => setPickedBranch(value ? Number(value) : null)}
-                style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box" }}
-              >
-                <option value="">— اختر الفرع —</option>
-                {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </AppSelect>
-            </div>
-          )}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الرصيد الافتتاحي للصندوق (د.ع)</label>
-            <input
-              dir="ltr" value={opening}
-              onChange={(e) => setOpening(e.target.value)}
-              style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box" }}
-            />
-          </div>
-          {/* اربط الطابعة الحرارية هنا **قبل** فتح الوردية كي يُطبَع إيصال الافتتاح صامتاً فوراً
-              بدل نافذة طباعة المتصفّح (كانت لا تظهر إلا بعد فتح الوردية داخل رأس الكاشير). */}
-          {isWebUsbSupported() && !bridge.enabled && (
-            <button
-              type="button" onClick={connectPrinter}
-              title={printerReady ? "الطابعة الحرارية مربوطة — اضغط لتبديلها" : "اربط طابعة حرارية كي يُطبع إيصال فتح الوردية عليها مباشرة"}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, height: 40, marginBottom: 12, borderRadius: 9, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, color: printerReady ? C.success : C.mutedFg }}
-            >
-              <Printer size={14} aria-hidden />
-              {printerReady
-                ? <>الطابعة الحرارية مربوطة <Check size={13} aria-hidden strokeWidth={3} /></>
-                : "اربط الطابعة الحرارية لطباعة إيصال الوردية"}
-            </button>
-          )}
-          <button
-            disabled={openShift.isPending || needsBranchChoice}
-            onClick={() => openShift.mutate({ branchId, openingBalance: opening, shiftType: "RETAIL" })}
-            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice ? "not-allowed" : "pointer" }}
-          >
-            {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
-          </button>
-          <Link href="/" style={{ display: "block", textAlign: "center", marginTop: 14, fontSize: 13, color: C.mutedFg }}>← الرئيسية</Link>
-        </div>
-      </div>
+      <POSShiftOpenScreen
+        C={C}
+        isLoading={shiftQ.isLoading}
+        noAssignedBranch={noAssignedBranch}
+        isElevatedRole={isElevatedRole}
+        pickedBranch={pickedBranch}
+        setPickedBranch={setPickedBranch}
+        branches={branches.data ?? []}
+        opening={opening}
+        setOpening={setOpening}
+        bridgeEnabled={bridge.enabled}
+        printerReady={printerReady}
+        connectPrinter={connectPrinter}
+        openPending={openShift.isPending}
+        needsBranchChoice={needsBranchChoice}
+        onOpenShift={() => openShift.mutate({ branchId, openingBalance: opening, shiftType: "RETAIL" })}
+      />
     );
   }
 
@@ -1701,40 +1386,37 @@ export default function POS() {
       </div>
 
       {/* Overlays */}
-      {receipt && (
-        <ReceiptOverlay
-          C={C} receipt={receipt}
-          onDismiss={() => {
-            setReceipt(null);
-            // ٢٣/٨ (بلاغ فحص UX): `useModalFocus` يعيد التركيز إلى «الزرّ الذي فتح الحوار» =
-            // زرّ الدفع. سكانر الباركود التالي يكتب حروفه في الزرّ فيبتلعها بلا أثر (يوم كاملٌ
-            // بمخزونٍ مضطرب دون تنبيه). نعيد التركيز صراحةً إلى حقل البحث كي يستقبل المسحة التالية.
-            setTimeout(() => searchRef.current?.focus(), 0);
-          }}
-          onPrint={() => printReceipt(buildBrandedReceipt(receipt!)).then((printed) => {
+      <POSOverlays
+        C={C}
+        receipt={receipt}
+        onDismissReceipt={() => {
+          setReceipt(null);
+          // ٢٣/٨ (بلاغ فحص UX): نعيد التركيز صراحةً إلى حقل البحث كي يستقبل المسحة التالية.
+          setTimeout(() => searchRef.current?.focus(), 0);
+        }}
+        onPrintReceipt={() => {
+          void printReceipt(buildBrandedReceipt(receipt!)).then((printed) => {
             if (!printed.ok) notify.err("تعذّرت الطباعة", "حجب المتصفح نافذة الطباعة البديلة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة");
-          }).catch((error) => notify.err(error))}
-        />
-      )}
-      {shifting && (
-        <ShiftCloseDialog
-          C={C} shift={shift} branchId={branchId}
-          onClose={() => setShifting(false)}
-          onClosed={() => { setShifting(false); shiftQ.refetch(); }}
-          me={me.data} branches={branches.data}
-        />
-      )}
-      {cashDropping && shift && (
-        <CashDropDialog C={C} shiftId={shift.id} onClose={() => setCashDropping(false)} />
-      )}
-      {creditPrompt && (
-        <CreditApprovalDialog
-          C={C} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail}
-          mgrPwd={mgrPwd} setMgrPwd={setMgrPwd} isPending={sale.isPending}
-          onApprove={() => submitSale({ email: mgrEmail, password: mgrPwd })}
-          onCancel={() => setCreditPrompt(null)}
-        />
-      )}
+          }).catch((error) => notify.err(error));
+        }}
+        shifting={shifting}
+        shift={shift}
+        branchId={branchId}
+        onCloseShifting={() => setShifting(false)}
+        onClosedShifting={() => { setShifting(false); void shiftQ.refetch(); }}
+        me={me.data}
+        branches={branches.data}
+        cashDropping={cashDropping}
+        onCloseCashDropping={() => setCashDropping(false)}
+        creditPrompt={creditPrompt}
+        mgrEmail={mgrEmail}
+        setMgrEmail={setMgrEmail}
+        mgrPwd={mgrPwd}
+        setMgrPwd={setMgrPwd}
+        isSalePending={sale.isPending}
+        onApproveCredit={() => submitSale({ email: mgrEmail, password: mgrPwd })}
+        onCancelCredit={() => setCreditPrompt(null)}
+      />
     </div>
   );
 }
