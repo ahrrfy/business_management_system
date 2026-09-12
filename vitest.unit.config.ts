@@ -350,6 +350,8 @@ export default defineConfig({
       "shared/barcodeScanner.test.ts",
       // نافذة تحميل صور كاروسيل الكشك وتحجيم شاشات العرض
       "client/src/components/kiosk/kioskWindow.test.ts",
+      // حارس إبقاء شاشة الكشك وقارئ الأسعار مستيقظة ومنع السكون
+      "client/src/lib/screenWakeLock.test.ts",
     ],
   },
 });

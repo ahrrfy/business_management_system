@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { Lock, RefreshCw, WifiOff } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import KioskView from "@/components/kiosk/KioskView";
+import { useScreenWakeLock } from "@/lib/screenWakeLock";
 
 const KIOSK_DEVICE_TOKEN_KEY = "alroya_kiosk_device_token_v1";
 
@@ -82,13 +83,26 @@ export default function Kiosk() {
     refetchOnWindowFocus: false,
   });
 
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
   const login = trpc.kiosk.deviceLogin.useMutation({
     onSuccess: () => {
+      setRetryAttempt(0);
       if (tokenRef.current) {
         setStoredToken(tokenRef.current);
       }
       stripHash();
       void utils.kiosk.deviceMe.invalidate();
+    },
+    onError: (err) => {
+      // إذا كان الرمز غير صالح أو مرفوضاً من الخادم فلا نكرر الطلب
+      if (err.data?.code === "UNAUTHORIZED" || err.data?.httpStatus === 401) {
+        clearStoredToken();
+        tokenRef.current = null;
+        setRetryAttempt(0);
+        return;
+      }
+      setRetryAttempt((prev) => Math.min(prev + 1, 6));
     },
   });
 
@@ -96,6 +110,7 @@ export default function Kiosk() {
     onSuccess: () => {
       clearStoredToken();
       tokenRef.current = null;
+      setRetryAttempt(0);
       void utils.kiosk.deviceMe.invalidate();
     },
   });
@@ -133,6 +148,26 @@ export default function Kiosk() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [utils]);
+
+  // إبقاء الشاشة مستيقظة 24/7 طوال وقت عمل الكشك
+  useScreenWakeLock(true);
+
+  // استعادة الجلسة تلقائياً في الخلفية في حال سقوط الكوكي بعد أيام تشغيل طويلة
+  // يعالج كلاً من حالة الخطأ (isError) وحالة انتهاء الجلسة (deviceMe.data === null)
+  // مع تراجع أسي محدد (Bounded Exponential Backoff) لا يتجاوز سقف معدل الطلبات (30/15min)
+  useEffect(() => {
+    const isUnauthenticated = !deviceMe.isLoading && (deviceMe.isError || deviceMe.data === null);
+    if (booted && isUnauthenticated && !login.isPending && !logout.isPending) {
+      const t = tokenRef.current || getStoredToken();
+      if (t && retryAttempt < 6) {
+        const delay = Math.min(2000 * Math.pow(2, retryAttempt), 60000);
+        const id = setTimeout(() => {
+          login.mutate({ token: t });
+        }, delay);
+        return () => clearTimeout(id);
+      }
+    }
+  }, [booted, deviceMe.isLoading, deviceMe.isError, deviceMe.data, login, logout.isPending, retryAttempt]);
 
   const authed = !!deviceMe.data;
 
