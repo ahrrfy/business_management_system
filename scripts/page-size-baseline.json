@@ -2,13 +2,11 @@
   "client/src/pages/DeliveryHub.tsx": 1715,
   "client/src/pages/Expenses.tsx": 2576,
   "client/src/pages/HrDevices.tsx": 1560,
-  "client/src/pages/POS.tsx": 1430,
-  "client/src/pages/PrintPOS.tsx": 1421,
   "client/src/pages/ProductImageStudio.tsx": 2300,
   "client/src/pages/Reception.tsx": 2183,
   "client/src/pages/Reconcile.tsx": 1692,
   "client/src/pages/Shifts.tsx": 1500,
   "client/src/pages/StocktakeReview.tsx": 2271,
-  "client/src/pages/Storefront.tsx": 3273,
+  "client/src/pages/Storefront.tsx": 3262,
   "client/src/pages/WorkOrders.tsx": 1693
 }
