@@ -7,6 +7,9 @@ import { moduleAccessAllowed } from "@shared/permissions";
 const readPage = (name: string) =>
   readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
+const readComponent = (relative: string) =>
+  readFileSync(new URL(`../../components/${relative}`, import.meta.url), "utf8");
+
 const section = (source: string, start: string, end: string) => {
   const startAt = source.indexOf(start);
   const endAt = source.indexOf(end, startAt + start.length);
@@ -80,7 +83,10 @@ describe("operational UI permission parity", () => {
   });
 
   it("keeps dispatch, manual proof, remittance, and row actions on store FULL", () => {
-    const source = readPage("DeliveryHub.tsx");
+    const source =
+      readPage("DeliveryHub.tsx") +
+      "\n" +
+      readComponent("delivery/DeliverySettleTab.tsx");
     const dispatchAuthority = section(
       source,
       "const canDispatch",

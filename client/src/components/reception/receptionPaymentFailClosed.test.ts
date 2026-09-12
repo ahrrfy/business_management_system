@@ -39,7 +39,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     const pickup = readClient("../delivery/MarkPickedUpDialog.tsx");
     const workOrderNew = readClient("../../pages/WorkOrderNew.tsx");
     const workOrderDetail = readClient("../../pages/WorkOrderDetail.tsx");
-    const workOrders = readClient("../../pages/WorkOrders.tsx");
+    const workOrders =
+      readClient("../../pages/WorkOrders.tsx") +
+      "\n" +
+      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
     const reservations = readClient("../../pages/ReservationsHub.tsx");
 
     expect(pickup).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
@@ -81,7 +84,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
   });
 
   it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {
-    const workOrders = readClient("../../pages/WorkOrders.tsx");
+    const workOrders =
+      readClient("../../pages/WorkOrders.tsx") +
+      "\n" +
+      readClient("../workOrders/WorkOrderDeliverDialog.tsx");
     const invoiceDetail = readClient("../../pages/InvoiceDetail.tsx");
     const receptionQueue = readComponent("ReceptionInvoiceQueue.tsx");
 
