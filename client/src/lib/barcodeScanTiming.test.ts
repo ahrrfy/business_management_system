@@ -1,0 +1,122 @@
+import { describe, it, expect } from "vitest";
+import { ScanBurstDetector, type FeedAction } from "./barcodeScanTiming";
+import type { ScannerKeyEvent } from "@shared/barcodeKeyDecode";
+
+/** يبني ضغطةً بموقعٍ فيزيائيّ مشتقٍّ من الرقم/الحرف (لتبسيط الاختبار على مدخلٍ لاتينيّ). */
+function digit(d: string): ScannerKeyEvent {
+  return { code: `Digit${d}`, key: d, shiftKey: false };
+}
+
+/** يغذّي سلسلةً من الأحرف بفواصل زمنيةٍ محدّدة، ويعيد قائمة الأفعال الناتجة. */
+function feedSequence(
+  det: ScanBurstDetector,
+  events: ScannerKeyEvent[],
+  gapsMs: number[],
+  startMs = 1000,
+): FeedAction[] {
+  let now = startMs;
+  const actions: FeedAction[] = [];
+  events.forEach((e, i) => {
+    if (i > 0) now += gapsMs[i - 1];
+    actions.push(det.feed(e, now));
+  });
+  return actions;
+}
+
+describe("ScanBurstDetector — كشف الومضة", () => {
+  it("يكشف ومضةً سريعة: أوّل حرفٍ pass، الثاني startBurst، الباقي capture", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const actions = feedSequence(det, ["6", "2", "8", "1"].map(digit), [10, 10, 10]);
+    expect(actions).toEqual(["pass", "startBurst", "capture", "capture"]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("6281");
+  });
+
+  it("مناعةٌ تامّة لتذبذب التوقيت وسط الومضة (فاصلٌ كبيرٌ لا يكسرها بعد التأكيد)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // بعد بدء الومضة، فاصل 300مي (تذبذب/جدولة نظام) يجب ألّا يكسرها.
+    const actions = feedSequence(det, ["1", "2", "3", "4", "5"].map(digit), [15, 300, 12, 9]);
+    expect(actions).toEqual(["pass", "startBurst", "capture", "capture", "capture"]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("12345");
+  });
+
+  it("يتسامح مع فاصلٍ بدائيّ بحجم العتبة تماماً", () => {
+    const det = new ScanBurstDetector({ minLength: 2, intraGapMs: 120 });
+    const actions = feedSequence(det, ["7", "7"].map(digit), [120]);
+    expect(actions).toEqual(["pass", "startBurst"]);
+    expect(det.isActive).toBe(true);
+  });
+
+  it("لا يبدأ ومضةً حين يتجاوز الفاصل الأوّل العتبة (كتابةٌ بشرية)", () => {
+    const det = new ScanBurstDetector({ minLength: 2, intraGapMs: 120 });
+    const actions = feedSequence(det, ["7", "7"].map(digit), [121]);
+    expect(actions).toEqual(["pass", "pass"]);
+    expect(det.isActive).toBe(false);
+  });
+
+  it("الكتابة البشرية البطيئة كلّها pass ولا تُقبَل ومضةً", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const actions = feedSequence(det, ["1", "2", "3"].map(digit), [200, 250]);
+    expect(actions).toEqual(["pass", "pass", "pass"]);
+    const { accepted } = det.flush();
+    expect(accepted).toBe(false);
+  });
+
+  it("ومضةٌ أقصر من الحدّ الأدنى تُرفَض وتُعيد الحروف الخام للاستعادة", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // حرفان سريعان فقط (نشِطة لكن طولها 2 < 3).
+    feedSequence(det, [{ code: "KeyA", key: "a" }, { code: "KeyB", key: "b" }], [10]);
+    expect(det.isActive).toBe(true);
+    const { accepted, text } = det.flush();
+    expect(accepted).toBe(false);
+    expect(text).toBe("ab");
+  });
+});
+
+describe("ScanBurstDetector — الفكّ الفيزيائيّ تحت التخطيط العربي", () => {
+  it("يفكّ باركوداً ممسوحاً بأرقامٍ عربية عبر code إلى لاتينيّ نظيف", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const events: ScannerKeyEvent[] = [
+      { code: "Digit6", key: "٦" },
+      { code: "Digit2", key: "٢" },
+      { code: "Digit8", key: "١" }, // حتّى لو اختلف key، code هو الحاكم
+      { code: "Digit1", key: "١" },
+    ];
+    feedSequence(det, events, [8, 8, 8]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("6281");
+  });
+
+  it("يفكّ بادئة مستندٍ مشوّهة (÷آ{ ⇒ INV) عبر المفاتيح الفيزيائية", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // I,N,V بحروفٍ كبيرة (Shift) — تصل رموزاً تحت العربي، لكنّ code+shift يعيدها.
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyI", key: "÷", shiftKey: true },
+      { code: "KeyN", key: "آ", shiftKey: true },
+      { code: "KeyV", key: "{", shiftKey: true },
+      { code: "Minus", key: "-", shiftKey: false },
+      { code: "Digit1", key: "١", shiftKey: false },
+    ];
+    feedSequence(det, events, [8, 8, 8, 8]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("INV-1");
+  });
+});
+
+describe("ScanBurstDetector — إعادة الضبط", () => {
+  it("reset يمسح الحالة الجارية", () => {
+    const det = new ScanBurstDetector({ minLength: 2, intraGapMs: 120 });
+    feedSequence(det, ["1", "2"].map(digit), [10]);
+    expect(det.isActive).toBe(true);
+    det.reset();
+    expect(det.isActive).toBe(false);
+    expect(det.length).toBe(0);
+    // بعد الضبط تبدأ ضغطةٌ جديدة كمرشّحٍ أوّل.
+    expect(det.feed(digit("9"), 5000)).toBe("pass");
+  });
+});

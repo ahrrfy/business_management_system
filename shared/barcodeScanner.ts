@@ -36,8 +36,12 @@ function latinDigit(char: string): string | null {
 }
 
 const INVISIBLE_FORMAT_MARKS = /[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
-/** بادئة معرّف المعيار الدولي للماسحات (ISO/IEC 15424 AIM Identifier): مثل ]E0 (لـ EAN) أو ]C1 (لـ Code-128) */
-const AIM_CODE_IDENTIFIER = /^\][A-Za-z0-9]{2}/;
+/**
+ * بادئة معرّف المعيار الدولي للماسحات (ISO/IEC 15424 AIM Identifier): `]` + حرف رمزٍ + خانة معدِّل،
+ * مثل ]E0 (لـ EAN) أو ]C1 (لـ Code-128). نشترط **حرفاً** بعد `]` مباشرةً (صيغة AIM الحقيقية) كي لا
+ * نجرّد محتوى باركودٍ مشروعٍ يبدأ صدفةً بـ`]` متبوعاً برقم.
+ */
+const AIM_CODE_IDENTIFIER = /^\][A-Za-z][A-Za-z0-9]/;
 
 export function normalizeBarcodeScannerInput(raw: string): string {
   if (!raw) return "";

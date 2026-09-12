@@ -1,6 +1,11 @@
-/** التقاط قارئ الباركود داخل input: تسلسل سريع ثم Enter، مع إبقاء الكتابة البشرية كما هي. */
-import { useCallback, useEffect, useRef, type KeyboardEvent } from "react";
-import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+/** التقاط قارئ الباركود داخل input: ومضةٌ سريعة ثم Enter، مع إبقاء الكتابة البشرية كما هي.
+ *
+ * يفوّض كلّ منطق التوقيت والفكّ الفيزيائيّ (المستقلّ عن تخطيط لوحة المفاتيح) إلى `ScanBurstDetector`
+ * الموحَّد — فلا ينجرف عن الخطّاف العالميّ ولا خطّاف الكاشير، ويرث تصحيح الرموز العربية والمناعة
+ * لتذبذب التوقيت. راجع `client/src/lib/barcodeScanTiming.ts`.
+ */
+import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
 
 type SetInputValue = (value: string) => void;
 
@@ -20,39 +25,37 @@ export function useBarcodeInput(
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ) {
   const onScanRef = useRef(onScan);
-  const previousMsRef = useRef(0);
-  const firstKeyRef = useRef("");
-  const bufferRef = useRef("");
-  const scanningRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   onScanRef.current = onScan;
 
+  // كاشفٌ مستقرّ لكلّ تركيبة خيارات؛ يُعاد بناؤه فقط عند تغيّرها (نادر، لا يقع وسط مسح).
+  const detector = useMemo(
+    () => new ScanBurstDetector({ minLength, intraGapMs: thresholdMs }),
+    [minLength, thresholdMs],
+  );
+
   const reset = useCallback(() => {
     clearTimeout(timerRef.current);
-    firstKeyRef.current = "";
-    bufferRef.current = "";
-    scanningRef.current = false;
-  }, []);
+    detector.reset();
+  }, [detector]);
 
   const flush = useCallback((setValue: SetInputValue) => {
     clearTimeout(timerRef.current);
-    const raw = bufferRef.current;
-    reset();
-    if (barcodeInputAcceptsScan(raw, minLength)) {
+    const { accepted, code, text } = detector.flush();
+    if (accepted && barcodeInputAcceptsScan(code, minLength)) {
       setValue("");
-      onScanRef.current(normalizeBarcodeScannerInput(raw));
-    } else if (raw) {
-      // تسلسل بشري قصير صُنّف سريعاً بالخطأ: لا نبتلعه.
-      setValue(raw);
+      onScanRef.current(code);
+    } else if (text) {
+      // تسلسلٌ بشريٌّ قصير صُنّف سريعاً بالخطأ: لا نبتلعه — نعيد الحروف الخام.
+      setValue(text);
     }
-  }, [minLength, reset]);
+  }, [detector, minLength]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>, setValue: SetInputValue) => {
     if (!enabled) return;
-    const now = Date.now();
 
     if (event.key === "Enter") {
-      if (scanningRef.current && barcodeInputAcceptsScan(bufferRef.current, minLength)) {
+      if (detector.isActive && detector.length >= minLength) {
         event.preventDefault();
         flush(setValue);
       } else {
@@ -64,32 +67,17 @@ export function useBarcodeInput(
       reset();
       return;
     }
-    if (event.ctrlKey || event.altKey || event.metaKey || event.key.length === 0 || event.key.length > 2) return;
+    // نقبل طول 1 أو 2: تخطيط عربي 101 يُنتج «لا/لأ/لآ» بحرفَين لضغطةٍ واحدة؛ الفكّ الفيزيائيّ
+    // (event.code) يعيدها إلى ASCII بصرف النظر عن ذلك.
+    if (event.ctrlKey || event.altKey || event.metaKey || event.key.length < 1 || event.key.length > 2) return;
 
-    const gap = now - previousMsRef.current;
-    previousMsRef.current = now;
-
-    if (scanningRef.current) {
-      event.preventDefault();
-      bufferRef.current += event.key;
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
-      return;
-    }
-
-    const candidate = firstKeyRef.current && gap < thresholdMs
-      ? firstKeyRef.current + event.key
-      : event.key;
-    firstKeyRef.current = candidate;
-    // لا نبتلع محرفين سريعين في حقل بحث مختلط؛ ندخل وضع الماسح فقط بعد بلوغ الحد.
-    if (!barcodeInputAcceptsScan(candidate, minLength)) return;
+    const action = detector.feed({ code: event.code, key: event.key, shiftKey: event.shiftKey }, Date.now());
+    if (action === "pass") return; // حرفٌ مرشّح: يظهر في الحقل طبيعياً (كتابةٌ بشرية محتملة)
     event.preventDefault();
-    bufferRef.current = candidate;
-    scanningRef.current = true;
-    setValue("");
+    if (action === "startBurst") setValue(""); // امسح الحرف المرشّح المتسرّب قبل تجميع الومضة
     clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => flush(setValue), thresholdMs * 6);
-  }, [enabled, flush, minLength, reset, thresholdMs]);
+    timerRef.current = setTimeout(() => flush(setValue), Math.max(250, Math.min(thresholdMs * 6, 600)));
+  }, [enabled, flush, minLength, reset, detector, thresholdMs]);
 
   useEffect(() => reset, [reset]);
 

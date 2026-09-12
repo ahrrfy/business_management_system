@@ -348,6 +348,10 @@ export default defineConfig({
       "server/services/__tests__/returnsAuditScenarios.test.ts",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
+      // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
+      "shared/barcodeKeyDecode.test.ts",
+      "client/src/lib/barcodeScanTiming.test.ts",
+      "client/src/lib/barcodeScannerInput.test.ts",
       // نافذة تحميل صور كاروسيل الكشك وتحجيم شاشات العرض
       "client/src/components/kiosk/kioskWindow.test.ts",
       // حارس إبقاء شاشة الكشك وقارئ الأسعار مستيقظة ومنع السكون

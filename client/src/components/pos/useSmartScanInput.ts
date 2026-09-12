@@ -1,46 +1,42 @@
-// خطّاف تمييز المسح السريع (باركود) عن الكتابة البشرية في حقل البحث.
-// استُخرج حرفياً من client/src/pages/POS.tsx (برنامج v2 «السهل الممتنع» م١ — PR-A) بلا تغيير
-// سلوكيّ: الصفحةُ العملاقة (٣٧٨٣ سطراً) قُسِّمت مكوّنياً كي تنزل تحت خطّ أساس `check:page-size`
-// ومقياس الاحتكاك D4، وتبقى كلّ الحالة المالية عند الأب (POS.tsx) وتصل عبر props.
+// خطّاف تمييز المسح السريع (باركود) عن الكتابة البشرية في حقل بحث الكاشير.
+// يفوّض التوقيت والفكّ الفيزيائيّ (المستقلّ عن تخطيط لوحة المفاتيح) إلى `ScanBurstDetector` الموحَّد
+// — نفس نواة الخطّاف العالميّ وخطّاف الحقل، فلا انجراف بينها، ويرث تصحيح الرموز العربية والمناعة
+// لتذبذب توقيت USB. الكاشير يشترط ≥٤ محارف لاعتباره باركوداً (يتجنّب التقاط ضغطتين بشريتين).
 
-import { useCallback, useRef } from "react";
-import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { useCallback, useMemo, useRef } from "react";
+import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
 import { SCAN_MS } from "./posShared";
 
+/** أدنى طولٍ لاعتبار الومضة باركوداً في الكاشير (رموز المنتجات ≥٤؛ الأقصر يبقى بحثاً بشرياً). */
+const POS_SCAN_MIN_LENGTH = 4;
+
 export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
-  const prevMsRef  = useRef(0);
-  const bufRef     = useRef("");
-  const inScanRef  = useRef(false);
-  const timerRef   = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const detector = useMemo(
+    () => new ScanBurstDetector({ minLength: POS_SCAN_MIN_LENGTH, intraGapMs: SCAN_MS }),
+    [],
+  );
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const fire = useCallback(
     (setValue: (s: string) => void) => {
       clearTimeout(timerRef.current);
-      const code = normalizeBarcodeScannerInput(bufRef.current);
-      bufRef.current = "";
-      inScanRef.current = false;
-      if (code.length >= 4) {
+      const { accepted, code, text } = detector.flush();
+      if (accepted && code.length >= POS_SCAN_MIN_LENGTH) {
         setValue("");
-        onBarcode(code);
-      } else {
-        // إدخال بشري قصير أُسيء تصنيفه كمسح (نقرتان سريعتان <٨٠مي، وليس باركوداً ≥٤ خانات) —
-        // أعِد النصّ المكتوب بدل ابتلاعه صامتاً. لا يمسّ مسار المسح الحقيقي إطلاقاً (≥٤ يُمسح ويُبحث كالسابق).
-        setValue(code);
+        void onBarcode(code);
+      } else if (text) {
+        // إدخال بشري قصير أُسيء تصنيفه كمسح — أعِد النصّ المكتوب بدل ابتلاعه صامتاً.
+        setValue(text);
       }
     },
-    [onBarcode]
+    [onBarcode, detector],
   );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => {
-      const now = Date.now();
-      const prevMs = prevMsRef.current;
-      prevMsRef.current = now;
-      const gap = now - prevMs;
-
+      void curVal; // التوقيع محفوظٌ للتوافق؛ الحرف المرشّح الأوّل يتتبّعه الكاشف داخلياً الآن.
       if (e.key === "Enter") {
-        clearTimeout(timerRef.current);
-        if (inScanRef.current && bufRef.current.length >= 4) {
+        if (detector.isActive && detector.length >= POS_SCAN_MIN_LENGTH) {
           e.preventDefault();
           fire(setValue);
         }
@@ -48,30 +44,20 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
       }
       if (e.key === "Escape") {
         clearTimeout(timerRef.current);
-        bufRef.current = "";
-        inScanRef.current = false;
+        detector.reset();
         return;
       }
-      if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
+      // طول 1 أو 2 (لِـ«لا/لأ/لآ» في العربي 101)؛ الفكّ الفيزيائيّ يعيدها ASCII.
+      if (e.ctrlKey || e.altKey || e.metaKey || e.key.length < 1 || e.key.length > 2) return;
 
-      if (inScanRef.current) {
-        e.preventDefault();
-        bufRef.current += e.key;
-        clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
-        return;
-      }
-
-      if (prevMs > 0 && gap < SCAN_MS) {
-        e.preventDefault();
-        bufRef.current = curVal + e.key;
-        inScanRef.current = true;
-        setValue("");
-        clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
-      }
+      const action = detector.feed({ code: e.code, key: e.key, shiftKey: e.shiftKey }, Date.now());
+      if (action === "pass") return; // إدخالٌ بشريٌّ محتمل — اتركه يظهر في الحقل
+      e.preventDefault();
+      if (action === "startBurst") setValue(""); // امسح الحرف المرشّح المتسرّب
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
     },
-    [fire]
+    [fire, detector],
   );
 
   return { handleKeyDown };

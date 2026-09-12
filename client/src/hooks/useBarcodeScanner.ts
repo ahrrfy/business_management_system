@@ -1,19 +1,21 @@
 /**
- * useBarcodeScanner — Custom Hook لاستقبال مدخل ماسح HID.
+ * useBarcodeScanner — خطّاف الالتقاط العالميّ لمدخل قارئ HID على مستوى الصفحة كاملةً.
  *
- * ماسحات الباركود USB/Bluetooth تحاكي لوحة مفاتيح (HID keyboard emulation):
- * تُرسل أحرفاً بسرعة عالية (< 80ms/حرف) ثم Enter.
- * هذا الـ hook يُفرّق بين مدخل الماسح والكتابة البشرية العادية بالتوقيت.
+ * ماسحات USB/Bluetooth تحاكي لوحة مفاتيح: تُرسل مواقع مفاتيح بسرعةٍ عالية ثم Enter. هذا الخطّاف
+ * يلتقط المسح في **أيّ مكانٍ** بالشاشة (داخل حقلٍ أو خارجه) ويميّزه عن الكتابة البشرية بالتوقيت.
  *
- * النمط معتمد في: Square POS SDK، Shopify POS، WooCommerce POS.
+ * كلّ منطق التوقيت والفكّ الفيزيائيّ موحَّدٌ في `ScanBurstDetector` (نواةٌ نقيّة مُختبَرة) — فلا
+ * ينجرف عن `useBarcodeInput`/`useSmartScanInput`، ويصحّح ثلاث علل معاً: الرموز العربية (فكّ
+ * `event.code` المستقلّ عن التخطيط)، و«يعمل أحياناً» (تسامحٌ مع تذبذب توقيت USB)، والتسريب
+ * (استعادةٌ فوريّة للحرف المرشّح عند بدء الومضة). راجع `client/src/lib/barcodeScanTiming.ts`.
  *
- * @param onScan  — callback يُستدعى بالنص الكامل عند اكتمال المسح
- * @param enabled — يُعطَّل عند فتح نوافذ مودال لتجنّب التعارض
- * @param minLength — الحد الأدنى لطول الباركود (افتراضي 3؛ بعض رموز الموردين الداخلية قصيرة)
- * @param thresholdMs — الفاصل الزمني الأقصى بين أحرف الماسح (افتراضي 80ms)
+ * @param onScan     — يُستدعى بالباركود المفكوك الكامل عند اكتمال المسح.
+ * @param enabled    — يُعطَّل عند فتح المودالات لتجنّب التعارض.
+ * @param minLength  — أدنى طولٍ لقبول الومضة (افتراضي 2؛ رموز الموردين الداخلية قد تكون قصيرة).
+ * @param thresholdMs— أقصى فاصلٍ بين ضغطتين ضمن ومضةٍ واحدة (افتراضي 120؛ سخيٌّ ليتحمّل التذبذب).
  */
 import { useEffect, useCallback } from "react";
-import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -22,7 +24,7 @@ export function useBarcodeScanner(
   {
     enabled = true,
     minLength = 2,
-    thresholdMs = 60,
+    thresholdMs = 120,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ): void {
   // useCallback لضمان استقرار المرجع وتجنّب إعادة تسجيل event listener
@@ -31,112 +33,104 @@ export function useBarcodeScanner(
   useEffect(() => {
     if (!enabled) return;
 
-    let buf = "";
-    let lastKeyTime = 0;
+    const detector = new ScanBurstDetector({ minLength, intraGapMs: thresholdMs });
+    // مهلة السكون قبل الإفراغ التلقائيّ (قارئٌ بلا لاحقة Enter): أطول من أيّ فاصلٍ متوقَّعٍ ضمن
+    // ومضة، وأقصر من أن يعوق كتابةً بشرية لاحقة.
+    const idleMs = Math.max(250, Math.min(thresholdMs * 4, 600));
     let timer: ReturnType<typeof setTimeout>;
 
-    // تتبع نبضات الماسح السريعة داخل حقول الإدخال النصية
-    let inFieldBurst = false;
-    let fieldCandidateBuf = "";
+    // الحقل المستهدَف وقيمته قبل ظهور الحرف المرشّح — لاستعادةٍ نظيفة (صفر تسريب).
     let fieldTarget: HTMLInputElement | HTMLTextAreaElement | null = null;
-    let fieldValBeforeBurst = "";
+    let valBefore = "";
 
-    const reset = () => {
-      buf = "";
-      inFieldBurst = false;
-      fieldCandidateBuf = "";
+    const clearField = () => {
       fieldTarget = null;
-      fieldValBeforeBurst = "";
+      valBefore = "";
     };
 
-    const flush = () => {
-      const captured = buf;
-      reset();
-      if (captured.length >= minLength) {
-        stableOnScan(normalizeBarcodeScannerInput(captured));
+    const restore = (value: string) => {
+      if (!fieldTarget) return;
+      fieldTarget.value = value;
+      fieldTarget.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    const finish = () => {
+      clearTimeout(timer);
+      const { accepted, code, text } = detector.flush();
+      if (accepted && code.length >= minLength) {
+        // نجحت الومضة: الحقل نُظّف بالفعل عند بدئها؛ نصدر الباركود المفكوك.
+        clearField();
+        stableOnScan(code);
+      } else {
+        // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
+        if (text) restore(valBefore + text);
+        clearField();
       }
+    };
+
+    const armIdle = () => {
+      clearTimeout(timer);
+      timer = setTimeout(finish, idleMs);
     };
 
     const handler = (e: KeyboardEvent) => {
-      const now = Date.now();
       const target = e.target as HTMLElement | null;
       const inField = target != null && INPUT_TAGS.has(target.tagName);
+      const inputEl = inField ? (target as HTMLInputElement | HTMLTextAreaElement) : null;
 
-      // Enter: لا نبتلع Enter إلا إذا كان التسلسل الحالي ماسحاً آلياً مؤكداً
+      // Enter: لا نبتلعه إلّا حين تكون ومضةٌ مؤكَّدة جاهزة — وإلّا نتركه للنموذج/الحقل.
       if (e.key === "Enter") {
-        clearTimeout(timer);
-        if (buf.length >= minLength && now - lastKeyTime < thresholdMs * 3) {
+        if (detector.isActive && detector.length >= minLength) {
           e.preventDefault();
           e.stopPropagation();
-          flush();
+          finish();
         } else {
-          reset();
-        }
-        return;
-      }
-
-      // تجاهل مفاتيح التحكم والوظائف والاختصارات
-      if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
-
-      const gap = lastKeyTime > 0 ? now - lastKeyTime : 9999;
-      lastKeyTime = now;
-
-      // الحالة 1: خارج أي حقل إدخال (الالتقاط التلقائي السلس في أي مكان بالشاشة)
-      if (!inField) {
-        if (buf.length > 0 && gap > thresholdMs * 3) {
-          buf = "";
-        }
-        buf += e.key;
-        clearTimeout(timer);
-        timer = setTimeout(flush, thresholdMs * 10);
-        return;
-      }
-
-      // الحالة 2: داخل حقل إدخال نصي — اعتراض ذكي لمنع تلوث الحقل
-      const inputEl = target as HTMLInputElement | HTMLTextAreaElement;
-
-      // إذا كنا في خضم نبضة ماسح جارية: اعترض كل حرف فورا
-      if (inFieldBurst) {
-        e.preventDefault();
-        e.stopPropagation();
-        buf += e.key;
-        clearTimeout(timer);
-        timer = setTimeout(flush, thresholdMs * 10);
-        return;
-      }
-
-      // قياس الفارق الزمني: الماسح يرسل الأحرف بسرعة فائقة (< 50ms)
-      if (gap <= thresholdMs) {
-        fieldCandidateBuf += e.key;
-        // الماسح الآلي يتجاوز حرفين بفاصل زمني فائق السرعة
-        if (fieldCandidateBuf.length >= 2) {
-          inFieldBurst = true;
-          e.preventDefault();
-          e.stopPropagation();
-          // استعادة القيمة الأصلية للحقل قبل بدء تسرب أحرف الماسح
-          if (fieldTarget && fieldTarget === inputEl) {
-            inputEl.value = fieldValBeforeBurst;
-            inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-          buf = fieldCandidateBuf;
           clearTimeout(timer);
-          timer = setTimeout(flush, thresholdMs * 10);
-          return;
+          detector.reset();
+          clearField();
         }
-      } else {
-        // كتابة بشرية عادية: تسجيل القيمة الحالية والفاصل الطبيعي
-        fieldCandidateBuf = e.key;
-        fieldTarget = inputEl;
-        fieldValBeforeBurst = inputEl.value;
+        return;
       }
+
+      // تجاهل مفاتيح التحكّم والوظائف والاختصارات. نقبل طول 1 أو 2 لأنّ العربي 101 يُنتج
+      // «لا/لأ/لآ» بحرفَين لضغطةٍ واحدة؛ الفكّ الفيزيائيّ (event.code) يعيدها ASCII.
+      if (e.ctrlKey || e.altKey || e.metaKey || e.key.length < 1 || e.key.length > 2) return;
+
+      const action = detector.feed({ code: e.code, key: e.key, shiftKey: e.shiftKey }, Date.now());
+
+      if (action === "pass") {
+        // حرفٌ مرشّح: يظهر في الحقل (قد يكون بشرياً). نسجّل قيمة الحقل قبله لاستعادةٍ محتملة.
+        if (inputEl) {
+          fieldTarget = inputEl;
+          valBefore = inputEl.value;
+        } else {
+          clearField();
+        }
+        return;
+      }
+
+      // startBurst أو capture: احجب الحرف عن الحقل.
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === "startBurst" && inputEl && fieldTarget === inputEl) {
+        // استعِد الحرف المرشّح الأوّل الذي تسرّب — صفر رمزٍ مرئيّ.
+        restore(valBefore);
+      }
+      armIdle();
     };
 
-    // useCapture: التقاط الأحداث عند النزول قبل وصولها لعناصر DOM لتأمين اعتراض Enter والنبضات
+    // useCapture: الالتقاط عند النزول قبل عناصر DOM لتأمين اعتراض Enter والنبضات وسبق الخطّافات الحقلية.
     document.addEventListener("keydown", handler, true);
-    document.addEventListener("focusin", reset);
+    // أيّ تغيّر تركيزٍ يُنهي أيّ تسلسلٍ جارٍ (منع حمل مخزنٍ عبر الحقول).
+    const onFocusChange = () => {
+      clearTimeout(timer);
+      detector.reset();
+      clearField();
+    };
+    document.addEventListener("focusin", onFocusChange);
     return () => {
       document.removeEventListener("keydown", handler, true);
-      document.removeEventListener("focusin", reset);
+      document.removeEventListener("focusin", onFocusChange);
       clearTimeout(timer);
     };
   }, [enabled, minLength, thresholdMs, stableOnScan]);
