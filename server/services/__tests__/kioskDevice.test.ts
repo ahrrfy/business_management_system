@@ -167,6 +167,21 @@ describe("kiosk: resolveKioskDevice (كوكي الجهاز) — الفرع من 
     expect(await resolveKioskDevice(reqWithKioskCookie(token))).toBeNull();
   });
 
+  it("تجديد الكوكي بنفس tokenPrefix يحافظ على استمرار الجلسة الصالحة", async () => {
+    const r = await createKioskDevice({ branchId: 2, label: "شاشة رئيسية", createdBy: 1 });
+    const initialToken = await signKioskSession(r.id, 2, r.rawToken.slice(0, 12));
+    const firstResolved = await resolveKioskDevice(reqWithKioskCookie(initialToken));
+    expect(firstResolved).not.toBeNull();
+    expect(firstResolved!.tokenPrefix).toBe(r.rawToken.slice(0, 12));
+
+    // محاكاة تجديد التوكن التلقائي كما في deviceMe
+    const renewedToken = await signKioskSession(firstResolved!.deviceId, firstResolved!.branchId, firstResolved!.tokenPrefix);
+    const secondResolved = await resolveKioskDevice(reqWithKioskCookie(renewedToken));
+    expect(secondResolved).not.toBeNull();
+    expect(secondResolved!.branchId).toBe(2);
+    expect(secondResolved!.tokenPrefix).toBe(r.rawToken.slice(0, 12));
+  });
+
   it("كوكي غير صالح/مفقود ⇒ null", async () => {
     expect(await resolveKioskDevice(reqWithKioskCookie("garbage.token.here"))).toBeNull();
     expect(await resolveKioskDevice({ headers: {}, socket: {} } as any)).toBeNull();

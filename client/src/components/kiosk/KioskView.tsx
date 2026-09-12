@@ -533,11 +533,14 @@ function TouchKeypadModal({
 export default function KioskView({
   mode,
   deviceBranchName,
+  deviceBranchId,
   onDeviceLogout,
 }: {
   mode: "staff" | "device";
   /** اسم الفرع المعروض في وضع الجهاز (مفروض خادمياً). */
   deviceBranchName?: string;
+  /** معرّف الفرع المربوط بالجهاز (طبقة دفاعية إضافية). */
+  deviceBranchId?: number;
   /** إنهاء جلسة الجهاز (وضع الجهاز فقط). */
   onDeviceLogout?: () => void;
 }) {
@@ -563,7 +566,7 @@ export default function KioskView({
   // البنر: كامل الكتالوج بلا سقف. مع الاحتفاظ بالبيانات السابقة ضد انقطاع الشبكة المؤقت.
   const cachedProductsRef = useRef<KProduct[]>([]);
   const bannerQ = trpc.kiosk.banner.useQuery(
-    isDevice ? {} : { branchId: staffBranchId ?? 0 },
+    isDevice ? (deviceBranchId ? { branchId: deviceBranchId } : {}) : { branchId: staffBranchId ?? 0 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
   if (bannerQ.data && bannerQ.data.length > 0) {
@@ -573,7 +576,7 @@ export default function KioskView({
 
   // العروض والبنرات الإعلانية لشاشة الكشك
   const promosQ = trpc.kiosk.promotions.useQuery(
-    isDevice ? undefined : { branchId: staffBranchId ?? undefined },
+    isDevice ? (deviceBranchId ? { branchId: deviceBranchId } : undefined) : { branchId: staffBranchId ?? undefined },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 10 * 60 * 1000, refetchOnWindowFocus: false }
   );
   const promos = (promosQ.data ?? []) as KPromo[];
@@ -599,7 +602,9 @@ export default function KioskView({
     // 2. فحص موثوق من الخادم لجلب خصومات العروض المحدّثة ووحدات الصنف الأخرى والباركودات البديلة
     try {
       const p = (await utils.kiosk.lookup.fetch(
-        isDevice ? { barcode: clean } : { branchId: staffBranchId ?? 0, barcode: clean }
+        isDevice
+          ? { barcode: clean, ...(deviceBranchId ? { branchId: deviceBranchId } : {}) }
+          : { branchId: staffBranchId ?? 0, barcode: clean }
       )) as KProduct | null;
       if (p) {
         if (!localMatch && settings.enableSound) playScanSuccess();
@@ -614,7 +619,7 @@ export default function KioskView({
         setScan({ mode: "neterror", code: clean, token: Date.now() });
       }
     }
-  }, [isDevice, staffBranchId, utils, products, settings.enableSound]);
+  }, [isDevice, deviceBranchId, staffBranchId, utils, products, settings.enableSound]);
 
   // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
   // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.

@@ -121,7 +121,7 @@ export const kioskRouter = router({
   deviceMe: publicProcedure.query(async ({ ctx }) => {
     const device = await resolveKioskDevice(ctx.req);
     if (!device) return null;
-    const token = await signKioskSession(device.deviceId, device.branchId, device.label);
+    const token = await signKioskSession(device.deviceId, device.branchId, device.tokenPrefix);
     ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
     return {
       deviceId: device.deviceId,
