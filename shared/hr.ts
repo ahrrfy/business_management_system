@@ -160,6 +160,16 @@ export const vacancyAccent = (department?: string | null): { from: string; to: s
  * ⚠️ يجب أن يشير سجلّ DNS لـhr.alarabiya.online إلى الـVPS، والمنفذ مفتوحاً على الجدار الناري. */
 export const HR_FINGERPRINT_TARGET = { host: "hr.alarabiya.online", port: 7788, label: "خادم الرؤية العربية" } as const;
 
+export const HR_DEVICE_PROTOCOLS = [
+  { key: "AIFACE_WS", label: "بصمة وجه (AiFace/AI518)" },
+  { key: "ZKTECO_PUSH", label: "ZKTeco وأشباهها" },
+] as const;
+export type HrDeviceProtocol = (typeof HR_DEVICE_PROTOCOLS)[number]["key"];
+export const HR_DEVICE_PROTOCOL_LABELS: Record<string, string> = {
+  AIFACE_WS: "بصمة وجه (AiFace/AI518)",
+  ZKTECO_PUSH: "ZKTeco وأشباهها",
+};
+
 /* ===== الترقيات/إنهاء الخدمات ===== */
 export const TERMINATION_TYPES = ["انتهاء عقد", "استقالة", "فصل", "تقاعد"] as const;
 
