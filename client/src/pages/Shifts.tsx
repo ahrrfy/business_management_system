@@ -7,16 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ShiftCloseDialog } from "@/components/shifts/ShiftCloseDialog";
+import { ShiftFundingDialog } from "@/components/shifts/ShiftFundingDialog";
+import { ShiftFundingDecisionDialogs } from "@/components/shifts/ShiftFundingDecisionDialogs";
+import { ShiftInvoicesDialog } from "@/components/shifts/ShiftInvoicesDialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { MoneyInput } from "@/components/form/MoneyInput";
-import {
-  ShiftCashReconciliation,
   adaptShiftCashReconciliation,
 } from "@/components/financial";
 import { useClipboard } from "@/hooks/useClipboard";
@@ -988,576 +983,157 @@ export default function Shifts() {
         </CardContent>
       </Card>
 
-      <Dialog
-        open={fundingShiftId != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setFundingShiftId(null);
-            setFundingAmount("");
-            setFundingNote("");
-            setFundingSourceReceiptId("");
-            setFundingClientRequestId("");
-            setFundingSourceCursor(null);
-            setFundingSourceCursorHistory([]);
-          }
+      <ShiftFundingDialog
+        fundingShiftId={fundingShiftId}
+        fundingRowUserName={fundingRow?.userName}
+        fundingReportLoading={fundingReportQ.isLoading}
+        fundingExpected={fundingExpected}
+        fundingSources={fundingSources}
+        fundingSourcesLoading={fundingSourcesQ.isLoading}
+        fundingSourcesNextCursor={fundingSourcesQ.data?.nextCursor}
+        fundingSourceReceiptId={fundingSourceReceiptId}
+        setFundingSourceReceiptId={(val) => {
+          setFundingSourceReceiptId(val);
+          const selected = fundingSources.find(
+            (source) => Number(source.receiptId) === Number(val),
+          );
+          setFundingAmount(selected?.amount ?? "");
         }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              تمويل إضافي للوردية #{fundingShiftId} — {fundingRow?.userName ?? ""}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
-              هذا طلب تسليم فقط: لا تُخصم الخزنة ولا يزيد الدرج حتى يستلم صاحب الوردية النقد فعلياً
-              ويؤكد الاستلام. الرصيد المتوقع الحي: {fundingReportQ.isLoading ? "جارٍ الحساب…" : fundingExpected == null ? "—" : `${fmt(fundingExpected.toString())} د.ع`}.
-            </div>
-            {fundingExpected?.lt(0) && (
-              <div className="rounded-lg border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
-                هذه الوردية سالبة؛ لا يجوز إخفاء العجز بتمويل إضافي. عالج المستند المسبب أو استخدم مسار التصحيح التاريخي.
-              </div>
-            )}
-            <div className="space-y-1.5">
-              <label htmlFor="shift-funding-source" className="text-sm font-bold">
-                سحب الوردية المصدر
-              </label>
-              <AppSelect
-                id="shift-funding-source"
-                className={`${selectCls} h-10 w-full`}
-                value={fundingSourceReceiptId}
-                disabled={fundingSourcesQ.isLoading}
-                onValueChange={(value) => {
-                  const nextId = value;
-                  setFundingSourceReceiptId(nextId);
-                  const selected = fundingSources.find(
-                    (source) => Number(source.receiptId) === Number(nextId),
-                  );
-                  setFundingAmount(selected?.amount ?? "");
-                }}
-              >
-                <option value="">اختر سحباً نقدياً مقبولاً وغير مستخدم</option>
-                {fundingSources.map((source) => (
-                  <option key={source.receiptId} value={source.receiptId}>
-                    {source.referenceNumber} — وردية #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
-                  </option>
-                ))}
-              </AppSelect>
-              <p className="text-xs text-muted-foreground">
-                إلزامي: يجب أن يكون سحباً مقبولاً من وردية أخرى وبنفس المبلغ، ولا يمكن استعماله مرتين. من دون سحبٍ فعلي أغلق الوردية وافتح وردية جديدة بعهدة من الخزينة.
-              </p>
-              {!fundingSourcesQ.isLoading && fundingSources.length === 0 && (
-                <p className="text-xs font-bold text-warning">
-                  {fundingSourcesQ.data?.nextCursor != null
-                    ? "لا يوجد مصدر صالح في هذه الصفحة؛ اعرض المصادر الأقدم."
-                    : "لا يوجد سحب وردية مقبول متاح لهذا الفرع. نفّذ السحب واستلمه في الخزينة أولاً."}
-                </p>
-              )}
-              <div className="flex items-center justify-between gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={fundingSourcesQ.isLoading || fundingSourceCursorHistory.length === 0}
-                  onClick={() => {
-                    setFundingSourceReceiptId("");
-                    setFundingAmount("");
-                    setFundingSourceCursorHistory((history) => {
-                      const previous = history[history.length - 1] ?? null;
-                      setFundingSourceCursor(previous);
-                      return history.slice(0, -1);
-                    });
-                  }}
-                >
-                  الأحدث
-                </Button>
-                <span className="text-xs text-muted-foreground">50 مصدراً في الصفحة كحد أقصى</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={fundingSourcesQ.isLoading || fundingSourcesQ.data?.nextCursor == null}
-                  onClick={() => {
-                    const nextCursor = fundingSourcesQ.data?.nextCursor;
-                    if (nextCursor == null) return;
-                    setFundingSourceReceiptId("");
-                    setFundingAmount("");
-                    setFundingSourceCursorHistory((history) => [...history, fundingSourceCursor]);
-                    setFundingSourceCursor(nextCursor);
-                  }}
-                >
-                  الأقدم
-                </Button>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="shift-funding-amount" className="text-sm font-bold">
-                المبلغ المطابق للسحب
-              </label>
-              <MoneyInput
-                id="shift-funding-amount"
-                value={fundingAmount}
-                onChange={setFundingAmount}
-                placeholder="0"
-                ariaLabel="مبلغ التمويل الإضافي للوردية"
-                disabled
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="shift-funding-note" className="text-sm font-bold">
-                سبب الحاجة للنقد
-              </label>
-              <Textarea
-                id="shift-funding-note"
-                rows={3}
-                maxLength={500}
-                value={fundingNote}
-                onChange={(event) => setFundingNote(event.target.value)}
-                placeholder="مثال: عهدة لتسديد مصروفات تشغيلية متوقعة خلال الوردية"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setFundingShiftId(null)}>
-              إلغاء
-            </Button>
-            <Button
-              disabled={
-                requestFundingM.isPending ||
-                fundingReportQ.isLoading ||
-                fundingExpected == null ||
-                fundingExpected.lt(0) ||
-                !fundingAmount ||
-                !fundingSourceReceiptId ||
-                D(fundingAmount || 0).lte(0) ||
-                fundingNote.trim().length < 10 ||
-                !fundingClientRequestId
-              }
-              onClick={() => {
-                if (fundingShiftId == null) return;
-                requestFundingM.mutate({
-                  shiftId: fundingShiftId,
-                  amount: D(fundingAmount).toFixed(2),
-                  evidenceNote: fundingNote.trim(),
-                  sourceTreasuryReceiptId: Number(fundingSourceReceiptId),
-                  clientRequestId: fundingClientRequestId,
-                });
-              }}
-            >
-              {requestFundingM.isPending ? "جارٍ إنشاء العهدة…" : "إنشاء طلب التسليم"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        fundingAmount={fundingAmount}
+        setFundingAmount={setFundingAmount}
+        fundingNote={fundingNote}
+        setFundingNote={setFundingNote}
+        fundingSourceCursor={fundingSourceCursor}
+        setFundingSourceCursor={setFundingSourceCursor}
+        fundingSourceCursorHistory={fundingSourceCursorHistory}
+        setFundingSourceCursorHistory={setFundingSourceCursorHistory}
+        fundingClientRequestId={fundingClientRequestId}
+        isPending={requestFundingM.isPending}
+        onClose={() => {
+          setFundingShiftId(null);
+          setFundingAmount("");
+          setFundingNote("");
+          setFundingSourceReceiptId("");
+          setFundingClientRequestId("");
+          setFundingSourceCursor(null);
+          setFundingSourceCursorHistory([]);
+        }}
+        onSubmit={() => {
+          if (fundingShiftId == null) return;
+          requestFundingM.mutate({
+            shiftId: fundingShiftId,
+            amount: D(fundingAmount).toFixed(2),
+            evidenceNote: fundingNote.trim(),
+            sourceTreasuryReceiptId: Number(fundingSourceReceiptId),
+            clientRequestId: fundingClientRequestId,
+          });
+        }}
+      />
 
-      <Dialog
-        open={rejectFundingId != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setRejectFundingId(null);
-            setFundingRejectionReason("");
-          }
+      <ShiftFundingDecisionDialogs
+        rejectFundingId={rejectFundingId}
+        fundingRejectionReason={fundingRejectionReason}
+        setFundingRejectionReason={setFundingRejectionReason}
+        onCloseReject={() => {
+          setRejectFundingId(null);
+          setFundingRejectionReason("");
         }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>رفض استلام العهدة النقدية</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label htmlFor="shift-funding-rejection" className="text-sm font-bold">
-              سبب عدم الاستلام
-            </label>
-            <Textarea
-              id="shift-funding-rejection"
-              rows={3}
-              maxLength={500}
-              value={fundingRejectionReason}
-              onChange={(event) => setFundingRejectionReason(event.target.value)}
-              placeholder="لم أستلم النقد فعلياً أو المبلغ لا يطابق الطلب"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRejectFundingId(null)}>
-              رجوع
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={
-                respondFundingM.isPending ||
-                fundingRejectionReason.trim().length < 5
-              }
-              onClick={() => {
-                if (rejectFundingId == null) return;
-                respondFundingM.mutate({
-                  requestReceiptId: rejectFundingId,
-                  decision: "REJECT",
-                  rejectionReason: fundingRejectionReason.trim(),
-                });
-              }}
-            >
-              {respondFundingM.isPending ? ACTION_LABELS.rejecting : "تأكيد الرفض بلا أثر نقدي"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onConfirmReject={() => {
+          if (rejectFundingId == null) return;
+          respondFundingM.mutate({
+            requestReceiptId: rejectFundingId,
+            decision: "REJECT",
+            rejectionReason: fundingRejectionReason.trim(),
+          });
+        }}
+        isRejectPending={respondFundingM.isPending}
+        cancelFundingId={cancelFundingId}
+        fundingCancellationReason={fundingCancellationReason}
+        setFundingCancellationReason={setFundingCancellationReason}
+        onCloseCancel={() => {
+          setCancelFundingId(null);
+          setFundingCancellationReason("");
+        }}
+        onConfirmCancel={() => {
+          if (cancelFundingId == null) return;
+          cancelFundingM.mutate({
+            requestReceiptId: cancelFundingId,
+            cancellationReason: fundingCancellationReason.trim(),
+          });
+        }}
+        isCancelPending={cancelFundingM.isPending}
+      />
 
-      <Dialog
-        open={cancelFundingId != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setCancelFundingId(null);
-            setFundingCancellationReason("");
+      <ShiftCloseDialog
+        closingShiftId={closingShiftId}
+        closingRowUserName={closingRow?.userName}
+        isLoading={closeReportQ.isLoading}
+        closeReportData={closeReportQ.data}
+        closeReconciliation={closeReconciliation}
+        isLegacyNegative={isLegacyNegative}
+        isOwner={isOwner}
+        closeExpected={closeExpected}
+        closeCounted={closeCounted}
+        setCloseCounted={setCloseCounted}
+        closeDiff={closeDiff}
+        closeHasVariance={closeHasVariance}
+        varianceCls={varianceCls}
+        legacySourceReceiptId={legacySourceReceiptId}
+        setLegacySourceReceiptId={setLegacySourceReceiptId}
+        legacyEvidenceNote={legacyEvidenceNote}
+        setLegacyEvidenceNote={setLegacyEvidenceNote}
+        legacyConfirmedZero={legacyConfirmedZero}
+        setLegacyConfirmedZero={setLegacyConfirmedZero}
+        legacyClientRequestId={legacyClientRequestId}
+        isPending={closeShiftM.isPending}
+        onClose={() => {
+          setClosingShiftId(null);
+          setCloseCounted("");
+          setLegacyEvidenceNote("");
+          setLegacySourceReceiptId("");
+          setLegacyConfirmedZero(false);
+          setLegacyClientRequestId("");
+        }}
+        onSubmit={({
+          isLegacyNegative: isNeg,
+          closingShiftId: sId,
+          closeExpected,
+          legacySourceReceiptId: srcId,
+          legacyEvidenceNote: note,
+          legacyClientRequestId: reqId,
+          closeCounted: counted,
+        }) => {
+          if (isNeg) {
+            closeShiftM.mutate({
+              shiftId: sId,
+              countedCash: "0",
+              legacyNegativeRemediation: {
+                expectedCash: closeExpected.toFixed(2),
+                sourceTreasuryReceiptId: srcId ? Number(srcId) : undefined,
+                evidenceNote: note.trim(),
+                confirmDrawerCountedZero: true,
+                clientRequestId: reqId,
+              },
+            });
+            return;
           }
+          closeShiftM.mutate({
+            shiftId: sId,
+            countedCash: counted,
+          });
         }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>إلغاء طلب تسليم العهدة</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              الإلغاء لا يغيّر الخزينة أو الدرج، ويعيد إتاحة سحب المصدر لطلب صحيح لاحقاً.
-            </p>
-            <label htmlFor="shift-funding-cancellation" className="text-sm font-bold">
-              سبب الإلغاء
-            </label>
-            <Textarea
-              id="shift-funding-cancellation"
-              rows={3}
-              maxLength={500}
-              value={fundingCancellationReason}
-              onChange={(event) => setFundingCancellationReason(event.target.value)}
-              placeholder="تعذّر التسليم الفعلي أو لم تعد الوردية تحتاج المبلغ"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCancelFundingId(null)}>
-              رجوع
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={cancelFundingM.isPending || fundingCancellationReason.trim().length < 5}
-              onClick={() => {
-                if (cancelFundingId == null) return;
-                cancelFundingM.mutate({
-                  requestReceiptId: cancelFundingId,
-                  cancellationReason: fundingCancellationReason.trim(),
-                });
-              }}
-            >
-              {cancelFundingM.isPending ? ACTION_LABELS.cancelling : "إلغاء الطلب بلا أثر نقدي"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
 
-      {/* إغلاق وردية عن بُعد (admin/manager) — لموظّف نسي إغلاق ورديته. نفس حوكمة نوافذ POS/
-          الاستقبال/الطباعة تماماً: لا إغلاق بفرق (closeShift الخادمية ترفضه دون استثناء). */}
-      <Dialog
-        open={closingShiftId != null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setClosingShiftId(null);
-            setCloseCounted("");
-            setLegacyEvidenceNote("");
-            setLegacySourceReceiptId("");
-            setLegacyConfirmedZero(false);
-            setLegacyClientRequestId("");
-          }
-        }}
-      >
-        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>
-              إغلاق وردية #{closingShiftId} — {closingRow?.userName ?? ""}
-            </DialogTitle>
-          </DialogHeader>
-          {closeReportQ.isLoading ? (
-            <LoadingState />
-          ) : (
-            <>
-              <div className="rounded-xl border bg-muted/30 px-4 py-3 text-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold">
-                    ملخص الفواتير (للمعلومة فقط)
-                  </span>
-                  <span className="tabular-nums" dir="ltr">
-                    {closeReportQ.data?.invoiceCount ?? 0} فاتورة ·{" "}
-                    {fmt(Number(closeReportQ.data?.salesTotal ?? 0))} د.ع
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  هذا الإجمالي لا يدخل معادلة الإغلاق؛ التسوية أدناه مبنية على
-                  إيصالات النقد الفعلية لهذه الوردية.
-                </p>
-              </div>
-              <ShiftCashReconciliation
-                data={closeReconciliation}
-                defaultExpandedKeys={[
-                  "cashSales",
-                  "cashReturns",
-                  "cashExpenses",
-                  "cashDrops",
-                ]}
-                formatMoney={(value) =>
-                  value == null || value === "" ? "—" : fmt(String(value))
-                }
-                formatDateTime={(value) => fmtDT(value)}
-              />
-              {isLegacyNegative && isOwner ? (
-                <div className="space-y-4 rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm">
-                  <div>
-                    <p className="font-bold">معالجة رصيد سالب موروث — للمالك فقط</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      سيُسحب من الخزنة مبلغ {fmt(closeExpected?.abs().toNumber() ?? 0)} د.ع
-                      ويُضاف إلى هذه الوردية بسندَي تصحيح مترابطين، ثم يُثبت الرصيد والمعدود
-                      والفرق صفراً وتُغلق الوردية. لن يتغير أي سند تاريخي.
-                    </p>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="legacy-source-receipt" className="font-bold">
-                      رقم إيصال السحب الموجود في الخزنة (إن وُجد)
-                    </label>
-                    <Input
-                      id="legacy-source-receipt"
-                      type="number"
-                      min={1}
-                      inputMode="numeric"
-                      value={legacySourceReceiptId}
-                      onChange={(event) => setLegacySourceReceiptId(event.target.value)}
-                      placeholder="مثال: 2996"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      يُستعمل لإثبات سلسلة الحيازة فقط؛ المتبقي منه يبقى في الخزنة.
-                    </p>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="legacy-evidence-note" className="font-bold">
-                      دليل وسبب المعالجة
-                    </label>
-                    <Textarea
-                      id="legacy-evidence-note"
-                      rows={3}
-                      maxLength={1000}
-                      value={legacyEvidenceNote}
-                      onChange={(event) => setLegacyEvidenceNote(event.target.value)}
-                      placeholder="اذكر نتيجة المراجعة، مصدر المبلغ، وتوجيه المالك…"
-                    />
-                  </div>
-                  <label className="flex items-start gap-2 rounded-md border bg-background p-3 font-bold">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 size-4"
-                      checked={legacyConfirmedZero}
-                      onChange={(event) => setLegacyConfirmedZero(event.target.checked)}
-                    />
-                    <span>أؤكد أن النقد الموجود فعلياً في درج هذه الوردية معدود ويساوي صفراً.</span>
-                  </label>
-                </div>
-              ) : isLegacyNegative ? (
-                <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
-                  هذه وردية سالبة موروثة. لا يملك حق تمويلها وتصفيرها وإغلاقها إلا حساب المالك.
-                </div>
-              ) : (
-              <div className="space-y-1.5 rounded-xl border p-4">
-                <label
-                  htmlFor="close-counted-cash"
-                  className="block text-sm font-bold"
-                >
-                  النقد المعدود (د.ع)
-                </label>
-                <MoneyInput
-                  id="close-counted-cash"
-                  value={closeCounted}
-                  onChange={setCloseCounted}
-                  placeholder="0"
-                  ariaLabel="النقد المعدود عند إغلاق الوردية"
-                  className="h-11 text-center text-lg font-extrabold"
-                />
-                {closeDiff != null && (
-                  <div
-                    className={`flex items-center gap-1 text-sm font-bold ${varianceCls(closeDiff.toFixed(2))}`}
-                  >
-                    <span>
-                      الفرق: {closeDiff.gte(0) ? "+" : ""}
-                      {fmt(closeDiff.toNumber())} د.ع
-                    </span>
-                    {closeDiff.isZero() && (
-                      <Check aria-hidden className="size-3.5" />
-                    )}
-                  </div>
-                )}
-              </div>
-              )}
-              {!isLegacyNegative && closeHasVariance && (
-                <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
-                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً
-                  إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات
-                  لهذه الوردية أولاً.
-                </div>
-              )}
-            </>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setClosingShiftId(null)}>
-              إلغاء
-            </Button>
-            <Button
-              disabled={
-                closeShiftM.isPending ||
-                closeExpected == null ||
-                (isLegacyNegative
-                  ? !isOwner ||
-                    legacyEvidenceNote.trim().length < 20 ||
-                    !legacyConfirmedZero ||
-                    !legacyClientRequestId
-                  : !closeCounted || closeHasVariance)
-              }
-              onClick={() => {
-                if (closingShiftId == null || closeExpected == null) return;
-                if (isLegacyNegative) {
-                  closeShiftM.mutate({
-                    shiftId: closingShiftId,
-                    countedCash: "0",
-                    legacyNegativeRemediation: {
-                      expectedCash: closeExpected.toFixed(2),
-                      sourceTreasuryReceiptId: legacySourceReceiptId
-                        ? Number(legacySourceReceiptId)
-                        : undefined,
-                      evidenceNote: legacyEvidenceNote.trim(),
-                      confirmDrawerCountedZero: true,
-                      clientRequestId: legacyClientRequestId,
-                    },
-                  });
-                  return;
-                }
-                closeShiftM.mutate({
-                  shiftId: closingShiftId,
-                  countedCash: closeCounted,
-                });
-              }}
-            >
-              {closeShiftM.isPending
-                ? "جارٍ التنفيذ…"
-                : isLegacyNegative
-                  ? "تمويل من الخزنة وتصفير وإغلاق"
-                  : "إغلاق"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* فواتير الوردية — قائمة مضمَّنة لتحقيق الفروقات النقدية بلا مغادرة الشاشة (سطراً بسطر). */}
-      <Dialog
-        open={invoicesShiftId != null}
-        onOpenChange={(open) => {
-          if (!open) setInvoicesShiftId(null);
-        }}
-      >
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              فواتير وردية #{invoicesShiftId} —{" "}
-              {invoicesShiftRow?.userName ?? ""}
-            </DialogTitle>
-          </DialogHeader>
-          {invoicesShiftQ.isLoading ? (
-            <LoadingState />
-          ) : (
-            <>
-              <div className="text-xs text-muted-foreground">
-                {invoicesShiftQ.data?.length ?? 0} فاتورة — الإجمالي{" "}
-                <b className="tabular-nums" dir="ltr">
-                  {fmt(
-                    (invoicesShiftQ.data ?? [])
-                      .reduce((s, r) => s.plus(D(r.total)), D(0))
-                      .toString(),
-                  )}
-                </b>{" "}
-                د.ع
-              </div>
-              {/* قائمةٌ مُضمَّنة في الحوار وعدَّها معروضٌ فوقها ⇒ بلا شريط حالةٍ ولا منتقي أعمدة. */}
-              <DataTable<ShiftInvoiceRow>
-                embedded
-                searchable={false}
-                pageSize={Infinity}
-                maxHeightClass="max-h-[60vh]"
-                data={invoicesShiftQ.data ?? []}
-                errorState={{
-                  isError: invoicesShiftQ.isError,
-                  message: invoicesShiftQ.error?.message,
-                  onRetry: () => void invoicesShiftQ.refetch(),
-                }}
-                emptyText="لا فواتير على هذه الوردية."
-                columns={[
-                  {
-                    id: "invoiceNumber",
-                    header: "رقم الفاتورة",
-                    accessorFn: (inv) => inv.invoiceNumber,
-                    meta: { kind: "code" },
-                    cell: ({ row }) => <span className="font-medium">{row.original.invoiceNumber}</span>,
-                  },
-                  {
-                    id: "invoiceDate",
-                    header: "الوقت",
-                    accessorFn: (inv) => fmtDT(inv.invoiceDate),
-                    meta: { kind: "datetime" },
-                    cell: ({ row }) => <span className="text-xs">{fmtDT(row.original.invoiceDate)}</span>,
-                  },
-                  {
-                    id: "paymentMethod",
-                    header: "طريقة الدفع",
-                    accessorFn: (inv) => (inv.paymentMethod ? paymentMethodLabel(inv.paymentMethod) : "—"),
-                    cell: ({ row }) => (
-                      <span className="text-xs">
-                        {row.original.paymentMethod ? paymentMethodLabel(row.original.paymentMethod) : "—"}
-                      </span>
-                    ),
-                  },
-                  {
-                    id: "total",
-                    header: "الإجمالي",
-                    accessorFn: (inv) => fmt(inv.total),
-                    meta: { kind: "money" },
-                    cell: ({ row }) => fmt(row.original.total),
-                  },
-                  {
-                    id: "paidAmount",
-                    header: "المدفوع",
-                    accessorFn: (inv) => fmt(inv.paidAmount),
-                    meta: { kind: "money" },
-                    cell: ({ row }) => fmt(row.original.paidAmount),
-                  },
-                  {
-                    id: "status",
-                    header: "الحالة",
-                    // المصدر الوحيد لتسمية الحالة — لا قاموسَ محلّياً (shared/invoiceStatus).
-                    accessorFn: (inv) => invoiceStatusLabel(inv.status),
-                    meta: { kind: "status" },
-                    cell: ({ row }) => <span className="text-xs">{invoiceStatusLabel(row.original.status)}</span>,
-                  },
-                  {
-                    id: "open",
-                    header: "فتح",
-                    enableSorting: false,
-                    meta: { kind: "actions" },
-                    cell: ({ row }) => (
-                      <Link href={`/invoices/${row.original.id}`} className="text-primary underline-offset-2 hover:underline">
-                        فتح
-                      </Link>
-                    ),
-                  },
-                ]}
-              />
-            </>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setInvoicesShiftId(null)}>
-              إغلاق
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ShiftInvoicesDialog
+        invoicesShiftId={invoicesShiftId}
+        invoicesShiftRowUserName={invoicesShiftRow?.userName}
+        isLoading={invoicesShiftQ.isLoading}
+        isError={invoicesShiftQ.isError}
+        errorMessage={invoicesShiftQ.error?.message}
+        invoices={invoicesShiftQ.data ?? []}
+        onRetry={() => void invoicesShiftQ.refetch()}
+        onClose={() => setInvoicesShiftId(null)}
+      />
     </div>
   );
 }
