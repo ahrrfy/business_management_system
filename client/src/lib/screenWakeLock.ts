@@ -15,8 +15,10 @@ export interface WakeLockState {
   isSupported: boolean;
 }
 
-let activeSentinel: any = null;
+let activeSentinels: any[] = [];
+let pendingRequest: Promise<boolean> | null = null;
 let fallbackVideoEl: HTMLVideoElement | null = null;
+let fallbackActive = false;
 let listenersAttached = false;
 let globalRefCount = 0;
 
@@ -25,21 +27,30 @@ export function isWakeLockSupported(): boolean {
   return typeof navigator !== "undefined" && "wakeLock" in navigator;
 }
 
-/** تشغيل قناة فيديو صامتة مصغرة (1px) كطبقة إسناد إضافية لمنع سكون الشاشة */
-function ensureFallbackVideoStream(): void {
-  if (typeof document === "undefined" || fallbackVideoEl) return;
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.fillStyle = "rgba(0,0,0,0.01)";
-      ctx.fillRect(0, 0, 1, 1);
-    }
-    // دعم التقاط الدفق الحركي
-    const stream = (canvas as any).captureStream ? (canvas as any).captureStream(1) : null;
-    if (stream) {
+/** تشغيل قناة فيديو صامتة مصغرة (1px) كطبقة إسناد إضافية مع التحقق من نجاح التشغيل */
+function ensureFallbackVideoStream(): Promise<boolean> {
+  if (typeof document === "undefined") return Promise.resolve(false);
+  if (fallbackVideoEl && fallbackActive && !fallbackVideoEl.paused) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "rgba(0,0,0,0.01)";
+        ctx.fillRect(0, 0, 1, 1);
+      }
+      const stream = (canvas as any).captureStream ? (canvas as any).captureStream(1) : null;
+      if (!stream) {
+        fallbackActive = false;
+        resolve(false);
+        return;
+      }
+
       const v = document.createElement("video");
       v.muted = true;
       v.playsInline = true;
@@ -55,16 +66,36 @@ function ensureFallbackVideoStream(): void {
       v.style.pointerEvents = "none";
       v.style.zIndex = "-99999";
       document.body.appendChild(v);
-      v.play().catch(() => {});
-      fallbackVideoEl = v;
+
+      const playPromise = v.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        playPromise
+          .then(() => {
+            fallbackVideoEl = v;
+            fallbackActive = true;
+            resolve(true);
+          })
+          .catch(() => {
+            cleanupFallbackVideoStream();
+            fallbackActive = false;
+            resolve(false);
+          });
+      } else {
+        fallbackVideoEl = v;
+        fallbackActive = true;
+        resolve(true);
+      }
+    } catch {
+      cleanupFallbackVideoStream();
+      fallbackActive = false;
+      resolve(false);
     }
-  } catch {
-    // إخفاق صامت للإسناد
-  }
+  });
 }
 
 /** إيقاف قناة الفيديو الاحتياطية */
 function cleanupFallbackVideoStream(): void {
+  fallbackActive = false;
   if (fallbackVideoEl) {
     try {
       fallbackVideoEl.pause();
@@ -78,52 +109,66 @@ function cleanupFallbackVideoStream(): void {
   }
 }
 
-/** طلب تنشيط قفل استيقاظ الشاشة لمنع تحولها إلى شاشة سوداء */
+/** طلب تنشيط قفل استيقاظ الشاشة لمنع تحولها إلى شاشة سوداء مع تسلسل الطلبات */
 export async function requestScreenWakeLock(): Promise<boolean> {
   if (typeof document === "undefined") return false;
 
-  // تشغيل الإسناد الاحتياطي دائماً كحزام أمان
-  ensureFallbackVideoStream();
+  // تشغيل الإسناد الاحتياطي بالتوازي والتحقق من حالته
+  const fallbackPromise = ensureFallbackVideoStream();
 
   if (!isWakeLockSupported()) {
-    return false;
+    return fallbackPromise;
   }
 
-  // إذا كان القفل نشطاً بالفعل ولم يتم تحريره فلا حاجة لتكرار الطلب
-  if (activeSentinel && !activeSentinel.released) {
+  // إذا كان هناك قفل نشط وغير مُحرر
+  if (activeSentinels.some((s) => !s.released)) {
     return true;
   }
 
-  try {
-    const sentinel = await (navigator as any).wakeLock.request("screen");
-    activeSentinel = sentinel;
-
-    sentinel.addEventListener("release", () => {
-      if (activeSentinel === sentinel) {
-        activeSentinel = null;
-      }
-      // إعادة الطلب فورا إن كانت الصفحة مرئية وهناك حاجة للاستيقاظ
-      if (globalRefCount > 0 && document.visibilityState === "visible") {
-        void requestScreenWakeLock();
-      }
-    });
-
-    return true;
-  } catch {
-    return false;
+  // تجنب تسابق الطلبات المتزامنة (In-Flight Request Serialization)
+  if (pendingRequest) {
+    return pendingRequest;
   }
+
+  pendingRequest = (async () => {
+    try {
+      const sentinel = await (navigator as any).wakeLock.request("screen");
+      activeSentinels.push(sentinel);
+
+      sentinel.addEventListener("release", () => {
+        activeSentinels = activeSentinels.filter((s) => s !== sentinel);
+        // إعادة الطلب فورا إن كانت الصفحة مرئية وهناك حاجة للاستيقاظ
+        if (globalRefCount > 0 && document.visibilityState === "visible") {
+          void requestScreenWakeLock();
+        }
+      });
+
+      return true;
+    } catch {
+      // في حال تعذر Wake Lock API نعتمد على نتيجة طبقة الإسناد
+      return await fallbackPromise;
+    } finally {
+      pendingRequest = null;
+    }
+  })();
+
+  return pendingRequest;
 }
 
 /** تحرير قفل الاستيقاظ عند إغلاق الشاشة بالكامل */
 export async function releaseScreenWakeLock(): Promise<void> {
-  if (activeSentinel) {
+  pendingRequest = null;
+  const sentinels = activeSentinels.slice();
+  activeSentinels = [];
+
+  for (let i = 0; i < sentinels.length; i++) {
     try {
-      await activeSentinel.release();
+      await sentinels[i].release();
     } catch {
       // تجاهل أخطاء التحرير
     }
-    activeSentinel = null;
   }
+
   cleanupFallbackVideoStream();
 }
 
@@ -146,7 +191,8 @@ function setupWakeLockListeners(): () => void {
   // فحص نبض دوري كل ٣٠ ثانية لضمان عدم سقوط القفل في فترات الخمول الطويلة
   const intervalId = setInterval(() => {
     if (globalRefCount > 0 && document.visibilityState === "visible") {
-      if (!activeSentinel || activeSentinel.released) {
+      const hasActive = activeSentinels.some((s) => !s.released);
+      if (!hasActive) {
         void requestScreenWakeLock();
       }
     }
@@ -180,7 +226,7 @@ export function useScreenWakeLock(enabled: boolean = true): WakeLockState {
     const acquire = async () => {
       const ok = await requestScreenWakeLock();
       if (mounted) {
-        setLocked(ok || !!fallbackVideoEl);
+        setLocked(ok);
       }
     };
 

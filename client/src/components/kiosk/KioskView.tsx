@@ -257,9 +257,16 @@ function Banner({
   const promosRef = useRef(promos);
   promosRef.current = promos;
 
-  // تهيئة أولية فقط عند أول تحميل للبيانات أو عندما تكون الشاشة فارغة
+  // تهيئة أولية أو تحديث القائمة عند فراغها
   useEffect(() => {
-    if (display.length === 0 && (source.length > 0 || promos.length > 0)) {
+    if (source.length === 0 && promos.length === 0) {
+      if (display.length > 0) {
+        setDisplay([]);
+        setIdx(0);
+      }
+      return;
+    }
+    if (display.length === 0) {
       const shuffled = source.length > 1 ? fisherYates(source) : source;
       setDisplay(buildSlideDeck(shuffled, promos));
       setIdx(0);
@@ -271,7 +278,10 @@ function Banner({
   useEffect(() => {
     if (prevBranchRef.current !== branchKey) {
       prevBranchRef.current = branchKey;
-      if (source.length > 0 || promos.length > 0) {
+      if (source.length === 0 && promos.length === 0) {
+        setDisplay([]);
+        setIdx(0);
+      } else {
         const shuffled = source.length > 1 ? fisherYates(source) : source;
         setDisplay(buildSlideDeck(shuffled, promos));
         setIdx(0);
@@ -301,13 +311,15 @@ function Banner({
     return () => clearInterval(id);
   }, [paused, n, rotateMs]);
 
-  // عند العودة إلى الشريحة الأولى بعد إتمام الدورة، نخلط الكتالوج بهدوء للدورة التالية
+  // عند العودة إلى الشريحة الأولى بعد إتمام الدورة، نخلط الكتالوج بهدوء للدورة التالية أو نفرغ القائمة إن انتهت
   const prevIdxRef = useRef(idx);
   useEffect(() => {
     if (prevIdxRef.current > 0 && idx === 0) {
       const curSource = sourceRef.current;
       const curPromos = promosRef.current;
-      if (curSource.length > 0 || curPromos.length > 0) {
+      if (curSource.length === 0 && curPromos.length === 0) {
+        setDisplay([]);
+      } else {
         const shuffled = curSource.length > 1 ? fisherYates(curSource) : curSource;
         setDisplay(buildSlideDeck(shuffled, curPromos));
       }
@@ -533,7 +545,7 @@ export default function KioskView({
   const [, navigate] = useLocation();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   // تفعيل حارس استيقاظ الشاشة لمنع السكون والشاشة السوداء 24/7
-  useScreenWakeLock(true);
+  const wakeLock = useScreenWakeLock(true);
   const setTweak = useCallback(<K extends keyof Settings>(k: K, v: Settings[K]) => {
     setSettings((prev) => {
       const next = { ...prev, [k]: v };
@@ -805,9 +817,13 @@ export default function KioskView({
 
             <div className="kpc-field">
               <label>وضع العمل المستمر (منع سكون الشاشة 24/7)</label>
-              <div className="kpc-status-chip">
-                <span className="kpc-status-dot" />
-                <span>حارس استيقاظ الشاشة نشط دائماً</span>
+              <div className={`kpc-status-chip ${wakeLock.isLocked ? "active" : "inactive"}`}>
+                <span className={`kpc-status-dot ${wakeLock.isLocked ? "active" : "inactive"}`} />
+                <span>
+                  {wakeLock.isLocked
+                    ? "حارس استيقاظ الشاشة نشط ويعمل"
+                    : "حارس استيقاظ الشاشة غير نشط (تحقق من إعدادات المتصفح والنظام)"}
+                </span>
               </div>
             </div>
 

@@ -91,4 +91,77 @@ describe("screenWakeLock", () => {
     const result = await requestScreenWakeLock();
     expect(result).toBe(false);
   });
+
+  it("تسلسل وإعادة استخدام الطلبات المتزامنة In-Flight Request Serialization", async () => {
+    let resolveLock: (val: any) => void;
+    const pendingPromise = new Promise((resolve) => {
+      resolveLock = resolve;
+    });
+
+    const mockSentinel = {
+      released: false,
+      release: vi.fn().mockImplementation(async () => {
+        mockSentinel.released = true;
+      }),
+      addEventListener: vi.fn(),
+    };
+
+    const requestMock = vi.fn().mockImplementation(() => pendingPromise);
+
+    vi.stubGlobal("document", {
+      createElement: vi.fn(() => ({
+        getContext: vi.fn(() => ({ fillRect: vi.fn() })),
+        captureStream: vi.fn(() => ({})),
+        play: vi.fn().mockResolvedValue(undefined),
+        pause: vi.fn(),
+        setAttribute: vi.fn(),
+        style: {},
+      })),
+      body: { appendChild: vi.fn(), removeChild: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+
+    vi.stubGlobal("navigator", {
+      wakeLock: {
+        request: requestMock,
+      },
+    });
+
+    // استدعاءان متزامنان
+    const p1 = requestScreenWakeLock();
+    const p2 = requestScreenWakeLock();
+
+    // التأكد من أن wakeLock.request لم يُستدعَ إلا مرة واحدة
+    expect(requestMock).toHaveBeenCalledTimes(1);
+
+    resolveLock!(mockSentinel);
+    const [res1, res2] = await Promise.all([p1, p2]);
+    expect(res1).toBe(true);
+    expect(res2).toBe(true);
+
+    await releaseScreenWakeLock();
+    expect(mockSentinel.release).toHaveBeenCalled();
+  });
+
+  it("الإبلاغ عن الفشل بدقة عند رفض المتصفح لكل من WakeLock والفيديو التلقائي", async () => {
+    vi.stubGlobal("navigator", {}); // لا يدعم wakeLock
+
+    vi.stubGlobal("document", {
+      createElement: vi.fn(() => ({
+        getContext: vi.fn(() => ({ fillRect: vi.fn() })),
+        captureStream: vi.fn(() => ({})),
+        play: vi.fn().mockRejectedValue(new Error("AutoplayDenied")),
+        pause: vi.fn(),
+        setAttribute: vi.fn(),
+        style: {},
+      })),
+      body: { appendChild: vi.fn(), removeChild: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+
+    const result = await requestScreenWakeLock();
+    expect(result).toBe(false);
+  });
 });

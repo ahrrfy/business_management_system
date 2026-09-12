@@ -83,13 +83,26 @@ export default function Kiosk() {
     refetchOnWindowFocus: false,
   });
 
+  const [retryAttempt, setRetryAttempt] = useState(0);
+
   const login = trpc.kiosk.deviceLogin.useMutation({
     onSuccess: () => {
+      setRetryAttempt(0);
       if (tokenRef.current) {
         setStoredToken(tokenRef.current);
       }
       stripHash();
       void utils.kiosk.deviceMe.invalidate();
+    },
+    onError: (err) => {
+      // إذا كان الرمز غير صالح أو مرفوضاً من الخادم فلا نكرر الطلب
+      if (err.data?.code === "UNAUTHORIZED" || err.data?.httpStatus === 401) {
+        clearStoredToken();
+        tokenRef.current = null;
+        setRetryAttempt(0);
+        return;
+      }
+      setRetryAttempt((prev) => Math.min(prev + 1, 6));
     },
   });
 
@@ -97,6 +110,7 @@ export default function Kiosk() {
     onSuccess: () => {
       clearStoredToken();
       tokenRef.current = null;
+      setRetryAttempt(0);
       void utils.kiosk.deviceMe.invalidate();
     },
   });
@@ -139,17 +153,21 @@ export default function Kiosk() {
   useScreenWakeLock(true);
 
   // استعادة الجلسة تلقائياً في الخلفية في حال سقوط الكوكي بعد أيام تشغيل طويلة
+  // يعالج كلاً من حالة الخطأ (isError) وحالة انتهاء الجلسة (deviceMe.data === null)
+  // مع تراجع أسي محدد (Bounded Exponential Backoff) لا يتجاوز سقف معدل الطلبات (30/15min)
   useEffect(() => {
-    if (booted && deviceMe.isError && !login.isPending) {
+    const isUnauthenticated = !deviceMe.isLoading && (deviceMe.isError || deviceMe.data === null);
+    if (booted && isUnauthenticated && !login.isPending && !logout.isPending) {
       const t = tokenRef.current || getStoredToken();
-      if (t) {
+      if (t && retryAttempt < 6) {
+        const delay = Math.min(2000 * Math.pow(2, retryAttempt), 60000);
         const id = setTimeout(() => {
           login.mutate({ token: t });
-        }, 3000);
+        }, delay);
         return () => clearTimeout(id);
       }
     }
-  }, [booted, deviceMe.isError, login]);
+  }, [booted, deviceMe.isLoading, deviceMe.isError, deviceMe.data, login, logout.isPending, retryAttempt]);
 
   const authed = !!deviceMe.data;
 
