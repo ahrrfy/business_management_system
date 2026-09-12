@@ -80,6 +80,7 @@ import { StorefrontCuratedRows, CuratedRow, type RowProduct } from "@/components
 import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilestoneBar";
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
+import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -3081,7 +3082,7 @@ function StorefrontContent() {
 
       {/* ═══ السلة ═══ */}
       {panel === "cart" && (
-        <PanelShell title="سلة المشتريات" onClose={() => setPanel(null)}>
+        <StorefrontPanelShell title="سلة المشتريات" onClose={() => setPanel(null)}>
           {cartLines.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-slate-400">
               <ShoppingCart aria-hidden className="size-10 opacity-50" />
@@ -3190,12 +3191,12 @@ function StorefrontContent() {
               )}
             </>
           )}
-        </PanelShell>
+        </StorefrontPanelShell>
       )}
 
       {/* ═══ الدفع عند الاستلام ═══ */}
       {panel === "checkout" && (
-        <PanelShell title="إتمام الطلب" onClose={() => {
+        <StorefrontPanelShell title="إتمام الطلب" onClose={() => {
           setTurnstileToken(null);
           setCheckoutErrors({});
           setPanel("cart");
@@ -3329,12 +3330,12 @@ function StorefrontContent() {
               <Banknote aria-hidden className="size-3.5" /> تدفع نقداً عند استلام الطلب من المندوب.
             </p>
           </form>
-        </PanelShell>
+        </StorefrontPanelShell>
       )}
 
       {/* ═══ تأكيد الطلب ═══ */}
       {panel === "confirmation" && confirmation && (
-        <PanelShell title="تمّ استلام طلبك" onClose={() => setPanel(null)}>
+        <StorefrontPanelShell title="تمّ استلام طلبك" onClose={() => setPanel(null)}>
           <div className="flex flex-col items-center py-6 text-center">
             <div className="flex size-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
               <Check aria-hidden className="size-10" />
@@ -3370,11 +3371,11 @@ function StorefrontContent() {
               <Package aria-hidden className="size-4" /> تتبّع هذا الطلب
             </button>
           </div>
-        </PanelShell>
+        </StorefrontPanelShell>
       )}
 
       {panel === "label" && (
-        <PanelShell title="معلومات طلب الشحن" onClose={() => setPanel(null)}>
+        <StorefrontPanelShell title="معلومات طلب الشحن" onClose={() => setPanel(null)}>
           {labelQ.isLoading ? (
             <div className="flex justify-center py-12 text-[var(--sem-info)]"><Loader2 aria-hidden className="size-7 animate-spin" /></div>
           ) : labelQ.data ? (
@@ -3392,11 +3393,11 @@ function StorefrontContent() {
               </div>
             </div>
           ) : <p className="py-10 text-center text-sm font-bold text-destructive">تعذر فتح معلومات هذا الملصق.</p>}
-        </PanelShell>
+        </StorefrontPanelShell>
       )}
 
       {panel === "track" && (
-        <PanelShell title="تتبّع طلبك" onClose={() => setPanel(null)}>
+        <StorefrontPanelShell title="تتبّع طلبك" onClose={() => setPanel(null)}>
           <div className="space-y-4">
             <p className="text-sm text-slate-600 dark:text-slate-300">استخدم طلباً محفوظاً بأمان على هذا الجهاز، أو ألصق رمز التتبّع من تأكيد الطلب.</p>
             {trustedTrackingOrders.length > 0 && (
@@ -3496,7 +3497,7 @@ function StorefrontContent() {
               </div>
             )}
           </div>
-        </PanelShell>
+        </StorefrontPanelShell>
       )}
     </div>
   );
@@ -3519,41 +3520,6 @@ export default function Storefront() {
 }
 
 
-
-/** غلاف لوح بملء الشاشة (سلة/دفع/تأكيد) — ترويسة ثابتة + محتوى قابل للتمرير. */
-function PanelShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(
-    typeof document !== "undefined" && document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-      ? document.activeElement
-      : null,
-  );
-  return (
-    <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[55] bg-slate-950/45" />
-        <DialogPrimitive.Content dir="rtl" aria-describedby={undefined} onOpenAutoFocus={(event) => { event.preventDefault(); closeRef.current?.focus(); }} onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          const trigger = restoreFocusRef.current;
-          restoreFocusRef.current = null;
-          window.requestAnimationFrame(() => { if (trigger?.isConnected) trigger.focus(); });
-        }} className="storefront fixed inset-0 z-[56] flex flex-col overflow-hidden bg-[#fff8ef] outline-none dark:bg-slate-950">
-          <header className="flex shrink-0 items-center gap-3 border-b border-[#f0e2d5] bg-white/95 px-4 py-3 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900" style={{ paddingTop: "calc(.75rem + env(safe-area-inset-top))" }}>
-            <DialogPrimitive.Close asChild>
-              <button ref={closeRef} type="button" aria-label="رجوع" className="flex size-11 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-slate-800">
-                <ArrowRight aria-hidden className="size-5 text-slate-600 dark:text-slate-300" />
-              </button>
-            </DialogPrimitive.Close>
-            <DialogPrimitive.Title className="text-base font-extrabold text-slate-900 dark:text-white">{title}</DialogPrimitive.Title>
-          </header>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            <div className="mx-auto w-full max-w-2xl px-4 py-4 sm:px-6" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
-  );
-}
 
 function Field({ icon, label, htmlFor, required = false, error, tone = "plain", children }: { icon: React.ReactNode; label: string; htmlFor: string; required?: boolean; error?: string; tone?: "plain" | "mint" | "lilac"; children: React.ReactNode }) {
   const errorId = `${htmlFor}-error`;
