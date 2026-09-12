@@ -42,7 +42,7 @@ import { assertCashOutAvailable } from "../services/cash/cashAvailability";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import {
-  recordPurchaseReturnCartCardReceipt,
+  postPurchaseReturnCartCardRefund,
   recordPurchaseReturnCartReceipt,
   recordSalesReturnCartCardReceipt,
   recordSalesReturnCartReceipt,
@@ -2099,46 +2099,22 @@ export const returnRouter = router({
               postingSourceComponents: paymentInSource,
             });
           } else if (input.settlement.method === "CARD_TRANSFER") {
-            // مردود بحوالة/بطاقة: المال يدخل حسابنا المصرفيّ (CARD_BANK) لا الدرج ⇒ إيصال قبضٍ
-            // (IN) غيرُ نقديٍّ بلا وردية + قيد PAYMENT_IN عاكسٌ يُصافر خفضَ RETURN لِـAP، فيبقى
-            // الدفتر مطابقاً لـcurrentBalance (reconcileSupplierBalances نظيف) وللمال مسارٌ وطرفٌ
-            // (المورد). كان هذا المسار بلا أثرٍ ماليّ إطلاقاً — RETURN وحده يخصم AP بلا نظير ⇒
+            // مردود بحوالة: المال يدخل حساب البنك (CARD_BANK) لا الدرج. العملية الكاملة (إيصال IN
+            // غيرُ نقديّ + قيد PAYMENT_IN عاكسٌ يُصافر خفضَ RETURN لِـAP) تعيش في الخدمة احتراماً
+            // لعقد الطبقات. صافي AP صفرٌ على الدفتر و currentBalance ⇒ reconcile نظيف، وللمال مسارٌ
+            // وطرفٌ (المورد). كان المسار بلا أثرٍ ماليّ إطلاقاً — RETURN وحده يخصم AP بلا نظير ⇒
             // انحراف reconcile بقيمة المرتجع + مردودٌ بلا إيصالٍ ولا قيد (يخالف مبدأ المالك §٥).
-            // نظيرُ فرع CASH_IN أعلاه وفرع البطاقة في مرتجع المبيعات (recordSalesReturnCartCardReceipt).
-            generatedReceiptId = await recordPurchaseReturnCartCardReceipt(tx, {
+            // المرجع: الواجهة لا تُرسل settlement.reference، فنُمرّر مرجعَ المستند (input.reference)
+            // كي لا يُخزَّن مرجعٌ فارغ يُعجز مطابقة كشف البنك (الخدمة تقصّه لطول عمود varchar(100)).
+            generatedReceiptId = await postPurchaseReturnCartCardRefund(tx, {
               branchId: actorBranchId,
               amount: returnTotalDec,
               returnNumber,
               supplierId: input.supplierId,
               supplierName: supplier.name,
-              reference: input.settlement.reference,
+              reference: input.settlement.reference ?? input.reference,
               userId: ctx.user.id,
-            });
-
-            const transferInSource = {
-              roleDebits: { CARD_BANK: returnTotalDec },
-              roleCredits: { AP: returnTotalDec },
-            };
-            await postEntry(tx, {
-              entryType: "PAYMENT_IN",
-              branchId: actorBranchId,
-              supplierId: input.supplierId,
-              receiptId: generatedReceiptId,
-              amount: returnTotalDec,
-              paymentMethod: "TRANSFER",
-              notes: `مردود حوالة لمرتجع مشتريات [${returnNumber}] — ${supplier.name}`,
-              createdBy: ctx.user.id,
-              createdByNameSnapshot: ctx.user.name ?? "مدير",
-              postingIntent: createPostingIntent(
-                "PAYMENT_IN_SUPPLIER_REFUND",
-                "PAYMENT_IN",
-                [
-                  debitLine("CARD_BANK", returnTotalDec),
-                  creditLine("AP", returnTotalDec),
-                ],
-                transferInSource,
-              ),
-              postingSourceComponents: transferInSource,
+              userName: ctx.user.name,
             });
           }
 

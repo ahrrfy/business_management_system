@@ -268,7 +268,7 @@ export function PurchaseReturnPortal({
         ? "معادلة ذمم (تقليل ذمة المورد علينا)"
         : purchaseSettlement === "CASH_IN"
           ? `مردود نقدي وتوريد إلى درج [${selectedDrawer?.userName || "الكاشير"}]`
-          : "حوالة بنكية / بطاقة";
+          : "حوالة بنكية";
 
     const ok = await confirm({
       title: `تأكيد مرتجع الشراء للمورد: ${selectedSupplier.name}`,
@@ -810,7 +810,7 @@ export function PurchaseReturnPortal({
                   <div className="flex items-center gap-2.5">
                     <CreditCard className="size-4 text-blue-600" />
                     <div>
-                      <div>حوالة بنكية / بطاقة</div>
+                      <div>حوالة بنكية</div>
                       <div className="text-[10px] text-muted-foreground font-normal">
                         استلام حوالة من المورد على الحساب المصرفي
                       </div>

@@ -2548,6 +2548,9 @@ export async function recordPurchaseReturnCartCardReceipt(
     approvalStatus: "APPROVED",
     operation: "مردود حوالة لمرتجع مشتريات سلة",
   });
+  // receipts.referenceNumber = varchar(100)؛ الراوتر يقبل مرجعاً حتى ١٢٠ ⇒ اقصصه لطول العمود كي
+  // لا يُجهَض الإدراج (MySQL صارم) أو يُخزَّن مرجعٌ مبتور صامتاً (متساهل) فتُعجز مطابقة كشف البنك.
+  const ref = params.reference?.trim().slice(0, 100) || null;
   const [insReceipt] = await tx.insert(receipts).values({
     branchId: params.branchId,
     shiftId: null,
@@ -2555,13 +2558,58 @@ export async function recordPurchaseReturnCartCardReceipt(
     amount: toDbMoney(params.amount),
     paymentMethod: "TRANSFER",
     cashBucket: null,
-    referenceNumber: params.reference?.trim() || null,
+    referenceNumber: ref,
     partyType: "SUPPLIER",
     partyId: params.supplierId,
-    description: `مردود حوالة لمرتجع مشتريات [${params.returnNumber}] من المورد (${params.supplierName}) (مرجع: ${params.reference || "—"})`,
+    description: `مردود حوالة لمرتجع مشتريات [${params.returnNumber}] من المورد (${params.supplierName}) (مرجع: ${ref || "—"})`,
     createdBy: params.userId,
     status: "COMPLETED",
     approvalStatus: "APPROVED",
   });
   return Number(insReceipt.insertId);
+}
+
+/**
+ * العملية الكاملة لمردود CARD_TRANSFER لمرتجع مشتريات السلة: إيصال قبضٍ (IN) + قيد PAYMENT_IN
+ * عاكس. تعيش في الخدمة احتراماً لعقد الطبقات (الراوتر تحقّقٌ واختيارُ إجراءٍ لا منطقُ أعمال)،
+ * فتُتاح لأيّ قناةٍ لا للـtRPC وحدها. المال يدخل حساب البنك (CARD_BANK) ويُصافر PAYMENT_IN خفضَ
+ * قيد RETURN لِـAP ⇒ صافي AP صفرٌ على الدفتر و currentBalance (reconcileSupplierBalances نظيف).
+ */
+export async function postPurchaseReturnCartCardRefund(
+  tx: Tx,
+  params: {
+    branchId: number;
+    amount: Decimal;
+    returnNumber: string;
+    supplierId: number;
+    supplierName: string;
+    reference?: string | null;
+    userId: number;
+    userName?: string | null;
+  },
+): Promise<number> {
+  const receiptId = await recordPurchaseReturnCartCardReceipt(tx, params);
+  const source = {
+    roleDebits: { CARD_BANK: params.amount },
+    roleCredits: { AP: params.amount },
+  };
+  await postEntry(tx, {
+    entryType: "PAYMENT_IN",
+    branchId: params.branchId,
+    supplierId: params.supplierId,
+    receiptId,
+    amount: params.amount,
+    paymentMethod: "TRANSFER",
+    notes: `مردود حوالة لمرتجع مشتريات [${params.returnNumber}] — ${params.supplierName}`,
+    createdBy: params.userId,
+    createdByNameSnapshot: params.userName ?? "مدير",
+    postingIntent: createPostingIntent(
+      "PAYMENT_IN_SUPPLIER_REFUND",
+      "PAYMENT_IN",
+      [debitLine("CARD_BANK", params.amount), creditLine("AP", params.amount)],
+      source,
+    ),
+    postingSourceComponents: source,
+  });
+  return receiptId;
 }
