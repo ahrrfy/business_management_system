@@ -140,6 +140,24 @@ async function customerBalance(id: number): Promise<string> {
   return String(rows[0]?.b ?? "0.00");
 }
 
+/** نسبةُ العميل على رافدَي قيد الردّ (RETURN و PAYMENT_OUT) — تُثبِت اتّساقَهما. */
+async function refundLegCustomerIds(): Promise<{
+  returnLeg: number | null;
+  paymentLeg: number | null;
+}> {
+  const rows = await db()
+    .select({
+      entryType: s.accountingEntries.entryType,
+      customerId: s.accountingEntries.customerId,
+    })
+    .from(s.accountingEntries);
+  const norm = (v: unknown) => (v == null ? null : Number(v));
+  return {
+    returnLeg: norm(rows.find((e) => e.entryType === "RETURN")?.customerId),
+    paymentLeg: norm(rows.find((e) => e.entryType === "PAYMENT_OUT")?.customerId),
+  };
+}
+
 async function entriesOfType(entryType: "RETURN" | "PAYMENT_OUT") {
   return db()
     .select()
@@ -200,6 +218,8 @@ describe("returns.executeSalesReturnCart — سلامة المسار المال�
     // (ج) لا انحراف في ذمم العملاء — الدفتر يطابق currentBalance، والرصيد صفرٌ (نقدٌ خرج مقابل نقدٍ دخل).
     expect(await reconcileCustomerBalances()).toEqual([]);
     expect(await customerBalance(1)).toBe("0.00");
+    // اتّساقُ رافدَي الردّ: كلاهما منسوبٌ للعميل (فاتورةٌ مطابقة، ومربوطٌ بها عبر invoiceId فيتصافران).
+    expect(await refundLegCustomerIds()).toEqual({ returnLeg: 1, paymentLeg: 1 });
 
     // البضاعة عادت للرف.
     const stock = await db()
@@ -294,7 +314,17 @@ describe("returns.executeSalesReturnCart — عميلٌ مسجّلٌ بلا فا
       clientRequestId: "sr-cart-cash-noinv-1",
     });
 
-    // لا فاتورةَ تنقص AR ولا رصيدَ تغيّر ⇒ يجب أن يبقى reconcile نظيفاً (صرفٌ نقديٌّ محضٌ للزبون).
+    // ⭐ بلاغ Codex P1 — اتّساقُ رافدَي الردّ: قيدا RETURN و PAYMENT_OUT لعمليةٍ واحدة يجب أن
+    // يُنسَبا للعميل **بالطريقة نفسها**. بلا فاتورةٍ مطابقة يُستبعَد كلاهما (customerId=null) ⇒ لا
+    // يجمع أيُّ تقريرٍ (getARAging بنطاق الفرع · دفتر العميل المزدوج) قيدَ RETURN (−30) بلا مقابل
+    // PAYMENT_OUT (+30) فيُظهر رصيداً وهمياً. قبل الإصلاح كان RETURN يحمل customerId وحده — عدمُ
+    // اتّساقٍ لا يراه reconcileCustomerBalances لأنّه لا يجمع RETURN، فمرّ صامتاً.
+    expect(await refundLegCustomerIds()).toEqual({
+      returnLeg: null,
+      paymentLeg: null,
+    });
+
+    // لا فاتورةَ تنقص AR ولا رصيدَ تغيّر ⇒ reconcile نظيف، والرصيد صفرٌ (صرفٌ نقديٌّ محضٌ للزبون).
     expect(await reconcileCustomerBalances()).toEqual([]);
     expect(await customerBalance(1)).toBe("0.00");
   });

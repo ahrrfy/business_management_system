@@ -1846,7 +1846,9 @@ export const returnRouter = router({
             branchId: actorBranchId,
             invoiceId: matchedInvoice?.id ?? null,
             receiptId: generatedReceiptId,
-            customerId: input.customer?.customerId ?? null,
+            // اتّساقُ رافدَي الردّ: نفس نسبة PAYMENT_OUT (ledgerCustomerId) — بلا فاتورةٍ مطابقة
+            // يُستبعَد كلاهما من دفتر العميل معاً، فلا يجمع تقريرٌ قيدَ RETURN بلا مقابله (بلاغ Codex P1).
+            customerId: ledgerCustomerId,
             amount: returnTotalDec.neg(),
             revenue: returnTotalDec.neg(),
             cost: new Decimal(0),
