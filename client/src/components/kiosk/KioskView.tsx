@@ -18,6 +18,7 @@ import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { X, Maximize, WifiOff, Package, Keyboard } from "lucide-react";
 import { fmtAr } from "@/lib/money";
 import { playScanSuccess, playScanNotFound } from "@/lib/audioFeedback";
+import { useScreenWakeLock } from "@/lib/screenWakeLock";
 
 export type KProduct = {
   productId: number;
@@ -285,23 +286,34 @@ function Banner({
     }
   }, [idx, n]);
 
-  // دوران مستمر: عند إتمام دورة كاملة (prev + 1 >= n) يُعاد الخلط وتحديث المنتجات من أحدث جلب
+  // دوران مستمر: تقدم سلس للشريحة التالية
   useEffect(() => {
     if (paused || n <= 1) return;
     const id = setInterval(() => {
       setIdx((prev) => {
-        if (prev + 1 >= n) {
-          const curSource = sourceRef.current;
-          const curPromos = promosRef.current;
-          const shuffled = curSource.length > 1 ? fisherYates(curSource) : curSource;
-          setDisplay(buildSlideDeck(shuffled, curPromos));
+        const next = prev + 1;
+        if (next >= n) {
           return 0;
         }
-        return prev + 1;
+        return next;
       });
     }, rotateMs);
     return () => clearInterval(id);
   }, [paused, n, rotateMs]);
+
+  // عند العودة إلى الشريحة الأولى بعد إتمام الدورة، نخلط الكتالوج بهدوء للدورة التالية
+  const prevIdxRef = useRef(idx);
+  useEffect(() => {
+    if (prevIdxRef.current > 0 && idx === 0) {
+      const curSource = sourceRef.current;
+      const curPromos = promosRef.current;
+      if (curSource.length > 0 || curPromos.length > 0) {
+        const shuffled = curSource.length > 1 ? fisherYates(curSource) : curSource;
+        setDisplay(buildSlideDeck(shuffled, curPromos));
+      }
+    }
+    prevIdxRef.current = idx;
+  }, [idx]);
 
   if (n === 0) {
     return (
@@ -520,6 +532,8 @@ export default function KioskView({
   const isDevice = mode === "device";
   const [, navigate] = useLocation();
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  // تفعيل حارس استيقاظ الشاشة لمنع السكون والشاشة السوداء 24/7
+  useScreenWakeLock(true);
   const setTweak = useCallback(<K extends keyof Settings>(k: K, v: Settings[K]) => {
     setSettings((prev) => {
       const next = { ...prev, [k]: v };
@@ -787,6 +801,14 @@ export default function KioskView({
             <div className="kpc-field">
               <label>رابط QR (واتساب/صفحة)</label>
               <input type="text" value={settings.contactUrl} onChange={(e) => setTweak("contactUrl", e.target.value)} />
+            </div>
+
+            <div className="kpc-field">
+              <label>وضع العمل المستمر (منع سكون الشاشة 24/7)</label>
+              <div className="kpc-status-chip">
+                <span className="kpc-status-dot" />
+                <span>حارس استيقاظ الشاشة نشط دائماً</span>
+              </div>
             </div>
 
             {/* محاكاة المسح — الموظّف داخل التطبيق فقط (لا تُعرض للزبون على الجهاز) */}

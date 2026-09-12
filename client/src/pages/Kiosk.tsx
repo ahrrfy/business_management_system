@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { Lock, RefreshCw, WifiOff } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import KioskView from "@/components/kiosk/KioskView";
+import { useScreenWakeLock } from "@/lib/screenWakeLock";
 
 const KIOSK_DEVICE_TOKEN_KEY = "alroya_kiosk_device_token_v1";
 
@@ -133,6 +134,22 @@ export default function Kiosk() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [utils]);
+
+  // إبقاء الشاشة مستيقظة 24/7 طوال وقت عمل الكشك
+  useScreenWakeLock(true);
+
+  // استعادة الجلسة تلقائياً في الخلفية في حال سقوط الكوكي بعد أيام تشغيل طويلة
+  useEffect(() => {
+    if (booted && deviceMe.isError && !login.isPending) {
+      const t = tokenRef.current || getStoredToken();
+      if (t) {
+        const id = setTimeout(() => {
+          login.mutate({ token: t });
+        }, 3000);
+        return () => clearTimeout(id);
+      }
+    }
+  }, [booted, deviceMe.isError, login]);
 
   const authed = !!deviceMe.data;
 
