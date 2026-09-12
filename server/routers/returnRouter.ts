@@ -1573,17 +1573,22 @@ export const returnRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+      // عزلُ الفرع صارم: كلُّ مسارٍ نقديٍّ/مخزنيٍّ يلزمه فرعٌ مُسنَد صريح — لا افتراضَ صامتٌ
+      // (`?? 1` بابُ IDOR تاريخيّ يحرسه check:branch). المشرفُ (admin) بلا فرعٍ يمرّ من
+      // `salesCashierProcedure` (`requireOwnBranch` يستثنيه) فيُرفَض هنا صراحةً: أيَّ درجٍ
+      // ومخزونِ أيِّ فرعٍ سيَمَسّ مرتجعٌ نُفِّذ بلا فرع؟
+      if (ctx.user.branchId == null) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: appErrorMessage({
             what: "تعذر تنفيذ مرتجع المبيعات",
             why: "لا يوجد فرع مُسنَد لحسابك الحالي",
-            doThis: "تواصل مع مدير النظام لإسناد الفرع التشغيلي لحسابك",
+            doThis:
+              "سجّل الدخول بحسابٍ مُسنَدٍ لفرعٍ تشغيليّ لتنفيذ المرتجع النقديّ/المخزنيّ",
           }),
         });
       }
-      const actorBranchId = Number(ctx.user.branchId ?? 1);
+      const actorBranchId = Number(ctx.user.branchId);
 
       return withTx(
         async (tx) => {
@@ -1629,6 +1634,15 @@ export const returnRouter = router({
               matchedInvoice = found;
             }
           }
+
+          // ⭐ نسبةُ العميل في **الدفتر** (accountingEntries.customerId) لقيد صرف الاسترداد مشروطةٌ
+          // بفاتورةٍ مطابقة: عندئذٍ يحمل القيدُ invoiceId فيُستبعَد من voucherSum في
+          // reconcileCustomerBalances. بلا فاتورةٍ مطابقة، قيدُ PAYMENT_OUT بـcustomerId وinvoiceId=NULL
+          // يُقرأ «سندَ صرفٍ يرفع AR» بينما لا رصيدَ يتحرّك ⇒ انحرافُ reconcile بقيمة المرتجع. النسبةُ
+          // للعميل تبقى على **الإيصال** (partyId) لسلامة المسار (§٥). يحرسه salesReturnCartRefund.test.ts.
+          const ledgerCustomerId = matchedInvoice
+            ? (input.customer?.customerId ?? null)
+            : null;
 
           // ١) تنفيذ حركة المخزون لكل بند
           for (const itm of input.items) {
@@ -1718,7 +1732,7 @@ export const returnRouter = router({
               branchId: actorBranchId,
               invoiceId: matchedInvoice?.id ?? null,
               receiptId: generatedReceiptId,
-              customerId: input.customer?.customerId ?? null,
+              customerId: ledgerCustomerId,
               amount: returnTotalDec,
               notes: `صرف نقدي لمرتجع مبيعات [${returnNumber}] من درج #${targetShiftId}`,
               createdBy: ctx.user.id,
@@ -1754,7 +1768,7 @@ export const returnRouter = router({
               branchId: actorBranchId,
               invoiceId: matchedInvoice?.id ?? null,
               receiptId: generatedReceiptId,
-              customerId: input.customer?.customerId ?? null,
+              customerId: ledgerCustomerId,
               amount: returnTotalDec,
               notes: `استرداد بطاقة لمرتجع مبيعات [${returnNumber}]`,
               createdBy: ctx.user.id,
@@ -1778,6 +1792,22 @@ export const returnRouter = router({
                   what: "تعذر إيداع رصيد المتجر",
                   why: "طريقة استرداد رصيد المتجر تتطلب تحديد عميل مسجل في النظام لإيداع الرصيد في حسابه",
                   doThis: "اختر العميل من CRM أو حدد طريقة استرداد نقدي",
+                }),
+              });
+            }
+            // رصيدُ المتجر التزامٌ دائمٌ على حساب العميل ⇒ يجب أن يُسنَد إلى بيعٍ موثَّق (الفاتورة
+            // المُرتجَعة): بها وحدها يُوازِن انخفاضُ AR في الدفتر (returnedTotal) خفضَ currentBalance،
+            // فيبقى reconcileCustomerBalances نظيفاً. بلا فاتورةٍ مطابقة يُنشَأ رصيدٌ دائنٌ بلا مُسنَد
+            // ⇒ التزامٌ غير متعقَّبٍ وانحرافُ ذمّة. المرتجعُ العابر بلا فاتورةٍ مساره ردٌّ نقديّ فوريّ
+            // لا إيداعُ رصيد متجر (مطابقةً للمسار القانونيّ returnSaleInTx الذي يشترط فاتورةً دائماً).
+            if (!matchedInvoice) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message: appErrorMessage({
+                  what: "تعذر إيداع رصيد المتجر",
+                  why: "إيداع رصيد المتجر يتطلّب ربطَ المرتجع بالفاتورة الأصليّة — لا يُنشأ رصيدٌ دائنٌ لعميلٍ بلا بيعٍ موثَّق",
+                  doThis:
+                    "أدخل رقم الفاتورة الأصليّة، أو اختر استرداداً نقدياً/بالبطاقة للمرتجع العابر",
                 }),
               });
             }
@@ -1817,7 +1847,9 @@ export const returnRouter = router({
             branchId: actorBranchId,
             invoiceId: matchedInvoice?.id ?? null,
             receiptId: generatedReceiptId,
-            customerId: input.customer?.customerId ?? null,
+            // اتّساقُ رافدَي الردّ: نفس نسبة PAYMENT_OUT (ledgerCustomerId) — بلا فاتورةٍ مطابقة
+            // يُستبعَد كلاهما من دفتر العميل معاً، فلا يجمع تقريرٌ قيدَ RETURN بلا مقابله (بلاغ Codex P1).
+            customerId: ledgerCustomerId,
             amount: returnTotalDec.neg(),
             revenue: returnTotalDec.neg(),
             cost: new Decimal(0),
