@@ -47,7 +47,6 @@ const BASELINE = new Set([
   "ConsignmentSettlements.tsx|const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);",
   "ContractPrices.tsx|const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);",
   "Dashboard.tsx|const myBranch = me.data?.branchId ?? 1;",
-  "DeliveryHub.tsx|const branchId = Number(me.data?.branchId ?? 0);",
   "Inventory.tsx|const myBranch = me.data?.branchId ?? 1;",
   "InventoryMovements.tsx|const myBranch = me.data?.branchId ?? 1;",
   "ItemLedger.tsx|const myBranch = me.data?.branchId ?? 1;",
