@@ -64,6 +64,7 @@ type Settings = {
   showQr: boolean;
   contactLabel: string;
   contactUrl: string;
+  enableSound: boolean;
 };
 
 const DEFAULTS: Settings = {
@@ -77,6 +78,7 @@ const DEFAULTS: Settings = {
   showQr: true,
   contactLabel: "تابعنا وتواصل معنا",
   contactUrl: "https://wa.me/9647700000000",
+  enableSound: true,
 };
 const LS_KEY = "kiosk_settings_v1";
 
@@ -564,7 +566,7 @@ export default function KioskView({
     // 1. فحص فوري بالذاكرة المحلية (استجابة 0ms وصوت نجاح فوري) إن كان الباركود ضمن الكتالوج النشط
     const localMatch = products.find((pr) => pr.barcode === clean);
     if (localMatch) {
-      playScanSuccess();
+      if (settings.enableSound) playScanSuccess();
       setScan({ mode: "result", product: localMatch, code: clean, token: Date.now() });
     }
 
@@ -574,19 +576,19 @@ export default function KioskView({
         isDevice ? { barcode: clean } : { branchId: staffBranchId ?? 0, barcode: clean }
       )) as KProduct | null;
       if (p) {
-        if (!localMatch) playScanSuccess();
+        if (!localMatch && settings.enableSound) playScanSuccess();
         setScan({ mode: "result", product: p, code: clean, token: Date.now() });
       } else if (!localMatch) {
-        playScanNotFound();
+        if (settings.enableSound) playScanNotFound();
         setScan({ mode: "notfound", code: clean, token: Date.now() });
       }
     } catch {
       if (!localMatch) {
-        playScanNotFound();
+        if (settings.enableSound) playScanNotFound();
         setScan({ mode: "neterror", code: clean, token: Date.now() });
       }
     }
-  }, [isDevice, staffBranchId, utils, products]);
+  }, [isDevice, staffBranchId, utils, products, settings.enableSound]);
 
   // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
   // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.
@@ -773,6 +775,9 @@ export default function KioskView({
             </label>
             <label className="kpc-toggle">رمز QR للتواصل
               <input type="checkbox" checked={settings.showQr} onChange={(e) => setTweak("showQr", e.target.checked)} />
+            </label>
+            <label className="kpc-toggle">التنبيه الصوتي عند المسح
+              <input type="checkbox" checked={settings.enableSound} onChange={(e) => setTweak("enableSound", e.target.checked)} />
             </label>
 
             <div className="kpc-field">
