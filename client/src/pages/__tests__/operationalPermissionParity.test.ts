@@ -86,7 +86,9 @@ describe("operational UI permission parity", () => {
     const source =
       readPage("DeliveryHub.tsx") +
       "\n" +
-      readComponent("delivery/DeliverySettleTab.tsx");
+      readComponent("delivery/DeliverySettleTab.tsx") +
+      "\n" +
+      readComponent("delivery/DeliverySettleSummaryCard.tsx");
     const dispatchAuthority = section(
       source,
       "const canDispatch",

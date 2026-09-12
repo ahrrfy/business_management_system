@@ -56,11 +56,6 @@ export const PRIORITIES: Record<string, { label: string; cls: string; rank: numb
   LOW: { label: "منخفض", cls: "wob-low", rank: 1 },
 };
 
-export const PAYMENT_METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  TRANSFER: "تحويل",
-};
 
 export function colVars(hue: number): React.CSSProperties {
   return {

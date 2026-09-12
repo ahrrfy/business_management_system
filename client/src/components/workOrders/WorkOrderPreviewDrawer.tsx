@@ -29,6 +29,7 @@ import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { fmtAr, fmtInt, D, positiveDiff } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
 import {
   type WorkOrderStatus,
   WO_NEXT_STATUS,
@@ -44,7 +45,6 @@ import {
   type ColKey,
   STATUSES,
   ADV_LABEL,
-  PAYMENT_METHOD_LABEL,
   PRIORITIES,
   dueInfo,
   progressOf,
@@ -144,7 +144,7 @@ export function WorkOrderPreviewDrawer({
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
                   {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
-                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">طريقة دفع العربون</div><div className="wob-v">{PAYMENT_METHOD_LABEL[d.paymentMethod ?? ""] ?? d.paymentMethod ?? "—"}</div></div>}
+                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">طريقة دفع العربون</div><div className="wob-v">{paymentMethodLabel(d.paymentMethod)}</div></div>}
                   {d.paymentReference && <div><div className="wob-k">مرجع الدفع</div><div className="wob-v" dir="ltr">{d.paymentReference}</div></div>}
                   <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{fmtDate(d.dueDate)}</div></div>
                   <div><div className="wob-k">أنشأ الطلب</div><div className="wob-v">{d.createdByName ?? "—"}</div></div>

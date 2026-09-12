@@ -218,6 +218,19 @@ export default function WorkOrders() {
   };
   const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending;
 
+  const operation = useMemo(() => ({
+    getOperation: (order: WO) => ({
+      actor: {
+        name: order.createdByName,
+        source: order.createdByName ? ("user" as const) : ("legacy" as const),
+      },
+      action: { code: "workOrder.create", label: "إنشاء طلب خدمة" },
+      subject: { type: "workOrder", label: "طلب", id: order.orderNumber },
+      at: order.createdAt,
+    }),
+    label: "تتبّع الإنشاء",
+  }), []);
+
   const all = useMemo(() => [...(activeQ.data ?? []), ...(deliveredQ.data ?? [])], [activeQ.data, deliveredQ.data]);
   // الأولوية/القناة ترشيح عميلي (لا يدعمهما الخادم)؛ q تُطبَّق فورياً هنا أيضاً فوق الترشيح الخادمي
   // المُبطَّأ (debounce) — استجابة لحظية بلا وميض نتائج قديمة.
@@ -701,8 +714,8 @@ export default function WorkOrders() {
           }}
         />
       ) : view === "list" ? (
-        /* operation={operation} */
         <WorkOrdersTable
+          operation={operation}
           rows={filtered}
           isManager={isManager}
           canRequestControl={canRequestControl}
