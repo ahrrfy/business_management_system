@@ -31,7 +31,7 @@ import {
   setKioskDeviceActive,
   updateKioskDevice,
 } from "../services/kioskDeviceService";
-import { adminProcedure, middleware, publicProcedure, router } from "../trpc";
+import { adminProcedure, middleware, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 
 /**
  * وسيط القراءة: يُمرّر المستخدم المسجَّل كما هو (deviceBranchId=null ⇒ يُستعمل branchId من المدخل)،
@@ -117,34 +117,18 @@ export const kioskRouter = router({
       return { ok: true as const, branchId: r.branchId, branchName: r.branchName, label: r.label };
     }),
 
-  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk). null = غير مُصرَّح. */
+  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk) مع تجديد تلقائي للكوكي. null = غير مُصرَّح. */
   deviceMe: publicProcedure.query(async ({ ctx }) => {
     const device = await resolveKioskDevice(ctx.req);
     if (!device) return null;
+    const token = await signKioskSession(device.deviceId, device.branchId, device.label);
+    ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
     return {
       deviceId: device.deviceId,
       branchId: device.branchId,
       branchName: device.branchName,
       label: device.label,
     };
-  }),
-
-  /** تجديد كوكي الجهاز دورياً لمنع انتهائه في الأجهزة التي تعمل شهوراً بلا إقلاع. */
-  deviceRefresh: publicProcedure.mutation(async ({ ctx }) => {
-    const device = await resolveKioskDevice(ctx.req);
-    if (!device) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: appErrorMessage({
-          what: "تعذّر تجديد جلسة جهاز قارئ الأسعار",
-          why: "جلسة الجهاز منتهية أو غير صالحة في النظام",
-          doThis: "أعد تفعيل الجهاز برمز جديد من لوحة الإدارة",
-        }),
-      });
-    }
-    const token = await signKioskSession(device.deviceId, device.branchId, device.label);
-    ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
-    return { ok: true as const };
   }),
 
   /** خروج الجهاز: مسح كوكي الجهاز فقط (لا يمسّ كوكي جلسة النظام). */
@@ -174,7 +158,7 @@ export const kioskRouter = router({
       }),
 
     /** تعديل اسم الجهاز أو فرعه المربوط. */
-    update: adminProcedure
+    update: settingsAdminProcedure
       .input(
         z.object({
           id: z.number().int().positive(),

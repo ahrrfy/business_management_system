@@ -78,6 +78,7 @@ export default function Kiosk() {
       return failureCount < 5;
     },
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
+    refetchInterval: 12 * 60 * 60 * 1000, // تجديد دوري تلقائي للكوكي كل ١٢ ساعة
     refetchOnWindowFocus: false,
   });
 
@@ -98,17 +99,6 @@ export default function Kiosk() {
       void utils.kiosk.deviceMe.invalidate();
     },
   });
-
-  const refresh = trpc.kiosk.deviceRefresh.useMutation();
-
-  // تجديد دوري لكوكي جلسة الجهاز كل ٢٤ ساعة حتى لا تنتهي الجلسة ما دام الجهاز يعمل
-  useEffect(() => {
-    if (!deviceMe.data) return;
-    const interval = setInterval(() => {
-      refresh.mutate();
-    }, 24 * 60 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [deviceMe.data, refresh]);
 
   // إقلاع: قراءة الرمز من الـfragment أو من التخزين المحلي الآمن.
   useEffect(() => {
