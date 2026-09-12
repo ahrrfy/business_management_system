@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 const readPage = (name: string) =>
   readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 
+const readComponent = (relative: string) =>
+  readFileSync(new URL(`../../components/${relative}`, import.meta.url), "utf8");
+
 describe("audited public UX contracts", () => {
   it("keeps the jobs marquee semantic once and delegates modal focus to Dialog", () => {
     const source = readPage("JobApply.tsx");
@@ -226,7 +229,8 @@ describe("audited public UX contracts", () => {
 });
 
 describe("سلة البطاقات والمنتجات الموحّدة في POS", () => {
-  const source = readPage("POS.tsx");
+  const source =
+    readPage("POS.tsx") + "\n" + readComponent("pos/usePOSCatalogSearch.ts");
 
   it("يقبل المنتجات والبطاقات في نيّة موحّدة بدلاً من فصل السلتين", () => {
     expect(source).not.toContain("DIGITAL_CART_BLOCKS_REGULAR_MESSAGE");
