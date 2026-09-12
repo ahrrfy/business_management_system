@@ -6,6 +6,7 @@ import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { DeliveryCustodyCard } from "@/components/treasury/DeliveryCustodyCard";
 import { PendingHandoversSection, CustodyQueryNotice } from "@/components/treasury/PendingHandoversSection";
+import { FundTreasuryDialog } from "@/components/treasury/FundTreasuryDialog";
 import { FinancialSourceBadge } from "@/components/financial";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { moduleAccessAllowed } from "@shared/permissions";
@@ -138,11 +139,6 @@ export default function Treasury() {
   const [movExporting, setMovExporting] = useState(false);
   // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): تمويل الخزينة (رأس مال) — يُموّل عهد الورديات.
   const [fundOpen, setFundOpen] = useState(false);
-  const [fundBranch, setFundBranch] = useState<number | "">("");
-  const [fundAmount, setFundAmount] = useState("");
-  const [fundDesc, setFundDesc] = useState("");
-  const [fundNotes, setFundNotes] = useState("");
-  const [fundReqId, setFundReqId] = useState("");
 
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -261,31 +257,6 @@ export default function Treasury() {
     void utils.treasury.getOpenShifts.invalidate();
     void utils.treasury.pendingHandoverReceipts.invalidate();
   };
-
-  const fundTreasuryM = trpc.treasury.fundTreasury.useMutation({
-    onSuccess: (r) => {
-      notify.ok("تم تمويل الخزينة", `السند ${r.referenceNumber} — الرصيد بعده ${fmtAr(r.treasuryBalanceAfter)} د.ع`);
-      setFundOpen(false); setFundAmount(""); setFundDesc(""); setFundNotes("");
-      refreshAll();
-    },
-    onError: (e) => notify.err(e),
-  });
-  const openFund = () => {
-    setFundReqId(newClientRequestId());
-    setFundBranch(
-      branchId !== ""
-        ? Number(branchId)
-        : isManager && me.data?.branchId != null
-          ? Number(me.data.branchId)
-          : "",
-    );
-    setFundAmount("");
-    setFundDesc("");
-    setFundNotes("");
-    setFundOpen(true);
-  };
-  const fundAmountValid =
-    /^\d+(\.\d{1,2})?$/.test(fundAmount) && Number(fundAmount) > 0;
 
   const movementCols: ColumnDef<MovementRow>[] = useMemo(
     () => [
@@ -759,7 +730,7 @@ export default function Treasury() {
             size="sm"
             variant="outline"
             className="gap-1.5"
-            onClick={openFund}
+            onClick={() => setFundOpen(true)}
             title="إيداع رأس مال / رصيد افتتاحيّ في الخزينة"
           >
             <Vault className="h-4 w-4" />
@@ -1146,126 +1117,20 @@ export default function Treasury() {
         </div>
       </div>
 
-      {/* تمويل الخزينة (imprest، ٢٨/٧/٢٦) — إيداع رأس مال / رصيد افتتاحيّ يُموّل عهد الورديات. */}
-      {fundOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          dir="rtl"
-          onClick={() => setFundOpen(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label="تمويل الخزينة"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-1 flex items-center gap-2">
-              <Vault className="h-5 w-5 text-primary" />
-              <h2 className="text-base font-bold">تمويل الخزينة</h2>
-            </div>
-            <p className="mb-4 text-xs text-muted-foreground">
-              إيداع رأس مال / رصيد افتتاحيّ في خزينة الفرع — يُموّل عهد
-              الورديات. يُسجَّل بسند وقيدٍ للتدقيق.
-            </p>
-            <div className="grid gap-3">
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  الفرع
-                </label>
-                {isAdmin ? (
-                  <AppSelect
-                    className={selectCls + " w-full"}
-                    value={String(fundBranch)}
-                    onValueChange={(value) =>
-                      setFundBranch(
-                        value ? Number(value) : "",
-                      )
-                    }
-                  >
-                    <option value="">— اختر الفرع —</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </AppSelect>
-                ) : (
-                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                    {(branches.data ?? []).find(
-                      (b) => Number(b.id) === Number(fundBranch),
-                    )?.name ?? (fundBranch ? `فرع #${fundBranch}` : "—")}
-                  </div>
-                )}
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  المبلغ (د.ع)
-                </label>
-                <MoneyInput
-                  value={fundAmount}
-                  onChange={setFundAmount}
-                  placeholder="0"
-                  className={selectCls + " w-full text-right font-bold"}
-                  ariaLabel="مبلغ تمويل الخزينة"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  التبرير / المصدر (إلزامي)
-                </label>
-                <input
-                  value={fundDesc}
-                  maxLength={500}
-                  placeholder="مثال: إيداع رأس مال أوّليّ من المالك"
-                  onChange={(e) => setFundDesc(e.target.value)}
-                  className={selectCls + " w-full"}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
-                  ملاحظة (اختياري)
-                </label>
-                <input
-                  value={fundNotes}
-                  maxLength={500}
-                  onChange={(e) => setFundNotes(e.target.value)}
-                  className={selectCls + " w-full"}
-                />
-              </div>
-            </div>
-            <div className="mt-5 flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => setFundOpen(false)}
-              >
-                إلغاء
-              </Button>
-              <Button
-                className="flex-1"
-                disabled={
-                  fundTreasuryM.isPending ||
-                  !fundBranch ||
-                  !fundAmountValid ||
-                  !fundDesc.trim()
-                }
-                onClick={() =>
-                  fundTreasuryM.mutate({
-                    branchId: Number(fundBranch),
-                    amount: fundAmount,
-                    description: fundDesc.trim(),
-                    notes: fundNotes.trim() || null,
-                    clientRequestId: fundReqId,
-                  })
-                }
-              >
-                {fundTreasuryM.isPending ? "جارٍ التمويل…" : "تمويل الخزينة"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <FundTreasuryDialog
+        open={fundOpen}
+        onOpenChange={setFundOpen}
+        defaultBranchId={
+          branchId !== ""
+            ? Number(branchId)
+            : isManager && me.data?.branchId != null
+              ? Number(me.data.branchId)
+              : ""
+        }
+        isAdmin={isAdmin}
+        branches={branches.data ?? []}
+        onSuccess={refreshAll}
+      />
     </div>
   );
 }
