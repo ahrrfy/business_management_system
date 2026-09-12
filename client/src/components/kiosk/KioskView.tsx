@@ -533,14 +533,11 @@ function TouchKeypadModal({
 export default function KioskView({
   mode,
   deviceBranchName,
-  deviceBranchId,
   onDeviceLogout,
 }: {
   mode: "staff" | "device";
   /** اسم الفرع المعروض في وضع الجهاز (مفروض خادمياً). */
   deviceBranchName?: string;
-  /** معرّف الفرع المربوط بالجهاز (طبقة دفاعية إضافية). */
-  deviceBranchId?: number;
   /** إنهاء جلسة الجهاز (وضع الجهاز فقط). */
   onDeviceLogout?: () => void;
 }) {
@@ -563,10 +560,10 @@ export default function KioskView({
   const staffBranchId = settings.branchId ?? branches[0]?.id ?? null;
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
-  // البنر: كامل الكتالوج بلا سقف. مع الاحتفاظ بالبيانات السابقة ضد انقطاع الشبكة المؤقت.
+  // البنر: كامل الكتالوج بلا سقف. وضع الجهاز مفروض خادمياً من التوكن (بدون تمرير فرع من العميل).
   const cachedProductsRef = useRef<KProduct[]>([]);
   const bannerQ = trpc.kiosk.banner.useQuery(
-    isDevice ? (deviceBranchId ? { branchId: deviceBranchId } : {}) : { branchId: staffBranchId ?? 0 },
+    isDevice ? {} : { branchId: staffBranchId ?? 0 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
   if (bannerQ.data && bannerQ.data.length > 0) {
@@ -576,11 +573,17 @@ export default function KioskView({
 
   // العروض والبنرات الإعلانية لشاشة الكشك
   const promosQ = trpc.kiosk.promotions.useQuery(
-    isDevice ? (deviceBranchId ? { branchId: deviceBranchId } : undefined) : { branchId: staffBranchId ?? undefined },
+    isDevice ? undefined : { branchId: staffBranchId ?? undefined },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 10 * 60 * 1000, refetchOnWindowFocus: false }
   );
   const promos = (promosQ.data ?? []) as KPromo[];
 
+  // إن ألغى المدير الجهاز من الخادم، يُرفض الاستعلام بـUNAUTHORIZED ونُنهي الجلسة فوراً بلا انتظار
+  useEffect(() => {
+    if (isDevice && bannerQ.error?.data?.code === "UNAUTHORIZED") {
+      onDeviceLogout?.();
+    }
+  }, [isDevice, bannerQ.error, onDeviceLogout]);
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();
@@ -602,9 +605,7 @@ export default function KioskView({
     // 2. فحص موثوق من الخادم لجلب خصومات العروض المحدّثة ووحدات الصنف الأخرى والباركودات البديلة
     try {
       const p = (await utils.kiosk.lookup.fetch(
-        isDevice
-          ? { barcode: clean, ...(deviceBranchId ? { branchId: deviceBranchId } : {}) }
-          : { branchId: staffBranchId ?? 0, barcode: clean }
+        isDevice ? { barcode: clean } : { branchId: staffBranchId ?? 0, barcode: clean }
       )) as KProduct | null;
       if (p) {
         if (!localMatch && settings.enableSound) playScanSuccess();
@@ -613,13 +614,17 @@ export default function KioskView({
         if (settings.enableSound) playScanNotFound();
         setScan({ mode: "notfound", code: clean, token: Date.now() });
       }
-    } catch {
+    } catch (err: any) {
+      if (isDevice && err?.data?.code === "UNAUTHORIZED") {
+        onDeviceLogout?.();
+        return;
+      }
       if (!localMatch) {
         if (settings.enableSound) playScanNotFound();
         setScan({ mode: "neterror", code: clean, token: Date.now() });
       }
     }
-  }, [isDevice, deviceBranchId, staffBranchId, utils, products, settings.enableSound]);
+  }, [isDevice, onDeviceLogout, staffBranchId, utils, products, settings.enableSound]);
 
   // نفس سياسة HID المشتركة؛ تقبل رموز الموردين القصيرة (محرفان) وكل ASCII القابل للطباعة،
   // وتتجاهل حقول إعدادات الكشك من دون مستمعٍ محليّ ينحرف عن بقية الشاشات.

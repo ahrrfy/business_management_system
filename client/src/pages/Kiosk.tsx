@@ -176,7 +176,6 @@ export default function Kiosk() {
       <KioskView
         mode="device"
         deviceBranchName={deviceMe.data?.branchName ?? undefined}
-        deviceBranchId={deviceMe.data?.branchId ?? undefined}
         onDeviceLogout={() => logout.mutate()}
       />
     );
