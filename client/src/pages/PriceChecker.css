@@ -43,6 +43,13 @@
   direction: rtl;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+
+  img {
+    -webkit-user-drag: none;
+    user-drag: none;
+  }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -377,6 +384,203 @@
   .kpc-note { font-size: 12px; opacity: .6; }
   .kpc-link-btn { border: none; background: transparent; color: var(--brand); font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 0; text-align: right; }
   .kpc-link-btn.kpc-danger { color: #dc2626; }
+
+  /* ===== أسعار العروض الترويجية والخصومات ===== */
+  .kpc-original-price {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 2px;
+  }
+  .kpc-was-num {
+    font-size: calc(52px * var(--ps, 1));
+    font-weight: 700;
+    color: var(--muted-fg);
+    text-decoration: line-through;
+    text-decoration-color: #ef4444;
+    text-decoration-thickness: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpc-was-cur {
+    font-size: calc(26px * var(--ps, 1));
+    font-weight: 700;
+    color: var(--muted-fg);
+  }
+  .kpc-discount-badge {
+    background: #ef4444;
+    color: #fff;
+    font-size: calc(24px * var(--ps, 1));
+    font-weight: 800;
+    padding: 4px 16px;
+    border-radius: 999px;
+  }
+  .kpc-promo-tag {
+    display: inline-block;
+    margin-right: 12px;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--brand);
+    background: var(--brand-weak);
+    padding: 4px 14px;
+    border-radius: 999px;
+  }
+
+  /* ===== بطاقة خطأ الشبكة والاتصال ===== */
+  .result-card.neterror { width: 820px; padding: 60px 60px 52px; text-align: center; }
+  .result-card.neterror .nf-icon {
+    width: 110px; height: 110px; border-radius: 50%; margin: 0 auto 28px;
+    background: #fee2e2; color: #ef4444;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .result-card.neterror h2 { font-size: 44px; font-weight: 800; color: #ef4444; margin-bottom: 18px; }
+  .result-card.neterror p { font-size: 26px; color: var(--muted-fg); margin-bottom: 36px; }
+
+  /* ===== شبكة وحدات وعبوات الصنف الأخرى ===== */
+  .kpc-units-box {
+    margin-top: 24px;
+    padding: 20px 24px;
+    border-radius: 20px;
+    background: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .kpc-units-title {
+    font-size: 22px;
+    font-weight: 800;
+    margin-bottom: 12px;
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .kpc-units-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .kpc-unit-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .kpc-unit-name {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--brand);
+  }
+  .kpc-unit-factor {
+    font-size: 16px;
+    color: var(--muted-fg);
+  }
+  .kpc-unit-price {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--fg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ===== لوحة الإدخال اليدوي الرقمي باللمس ===== */
+  .kpc-touch-trigger {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted-fg);
+    font-family: inherit;
+    font-size: 20px;
+    font-weight: 700;
+    padding: 10px 20px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s;
+  }
+  .kpc-touch-trigger:hover {
+    background: var(--card);
+    color: var(--brand);
+    border-color: var(--brand);
+  }
+  .kpc-keypad-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .kpc-keypad-card {
+    width: 480px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    padding: 32px;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .kpc-keypad-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .kpc-keypad-head strong { font-size: 26px; font-weight: 800; }
+  .kpc-keypad-head button { border: none; background: transparent; cursor: pointer; color: inherit; font-size: 24px; }
+  .kpc-keypad-display {
+    height: 72px;
+    background: var(--muted);
+    border: 2px solid var(--border);
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: var(--fg);
+    direction: ltr;
+    padding: 0 16px;
+  }
+  .kpc-keypad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .kpc-key-btn {
+    height: 70px;
+    font-size: 30px;
+    font-weight: 700;
+    border-radius: 16px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    user-select: none;
+  }
+  .kpc-key-btn:active {
+    background: var(--muted);
+    transform: scale(0.96);
+  }
+  .kpc-key-btn.action-btn {
+    font-size: 22px;
+    background: var(--brand);
+    color: #fff;
+    border-color: var(--brand);
+  }
+  .kpc-key-btn.clear-btn {
+    font-size: 20px;
+    color: #ef4444;
+  }
 }
 
 /* الوضع الداكن — متغيّرات على نفس الجذر فقط */
@@ -393,3 +597,133 @@
   --shadow-md: 0 24px 50px -26px rgba(0, 0, 0, 0.6);
 }
 .kioskpc-root.kpc-dark .qr-frame { background: var(--card); }
+.kioskpc-root.kpc-dark .kpc-panel {
+  background: var(--card);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.kioskpc-root.kpc-dark .kpc-panel-head {
+  border-color: var(--border);
+}
+.kioskpc-root.kpc-dark .kpc-field select,
+.kioskpc-root.kpc-dark .kpc-field input[type="text"] {
+  background: var(--muted);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.kioskpc-root.kpc-dark .kpc-seg button {
+  background: var(--muted);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.kioskpc-root.kpc-dark .kpc-seg button.on {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+.kioskpc-root.kpc-dark .kpc-demo-item {
+  border-color: var(--border);
+}
+
+/* ===== تحجيم الشاشات العمودية (Portrait 1080×1920) ===== */
+.kioskpc-root .kpc-canvas.kpc-portrait {
+  width: 1080px;
+  height: 1920px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .kiosk {
+  width: 1080px;
+  height: 1920px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .kiosk-header {
+  padding: 0 48px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .kiosk-footer {
+  padding: 0 48px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .slides {
+  inset: 32px 48px 40px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .slide {
+  flex-direction: column;
+  justify-content: center;
+  gap: 36px;
+  text-align: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .slide-media {
+  order: 1;
+  width: 100%;
+  height: 720px;
+  flex: none;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .slide-info {
+  order: 2;
+  align-items: center;
+  text-align: center;
+  gap: 20px;
+  width: 100%;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .brand-chip {
+  align-self: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .prod-name {
+  font-size: 60px;
+  text-align: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .price-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .price-row {
+  justify-content: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .slide-promo {
+  flex-direction: column;
+  justify-content: center;
+  gap: 36px;
+  text-align: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .promo-banner-media {
+  order: 1;
+  width: 100%;
+  height: 720px;
+  flex: none;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .promo-info {
+  order: 2;
+  align-items: center;
+  text-align: center;
+  gap: 20px;
+  width: 100%;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .promo-badge {
+  align-self: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-card.found {
+  width: 960px;
+  padding: 44px 36px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-body {
+  flex-direction: column;
+  text-align: center;
+  gap: 28px;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-media {
+  width: 440px;
+  height: 440px;
+  flex: none;
+  margin: 0 auto;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-info {
+  align-items: center;
+  text-align: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-price {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.kioskpc-root .kpc-canvas.kpc-portrait .result-card.notfound,
+.kioskpc-root .kpc-canvas.kpc-portrait .result-card.neterror {
+  width: 920px;
+}

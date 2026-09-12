@@ -23,7 +23,7 @@ export function kioskUrl(origin: string, token: string): string {
 export interface InstallerInfo {
   /** أصل الخادم (مثلاً https://srv1548487.hstgr.cloud). */
   origin: string;
-  /** ثواني الانتظار قبل فتح المتصفّح بعد إقلاع الوندوز. افتراضي 120. */
+  /** ثواني الانتظار قبل فتح المتصفّح بعد إقلاع الوندوز. افتراضي 5. */
   bootDelaySeconds?: number;
 }
 
@@ -33,18 +33,18 @@ export interface InstallerInfo {
  * منطقه:
  *   1. إن لم يوجد ملف الرمز (`token.txt`) ⇒ وضع «تفعيل»: يطلب لصق الرمز، يحفظه،
  *      يُنسّخ نفسه إلى مجلّد بدء التشغيل، ثم يفتح الكشك فوراً (بلا انتظار).
- *   2. إن كان يعمل من مجلّد بدء التشغيل (بعد إقلاع الوندوز) ⇒ ينتظر BOOT_DELAY_SECS ثم يفتح.
+ *   2. إن كان يعمل من مجلّد بدء التشغيل (بعد إقلاع الوندوز) ⇒ ينتظر BOOT_DELAY_SECS ثم يفحص الشبكة ويفتح.
  *   3. إن كان يعمل يدوياً بعد التفعيل ⇒ يفتح مباشرةً بلا انتظار.
  *
  * ملاحظات تقنية:
  * - كشف «تشغيل من Startup» عبر مقارنة `%~dp0` بمسار مجلّد Startup للمستخدم.
- * - يفضّل Chrome ثم يقع إلى Edge؛ ملف تعريف متصفّح مخصّص معزول عن جلسات المستخدم.
+ * - يفضّل Chrome ثم يقع إلى Edge؛ يبحث في ProgramFiles وLocalAppData (تثبيت المستخدم).
  * - `--kiosk` يخفي كل شرائط المتصفّح (ملء شاشة كامل).
  * - العلامة `title` تُظهر «قارئ الأسعار» في شريط مهام الوندوز لتمييز النافذة.
  */
 export function buildInstallerCmd(info: InstallerInfo): string {
   const base = info.origin.replace(/\/+$/, "");
-  const delay = Math.max(0, Math.floor(info.bootDelaySeconds ?? 120));
+  const delay = Math.max(0, Math.floor(info.bootDelaySeconds ?? 5));
   const lines = [
     "@echo off",
     "chcp 65001 >nul",
@@ -118,6 +118,7 @@ export function buildInstallerCmd(info: InstallerInfo): string {
     ":delay_then_run",
     "echo.",
     "echo   قارئ الأسعار — جاري فحص الاتصال بالخادم واستقرار النظام...",
+    "if %BOOT_DELAY_SECS% gtr 0 timeout /t %BOOT_DELAY_SECS% /nobreak >nul",
     "set /a ATTEMPTS=0",
     ":wait_network",
     "set /a ATTEMPTS+=1",
@@ -154,16 +155,18 @@ export function buildInstallerCmd(info: InstallerInfo): string {
     "set \"CHROME=\"",
     "if exist \"%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\"",
     "if exist \"%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe\"",
+    "if exist \"%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe\"",
     "if defined CHROME (",
-    "  start \"\" \"!CHROME!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --no-default-browser-check --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI --disable-session-crashed-bubble --check-for-update-interval=604800",
+    "  start \"\" \"!CHROME!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --no-default-browser-check --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI,TouchpadOverscrollHistoryNavigation --disable-session-crashed-bubble --check-for-update-interval=604800",
     "  exit /b 0",
     ")",
     "",
     "set \"EDGE=\"",
     "if exist \"%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe\"",
     "if exist \"%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe\"",
+    "if exist \"%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe\" set \"EDGE=%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe\"",
     "if defined EDGE (",
-    "  start \"\" \"!EDGE!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --noerrdialogs --overscroll-history-navigation=0 --disable-session-crashed-bubble",
+    "  start \"\" \"!EDGE!\" --kiosk --app=\"!KURL!\" --user-data-dir=\"%PROFILE%\" --no-first-run --noerrdialogs --disable-pinch --overscroll-history-navigation=0 --disable-features=TranslateUI,TouchpadOverscrollHistoryNavigation --disable-session-crashed-bubble",
     "  exit /b 0",
     ")",
     "",

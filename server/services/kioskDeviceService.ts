@@ -132,6 +132,31 @@ export async function deleteKioskDevice(id: number): Promise<void> {
   await db.delete(kioskDevices).where(eq(kioskDevices.id, id));
 }
 
+/** تعديل بيانات الجهاز (الاسم أو الفرع). */
+export async function updateKioskDevice(
+  id: number,
+  data: { label?: string; branchId?: number }
+): Promise<void> {
+  const db = requireDb();
+  const rows = await db.select({ id: kioskDevices.id }).from(kioskDevices).where(eq(kioskDevices.id, id)).limit(1);
+  if (!rows[0]) throw new Error("الجهاز غير موجود");
+
+  const updateSet: Partial<typeof kioskDevices.$inferInsert> = {};
+  if (data.label != null) {
+    const l = data.label.trim();
+    if (!l) throw new Error("اسم الجهاز مطلوب");
+    updateSet.label = l;
+  }
+  if (data.branchId != null) {
+    await assertBranchActive(db, data.branchId);
+    updateSet.branchId = data.branchId;
+  }
+
+  if (Object.keys(updateSet).length > 0) {
+    await db.update(kioskDevices).set(updateSet).where(eq(kioskDevices.id, id));
+  }
+}
+
 /** تجزئة ثابتة الزمن للمقارنة (يُغلق تسريب التوقيت ولو نظرياً). */
 function hashEquals(a: string, b: string): boolean {
   const ba = Buffer.from(a, "hex");

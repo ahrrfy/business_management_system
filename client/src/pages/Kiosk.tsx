@@ -78,6 +78,7 @@ export default function Kiosk() {
       return failureCount < 5;
     },
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
+    refetchInterval: 12 * 60 * 60 * 1000, // تجديد دوري تلقائي للكوكي كل ١٢ ساعة
     refetchOnWindowFocus: false,
   });
 

@@ -20,6 +20,7 @@ import { KIOSK_COOKIE_NAME, KIOSK_TOKEN_TTL_MS, signKioskSession } from "../auth
 import { logAudit } from "../services/auditService";
 import { kioskBanner, kioskLookup, kioskPromotions } from "../services/kioskService";
 import { barcodeString } from "../lib/schemas";
+import { appErrorMessage } from "@shared/errors";
 import {
   createKioskDevice,
   deleteKioskDevice,
@@ -28,8 +29,9 @@ import {
   resolveKioskDevice,
   rotateKioskDevice,
   setKioskDeviceActive,
+  updateKioskDevice,
 } from "../services/kioskDeviceService";
-import { adminProcedure, middleware, publicProcedure, router } from "../trpc";
+import { adminProcedure, middleware, publicProcedure, router, settingsAdminProcedure } from "../trpc";
 
 /**
  * وسيط القراءة: يُمرّر المستخدم المسجَّل كما هو (deviceBranchId=null ⇒ يُستعمل branchId من المدخل)،
@@ -115,10 +117,12 @@ export const kioskRouter = router({
       return { ok: true as const, branchId: r.branchId, branchName: r.branchName, label: r.label };
     }),
 
-  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk). null = غير مُصرَّح. */
+  /** حالة الجهاز الحالي من الكوكي (لصفحة /kiosk) مع تجديد تلقائي للكوكي. null = غير مُصرَّح. */
   deviceMe: publicProcedure.query(async ({ ctx }) => {
     const device = await resolveKioskDevice(ctx.req);
     if (!device) return null;
+    const token = await signKioskSession(device.deviceId, device.branchId, device.label);
+    ctx.res.cookie(KIOSK_COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: KIOSK_TOKEN_TTL_MS });
     return {
       deviceId: device.deviceId,
       branchId: device.branchId,
@@ -151,6 +155,26 @@ export const kioskRouter = router({
           newValue: { branchId: input.branchId, label: input.label, tokenPrefix: r.tokenPrefix },
         });
         return { id: r.id, rawToken: r.rawToken, tokenPrefix: r.tokenPrefix };
+      }),
+
+    /** تعديل اسم الجهاز أو فرعه المربوط. */
+    update: settingsAdminProcedure
+      .input(
+        z.object({
+          id: z.number().int().positive(),
+          label: z.string().trim().min(1).max(120).optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+      )
+      .mutation(async ({ input, ctx }) => {
+        await updateKioskDevice(input.id, { label: input.label, branchId: input.branchId });
+        await logAudit(ctx, {
+          action: "kiosk.device.update",
+          entityType: "kioskDevice",
+          entityId: input.id,
+          newValue: { label: input.label, branchId: input.branchId },
+        });
+        return { ok: true as const };
       }),
 
     /** تدوير الرمز ⇒ رمز خام جديد (يُبطل القديم فوراً). */

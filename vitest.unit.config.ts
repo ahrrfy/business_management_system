@@ -347,6 +347,8 @@ export default defineConfig({
       "server/services/__tests__/returnsAuditScenarios.test.ts",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
+      // نافذة تحميل صور كاروسيل الكشك وتحجيم شاشات العرض
+      "client/src/components/kiosk/kioskWindow.test.ts",
     ],
   },
 });

@@ -36,6 +36,8 @@ function latinDigit(char: string): string | null {
 }
 
 const INVISIBLE_FORMAT_MARKS = /[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+/** بادئة معرّف المعيار الدولي للماسحات (ISO/IEC 15424 AIM Identifier): مثل ]E0 (لـ EAN) أو ]C1 (لـ Code-128) */
+const AIM_CODE_IDENTIFIER = /^\][A-Za-z0-9]{2}/;
 
 export function normalizeBarcodeScannerInput(raw: string): string {
   if (!raw) return "";
@@ -56,7 +58,9 @@ export function normalizeBarcodeScannerInput(raw: string): string {
     normalized += latinDigit(char) ?? (translateLayout ? ARABIC_101_TO_ASCII[char] : undefined) ?? char;
     index += 1;
   }
-  return normalized.trim();
+  const result = normalized.trim();
+  // تجريد بادئة معرّف AIM الدولي إن وُجدت
+  return result.replace(AIM_CODE_IDENTIFIER, "").trim();
 }
 
 /**
@@ -85,7 +89,9 @@ export const normalizeArabicKeyboardToAscii = normalizeBarcodeScannerInput;
 export function normalizeKnownSystemBarcode(raw: string): string {
   if (!raw) return "";
   const normalized = normalizeBarcodeScannerInput(raw);
-  if (!looksLikeSystemBarcode(normalized)) return raw.trim();
+  if (!looksLikeSystemBarcode(normalized)) {
+    return raw.startsWith("]") ? normalized : raw.trim();
+  }
   const match = normalized.match(new RegExp(`^(${KNOWN_SYSTEM_PREFIXES.join("|")})([-|]?.*)$`, "i"));
   if (match) {
     return `${match[1].toUpperCase()}${match[2]}`;
