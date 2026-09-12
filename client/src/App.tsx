@@ -35,7 +35,11 @@ import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
+import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
+const QuranStationDrawer = lazy(() =>
+  import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
+);
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const ForceTwoFactorEnroll = lazy(() =>
   import("@/components/ForceTwoFactorEnroll").then((m) => ({ default: m.ForceTwoFactorEnroll })),
@@ -330,14 +334,26 @@ function GlobalPrinterAutoConnect() {
   return null;
 }
 
+function QuranAuthBoundary() {
+  const [location] = useLocation();
+  useEffect(() => {
+    if (location === "/login") {
+      pauseGlobalQuranAudio();
+    }
+  }, [location]);
+  return null;
+}
+
 export default function App() {
   return (
-    <ErrorBoundary>
-    <HostPolicy />
-    <GlobalPrinterAutoConnect />
-    {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
-    <OfflineBanner />
-    <Suspense fallback={<RouteFallback />}>
+    <QuranAudioProvider>
+      <QuranAuthBoundary />
+      <ErrorBoundary>
+      <HostPolicy />
+      <GlobalPrinterAutoConnect />
+      {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
+      <OfflineBanner />
+      <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
       {/* معاينة تصميم الهاتف/اللوحي: واجهة تجريبية ثابتة بلا بيانات تشغيلية. */}
@@ -620,6 +636,11 @@ export default function App() {
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
     </Suspense>
+    {/* محطة القرآن الكريم الموسعة — تفتح كدرج جانبي عند الطلب من أي شاشة */}
+    <Suspense fallback={null}>
+      <QuranStationDrawer />
+    </Suspense>
     </ErrorBoundary>
+    </QuranAudioProvider>
   );
 }

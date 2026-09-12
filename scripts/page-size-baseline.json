@@ -2,8 +2,6 @@
   "client/src/pages/DeliveryHub.tsx": 1715,
   "client/src/pages/Expenses.tsx": 2576,
   "client/src/pages/HrDevices.tsx": 1560,
-  "client/src/pages/InstallmentPlans.tsx": 1375,
-  "client/src/pages/InvoiceDetail.tsx": 1416,
   "client/src/pages/POS.tsx": 1430,
   "client/src/pages/PrintPOS.tsx": 1421,
   "client/src/pages/ProductImageStudio.tsx": 2300,

@@ -1,8 +1,5 @@
-import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState } from "@/components/PageState";
-import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
-import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -33,7 +30,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
-import { fmtDate, fmtDateTime, toDate, type DateInput } from "@/lib/date";
+import { fmtDate } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
@@ -41,10 +38,8 @@ import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
-import { cn } from "@/lib/utils";
 import { DataTable } from "@/components/data-table/DataTable";
-import type { ColumnDef } from "@tanstack/react-table";
-import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { trpc } from "@/lib/trpc";
 import {
   hasModuleAccess,
   moduleAccessAllowed,
@@ -62,10 +57,7 @@ import {
   Download,
   FileText,
   FileWarning,
-  Gift,
-  History,
   Package,
-  Paperclip,
   Pencil,
   Printer,
   Truck,
@@ -76,49 +68,25 @@ import { getDeviceCode } from "@/lib/offline/outbox";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
   POS_METHODS as METHODS,
-  paymentMethodClass,
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage,
 } from "@shared/posPaymentPolicy";
 import { NextActionChip } from "@/components/nextAction/NextActionChip";
-import { invoiceStatusLabel, invoiceStatusBadgeVariant,
-} from "@shared/invoiceStatus";
-import { Badge } from "@/components/ui/badge";
-
-const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v),
-);
-
-// التعريب و variant من `@shared/invoiceStatus` وحده — كانت خريطة `STATUS_CLS` محلّية بألوان
-// Tailwind خامّة (`bg-emerald-100 text-emerald-700`) تتجاوز التوكنز الدلالية للحالة، ولا مقابل
-// لها في dark mode، وتنحرف عن Invoices.tsx و ReceptionInvoiceQueue.tsx بصرياً على نفس الحالة.
-// origin/main #799 حاول تسكينها بتوكنز sem لكنّ الخريطة المحلّية تبقى انحرافاً — الحلّ الجذريّ
-// هو الحذف الكامل والتحويل إلى `<Badge variant={invoiceStatusBadgeVariant(status)} />`.
-// METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
-const PAY_STATUS: Record<string, string> = {
-  COMPLETED: "مكتملة",
-  PENDING: "معلّقة",
-  FAILED: "فاشلة",
-  CANCELLED: "ملغاة",
-};
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-/* ─────────── أعمدة جداول تفاصيل الفاتورة ───────────
- * دوالّ لا ثوابت حيث تحتاج قيمةً من المستند (مجموع البنود) أو من الصلاحية (فتح السند) —
- * والشاشة تخرج مبكّراً قبل توفّر البيانات فلا يصحّ بناؤها بـuseMemo بعد ذلك الخروج.
- */
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { InvoiceHeaderCard } from "@/components/invoice/InvoiceHeaderCard";
+import { InvoiceCorrectionHistoryCard } from "@/components/invoice/InvoiceCorrectionHistoryCard";
 import {
-  Field,
-  SummaryRow,
   invoiceItemColumns,
   invoicePaymentColumns,
   invoiceReturnColumns,
-  type InvoiceDetailData,
   type InvoiceItemRow,
   type InvoicePaymentRow,
   type InvoiceReturnRow,
 } from "@/components/invoice/InvoiceDetailComponents";
+
+const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v),
+);
 
 export default function InvoiceDetail() {
   const params = useParams();
@@ -865,207 +833,11 @@ export default function InvoiceDetail() {
       )}
 
       {/* بطاقة الترويسة: بيانات وصفية + لوحة ملخّص مالي */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between gap-2">
-            <CopyInline value={data.invoiceNumber} />
-            <div className="flex items-center gap-2">
-              {/* بالطريق مع المندوب ⇒ الحقيقة «عند الاستلام» لا طريقة السلة المخزَّنة (بلاغ
-                  المالك ١٠/٨: فاتورة توصيل بلا أي قبضٍ كانت تتصدّر بشارة «نقدي»). */}
-              {data.consignmentStatus === "DISPATCHED" || data.consignmentStatus === "PARTIAL" ? (
-                <span
-                  className="text-xs rounded-full px-2.5 py-0.5 font-semibold badge-stock-low"
-                  title={D(data.paidAmount).gt(0) && data.paymentMethod
-                    ? `المتبقّي يُحصَّل عند الاستلام — المقبوض سلفاً بطريقة: ${paymentMethodLabel(data.paymentMethod)}`
-                    : "تُحصَّل عند الاستلام عبر المندوب ثم تُورَّد"}
-                >
-                  عند الاستلام (COD)
-                </span>
-              ) : (
-                data.paymentMethod && (
-                <span
-                  className={`text-xs rounded-full px-2.5 py-0.5 font-semibold ${paymentMethodClass(data.paymentMethod)}`}
-                  title="طريقة الدفع المسجّلة على هذه الفاتورة"
-                >
-                  {paymentMethodLabel(data.paymentMethod)}
-                </span>
-              )
-              )}
-              {/* التمييز البصريّ «مُعدَّلة» (طلب المالك ١٧/٨): هذه الفاتورة صدرت تصحيحاً
-                  لفاتورةٍ سابقة. `correctionOfInvoiceId` كان يُكتَب ولا يُقرأ من أيّ استعلام. */}
-              {data.correctionOfInvoiceId != null && (
-                <Link
-                  href={`/invoices/${data.correctionOfInvoiceId}`}
-                  className="rounded-full bg-[var(--sem-warn-bg)] px-2.5 py-0.5 text-xs font-medium text-[var(--sem-warn)]"
-                  title="فاتورةٌ مُعدَّلة — اضغط لعرض الأصل المُستبدَل"
-                >
-                  مُعدَّلة
-                </Link>
-              )}
-              <Badge variant={invoiceStatusBadgeVariant(data.status)} className="text-xs">
-                {invoiceStatusLabel(data.status)}
-              </Badge>
-            </div>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-5 md:grid-cols-3">
-            {/* البيانات الوصفية */}
-            <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
-              <Field label="القناة">
-                <span className="inline-flex items-center gap-1.5">
-                  <InvoiceChannelBadge row={data} />
-                  <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
-                </span>
-              </Field>
-              <Field label="العميل">
-                {/* ٢٤/٨ (تدقيق + Codex P2): اسمُ العميل رابطٌ لكشف الحساب — لأدوارٍ لها `reports:READ`
-                    فقط (Cashier/print/reception يذهبون إلى تبويبٍ محذوف). «عميل نقدي» يبقى نصاً. */}
-                {data.customerId && canOpenStatement ? (
-                  <Link
-                    href={`/customers-statement?id=${data.customerId}`}
-                    className="text-primary hover:underline"
-                    title="فتح كشف حساب العميل"
-                  >
-                    {data.customerName ?? `#${data.customerId}`}
-                  </Link>
-                ) : (
-                  (data.customerName ?? "عميل نقدي"
-                )
-                )}
-              </Field>
-              <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
-              <Field label="الوردية">
-                {data.shiftId
-                  ? `#${data.shiftId} — ${shiftTypeLabel(data.shiftType)}`
-                  : "—"}
-              </Field>
-              <Field label="محطة البيع">
-                <span dir="ltr" className="font-mono text-xs">
-                  {data.deviceId ?? "—"}
-                </span>
-              </Field>
-              <Field label="التاريخ">{fmtDate(data.invoiceDate)}</Field>
-              <Field label="الاستحقاق">
-                {data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}
-              </Field>
-              {data.customerId && (
-                <div className="col-span-2 space-y-0.5">
-                  <div className="text-xs text-muted-foreground">
-                    ذمة العميل الحالية
-                  </div>
-                  <div className="font-medium tabular-nums" dir="ltr">
-                    <CopyInline
-                      value={data.customerBalance ?? "0"}
-                      display={fmt(data.customerBalance ?? "0")}
-                      mono={false}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* لوحة الملخّص المالي */}
-            <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
-              <SummaryRow label="قبل الضريبة" value={data.subtotal} />
-              {hasDiscount && (
-                <SummaryRow label="الخصم" value={data.discountAmount} />
-              )}
-              {hasTax && (
-                <SummaryRow
-                  label={`الضريبة (${data.taxRatePercent ?? "0"}٪)`}
-                  value={data.taxAmount}
-                />
-              )}
-              {/* إفصاح التوصيل (0152): أجرةٌ مقبوضة، أو توصيلٌ أُهدي (بقيمته)، أو لا سطر
-                  إطلاقاً حين لا توصيل — الصفر الصامت كان يخلط الحالتين الأخيرتين. */}
-              {Number(data.deliveryFee ?? 0) > 0 ? (
-                <SummaryRow label="أجرة التوصيل" value={data.deliveryFee} />
-              ) : data.deliveryFree ? (
-                <div className="flex items-center justify-between py-1 text-sm">
-                  <span className="text-muted-foreground">التوصيل</span>
-                  <span className="badge-status-active rounded-md px-1.5 py-0.5 text-xs font-extrabold">
-                    {Number(data.deliveryWaivedAmount ?? 0) > 0
-                      ? `مجاناً — قيمته ${fmt(data.deliveryWaivedAmount)} د.ع`
-                      : "مجاناً"}
-                  </span>
-                </div>
-              ) : null}
-              <div className="border-t pt-2.5">
-                <SummaryRow label="الإجمالي" value={data.total} strong />
-              </div>
-              {/* ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة (تمريرٌ لا
-                  إيراد) ⇒ خارج «الإجمالي»؛ نعرضها هنا مع «المجموع النهائي» الذي يدفعه الزبون. */}
-              {data.courierName && Number(data.courierFee ?? 0) > 0 && (
-                <div className="mt-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-2.5 py-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="inline-flex items-center gap-1 font-bold text-[var(--sem-warn)]">
-                      <Truck aria-hidden className="size-3.5" /> أجرة التوصيل ({data.courierFeeCollection === "COUNTER" ? "مقبوضة في الاستقبال" : data.courierFeeCollection === "SHOP" ? "على المكتبة" : `يقبضها ${data.courierName}`})
-                    </span>
-                    <span className="font-black tabular-nums text-[var(--sem-warn)]" dir="ltr">{fmt(data.courierFee)}</span>
-                  </div>
-                  {data.courierFeeCollection !== "SHOP" && (
-                    <div className="mt-1.5 flex items-center justify-between border-t border-[var(--sem-warn)]/30 pt-1.5 font-black text-[var(--sem-warn)]">
-                      <span>المجموع النهائي (يدفعه الزبون شاملاً التوصيل)</span>
-                      <span className="tabular-nums" dir="ltr">{fmt(round2(D(data.total).plus(D(data.courierFee ?? 0)),
-                          ).toFixed(2),
-                        )}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {/* ٩/٨ — خيط الإرسالية: الرقم + الحالة + الجهة برابطٍ لمركز التوصيل («وين طلبي؟»
-                  كان ينقطع هنا — الاسم والأجرة بلا رقم إرسالية ولا حالة ولا مسار متابعة). */}
-              {data.consignmentNumber && (
-                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 text-sm">
-                  <span className="inline-flex items-center gap-1.5">
-                    <Truck aria-hidden className="size-3.5 text-muted-foreground" />
-                    إرسالية{" "}
-                    <span className="font-mono font-bold" dir="ltr">{data.consignmentNumber}</span>
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                        data.consignmentStatus === "DELIVERED"
-                          ? "badge-status-active"
-                          : data.consignmentStatus === "RETURNED" ||
-                              data.consignmentStatus === "WRITTEN_OFF"
-                            ? "badge-stock-out"
-                            : "badge-stock-low"
-                      }`}>
-                      {data.consignmentStatus === "DISPATCHED" ? "بالطريق"
-                        : data.consignmentStatus === "PARTIAL" ? "حُصِّل جزئياً"
-                        : data.consignmentStatus === "DELIVERED" ? "سُلِّمت"
-                        : data.consignmentStatus === "RETURNED" ? "أُرجعت"
-                        : data.consignmentStatus === "WRITTEN_OFF" ? "شُطبت" : data.consignmentStatus}
-                    </span>
-                  </span>
-                  <a className="text-xs font-bold text-primary hover:underline" href={`/delivery?tab=parties&detail=${data.deliveryPartyId ?? ""}`}>
-                    {data.courierName ?? "جهة التوصيل"} — كشف الجهة
-                  </a>
-                </div>
-              )}
-              <SummaryRow label="المدفوع" value={data.paidAmount} />
-              <SummaryRow
-                label="المتبقّي"
-                value={remaining.toFixed(2)}
-                tone={remaining.gt(0) ? "amber" : "emerald"}
-              />
-            </div>
-          </div>
-
-          {data.notes && (
-            <div className="rounded-md bg-muted/40 p-3 text-sm">
-              <div className="text-xs text-muted-foreground mb-1">ملاحظات</div>
-              <div className="whitespace-pre-wrap">{data.notes}</div>
-            </div>
-          )}
-          {data.status === "CANCELLED" && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-              ألغيت بواسطة:{" "}
-              <strong>{data.cancelledByName ?? "غير موثّق"}</strong>
-              {data.cancelledAt ? ` — ${fmtDateTime(data.cancelledAt)}` : ""}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <InvoiceHeaderCard
+        data={data}
+        remaining={remaining}
+        canOpenStatement={canOpenStatement}
+      />
 
       {(data.returns ?? []).length > 0 && (
         <Card>
@@ -1219,130 +991,10 @@ export default function InvoiceDetail() {
       )}
 
       {canCorrectInvoice && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <History aria-hidden className="size-4" />
-              سجل تصحيحات الفاتورة
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {corrections.isLoading && (
-              <p className="text-sm text-muted-foreground">
-                جارٍ تحميل سجل التعديل…
-              </p>
-            )}
-            {!corrections.isLoading &&
-              (corrections.data ?? []).length === 0 && (
-                <p className="text-sm text-muted-foreground">
-                  لا توجد تعديلات مسجّلة على هذه الفاتورة.
-                </p>
-              )}
-            {(corrections.data ?? []).map((entry) => {
-              // ⛔ لا `paymentMethod`/`receipts` (تجريد ١٩/٨): كان `sales.correct` يكتبهما
-              // **متطابقَين** في طرفَي التدقيق ولا يمسّهما، وهذه الشاشة ترسم لهما سطر
-              // «طريقة الدفع: كذا ← كذا» لا يظهر أبداً ⤇ وعدٌ بقدرةٍ لا وجود لها. الصفوف
-              // التاريخية قد تحمل المفتاحَين وتُتجاهَلان بلا ضرر (متطابقان فيها أصلاً).
-              const oldFields =
-                (entry.oldValue as {
-                  notes?: string | null;
-                  dueDate?: string | null;
-                } | null) ?? {};
-              const newValue =
-                (entry.newValue as {
-                  reason?: string;
-                  fields?: typeof oldFields;
-                  correctedInvoiceNumber?: string;
-                  correctedInvoiceId?: number;
-                  total?: string;
-                  overpay?: string;
-                  overpayHandled?: "CREDIT" | "CASH_REFUND" | null;
-                } | null) ?? {};
-              const newFields = newValue.fields ?? {};
-              const isReissue = entry.action === "sale.reissue";
-              return (
-                <div
-                  key={entry.id}
-                  className="rounded-md border bg-muted/20 p-3 text-sm space-y-2"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold">
-                      {entry.userName ?? "مستخدم محذوف"}
-                    </span>
-                    <span
-                      className="text-xs text-muted-foreground tabular-nums"
-                      dir="ltr"
-                    >
-                      {fmtDateTime(entry.createdAt)}
-                    </span>
-                  </div>
-                  {isReissue && (
-                    <span className="inline-flex w-fit items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-extrabold text-primary">
-                      <FileWarning aria-hidden className="size-3" />
-                      تصحيح كامل (عكس وإعادة إصدار)
-                    </span>
-                  )}
-                  <p>
-                    <span className="text-muted-foreground">السبب: </span>
-                    {newValue.reason ?? "—"}
-                  </p>
-                  {isReissue && newValue.correctedInvoiceNumber && (
-                    <div className="grid gap-1 text-xs text-muted-foreground">
-                      <p>
-                        استُبدِلت بالفاتورة{" "}
-                        {newValue.correctedInvoiceId ? (
-                          <Link
-                            href={`/invoices/${newValue.correctedInvoiceId}`}
-                            className="font-semibold text-primary hover:underline"
-                          >
-                            {newValue.correctedInvoiceNumber}
-                          </Link>
-                        ) : (
-                          <span className="font-semibold text-foreground">{newValue.correctedInvoiceNumber}</span>
-                        )}
-                      </p>
-                      {newValue.overpayHandled && (
-                        <p>
-                          الفرق الزائد:{" "}
-                          <span className="text-foreground">
-                            {newValue.overpayHandled === "CASH_REFUND" ? "استرداد نقديّ" : "رصيد دائن للعميل"}
-                            {newValue.overpay ? ` (${fmt(newValue.overpay)})` : ""}
-                          </span>
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  <div className="grid gap-1 text-xs text-muted-foreground">
-                    {oldFields.notes !== newFields.notes && (
-                      <p>
-                        الملاحظات:{" "}
-                        <span className="line-through">
-                          {oldFields.notes || "—"}
-                        </span>{" "}
-                        ←{" "}
-                        <span className="text-foreground">
-                          {newFields.notes || "—"}
-                        </span>
-                      </p>
-                    )}
-                    {oldFields.dueDate !== newFields.dueDate && (
-                      <p>
-                        تاريخ الاستحقاق:{" "}
-                        <span className="line-through" dir="ltr">
-                          {oldFields.dueDate || "—"}
-                        </span>{" "}
-                        ←{" "}
-                        <span className="text-foreground" dir="ltr">
-                          {newFields.dueDate || "—"}
-                        </span>
-                      </p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
+        <InvoiceCorrectionHistoryCard
+          isLoading={corrections.isLoading}
+          history={corrections.data}
+        />
       )}
 
       <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>

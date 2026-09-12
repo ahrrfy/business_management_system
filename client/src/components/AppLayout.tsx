@@ -2,7 +2,7 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { NotificationBell } from "@/components/NotificationBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DisplayScaleControl } from "@/components/DisplayScaleControl";
-import { QuranAudioProvider } from "@/components/quran/QuranAudioContext";
+import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
 import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
 import { Button } from "@/components/ui/button";
@@ -32,9 +32,6 @@ import {
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore, Suspense, lazy } from "react";
 
-const QuranStationDrawer = lazy(() =>
-  import("@/components/quran/QuranStationDrawer").then((m) => ({ default: m.QuranStationDrawer })),
-);
 import { CASHIER_NAV_PATHS, canSeeGate } from "@/lib/navVisibility";
 import { hasModuleAccess } from "@shared/permissions";
 import { ROLE_LABEL } from "@/lib/roles";
@@ -524,6 +521,7 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           </SheetTrigger>
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <div className="flex items-center gap-1">
+            {!coldStudio && <QuranHeaderButton />}
             <NotificationBell enabled={!coldStudio && Boolean(me.data)} identity={String(me.data?.id ?? "")} />
             <PrinterStatusButton printerReady={printer.printerReady} connect={printer.connect} supported={printer.supported} />
             <DisplayScaleControl />
@@ -556,19 +554,10 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
           deliveryReadyCount={deliveryReadyCount}
         />
       )}
-
-      {/* محطة القرآن الكريم الموسعة — تفتح كدرج جانبي عند الطلب فقط */}
-      <Suspense fallback={null}>
-        <QuranStationDrawer />
-      </Suspense>
     </div>
   );
 }
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <QuranAudioProvider>
-      <AppLayoutInner>{children}</AppLayoutInner>
-    </QuranAudioProvider>
-  );
+  return <AppLayoutInner>{children}</AppLayoutInner>;
 }
