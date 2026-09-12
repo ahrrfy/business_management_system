@@ -44,11 +44,8 @@ internal data class SecureTransportConfiguration(
       if (raw.isNullOrBlank()) return SecureTransportConfiguration("", "development", emptySet())
       return try {
         val json = if (raw.startsWith(ENCODED_PREFIX)) {
-          val payload = raw.removePrefix(ENCODED_PREFIX)
-          String(Base64Url.decode(payload), StandardCharsets.UTF_8)
+          String(Base64Url.decode(raw.removePrefix(ENCODED_PREFIX)), StandardCharsets.UTF_8)
         } else {
-          // Backward-compatible only for unit tests and development builds.
-          // Store artifacts are emitted with the versioned envelope above.
           raw
         }
         val source = JSONObject(json)

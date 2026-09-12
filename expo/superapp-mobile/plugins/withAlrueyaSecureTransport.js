@@ -48,16 +48,16 @@ function normalize(options = {}) {
   return JSON.stringify({ environment, baseUrl, spkiPins });
 }
 
-// Android string resources treat unescaped quote characters as formatting
-// syntax. Embedding JSON directly therefore changes the value returned by
-// Context#getString even though strings.xml looks correct. A versioned,
-// URL-safe Base64 envelope gives the native parser the exact reviewed bytes.
+// Android resources interpret raw quote characters. A versioned base64url
+// envelope preserves the reviewed JSON bytes after AAPT compilation.
 function encodeAndroidConfiguration(value) {
   return `${ANDROID_ENCODING_PREFIX}${Buffer.from(value, "utf8").toString("base64url")}`;
 }
 
 function decodeAndroidConfiguration(value) {
-  if (!value.startsWith(ANDROID_ENCODING_PREFIX)) throw new Error("Unsupported Android secure transport configuration encoding.");
+  if (!value.startsWith(ANDROID_ENCODING_PREFIX)) {
+    throw new Error("Unsupported Android secure transport configuration encoding.");
+  }
   return Buffer.from(value.slice(ANDROID_ENCODING_PREFIX.length), "base64url").toString("utf8");
 }
 
@@ -81,8 +81,6 @@ function withAlrueyaSecureTransport(config, options) {
   });
 
   return withInfoPlist(config, (mod) => {
-    // Info.plist preserves the JSON string byte-for-byte, so iOS keeps the
-    // existing audited representation.
     mod.modResults[INFO_PLIST_KEY] = normalized;
     return mod;
   });

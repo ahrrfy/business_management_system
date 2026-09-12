@@ -27,18 +27,15 @@ describe("compiled secure transport configuration", () => {
     expect(() => normalize({ environment: "production", baseUrl: "https://erp.example.test", spkiPins: [] })).toThrow("SPKI pin");
   });
 
-  it("round-trips production configuration through the Android resource envelope", () => {
+  it("round-trips Android configuration through a resource-safe envelope", () => {
     const normalized = normalize({
       environment: "production",
-      baseUrl: "https://srv1548487.hstgr.cloud",
-      spkiPins: [
-        "heyx24VzgigLNUK_xrMM4IODY0kLR33mjqjg_b8HUPg",
-        "brzvtCELCIZUo4sD_qPX0ccRtPsd3DY6RfmxpOU9oB4",
-      ],
+      baseUrl: "https://erp.example.test",
+      spkiPins: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     });
     const encoded = encodeAndroidConfiguration(normalized);
 
     expect(encoded).toMatch(/^base64url-v1:[A-Za-z0-9_-]+$/);
-    expect(JSON.parse(decodeAndroidConfiguration(encoded))).toEqual(JSON.parse(normalized));
+    expect(decodeAndroidConfiguration(encoded)).toBe(normalized);
   });
 });

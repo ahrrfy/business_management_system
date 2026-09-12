@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,12 +9,10 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 
 import { Card } from "@/components/Ui";
 import { colors, radius, space } from "@/constants/theme";
-import { readableAuthError } from "@/lib/authErrors";
 import {
   completeNativeTwoFactor,
   signInWithNativeTransport,
@@ -25,6 +22,16 @@ import { completeTwoFactorSignIn } from "@/lib/signInFlow";
 import { useWorkspaceAccess } from "@/lib/workspaceAccess";
 
 type Step = "credentials" | "twoFactor";
+
+function readableError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/invalid login (identifier|password)/i.test(message)) return "تحقق من بيانات الدخول ثم حاول مرة أخرى.";
+  if (/two-factor/i.test(message)) return "تعذر التحقق من الرمز. تحقق منه وحاول مرة أخرى.";
+  if (/session|required|network|connection|unavailable/i.test(message)) {
+    return "تعذر إتمام الاتصال المحمي الآن. تحقق من الشبكة أو أعد المحاولة لاحقاً.";
+  }
+  return "تعذر إتمام الطلب الآن. لم يتم حفظ كلمة المرور في التطبيق.";
+}
 
 export default function SignInScreen() {
   const { refreshWorkspace } = useWorkspaceAccess();
@@ -70,12 +77,9 @@ export default function SignInScreen() {
         setStep("twoFactor");
         return;
       }
-      const next = await refreshWorkspace({
-        localProtectionAlreadyConfirmed: true,
-      });
-      openAllowedWorkspace(next);
+      openAllowedWorkspace(await refreshWorkspace({ localProtectionAlreadyConfirmed: true }));
     } catch (caught) {
-      setError(readableAuthError(caught));
+      setError(readableError(caught));
     } finally {
       setBusy(false);
     }
@@ -90,18 +94,14 @@ export default function SignInScreen() {
     setError(null);
     try {
       const next = await completeTwoFactorSignIn(
-        {
-          ticket,
-          code: twoFactorCode,
-          recoveryCode,
-        },
+        { ticket, code: twoFactorCode, recoveryCode },
         { completeNativeTwoFactor, refreshWorkspace, unlockLocalSession },
       );
       setTwoFactorCode("");
       setRecoveryCode("");
       openAllowedWorkspace(next);
     } catch (caught) {
-      setError(readableAuthError(caught));
+      setError(readableError(caught));
     } finally {
       setBusy(false);
     }
@@ -112,15 +112,10 @@ export default function SignInScreen() {
       behavior={Platform.select({ ios: "padding", default: undefined })}
       style={styles.page}
     >
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
           <Text style={styles.overline}>سوبر العربية</Text>
-          <Text style={styles.title}>
-            {step === "credentials" ? "دخول آمن" : "التحقق بخطوتين"}
-          </Text>
+          <Text style={styles.title}>{step === "credentials" ? "دخول آمن" : "التحقق بخطوتين"}</Text>
           <Text style={styles.subtitle}>
             {step === "credentials"
               ? "تُحفظ الجلسة داخل حماية الجهاز فقط، ولا تظهر كلمة المرور أو الرمز داخل التطبيق."
@@ -151,30 +146,13 @@ export default function SignInScreen() {
                 accessibilityHint="عند إيقافه تنتهي الجلسة بحسب سياسة الخادم"
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: remember }}
-                aria-checked={remember}
                 onPress={() => setRemember((current) => !current)}
                 style={styles.remember}
               >
-                <View
-                  style={[styles.checkbox, remember && styles.checkboxSelected]}
-                >
-                  {remember ? (
-                    <Ionicons
-                      color={colors.surface}
-                      name="checkmark"
-                      size={14}
-                    />
-                  ) : null}
-                </View>
-                <Text style={styles.rememberText}>
-                  البقاء مسجلاً على هذا الجهاز
-                </Text>
+                <View style={[styles.checkbox, remember && styles.checkboxSelected]} />
+                <Text style={styles.rememberText}>البقاء مسجلاً على هذا الجهاز</Text>
               </Pressable>
-              <ActionButton
-                busy={busy}
-                label="متابعة"
-                onPress={() => void submitCredentials()}
-              />
+              <ActionButton busy={busy} label="متابعة" onPress={() => void submitCredentials()} />
             </View>
           ) : (
             <View style={styles.form}>
@@ -183,9 +161,7 @@ export default function SignInScreen() {
                 keyboardType="number-pad"
                 label="رمز التحقق"
                 maxLength={6}
-                onChangeText={(value) =>
-                  setTwoFactorCode(value.replace(/\D/g, "").slice(0, 6))
-                }
+                onChangeText={(value) => setTwoFactorCode(value.replace(/\D/g, "").slice(0, 6))}
                 placeholder="6 أرقام"
                 value={twoFactorCode}
               />
@@ -198,11 +174,7 @@ export default function SignInScreen() {
                 placeholder="رمز الاسترداد"
                 value={recoveryCode}
               />
-              <ActionButton
-                busy={busy}
-                label="إتمام الدخول"
-                onPress={() => void submitTwoFactor()}
-              />
+              <ActionButton busy={busy} label="إتمام الدخول" onPress={() => void submitTwoFactor()} />
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
@@ -218,18 +190,10 @@ export default function SignInScreen() {
               </Pressable>
             </View>
           )}
-          {error ? (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {error}
-            </Text>
-          ) : null}
+          {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
         </Card>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.back()}
-          style={styles.cancel}
-        >
+        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.cancel}>
           <Text style={styles.cancelText}>إلغاء</Text>
         </Pressable>
       </ScrollView>
@@ -271,33 +235,15 @@ function Field(props: {
   );
 }
 
-function ActionButton({
-  busy,
-  label,
-  onPress,
-}: {
-  busy: boolean;
-  label: string;
-  onPress(): void;
-}) {
+function ActionButton({ busy, label, onPress }: { busy: boolean; label: string; onPress(): void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ busy, disabled: busy }}
-      aria-busy={busy}
       disabled={busy}
       onPress={onPress}
-      style={({ pressed }) => [
-        styles.primary,
-        pressed && !busy && styles.primaryPressed,
-      ]}
+      style={({ pressed }) => [styles.primary, (pressed || busy) && styles.primaryPressed]}
     >
-      <View style={styles.primaryContent}>
-        {busy ? (
-          <ActivityIndicator color={colors.surface} size="small" />
-        ) : null}
-        <Text style={styles.primaryText}>{busy ? "جارٍ التحقق" : label}</Text>
-      </View>
+      <Text style={styles.primaryText}>{busy ? "جارٍ التحقق…" : label}</Text>
     </Pressable>
   );
 }
@@ -306,111 +252,24 @@ const styles = StyleSheet.create({
   page: { backgroundColor: colors.canvas, flex: 1 },
   content: { gap: space.lg, padding: space.md, paddingTop: 48 },
   header: { gap: space.xxs },
-  overline: {
-    color: colors.brand,
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 13,
-    textAlign: "right",
-  },
-  title: {
-    color: colors.ink,
-    fontFamily: "Cairo_700Bold",
-    fontSize: 28,
-    lineHeight: 40,
-    textAlign: "right",
-  },
-  subtitle: {
-    color: colors.mutedInk,
-    fontFamily: "Cairo_400Regular",
-    fontSize: 14,
-    lineHeight: 24,
-    textAlign: "right",
-  },
+  overline: { color: colors.brand, fontFamily: "Cairo_600SemiBold", fontSize: 13, textAlign: "right" },
+  title: { color: colors.ink, fontFamily: "Cairo_700Bold", fontSize: 28, lineHeight: 40, textAlign: "right" },
+  subtitle: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 14, lineHeight: 24, textAlign: "right" },
   form: { gap: space.md },
   fieldGroup: { gap: space.xxs },
-  label: {
-    color: colors.ink,
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 13,
-    textAlign: "right",
-  },
-  field: {
-    backgroundColor: colors.surface,
-    borderColor: colors.outline,
-    borderRadius: radius.field,
-    borderWidth: 1,
-    color: colors.ink,
-    fontFamily: "Cairo_400Regular",
-    fontSize: 16,
-    minHeight: 52,
-    paddingHorizontal: space.sm,
-    writingDirection: "ltr",
-  },
-  remember: {
-    alignItems: "center",
-    flexDirection: "row-reverse",
-    gap: space.xs,
-    minHeight: 48,
-  },
-  checkbox: {
-    alignItems: "center",
-    borderColor: colors.mutedInk,
-    borderRadius: 4,
-    borderWidth: 1,
-    height: 18,
-    justifyContent: "center",
-    width: 18,
-  },
-  checkboxSelected: {
-    backgroundColor: colors.brand,
-    borderColor: colors.brand,
-  },
-  rememberText: {
-    color: colors.mutedInk,
-    fontFamily: "Cairo_400Regular",
-    fontSize: 13,
-    textAlign: "right",
-  },
-  primary: {
-    alignItems: "center",
-    backgroundColor: colors.brand,
-    borderRadius: radius.field,
-    justifyContent: "center",
-    minHeight: 52,
-  },
+  label: { color: colors.ink, fontFamily: "Cairo_600SemiBold", fontSize: 13, textAlign: "right" },
+  field: { backgroundColor: colors.surface, borderColor: colors.outline, borderRadius: radius.field, borderWidth: 1, color: colors.ink, fontFamily: "Cairo_400Regular", fontSize: 16, minHeight: 52, paddingHorizontal: space.sm, writingDirection: "ltr" },
+  remember: { alignItems: "center", flexDirection: "row-reverse", gap: space.xs, minHeight: 48 },
+  checkbox: { borderColor: colors.mutedInk, borderRadius: 4, borderWidth: 1, height: 18, width: 18 },
+  checkboxSelected: { backgroundColor: colors.brand, borderColor: colors.brand },
+  rememberText: { color: colors.mutedInk, fontFamily: "Cairo_400Regular", fontSize: 13, textAlign: "right" },
+  primary: { alignItems: "center", backgroundColor: colors.brand, borderRadius: radius.field, justifyContent: "center", minHeight: 52 },
   primaryPressed: { opacity: 0.65 },
-  primaryContent: {
-    alignItems: "center",
-    flexDirection: "row-reverse",
-    gap: space.xs,
-  },
-  primaryText: {
-    color: colors.surface,
-    fontFamily: "Cairo_700Bold",
-    fontSize: 16,
-  },
+  primaryText: { color: colors.surface, fontFamily: "Cairo_700Bold", fontSize: 16 },
   secondary: { alignItems: "center", justifyContent: "center", minHeight: 48 },
-  secondaryText: {
-    color: colors.brand,
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 14,
-  },
-  separator: {
-    backgroundColor: colors.outline,
-    height: StyleSheet.hairlineWidth,
-  },
-  error: {
-    color: colors.danger,
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 13,
-    lineHeight: 22,
-    marginTop: space.md,
-    textAlign: "right",
-  },
+  secondaryText: { color: colors.brand, fontFamily: "Cairo_600SemiBold", fontSize: 14 },
+  separator: { backgroundColor: colors.outline, height: StyleSheet.hairlineWidth },
+  error: { color: colors.danger, fontFamily: "Cairo_600SemiBold", fontSize: 13, lineHeight: 22, marginTop: space.md, textAlign: "right" },
   cancel: { alignItems: "center", minHeight: 48, justifyContent: "center" },
-  cancelText: {
-    color: colors.mutedInk,
-    fontFamily: "Cairo_600SemiBold",
-    fontSize: 14,
-  },
+  cancelText: { color: colors.mutedInk, fontFamily: "Cairo_600SemiBold", fontSize: 14 },
 });

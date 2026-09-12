@@ -37,9 +37,6 @@ internal class SecureNativeSessionStore(private val context: Context) {
       cipher.doFinal(cipherText).toString(Charsets.UTF_8).takeIf(::isSessionCookie)
         ?: throw IllegalArgumentException("Unexpected session cookie")
     } catch (error: UserNotAuthenticatedException) {
-      // A locked key is a recoverable state, not corrupt session material.
-      // Deleting the encrypted cookie here signed the user out whenever the
-      // short authentication window elapsed before the next request.
       throw SecureTransportException(
         "E_SECURE_TRANSPORT_SESSION_LOCKED",
         "The protected work session was not unlocked.",

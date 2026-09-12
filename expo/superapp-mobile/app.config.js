@@ -39,7 +39,9 @@ const config = {
   // identity intentionally uses a different scheme so it cannot intercept the
   // future production app's links.
   scheme: identity.scheme,
-  version: "1.1.2",
+  // Emergency rescue build: runtime/UI source is restored from the reviewed
+  // version 18 tree. Only store identity advances so Play can upgrade v20.
+  version: "1.1.3",
   orientation: "portrait",
   userInterfaceStyle: "light",
   newArchEnabled: true,
@@ -51,7 +53,7 @@ const config = {
     output: "single",
   },
   ios: {
-    buildNumber: "2",
+    buildNumber: "3",
     supportsTablet: true,
     bundleIdentifier: identity.iosBundleId,
     infoPlist: {
@@ -60,7 +62,7 @@ const config = {
     },
   },
   android: {
-    versionCode: 20,
+    versionCode: 21,
     package: identity.androidPackage,
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,

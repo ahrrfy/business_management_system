@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { AppMasthead, Card } from "@/components/Ui";
 import { AnimatedReveal } from "@/components/AnimatedReveal";
 import { ExperienceState, SyncStatus } from "@/components/ExperienceState";
+import { PreviewBanner } from "@/components/PreviewBanner";
 import { colors, radius, space } from "@/constants/theme";
 import {
   getDeviceProofRuntimeStatus,
@@ -62,9 +63,7 @@ export default function AccountScreen() {
       try {
         await signOutFromNativeTransport();
       } finally {
-        // Native logout always destroys the local cookie, including when the
-        // remote revocation fails. Remove the matching in-memory employee data
-        // in the same guaranteed path so another user can never inherit it.
+        // Clear employee data even if remote revocation cannot be confirmed.
         access.clearWorkspace();
         await refreshDeviceProof().catch(() => undefined);
       }
@@ -103,13 +102,17 @@ export default function AccountScreen() {
           ? "مفتاح إثبات الجهاز موجود محليًا. تسجيله وربط الجلسة لا يتمان إلا داخل تدفق الدخول الموقّع."
           : "لا يوجد مفتاح بعد. ينشأ المفتاح داخل الحماية الأصلية عند إتمام تدفق الدخول، وليس من هذه الشاشة.";
 
+  const isPreview = !isChecking && Platform.OS === "web" && __DEV__ && (
+    transport?.kind === "unavailable" || (transport?.kind === "available" && !transport.configured)
+  );
   const connectionReady = transport?.kind === "available" && transport.configured;
   const employee = access.mode === "ready" && access.today?.personal.state === "READY"
     ? access.today.personal.employee
     : null;
   const accountName = employee?.displayName || "حسابي";
   const accountRole = employee?.position || employee?.department || "حساب مؤسسي";
-  const trustedDevice = deviceProof?.kind === "available" && deviceProof.keyExists;
+  const trustedDevice = connectionReady && transport?.session === "present" &&
+    deviceProof?.kind === "available" && deviceProof.keyExists;
   const menuSections = [
     {
       title: "بيانات العمل",
@@ -148,6 +151,7 @@ export default function AccountScreen() {
         subtitle={employee ? "بياناتك وخدماتك الشخصية من النظام الأساسي" : "الحساب والجهاز والجلسة الآمنة"}
         title="حسابي"
       >
+        {isPreview ? <PreviewBanner tone="dark" /> : null}
         <View style={styles.accountStatus}>
           <View style={styles.accountStatusIcon}><Ionicons color="#35D796" name="shield-checkmark" size={23} /></View>
           <View style={styles.identityBody}>
@@ -158,16 +162,6 @@ export default function AccountScreen() {
         </View>
       </AppMasthead>
 
-      {!isChecking && !connectionReady ? (
-        <ExperienceState
-          actionLabel="إعادة الفحص"
-          detail="هذا الإصدار لم ينجح في تهيئة الاتصال الآمن بالنظام الأساسي؛ لذلك أوقفنا عرض أي بيانات بديلة."
-          onAction={() => void refreshDeviceProof()}
-          state="error"
-          title="الاتصال بالنظام الأساسي غير جاهز"
-        />
-      ) : null}
-
       <View style={styles.privacyStrip}>
         <View style={styles.privacyBody}>
           <Text style={styles.privacyTitle}>لا تظهر بياناتك إلا لك</Text>
@@ -177,7 +171,7 @@ export default function AccountScreen() {
       </View>
 
       <View style={styles.statusRow}>
-        <SyncStatus label={trustedDevice && connectionReady ? "متصل بجهاز موثوق" : connectionReady ? "التحقق مطلوب" : "الاتصال غير متاح"} state={trustedDevice && connectionReady ? "synced" : connectionReady ? "pending" : "offline"} />
+        <SyncStatus label={trustedDevice ? "متصل بجهاز موثوق" : isPreview ? "معاينة محلية" : connectionReady ? "التحقق مطلوب" : "الاتصال غير متاح"} state={trustedDevice ? "synced" : isPreview ? "offline" : connectionReady ? "pending" : "offline"} />
         <Text style={styles.lastVerification}>{trustedDevice ? "تم التحقق الآن" : "لا بيانات حساسة مكشوفة"}</Text>
       </View>
 
@@ -235,7 +229,7 @@ export default function AccountScreen() {
                 ? transport.session === "present"
                   ? "النقل الأصلي محمي وجلسة التطبيق محفوظة داخل الطبقة الأصلية."
                   : "النقل الأصلي مهيأ؛ لا توجد جلسة عمل حالياً."
-                : "إعداد الاتصال الآمن غير صالح في هذا البناء. لا تُعرض أي بيانات تشغيلية حتى يُصحح الإصدار."}
+                : "النقل الأصلي غير مهيأ في هذا البناء، لذلك تبقى البيانات المعروضة معاينة محلية."}
             </Text>
           ) : null}
           <View style={styles.actions}>

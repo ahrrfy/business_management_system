@@ -21,7 +21,7 @@ flowchart RL
 | البيئة | Android | iPhone |
 |---|---|---|
 | تطوير | `online.alarabiya.store.expo` | `online.alarabiya.superapp.preview` |
-| أثر متجر | `online.alarabiya.store`، versionCode `18`، للاختبار الداخلي بعد تحقق مفتاح الرفع | `online.alarabiya.superapp`، إعداد جاهز للبناء لاحقاً بعد تهيئة Apple Developer |
+| أثر متجر | `online.alarabiya.store`، versionCode `21` (استعادة شجرة الإصدار 18)، للاختبار الداخلي بعد تحقق مفتاح الرفع | `online.alarabiya.superapp`، buildNumber `3`، إعداد جاهز للبناء لاحقاً بعد تهيئة Apple Developer |
 
 مشروع EAS مستقل باسم `@shrkh-alruyh-alarbyh/super-arabia` ومعرفه مثبت في التهيئة. ملف `store-ios` مهيأ ولا يرسل شيئاً تلقائياً. أما Android فيُبنى محلياً داخل GitHub Actions بالمفتاح الحالي ثم يرفع يدوياً إلى Internal testing فقط.
 

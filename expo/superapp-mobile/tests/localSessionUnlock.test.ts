@@ -10,11 +10,9 @@ vi.mock("react-native", () => ({ Platform: { OS: "android" } }));
 vi.mock("expo-local-authentication", () => localAuthentication);
 
 describe("unlockLocalSession", () => {
-  beforeEach(() => {
-    localAuthentication.authenticateAsync.mockReset();
-  });
+  beforeEach(() => localAuthentication.authenticateAsync.mockReset());
 
-  it("lets Android use the device credential when biometrics are not enrolled", async () => {
+  it("allows Android device credentials without biometric enrollment", async () => {
     localAuthentication.authenticateAsync.mockResolvedValue({ success: true });
 
     await expect(unlockLocalSession()).resolves.toBeUndefined();
@@ -24,14 +22,8 @@ describe("unlockLocalSession", () => {
     }));
   });
 
-  it("returns an actionable protection error when the system cannot authenticate", async () => {
-    localAuthentication.authenticateAsync.mockResolvedValue({
-      success: false,
-      error: "not_enrolled",
-    });
-
-    await expect(unlockLocalSession()).rejects.toMatchObject({
-      code: "E_LOCAL_PROTECTION_REQUIRED",
-    });
+  it("returns an actionable error when no local protection exists", async () => {
+    localAuthentication.authenticateAsync.mockResolvedValue({ success: false, error: "not_enrolled" });
+    await expect(unlockLocalSession()).rejects.toMatchObject({ code: "E_LOCAL_PROTECTION_REQUIRED" });
   });
 });

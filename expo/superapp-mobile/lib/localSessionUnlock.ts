@@ -27,10 +27,8 @@ export async function unlockLocalSession(): Promise<void> {
   // prompt during the native read. A JavaScript prompt first would be duplicate
   // UX without extending the Keychain authorization window.
   if (Platform.OS === "ios") return;
-  // Do not preflight with isEnrolledAsync(): that API reports biometric
-  // enrollment only and would incorrectly reject a secure Android device that
-  // can authenticate with its screen-lock credential. BiometricPrompt is the
-  // authority and keeps the native device-credential fallback enabled.
+  // Biometric enrollment is not required when Android can authenticate with
+  // the secure screen-lock credential. The system prompt is the authority.
   const result = await LocalAuthentication.authenticateAsync({
     biometricsSecurityLevel: "strong",
     cancelLabel: "إلغاء",
@@ -52,10 +50,8 @@ export async function unlockLocalSession(): Promise<void> {
       "أُلغي فتح حماية الجهاز.",
     );
   }
-  if (!result.success) {
-    throw new LocalProtectionError(
-      "E_LOCAL_PROTECTION_FAILED",
-      "لم يتم فتح جلسة العمل. أعد التحقق عندما تكون مستعداً.",
-    );
-  }
+  throw new LocalProtectionError(
+    "E_LOCAL_PROTECTION_FAILED",
+    "لم يتم فتح جلسة العمل. أعد التحقق عندما تكون مستعداً.",
+  );
 }
