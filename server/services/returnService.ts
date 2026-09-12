@@ -2522,3 +2522,46 @@ export async function recordPurchaseReturnCartReceipt(
   });
   return Number(insReceipt.insertId);
 }
+
+/**
+ * تسجيل إيصال مردود بحوالة/بطاقة لمرتجع مشتريات فوري من المورد (غير نقديّ).
+ * المال يدخل حسابنا المصرفيّ (CARD_BANK) لا الدرج ⇒ `cashBucket=NULL` فلا يمسّ تسوية الوردية
+ * ولا `expectedCash` (الثابت المحاسبيّ المحروس). نظيرُ `recordSalesReturnCartCardReceipt` على
+ * جانب المشتريات — كان مفقوداً فبقيَ مسار CARD_TRANSFER بلا أثرٍ ماليّ (مردودٌ بلا مسار).
+ */
+export async function recordPurchaseReturnCartCardReceipt(
+  tx: Tx,
+  params: {
+    branchId: number;
+    amount: Decimal;
+    returnNumber: string;
+    supplierId: number;
+    supplierName: string;
+    reference?: string | null;
+    userId: number;
+  },
+): Promise<number> {
+  assertNonPhysicalOutReceipt({
+    classification: "NON_CASH_METHOD",
+    paymentMethod: "TRANSFER",
+    cashBucket: null,
+    approvalStatus: "APPROVED",
+    operation: "مردود حوالة لمرتجع مشتريات سلة",
+  });
+  const [insReceipt] = await tx.insert(receipts).values({
+    branchId: params.branchId,
+    shiftId: null,
+    direction: "IN",
+    amount: toDbMoney(params.amount),
+    paymentMethod: "TRANSFER",
+    cashBucket: null,
+    referenceNumber: params.reference?.trim() || null,
+    partyType: "SUPPLIER",
+    partyId: params.supplierId,
+    description: `مردود حوالة لمرتجع مشتريات [${params.returnNumber}] من المورد (${params.supplierName}) (مرجع: ${params.reference || "—"})`,
+    createdBy: params.userId,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+  });
+  return Number(insReceipt.insertId);
+}
