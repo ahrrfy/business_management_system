@@ -4,17 +4,12 @@
 // سند قبض حقيقياً بالمسار الموحَّد (قد يعلَّق على اعتماد مدير ثانٍ للمبالغ الكبيرة — Maker-Checker).
 import { useMemo, useState } from "react";
 import {
-  AlarmClock,
-  Ban,
   CalendarPlus,
   CheckCircle2,
-  CircleDollarSign,
   Download,
   FileText,
-  Landmark,
   Plus,
   RotateCcw,
-  Undo2,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -48,13 +43,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { DueSoonSection } from "@/components/installments/DueSoonSection";
+import { PlanDetailDialog } from "@/components/installments/PlanDetailDialog";
+import {
+  type PlanRow,
+  type PlanLine,
+  type DueRow,
+  type PendingExternalPayment,
+  PLAN_STATUS_AR,
+  LINE_STATUS_AR,
+  StatusBadge,
+} from "@/components/installments/installmentTypes";
 
-type PlanRow = RouterOutputs["installments"]["list"]["rows"][number];
-type PlanDetail = RouterOutputs["installments"]["get"];
-type PlanLine = PlanDetail["lines"][number];
-type DueRow = RouterOutputs["installments"]["dueSoon"][number];
-type PendingExternalPayment =
-  RouterOutputs["installments"]["pendingExternalPayments"][number];
 type PayTarget = {
   lineId: number;
   branchId: number;
@@ -66,23 +66,6 @@ type PayTarget = {
 };
 
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
-
-const PLAN_STATUS_AR: Record<string, { label: string; cls: string }> = {
-  ACTIVE: { label: "نشطة", cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
-  COMPLETED: { label: "مكتملة", cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
-  CANCELLED: { label: "ملغاة", cls: "bg-muted text-muted-foreground" },
-};
-const LINE_STATUS_AR: Record<string, { label: string; cls: string }> = {
-  PENDING: { label: "معلَّق", cls: "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" },
-  PAID: { label: "مسدَّد", cls: "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" },
-  BOUNCED: { label: "صك مرتجع", cls: "bg-destructive/15 text-destructive" },
-  CANCELLED: { label: "ملغى", cls: "bg-muted text-muted-foreground" },
-};
-
-function StatusBadge({ map, value }: { map: Record<string, { label: string; cls: string }>; value: string }) {
-  const m = map[value] ?? { label: value, cls: "bg-muted text-muted-foreground" };
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${m.cls}`}>{m.label}</span>;
-}
 
 const todayYmd = () => new Date().toISOString().slice(0, 10);
 const addDays = (ymd: string, days: number) => {
@@ -390,134 +373,6 @@ function PendingExternalPaymentsPanel({
   );
 }
 
-/* ============================ المستحقّ قريباً ============================ */
-
-function DueSoonSection({
-  rows,
-  isLoading,
-  days,
-  onDaysChange,
-  onPay,
-}: {
-  rows: DueRow[];
-  isLoading: boolean;
-  /** نافذة «المستحقّ قريباً» بالأيام — الخادم يقبل حتى ٩٠ (installments.dueSoon). */
-  days: number;
-  onDaysChange: (days: number) => void;
-  onPay: (r: DueRow) => void;
-}) {
-  if (isLoading) return null;
-  const overdue = rows.filter((r) => r.daysOverdue > 0).length;
-  return (
-    <Card className="border-[var(--sem-warn)]/40">
-      <CardHeader className="pb-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <AlarmClock className="size-4 text-[var(--sem-warn)]" aria-hidden />
-            المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
-          </CardTitle>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            خلال
-            <AppSelect
-              value={String(days)}
-              onValueChange={(v) => onDaysChange(Number(v))}
-              className="h-7 w-24 text-xs"
-              size="sm"
-              aria-label="نافذة المستحقّ قريباً بالأيام"
-            >
-              <option value="3">٣ أيام</option>
-              <option value="7">٧ أيام</option>
-              <option value="14">١٤ يوماً</option>
-              <option value="30">٣٠ يوماً</option>
-              <option value="60">٦٠ يوماً</option>
-              <option value="90">٩٠ يوماً</option>
-            </AppSelect>
-          </label>
-        </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        {rows.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground text-center">لا أقساط مستحقّة خلال {days} يوماً.</p>
-        ) : (
-        <ScrollTableShell bordered={false} maxHeightClass="max-h-64">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-right">العميل</TableHead>
-                <TableHead className="text-center">القسط</TableHead>
-                <TableHead className="text-center">الاستحقاق</TableHead>
-                <TableHead className="text-center">التأخّر</TableHead>
-                <TableHead className="text-left">المبلغ</TableHead>
-                <TableHead className="text-center">النوع</TableHead>
-                <TableHead className="text-center">إجراء</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.lineId} className={r.daysOverdue > 0 ? "bg-destructive/5" : ""}>
-                  <TableCell className="font-medium">
-                    {r.customerName}
-                    {r.customerPhone && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">{r.customerPhone}</span>}
-                  </TableCell>
-                  <TableCell className="text-center tabular-nums">{r.seq} — خطة #{r.planId}</TableCell>
-                  <TableCell className="text-center text-xs tabular-nums" dir="ltr">{r.dueDate}</TableCell>
-                  <TableCell className="text-center">
-                    {r.daysOverdue > 0 ? (
-                      <span className="inline-flex items-center rounded-md bg-destructive/15 px-2 py-0.5 text-xs font-bold text-destructive tabular-nums">
-                        {r.daysOverdue} يوماً
-                      </span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">في الموعد</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-left font-bold tabular-nums" dir="ltr">{fmt(r.amount)}</TableCell>
-                  <TableCell className="text-center text-xs">
-                    {r.kind === "CHECK" ? (
-                      <span className="inline-flex items-center gap-1">
-                        <Landmark className="size-3 text-muted-foreground" aria-hidden />
-                        صك {r.checkNumber ?? ""}{r.bankName ? ` — ${r.bankName}` : ""}
-                      </span>
-                    ) : (
-                      "نقدي"
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <RowActions
-                      mode="inline"
-                      contact={{
-                        phone: r.customerPhone,
-                        label: `واتساب ${r.customerName}`,
-                        message: buildOperationalContactMessage({
-                          entityLabel: "قسط",
-                          reference: `${r.planId}-${r.seq}`,
-                          partyName: r.customerName,
-                          title: `القسط المستحق: ${fmt(r.amount)} د.ع`,
-                          dueAt: r.dueDate,
-                          status: r.daysOverdue > 0 ? `متأخر ${r.daysOverdue} يوماً` : "قريب الاستحقاق",
-                          nextAction: "يرجى تأكيد موعد السداد.",
-                        }),
-                        gate: { module: "treasury", level: "READ" },
-                      }}
-                      actions={[{
-                        key: "pay",
-                        kind: "pay",
-                        label: "سداد",
-                        icon: CircleDollarSign,
-                        onSelect: () => onPay(r),
-                        gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                      }]}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollTableShell>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 /* ============================ جدول الخطط ============================ */
 
@@ -965,228 +820,6 @@ function CreatePlanDialog({
   );
 }
 
-/* ============================ حوار تفاصيل الخطة ============================ */
-
-function PlanDetailDialog({
-  planId,
-  onClose,
-  onPay,
-  onChanged,
-}: {
-  planId: number;
-  onClose: () => void;
-  onPay: (line: PlanLine, branchId: number) => void;
-  onChanged: () => Promise<void> | void;
-}) {
-  const plan = trpc.installments.get.useQuery({ planId });
-  const [bounceTarget, setBounceTarget] = useState<PlanLine | null>(null);
-  const [bounceNote, setBounceNote] = useState("");
-  const [cancelOpen, setCancelOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelClientRequestId, setCancelClientRequestId] = useState(() => crypto.randomUUID());
-
-  const bounce = trpc.installments.bounce.useMutation({
-    onSuccess: async (res) => {
-      notify.ok(res.reversed ? "سُجِّل ارتجاع الصك وعُكِس التحصيل (رُدَّ رصيد العميل)" : "سُجِّل ارتجاع الصك");
-      setBounceTarget(null);
-      setBounceNote("");
-      await plan.refetch();
-      await onChanged();
-    },
-    onError: (e) => notify.err(e.message || "تعذّر تسجيل الارتجاع"),
-  });
-  const cancel = trpc.installments.cancel.useMutation({
-    onSuccess: async () => {
-      notify.ok("أُلغيت الخطة");
-      setCancelOpen(false);
-      await plan.refetch();
-      await onChanged();
-    },
-    onError: (e) => notify.err(e.message || "تعذّر إلغاء الخطة"),
-  });
-
-  const p = plan.data;
-  const hasPaid = (p?.lines ?? []).some((l) => l.status === "PAID");
-
-  return (
-    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>خطة الأقساط #{planId}</DialogTitle>
-          {p && (
-            <DialogDescription>
-              {p.customerName} — الإجمالي <span dir="ltr" className="tabular-nums">{fmt(p.totalAmount)}</span> د.ع
-              {D(p.downPayment).gt(0) && <> (دفعة أولى <span dir="ltr" className="tabular-nums">{fmt(p.downPayment)}</span>)</>}
-              {p.invoiceId != null && <> — مرتبطة بالفاتورة #{p.invoiceId}</>}
-            </DialogDescription>
-          )}
-        </DialogHeader>
-
-        {plan.isLoading && <LoadingState />}
-        {plan.isError && <ErrorState message="تعذّر تحميل الخطة." onRetry={() => plan.refetch()} />}
-
-        {p && (
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <StatusBadge map={PLAN_STATUS_AR} value={p.status} />
-              {p.notes && <span className="text-xs text-muted-foreground">{p.notes}</span>}
-            </div>
-
-            <ScrollTableShell maxHeightClass="max-h-80">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-center">#</TableHead>
-                    <TableHead className="text-center">الاستحقاق</TableHead>
-                    <TableHead className="text-left">المبلغ</TableHead>
-                    <TableHead className="text-center">النوع</TableHead>
-                    <TableHead className="text-center">الحالة</TableHead>
-                    <TableHead className="text-right">ملاحظة/سند</TableHead>
-                    <TableHead className="text-center">إجراءات</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {p.lines.map((l) => (
-                    <TableRow key={l.id}>
-                      <TableCell className="text-center tabular-nums">{l.seq}</TableCell>
-                      <TableCell className="text-center text-xs tabular-nums" dir="ltr">{l.dueDate}</TableCell>
-                      <TableCell className="text-left font-semibold tabular-nums" dir="ltr">{fmt(l.amount)}</TableCell>
-                      <TableCell className="text-center text-xs">
-                        {l.kind === "CHECK" ? `صك ${l.checkNumber ?? ""}${l.bankName ? ` — ${l.bankName}` : ""}` : "نقدي"}
-                      </TableCell>
-                      <TableCell className="text-center"><StatusBadge map={LINE_STATUS_AR} value={l.status} /></TableCell>
-                      <TableCell className="text-right text-xs text-muted-foreground">
-                        {l.receiptId != null && <span className="tabular-nums">سند #{l.receiptId}</span>}
-                        {l.receiptId != null && l.note ? " — " : ""}
-                        {l.note ?? ""}
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        <RowActions
-                          mode="inline"
-                          contact={{
-                            phone: p.customerPhone,
-                            label: `واتساب ${p.customerName}`,
-                            message: buildOperationalContactMessage({
-                              entityLabel: "قسط",
-                              reference: `${p.id}-${l.seq}`,
-                              partyName: p.customerName,
-                              title: `قيمة القسط: ${fmt(l.amount)} د.ع`,
-                              dueAt: l.dueDate,
-                              status: LINE_STATUS_AR[l.status]?.label ?? l.status,
-                              nextAction: "يرجى تأكيد حالة السداد.",
-                            }),
-                            gate: { module: "treasury", level: "READ" },
-                          }}
-                          actions={[
-                            {
-                              key: "pay",
-                              kind: "pay",
-                              label: "سداد",
-                              icon: CircleDollarSign,
-                              hidden: p.status !== "ACTIVE" || (l.status !== "PENDING" && l.status !== "BOUNCED"),
-                              onSelect: () => onPay(l, Number(p.branchId)),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                            },
-                            {
-                              key: "bounce",
-                              kind: "reverse",
-                              label: "ارتجاع",
-                              icon: Undo2,
-                              variant: "destructive",
-                              hidden:
-                                p.status === "CANCELLED"
-                                || l.kind !== "CHECK"
-                                || (l.status !== "PENDING" && !(l.status === "PAID" && l.receiptPaymentMethod === "CHECK")),
-                              onSelect: () => setBounceTarget(l),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
-                            },
-                          ]}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ScrollTableShell>
-
-            {p.status === "ACTIVE" && (
-              <div className="flex justify-end">
-                <Button
-                  variant="ghost"
-                  className="gap-1 text-destructive"
-                  disabled={hasPaid}
-                  title={hasPaid ? "لا يمكن إلغاء خطة سُدِّد منها قسط" : undefined}
-                  onClick={() => {
-                    setCancelClientRequestId(crypto.randomUUID());
-                    setCancelOpen(true);
-                  }}
-                >
-                  <Ban className="size-4" aria-hidden /> إلغاء الخطة
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* حوار الارتجاع */}
-        <Dialog open={bounceTarget != null} onOpenChange={(o) => { if (!o) { setBounceTarget(null); setBounceNote(""); } }}>
-          <DialogContent className="z-[100] sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>ارتجاع صك — القسط رقم {bounceTarget?.seq}</DialogTitle>
-              <DialogDescription>
-                {bounceTarget?.status === "PAID"
-                  ? "الصك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار القسط، ثم يُوسم «صك مرتجع» قابلاً للسداد لاحقاً."
-                  : "يُوسم القسط «صك مرتجع» بلا أي حركة مالية (الصك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً."}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-1">
-              <Label>سبب الارتجاع</Label>
-              <Textarea value={bounceNote} onChange={(e) => setBounceNote(e.target.value)} rows={2} maxLength={255} placeholder="مثال: رصيد غير كافٍ" />
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setBounceTarget(null)}>تراجع</Button>
-              <Button
-                variant="destructive"
-                disabled={bounce.isPending}
-                onClick={() => bounceTarget && bounce.mutate({ lineId: bounceTarget.id, note: bounceNote.trim() || undefined })}
-              >
-                {bounce.isPending ? "جارٍ…" : "تسجيل الارتجاع"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* حوار الإلغاء */}
-        <Dialog open={cancelOpen} onOpenChange={(o) => { if (!o) setCancelOpen(false); }}>
-          <DialogContent className="z-[100] sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>إلغاء خطة الأقساط #{planId}</DialogTitle>
-              <DialogDescription>تُلغى الخطة وكل أقساطها المعلَّقة — متاح فقط لخطة بلا أي قسط مسدَّد.</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-1">
-              <Label>سبب الإلغاء</Label>
-              <Textarea value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} rows={2} maxLength={500} placeholder="اختياري" />
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCancelOpen(false)}>تراجع</Button>
-              <Button
-                variant="destructive"
-                disabled={cancel.isPending}
-                onClick={() => cancel.mutate({
-                  planId,
-                  reason: cancelReason.trim() || undefined,
-                  clientRequestId: cancelClientRequestId,
-                })}
-              >
-                {cancel.isPending ? "جارٍ…" : "تأكيد الإلغاء"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 /* ============================ حوار السداد ============================ */
 
