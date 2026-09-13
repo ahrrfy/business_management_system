@@ -115,7 +115,8 @@ export function DoubleEntryStatus({
                 activation.missingCount +
                 activation.extraCount +
                 activation.scopeMismatchCount +
-                activation.unreconstructableCount ===
+                activation.unreconstructableCount +
+                activation.sourceMismatchCount ===
               0
             }
           />

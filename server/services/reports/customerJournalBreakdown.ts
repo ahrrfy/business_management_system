@@ -16,7 +16,7 @@
  * القراءةُ فقط، لا كتابة.
  * ========================================================================== */
 import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { accounts, journalEntries, journalLines } from "../../../drizzle/schema";
+import { accounts, doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money } from "../money";
 
@@ -66,9 +66,18 @@ export async function getCustomerJournalBreakdown(
   };
   if (!db) return empty;
 
+  // تحصين م١ (١٣/٩): حصرُ الدورة الحالية فقط — نظير trialBalance/statutoryReports — كي لا يخلط
+  // الكشفُ أسطرَ دورةِ ظلٍّ سابقةٍ مُلغاة بأرصدة الدورة الحاليّة (cycleId="" في OFF ⇒ لا أسطر، وهو الصحيح).
+  const [cycleSetting] = await db
+    .select({ cycleId: doubleEntrySettings.shadowCycleId })
+    .from(doubleEntrySettings)
+    .limit(1);
+  const cycleId = cycleSetting?.cycleId ?? "";
+
   const conds = [
     eq(journalLines.customerId, input.customerId),
     eq(journalEntries.status, "POSTED"),
+    eq(journalEntries.cycleId, cycleId),
     // الأسطر بلا accountId (تاريخية) خارج نطاق التقرير — Tier-3 #5 يكشفها.
     sql`${journalLines.accountId} IS NOT NULL`,
   ];
