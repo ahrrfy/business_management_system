@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { hasLocalScanner } from "./CommandPalette";
 
 describe("hasLocalScanner", () => {
@@ -13,8 +14,16 @@ describe("hasLocalScanner", () => {
     expect(hasLocalScanner("/inventory", "?tab=stocktakes")).toBe(false);
   });
 
-  it("يمنح بوابة المرتجعات ماسحها المحلي (ProductSearchBar) كي لا يخطف البحث الشامل مسح السلة ويُنقّل للمخزون", () => {
-    expect(hasLocalScanner("/returns", "")).toBe(true);
-    expect(hasLocalScanner("/returns", "?portal=purchases")).toBe(true);
+  it("لا يُدرِج /returns في hasLocalScanner: البحث الشامل يبقى متاحاً في شاشة السجلّ، ويتنحّى عن حقل السلة عبر ignoreInputFields", () => {
+    // بوابة المرتجعات تعتمد ماسحها المحلّيّ (ProductSearchBar عبر useBarcodeInput) في شاشة الإنشاء،
+    // والماسح العالميّ يتنحّى عنها لأنّها حقلٌ مركَّز (ignoreInputFields) لا لأنّها في هذه القائمة —
+    // كي لا يُعطَّل مسحُ الانتقال في شاشة السجلّ (view=history) التي لا ProductSearchBar فيها.
+    expect(hasLocalScanner("/returns", "")).toBe(false);
+    expect(hasLocalScanner("/returns", "?view=history")).toBe(false);
+  });
+
+  it("الماسح العالميّ للوحة الأوامر يتنحّى عن الحقول المركَّز فيها (ignoreInputFields) فلا يخطف سلال ProductSearchBar", () => {
+    const source = readFileSync(new URL("./CommandPalette.tsx", import.meta.url), "utf8");
+    expect(/useBarcodeScanner\(\s*scanToSearch\s*,\s*\{[^}]*ignoreInputFields:\s*true/.test(source)).toBe(true);
   });
 });

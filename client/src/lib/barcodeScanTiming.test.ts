@@ -33,6 +33,30 @@ describe("ScanBurstDetector — كشف الومضة", () => {
     expect(code).toBe("6281");
   });
 
+  it("يستعيد الحرف الأوّل حين يكون أوّل فاصلٍ بطيئاً (بدءُ قارئٍ بطيء) — لا يُبتَر الباركود", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // أوّل فاصلٍ 150مي (>العتبة) ثمّ سريع: يجب ألّا يسقط «6».
+    const actions = feedSequence(det, ["6", "2", "8", "1"].map(digit), [150, 10, 10]);
+    expect(actions).toEqual(["pass", "pass", "startBurst", "capture"]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("6281"); // مع الحرف الأوّل المستعاد، لا "281"
+  });
+
+  it("لا يستعيد حرفاً مُسقطاً قديماً خارج نافذة الاستعادة (حرفٌ شاردٌ قبل المسح)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    // «a» شاردٌ ثمّ فجوةٌ كبيرة (400مي) ثمّ مسحٌ سريع: يجب ألّا يُلحَق «a» بالباركود.
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyA", key: "a" },
+      { code: "Digit6", key: "6" },
+      { code: "Digit2", key: "2" },
+      { code: "Digit8", key: "8" },
+    ];
+    feedSequence(det, events, [400, 10, 10]);
+    const { code } = det.flush();
+    expect(code).toBe("628");
+  });
+
   it("مناعةٌ تامّة لتذبذب التوقيت وسط الومضة (فاصلٌ كبيرٌ لا يكسرها بعد التأكيد)", () => {
     const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
     // بعد بدء الومضة، فاصل 300مي (تذبذب/جدولة نظام) يجب ألّا يكسرها.
@@ -143,8 +167,16 @@ describe("recoverSlowScanCode — استرداد مسح القارئ البطي�
     expect(recoverSlowScanCode("٦٢٨١٠٠١٢٣٤٥٦٧", 3)).toBe("6281001234567");
   });
 
-  it("يزيل المسافات الداخلية المتسرّبة ثمّ يستردّ", () => {
-    expect(recoverSlowScanCode("0172 100055", 3)).toBe("0172100055");
+  it("يستردّ باركوداً رقمياً بمسافةٍ داخلية ويُبقيها (عقد Code39؛ المطابقة اللا-حسّاسة للمسافة تتكفّل)", () => {
+    // Comment 6: نستعمل العقد القياسيّ (لا تجريدٌ يدويّ) — المسافة تبقى، وbarcodeIdentityCandidates
+    // يضيف الصورة بلا فراغات فيطابق الشكلين.
+    expect(recoverSlowScanCode("0172 100055", 3)).toBe("0172 100055");
+  });
+
+  it("لا يخطف بحثاً بشرياً فيه رقمٌ عابر (Comment 3): «قلم A4» ⇒ null", () => {
+    // يُفكّ إلى حروفٍ + رقم ⇒ ليس رقمياً محضاً ولا بادئة ⇒ يُترَك للبحث لا يُعامَل باركوداً.
+    expect(recoverSlowScanCode("قلم a4", 3)).toBeNull();
+    expect(recoverSlowScanCode("ab12", 3)).toBeNull();
   });
 
   it("يستردّ رمزاً داخلياً/مصنّعياً بأحرفٍ مشوّهة بالتخطيط العربي (شمق ⇒ alr)", () => {

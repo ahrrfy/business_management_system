@@ -97,8 +97,8 @@ export function useBarcodeInput(
     event.preventDefault();
     if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، وأبقِ البادئة
     clearTimeout(timerRef.current);
-    // مهلة سكونٍ أقصر (استجابةٌ أسرع للقارئ بلا لاحقة Enter): أطول من فاصل الومضة، أقصر ملحوظياً.
-    timerRef.current = setTimeout(() => settle(setValue), Math.max(180, Math.min(thresholdMs + 80, 320)));
+    // مهلة سكونٍ سخيّة كي لا يقطع تذبذبُ التوقيت الومضةَ فيُصدِر بادئةً جزئيّة (مراجعة #1108).
+    timerRef.current = setTimeout(() => settle(setValue), Math.max(400, Math.min(thresholdMs * 4, 600)));
   }, [enabled, settle, minLength, reset, detector, thresholdMs]);
 
   useEffect(() => reset, [reset]);

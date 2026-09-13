@@ -14,8 +14,8 @@
  * @param minLength  — أدنى طولٍ لقبول الومضة (افتراضي 2؛ رموز الموردين الداخلية قد تكون قصيرة).
  * @param thresholdMs— أقصى فاصلٍ بين ضغطتين ضمن ومضةٍ واحدة (افتراضي 120؛ سخيٌّ ليتحمّل التذبذب).
  */
-import { useEffect, useCallback } from "react";
-import { ScanBurstDetector, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
+import { useEffect, useRef } from "react";
+import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -31,16 +31,19 @@ export function useBarcodeScanner(
     ignoreInputFields = false,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number; ignoreInputFields?: boolean } = {},
 ): void {
-  // useCallback لضمان استقرار المرجع وتجنّب إعادة تسجيل event listener
-  const stableOnScan = useCallback(onScan, [onScan]);
+  // مرجعٌ مستقرّ لـonScan: يمنع إعادةَ بناء الكاشف وتسجيلِ المستمع كلّما تغيّرت هويّة onScan
+  // (المستدعي بدالّةٍ سطريّة مثل BarcodeLabels) — فلا يُعاد ضبطُ الكاشف وسط المسح فيُبتَر الباركود.
+  const onScanRef = useRef(onScan);
+  onScanRef.current = onScan;
 
   useEffect(() => {
     if (!enabled) return;
 
     const detector = new ScanBurstDetector({ minLength, intraGapMs: thresholdMs });
-    // مهلة السكون قبل الإفراغ التلقائيّ (قارئٌ بلا لاحقة Enter): أطول من أيّ فاصلٍ متوقَّعٍ ضمن
-    // ومضة، وأقصر ملحوظياً من السابق (استجابةٌ أسرع).
-    const idleMs = Math.max(180, Math.min(thresholdMs + 80, 320));
+    // مهلة السكون قبل الإفراغ التلقائيّ (قارئٌ بلا لاحقة Enter): سخيّةٌ عمداً كي لا يقطع تذبذبُ
+    // توقيت USB (فاصلٌ >المهلة وسط ومضةٍ نشطة) الباركودَ فيُصدِر بادئةً جزئيّة (P2). القارئ البطيء
+    // جداً لا يُشغّل ومضةً أصلاً (فلا تنطبق المهلة)، فتقصيرُها لم يكن يُفيده.
+    const idleMs = Math.max(250, Math.min(thresholdMs * 4, 600));
     let timer: ReturnType<typeof setTimeout>;
 
     // الحقل المستهدَف وقيمته قبل ظهور الحرف المرشّح — لاستعادةٍ نظيفة (صفر تسريب).
@@ -54,7 +57,15 @@ export function useBarcodeScanner(
 
     const restore = (value: string) => {
       if (!fieldTarget) return;
-      fieldTarget.value = value;
+      // ضبطٌ عبر الـsetter الأصليّ (لا الخاصية المرقَّعة من React) ثمّ إرسال حدث input: الإسناد
+      // المباشر لـ`.value` يُحدِّث متتبِّع React فيُقرأ الحدثُ «بلا تغيير» ولا يُطلَق onChange، فتبقى
+      // حالة React (مثل نصّ البحث) غير مصحَّحة. هذا التمرير يجعل الاستعادة تصحّح الحالة فعلاً.
+      const proto = fieldTarget instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (nativeSetter) nativeSetter.call(fieldTarget, value);
+      else fieldTarget.value = value;
       fieldTarget.dispatchEvent(new Event("input", { bubbles: true }));
     };
 
@@ -64,7 +75,7 @@ export function useBarcodeScanner(
       if (accepted && code.length >= minLength) {
         // نجحت الومضة: الحقل نُظّف بالفعل عند بدئها؛ نصدر الباركود المفكوك.
         clearField();
-        stableOnScan(code);
+        onScanRef.current(code);
       } else {
         // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
         if (text) restore(valBefore + text);
@@ -92,21 +103,12 @@ export function useBarcodeScanner(
           e.preventDefault();
           e.stopPropagation();
           finish();
-          return;
-        }
-        clearTimeout(timer);
-        detector.reset();
-        // قارئٌ بطيء لم يُكتشَف كومضة (تسرّب حرفاً حرفاً في حقل): استردّ باركوداً واثقاً من محتوى
-        // الحقل بدل تركه بحثاً نصّياً فاشلاً. غير النشط بلا حقلٍ أو بلا رمزٍ واثق يمرّ للنموذج.
-        const recovered = inputEl ? recoverSlowScanCode(inputEl.value, minLength) : null;
-        if (recovered) {
-          e.preventDefault();
-          e.stopPropagation();
-          inputEl!.value = "";
-          inputEl!.dispatchEvent(new Event("input", { bubbles: true }));
-          clearField();
-          stableOnScan(recovered);
         } else {
+          // ⛔ لا استردادٌ لمسحٍ بطيء هنا: الخطّاف العالميّ يُطلَق على **أيّ** حقلٍ في الصفحة
+          // (طور الالتقاط على document)، فتفسيرُ قيمةِ حقلٍ غير باركوديّ (مبلغ الدفع مثلاً) باركوداً
+          // خطرٌ ماليّ (P1). استردادُ القارئ البطيء يبقى في خطّافات الحقل المخصَّصة للباركود وحدها.
+          clearTimeout(timer);
+          detector.reset();
           clearField();
         }
         return;
@@ -153,5 +155,5 @@ export function useBarcodeScanner(
       document.removeEventListener("focusin", onFocusChange);
       clearTimeout(timer);
     };
-  }, [enabled, minLength, thresholdMs, ignoreInputFields, stableOnScan]);
+  }, [enabled, minLength, thresholdMs, ignoreInputFields]);
 }

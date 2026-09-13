@@ -8,14 +8,15 @@
 
 import { useCallback, useMemo, useRef } from "react";
 import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
-import { SCAN_MS } from "./posShared";
 
 /** أدنى طولٍ لاعتبار الومضة باركوداً في الكاشير (رموز المنتجات ≥٤؛ الأقصر يبقى بحثاً بشرياً). */
 const POS_SCAN_MIN_LENGTH = 4;
+/** عتبة الومضة موحّدةٌ مع بقية الأسطح (١٢٠مي، لتحمّل تذبذب توقيت USB) — كانت 80 سهواً في الإعادة الهيكلية. */
+const POS_SCAN_GAP_MS = 120;
 
 export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
   const detector = useMemo(
-    () => new ScanBurstDetector({ minLength: POS_SCAN_MIN_LENGTH, intraGapMs: SCAN_MS }),
+    () => new ScanBurstDetector({ minLength: POS_SCAN_MIN_LENGTH, intraGapMs: POS_SCAN_GAP_MS }),
     [],
   );
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -70,8 +71,8 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
       e.preventDefault();
       if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، أبقِ البادئة
       clearTimeout(timerRef.current);
-      // مهلة سكونٍ أقصر (استجابةٌ أسرع للقارئ بلا لاحقة Enter).
-      timerRef.current = setTimeout(() => fire(setValue), Math.max(180, SCAN_MS + 80));
+      // مهلة سكونٍ سخيّة كي لا يقطع تذبذبُ التوقيت الومضةَ فيُصدِر بادئةً جزئيّة (مراجعة #1108).
+      timerRef.current = setTimeout(() => fire(setValue), Math.max(400, POS_SCAN_GAP_MS * 4));
     },
     [fire, detector],
   );

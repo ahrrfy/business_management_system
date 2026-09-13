@@ -38,7 +38,7 @@ export function hasLocalScanner(
   pathname: string,
   search = typeof window !== "undefined" ? window.location.search : "",
 ): boolean {
-  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes|reception|delivery|returns)(\/|$)/.test(pathname)) return true;
+  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes|reception|delivery)(\/|$)/.test(pathname)) return true;
   if (pathname.startsWith("/inventory")) {
     const tab = new URLSearchParams(search).get("tab") ?? "stock";
     if (tab === "stock" || tab === "barcodes") return true;
@@ -140,6 +140,18 @@ export function CommandPalette() {
   const scanToSearch = useCallback((raw: string) => {
     const code = raw.trim();
     if (!code) return;
+    // إن كانت الصفحة تملك حقل بحث منتجاتٍ محلّيّاً (سلة مرتجعات/تحويل/هدايا/حجز/شراء عبر
+    // ProductSearchBar)، فالمسح مقصودٌ لتلك السلة لا للبحث الشامل. نُركّز الحقل بدل فتح اللوحة
+    // فوقه (لئلّا تُنقّل المستخدم خارج مستنده غير المحفوظ) — والمسحة التالية تصله فيتولّاها ماسحه
+    // المحلّيّ. يعالج هذا خطفَ المسح غير المركَّز على شاشات ProductSearchBar جميعاً (مراجعة #1108)،
+    // بينما يبقى البحث الشامل للمسح على شاشات التصفّح التي لا سلّة فيها.
+    if (typeof document !== "undefined") {
+      const localField = document.querySelector<HTMLInputElement>("input[data-product-search='1']");
+      if (localField) {
+        localField.focus();
+        return;
+      }
+    }
     setQ(code);
     setOpen(true);
   }, []);
