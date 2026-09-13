@@ -3,10 +3,12 @@ import {
   Calendar,
   CheckCircle2,
   ChevronRight,
+  Clock,
   Package,
   Pencil,
   Truck,
 } from "lucide-react";
+import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/data-table/DataTable";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
@@ -142,6 +144,31 @@ export function WorkOrdersTable({
       },
     },
     {
+      id: "timer",
+      header: "العداد / المدة",
+      cell: ({ row }) => {
+        const timing = computeOrderLifecycleTiming(row.original);
+        if (timing.state === "UNKNOWN") return <span className="text-muted-foreground">—</span>;
+        return (
+          <span
+            className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+              timing.state === "RUNNING"
+                ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+            }`}
+            title={timing.tooltip}
+          >
+            {timing.state === "RUNNING" ? (
+              <Clock aria-hidden className="size-3 animate-pulse" />
+            ) : (
+              <CheckCircle2 aria-hidden className="size-3" />
+            )}
+            {timing.badgeLabel}
+          </span>
+        );
+      },
+    },
+    {
       id: "channel",
       header: "القناة",
       cell: ({ row }) => {
@@ -242,6 +269,7 @@ export function WorkOrdersTable({
         const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
         const due = positiveDiff(o.salePrice, o.deposit ?? 0);
         const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
+        const timing = computeOrderLifecycleTiming(o);
         return (
           <MobileDataCard
             key={o.id}
@@ -259,6 +287,9 @@ export function WorkOrdersTable({
             metadata={[
               { label: "الكمية", value: `${fmtInt(o.quantity)} نسخة` },
               { label: "الأولوية", value: pri.label },
+              ...(timing.state !== "UNKNOWN"
+                ? [{ label: "المدة", value: timing.badgeLabel, icon: timing.state === "RUNNING" ? Clock : CheckCircle2 }]
+                : []),
               { label: "الاستحقاق", value: fmtDate(o.dueDate), icon: Calendar },
               { label: "الفني", value: o.assigneeName ?? "غير مُسنَد" },
             ]}

@@ -303,6 +303,7 @@ export default defineConfig({
       "shared/nextAction.test.ts",
       "shared/documentActions.test.ts",
       "shared/automationRegistry.test.ts",
+      "shared/workOrderTimer.test.ts",
       "shared/decisionRegistry.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",

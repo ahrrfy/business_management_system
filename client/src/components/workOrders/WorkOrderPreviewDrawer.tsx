@@ -6,6 +6,7 @@ import {
   Calendar,
   CheckCircle2,
   ChevronRight,
+  Clock,
   FileText,
   Package,
   Pencil,
@@ -17,6 +18,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
@@ -149,6 +151,32 @@ export function WorkOrderPreviewDrawer({
                   <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{fmtDate(d.dueDate)}</div></div>
                   <div><div className="wob-k">أنشأ الطلب</div><div className="wob-v">{d.createdByName ?? "—"}</div></div>
                   <div><div className="wob-k">وقت الاستلام</div><div className="wob-v">{fmtDateTime(d.createdAt)}</div></div>
+                  <div>
+                    <div className="wob-k">عداد الوقت / المدة</div>
+                    <div className="wob-v">
+                      {(() => {
+                        const timing = computeOrderLifecycleTiming(d);
+                        if (timing.state === "UNKNOWN") return "—";
+                        return (
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                              timing.state === "RUNNING"
+                                ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                                : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                            }`}
+                            title={timing.tooltip}
+                          >
+                            {timing.state === "RUNNING" ? (
+                              <Clock aria-hidden className="size-3 animate-pulse shrink-0" />
+                            ) : (
+                              <CheckCircle2 aria-hidden className="size-3 shrink-0" />
+                            )}
+                            {timing.badgeLabel}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  </div>
                   {d.hasDelivery && <div><div className="wob-k">هاتف التوصيل</div><div className="wob-v" dir="ltr">{d.deliveryPhone ?? d.customerPhone ?? "—"}</div></div>}
                   {d.hasDelivery && <div style={{ gridColumn: "1 / -1" }}><div className="wob-k">عنوان التوصيل</div><div className="wob-v">{d.deliveryAddress ?? "—"}</div></div>}
                   {d.materialsCost != null && <div><div className="wob-k">كلفة المواد</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.materialsCost)} د.ع</div></div>}

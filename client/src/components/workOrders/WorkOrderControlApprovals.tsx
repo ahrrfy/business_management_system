@@ -127,10 +127,16 @@ function SupervisorWorkOrderControlApprovals({
     setNote("");
   };
 
+  const rows = queue.data ?? [];
+  // إخفاء تلقائي عند الصفر: لا نثقل الشاشة بصندوق فارغ ما لم توجد طلبات معلقة أو حوار قرار مفتوح
+  if (rows.length === 0 && !decision) {
+    return null;
+  }
+
   return (
     <>
       <WorkOrderControlApprovalsView
-        rows={queue.data ?? []}
+        rows={rows}
         currentUserId={currentUserId}
         isLoading={queue.isLoading}
         errorMessage={queue.error?.message ?? null}
