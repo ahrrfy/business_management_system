@@ -19,6 +19,7 @@ import {
   getTopProducts,
   getWIPReport,
 } from "../services/reportsService";
+import { getTodaySalesComposition } from "../services/reports/todaySales";
 import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
@@ -1092,6 +1093,14 @@ export const reportsRouter = router({
         branchId,
         limit: input.limit,
       });
+    }),
+
+  /** تركيب مبيعات اليوم (نقد/غير نقد/آجل) — جسر «لماذا لا تساوي المبيعاتُ النقدَ في الدرج». manager + عزل الفرع. */
+  todaySalesComposition: reportsBranchScoped
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getTodaySalesComposition(branchId ?? undefined);
     }),
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */
