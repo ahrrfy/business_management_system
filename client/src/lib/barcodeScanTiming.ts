@@ -22,7 +22,8 @@
  * كما كتبها المستخدم (نصون بحثه العربيّ بلا تحويلٍ خطأً إلى لاتينيّ).
  */
 import { scannerCharFromEvent, type ScannerKeyEvent } from "@shared/barcodeKeyDecode";
-import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
+import { normalizeBarcodeScannerInput, looksLikeSystemBarcode } from "@shared/barcodeScanner";
+import { hasUnsupportedBarcodeCharacters } from "@shared/barcodeNormalize";
 
 export interface ScanBurstOptions {
   /** أدنى طولٍ لاعتبار الومضة باركوداً (افتراضي 3؛ حقول القارئ المخصَّصة قد تخفضه إلى 2). */
@@ -56,6 +57,9 @@ export class ScanBurstDetector {
   private keys: ScannerKeyEvent[] = [];
   private lastMs = 0;
   private active = false;
+  // آخر حرفٍ أُسقط عند فاصلٍ بطيء + فاصلُه — لاستعادته إن بدأت ومضةٌ سريعةٌ بعده مباشرةً (قارئٌ
+  // بطيء البدء: أوّل فاصلٍ كبيرٌ ثمّ بقيّةُ الأحرف سريعة). بلا هذا يُبتَر الحرفُ الأوّل من الباركود.
+  private lookback: { key: ScannerKeyEvent; gap: number } | null = null;
 
   readonly minLength: number;
   readonly intraGapMs: number;
@@ -92,13 +96,26 @@ export class ScanBurstDetector {
     // الحرف الثاني وصل بسرعة القارئ بعد المرشّح الأوّل ⇒ ومضةٌ مؤكَّدة.
     if (this.keys.length === 1 && gap <= this.intraGapMs) {
       this.active = true;
+      // استعِد الحرف المُسقَط قبل المرشّح إن كان ضمن نافذة الاستعادة (بدءُ قارئٍ بطيء): نافذةٌ أوسع
+      // من عتبة الومضة لكنّها لا تزيد الإيجابيات الكاذبة — تُطبَّق فقط بعد تأكّد الومضة بزوجٍ سريع.
+      if (this.lookback && this.lookback.gap <= this.lookbackMs) {
+        this.keys.unshift(this.lookback.key);
+      }
+      this.lookback = null;
       this.keys.push(input);
       return "startBurst";
     }
 
-    // فاصلٌ بشريّ (أو أوّل ضغطةٍ على الإطلاق) ⇒ ابدأ مرشّحاً جديداً يظهر في الحقل.
+    // فاصلٌ بشريّ (أو أوّل ضغطةٍ على الإطلاق) ⇒ ابدأ مرشّحاً جديداً يظهر في الحقل، واحفظ المُسقَط
+    // مع فاصله لاستعادةٍ محتملة إن تبيّن أنّه أوّلُ ومضةٍ من قارئٍ بطيء البدء.
+    this.lookback = this.keys.length ? { key: this.keys[0], gap } : null;
     this.keys = [input];
     return "pass";
+  }
+
+  /** نافذة استعادة الحرف الأوّل: أوسع من عتبة الومضة لتحمّل بطء أوّل فاصلٍ من القارئ. */
+  private get lookbackMs(): number {
+    return Math.max(this.intraGapMs * 2, 260);
   }
 
   /** يفرّغ الحالة ويعيد القرار النهائيّ (ومضةٌ مقبولة أم كتابةٌ تُستعاد). */
@@ -116,6 +133,7 @@ export class ScanBurstDetector {
     this.keys = [];
     this.lastMs = 0;
     this.active = false;
+    this.lookback = null;
   }
 }
 
@@ -140,4 +158,30 @@ export function resolveScanSettle(result: FlushResult, prefix: string, minLength
     return { scan: result.code, fieldValue: "" };
   }
   return { scan: null, fieldValue: prefix + result.text };
+}
+
+/**
+ * استرداد رمزٍ من نصٍّ **تسرّب** من قارئٍ بطيء لم يُكتشَف كومضة (فبدا كتابةً بشرية)، عند ضغط Enter.
+ *
+ * السبب: بعض القارئات تُضبَط بتأخيرٍ عالٍ بين المحارف فتطبع الرمز حرفاً حرفاً ببطءٍ يوازي الكتابة
+ * البشرية — فيستحيل تمييزها بالتوقيت وحده. لكنّها تُنهي بـEnter غالباً؛ فعنده نطبّع محتوى الحقل
+ * ونستعلمه كباركود **بشرط أن يبدو باركوداً واثقاً** كي لا نخطف بحثاً بشرياً.
+ *
+ * **يستعمل نفس عقد الحفظ/البحث** (مراجعة #1108): التطبيع عبر `normalizeBarcodeScannerInput` (يترجم
+ * تخطيط عربي 101 + يطوي الأرقام + يقلّم + يجرّد بادئة AIM، ويُبقي المسافة الداخلية — عقد Code39)،
+ * وفحص المحارف عبر `hasUnsupportedBarcodeCharacters` القياسيّ (يقبل ترقيم Code128 مثل `_ = ?`، لا
+ * قائمةٌ بيضاء ضيّقة). ولا نُجرّد المسافة الداخلية من القيمة المُعادة — تكافلُ المطابقة اللا-حسّاسة
+ * للمسافة على `barcodeIdentityCandidates`.
+ *
+ * بوّابة الباركود الواثق: طولٌ ≥ max(4, minLength)، ومحارفُ مدعومة، و**رقميٌّ محضٌ** (بعد طيّ الفراغات)
+ * أو بادئة داخلية ALR/بادئة مستندٍ معروفة — كي لا نخطف بحثاً بشرياً فيه رقمٌ عابر («قلم A4» يُفكّ
+ * حروفاً + رقماً ⇒ يُترَك للبحث). الحلّ الجذريّ لبطء القارئ يبقى ضبطه (تأخير = 0 + لاحقة Enter).
+ */
+export function recoverSlowScanCode(rawFieldValue: string, minLength: number): string | null {
+  const code = normalizeBarcodeScannerInput(rawFieldValue);
+  if (code.length < Math.max(4, minLength)) return null;
+  if (hasUnsupportedBarcodeCharacters(code)) return null;
+  const digitsOnly = code.replace(/\s+/g, "");
+  const confident = /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code);
+  return confident ? code : null;
 }

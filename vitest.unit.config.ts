@@ -352,6 +352,8 @@ export default defineConfig({
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",
       "client/src/lib/barcodeScannerInput.test.ts",
+      // بوابة /returns تملك ماسحها المحلّيّ (ProductSearchBar) كي لا يخطف الماسح العالميّ مسحَ السلة.
+      "client/src/components/CommandPalette.test.ts",
       // نافذة تحميل صور كاروسيل الكشك وتحجيم شاشات العرض
       "client/src/components/kiosk/kioskWindow.test.ts",
       // حارس إبقاء شاشة الكشك وقارئ الأسعار مستيقظة ومنع السكون
