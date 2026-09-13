@@ -7,14 +7,10 @@ const units = [
 ] as const;
 
 describe("resolveProductBarcodeMatch", () => {
-  it("مطابقةٌ لا حسّاسة للمسافة الداخلية (ملصقات المتجر «1 0172») وترفض الحسم بين صنفين", () => {
+  it("يحفظ رمز الملصق الفعلي بمسافتين ويرفض الحسم بين صنفين", () => {
     const first = { id: 1, units: [{ unitName: "قطعة", factor: 1, barcode: "1  0095", aliases: [] }] };
-    // المسح الحرفيّ يطابق (نفس الرمز).
     expect(resolveProductBarcodeItem([first], "1  0095")).toMatchObject({ status: "FOUND", item: { id: 1 } });
-    // وبلا مسافة يطابق أيضاً: القارئ قد يُنتج المسافة والإدخال اليدويّ لا — فالشكلان هويّةٌ واحدة
-    // (يضيف barcodeIdentityCandidates صورةً بلا فراغاتٍ داخلية). كان هذا NOT_FOUND في السلوك القديم.
-    expect(resolveProductBarcodeItem([first], "10095")).toMatchObject({ status: "FOUND", item: { id: 1 } });
-    // وحارس الغموض يبقى: صنفان بالرمز نفسه ⇒ لا حسمٌ صامت.
+    expect(resolveProductBarcodeItem([first], "10095")).toEqual({ status: "NOT_FOUND" });
     expect(resolveProductBarcodeItem([first, { ...first, id: 2 }], "1  0095")).toEqual({ status: "AMBIGUOUS" });
   });
   it("يرفض التباس الأساسي والبديل بين وحدتين حتى لو كانت إحداهما مطابقة حرفياً", () => {

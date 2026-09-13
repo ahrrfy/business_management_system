@@ -81,30 +81,13 @@ function isZeroPrefixedEan13(code: string): boolean {
  *
  * ZXing قد يعيد EAN-13 البادئ بصفر كـUPC-A من 12 خانة. نوسّع صفراً واحداً فقط وبعد
  * التحقق من خانة الفحص؛ الأكواد القصيرة وغير القياسية تبقى حرفية ولا تفقد أصفارها.
- *
- * **المسافة الداخلية (ملصقات المتجر «1 0172»):** التطبيع يُبقي الفراغ الداخليّ عمداً (لأجل Code39)،
- * فباركودٌ بمسافة لا يطابق نظيره بلا مسافة. نضيف **صورةً بلا فراغاتٍ داخلية** كمرشّحٍ إضافيّ (مع
- * تطبيق تكافؤ GTIN عليها). ⚠️ **المطابقة أحاديّة الاتجاه عملياً:** المرشّح مُشتقٌّ من **مُدخل المسح**،
- * والعمود المولَّد `barcodeNormalized` يُبقي الفراغ (لا نمسّه، فيبقى تكافؤ JS/SQL) — فمسحٌ **بمسافة**
- * يطابق مخزَّناً **بلا مسافة** (المسار الشائع: القارئ يحمل مسافة الملصق، والصنف محفوظٌ نظيفاً) على كلّ
- * المسارات؛ أمّا مسحٌ/إدخالٌ **بلا مسافة** لمخزَّنٍ **بمسافة** فيطابق فقط في مطابقة الذاكرة المتماثلة
- * (`barcodesEquivalent`) لا في SQL/الأوفلاين. التماثل الكامل يلزمه إضافة الصورة بلا فراغات إلى العمود
- * المولَّد (هجرة) واللقطة — مؤجَّل. ولا يقع حسمٌ خاطئ: حارس الغموض يعدّ المُلّاك المتمايزين ويرفض تعدّدهم.
  */
 export function barcodeIdentityCandidates(raw: string): string[] {
   const code = canonicalizeBarcodeInput(raw);
   if (!code) return [];
-  const out = new Set<string>();
-  const addWithGtin = (c: string) => {
-    if (!c) return;
-    out.add(c);
-    if (isValidUpcA(c)) out.add(`0${c}`);
-    else if (isZeroPrefixedEan13(c)) out.add(c.slice(1));
-  };
-  addWithGtin(code);
-  const deSpaced = code.replace(/\s+/g, "");
-  if (deSpaced !== code) addWithGtin(deSpaced);
-  return Array.from(out);
+  if (isValidUpcA(code)) return [code, `0${code}`];
+  if (isZeroPrefixedEan13(code)) return [code, code.slice(1)];
+  return [code];
 }
 
 /** مفتاح المقارنة الحالي للنظام: التطبيع النصي + عدم حساسية حالة الأحرف. */
