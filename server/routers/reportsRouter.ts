@@ -55,6 +55,7 @@ import {
 } from "../services/reportsInventoryAnalyticsService";
 import {
   getTreasurySummary,
+  getTreasuryStatement,
   getExpensesReport,
   getCashOrphansReport,
 } from "../services/reportsTreasuryService";
@@ -1071,6 +1072,26 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getTreasurySummary({ from: input.from, to: input.to, branchId });
+    }),
+
+  /** كشف حركة الخزينة النقدية — رصيدٌ جارٍ يشرح كل داخل/خارج؛ الرصيد الختاميّ ≡ رصيد الخزينة. manager + عزل الفرع. */
+  treasuryStatement: reportsBranchScoped
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+        limit: z.number().int().min(1).max(5000).optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getTreasuryStatement({
+        from: input.from,
+        to: input.to,
+        branchId,
+        limit: input.limit,
+      });
     }),
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */
