@@ -22,7 +22,7 @@
  * كما كتبها المستخدم (نصون بحثه العربيّ بلا تحويلٍ خطأً إلى لاتينيّ).
  */
 import { scannerCharFromEvent, type ScannerKeyEvent } from "@shared/barcodeKeyDecode";
-import { normalizeBarcodeScannerInput } from "@shared/barcodeScanner";
+import { normalizeBarcodeScannerInput, looksLikeSystemBarcode } from "@shared/barcodeScanner";
 
 export interface ScanBurstOptions {
   /** أدنى طولٍ لاعتبار الومضة باركوداً (افتراضي 3؛ حقول القارئ المخصَّصة قد تخفضه إلى 2). */
@@ -140,4 +140,27 @@ export function resolveScanSettle(result: FlushResult, prefix: string, minLength
     return { scan: result.code, fieldValue: "" };
   }
   return { scan: null, fieldValue: prefix + result.text };
+}
+
+/** محارف الباركود المسموحة عند الاسترداد (بلا مسافاتٍ داخلية). */
+const BARCODE_CHARS = /^[A-Za-z0-9\-.$/+%]+$/;
+
+/**
+ * استرداد رمزٍ من نصٍّ **تسرّب** من قارئٍ بطيء لم يُكتشَف كومضة (فبدا كتابةً بشرية)، عند ضغط Enter.
+ *
+ * السبب: بعض القارئات تُضبَط بتأخيرٍ عالٍ بين المحارف فتطبع الرمز حرفاً حرفاً ببطءٍ يوازي الكتابة
+ * البشرية — فيستحيل تمييزها بالتوقيت وحده. لكنّها تُنهي بـEnter غالباً؛ فعنده نفكّ محتوى الحقل
+ * (خريطة تخطيط عربي 101 + طيّ الأرقام) ونستعلمه كباركود **بشرط أن يبدو باركوداً واثقاً** كي لا
+ * نخطف بحثاً بشرياً عربياً (الذي يُفكّ إلى أحرفٍ لاتينية بلا أرقام).
+ *
+ * القبول: بعد التطبيع وإزالة المسافات، طولٌ ≥ max(4, minLength)، محارف باركودٍ فقط، و**يحوي رقماً**
+ * (باركودات المنتجات تحوي أرقاماً؛ كلمات البحث العربية تُفكّ حروفاً بلا أرقام) أو بادئة ALR/مستند.
+ * الحلّ الجذريّ يبقى ضبط القارئ (تأخير بين-المحارف = 0 + لاحقة Enter)، وهذا شبكةُ أمان.
+ */
+export function recoverSlowScanCode(rawFieldValue: string, minLength: number): string | null {
+  const code = normalizeBarcodeScannerInput(rawFieldValue).replace(/\s+/g, "");
+  if (code.length < Math.max(4, minLength)) return null;
+  if (!BARCODE_CHARS.test(code)) return null;
+  const barcodeLike = /\d/.test(code) || /^ALR/i.test(code) || looksLikeSystemBarcode(code);
+  return barcodeLike ? code : null;
 }

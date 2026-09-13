@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ScanBurstDetector, resolveScanSettle, type FeedAction, type FlushResult } from "./barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode, type FeedAction, type FlushResult } from "./barcodeScanTiming";
 import type { ScannerKeyEvent } from "@shared/barcodeKeyDecode";
 
 /** يبني ضغطةً بموقعٍ فيزيائيّ مشتقٍّ من الرقم/الحرف (لتبسيط الاختبار على مدخلٍ لاتينيّ). */
@@ -131,6 +131,35 @@ describe("resolveScanSettle — صون البادئة والكتابة البش�
   it("رمزٌ مقبولٌ لكنّه أقصر من الحدّ الأدنى: يُعامَل كرفضٍ فيُستعاد", () => {
     // حاجزٌ ثانٍ: لو قصّ تجريدُ AIM الرمز دون الحدّ، لا نُطلق استعلاماً بمُدخلٍ ناقص.
     expect(resolveScanSettle(mk(true, "ab", "ab"), "x", 3)).toEqual({ scan: null, fieldValue: "xab" });
+  });
+});
+
+describe("recoverSlowScanCode — استرداد مسح القارئ البطيء عند Enter", () => {
+  it("يستردّ باركوداً رقمياً تسرّب (قارئٌ بطيء بأرقامٍ لاتينية)", () => {
+    expect(recoverSlowScanCode("6281001234567", 3)).toBe("6281001234567");
+  });
+
+  it("يستردّ باركوداً رقمياً تسرّب بأرقامٍ عربية عبر الخريطة", () => {
+    expect(recoverSlowScanCode("٦٢٨١٠٠١٢٣٤٥٦٧", 3)).toBe("6281001234567");
+  });
+
+  it("يزيل المسافات الداخلية المتسرّبة ثمّ يستردّ", () => {
+    expect(recoverSlowScanCode("0172 100055", 3)).toBe("0172100055");
+  });
+
+  it("يستردّ رمزاً داخلياً/مصنّعياً بأحرفٍ مشوّهة بالتخطيط العربي (شمق ⇒ alr)", () => {
+    expect(recoverSlowScanCode("شمق005123", 3)).toBe("alr005123");
+  });
+
+  it("لا يخطف بحثاً بشرياً عربياً (يُفكّ حروفاً بلا أرقام)", () => {
+    // «قلم ازرق» تحت الخريطة ⇒ حروفٌ لاتينية بلا رقمٍ ولا بادئة ⇒ يُترَك للبحث.
+    expect(recoverSlowScanCode("قلم ازرق", 3)).toBeNull();
+    expect(recoverSlowScanCode("كتاب", 3)).toBeNull();
+  });
+
+  it("يرفض الأقصر من الحدّ الأدنى (٤ محارف)", () => {
+    expect(recoverSlowScanCode("12", 3)).toBeNull();
+    expect(recoverSlowScanCode("ab1", 3)).toBeNull();
   });
 });
 

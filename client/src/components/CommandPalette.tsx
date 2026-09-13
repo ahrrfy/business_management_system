@@ -38,7 +38,7 @@ export function hasLocalScanner(
   pathname: string,
   search = typeof window !== "undefined" ? window.location.search : "",
 ): boolean {
-  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes|reception|delivery)(\/|$)/.test(pathname)) return true;
+  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes|reception|delivery|returns)(\/|$)/.test(pathname)) return true;
   if (pathname.startsWith("/inventory")) {
     const tab = new URLSearchParams(search).get("tab") ?? "stock";
     if (tab === "stock" || tab === "barcodes") return true;
@@ -143,7 +143,9 @@ export function CommandPalette() {
     setQ(code);
     setOpen(true);
   }, []);
-  useBarcodeScanner(scanToSearch, { enabled: !open && !hasLocalScanner(loc) });
+  // ignoreInputFields: يتنحّى عن الحقول المركَّز فيها فيتركها لماسحها المحلّيّ (ProductSearchBar)
+  // — فلا يُخطَف مسحُ سلال المرتجعات/التحويلات/الهدايا إلى البحث الشامل ثم التنقّل للمخزون.
+  useBarcodeScanner(scanToSearch, { enabled: !open && !hasLocalScanner(loc), ignoreInputFields: true });
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

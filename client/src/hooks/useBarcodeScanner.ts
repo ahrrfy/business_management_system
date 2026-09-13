@@ -15,7 +15,7 @@
  * @param thresholdMs— أقصى فاصلٍ بين ضغطتين ضمن ومضةٍ واحدة (افتراضي 120؛ سخيٌّ ليتحمّل التذبذب).
  */
 import { useEffect, useCallback } from "react";
-import { ScanBurstDetector } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
 
 const INPUT_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
@@ -25,7 +25,11 @@ export function useBarcodeScanner(
     enabled = true,
     minLength = 2,
     thresholdMs = 120,
-  }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
+    // يتنحّى الماسح عن الحقول المركَّز فيها (INPUT/TEXTAREA/SELECT) فيتركها لماسحها المحلّيّ
+    // (مثل ProductSearchBar عبر useBarcodeInput). يستعمله الماسح العالميّ للوحة الأوامر كي لا
+    // يخطف المسح داخل شاشات السلة (مرتجعات/تحويلات/هدايا...) — يعيد سلوك ما قبل #1070.
+    ignoreInputFields = false,
+  }: { enabled?: boolean; minLength?: number; thresholdMs?: number; ignoreInputFields?: boolean } = {},
 ): void {
   // useCallback لضمان استقرار المرجع وتجنّب إعادة تسجيل event listener
   const stableOnScan = useCallback(onScan, [onScan]);
@@ -35,8 +39,8 @@ export function useBarcodeScanner(
 
     const detector = new ScanBurstDetector({ minLength, intraGapMs: thresholdMs });
     // مهلة السكون قبل الإفراغ التلقائيّ (قارئٌ بلا لاحقة Enter): أطول من أيّ فاصلٍ متوقَّعٍ ضمن
-    // ومضة، وأقصر من أن يعوق كتابةً بشرية لاحقة.
-    const idleMs = Math.max(250, Math.min(thresholdMs * 4, 600));
+    // ومضة، وأقصر ملحوظياً من السابق (استجابةٌ أسرع).
+    const idleMs = Math.max(180, Math.min(thresholdMs + 80, 320));
     let timer: ReturnType<typeof setTimeout>;
 
     // الحقل المستهدَف وقيمته قبل ظهور الحرف المرشّح — لاستعادةٍ نظيفة (صفر تسريب).
@@ -78,6 +82,9 @@ export function useBarcodeScanner(
       const inField = target != null && INPUT_TAGS.has(target.tagName);
       const inputEl = inField ? (target as HTMLInputElement | HTMLTextAreaElement) : null;
 
+      // تنحٍّ عن الحقول المركَّز فيها (وضع لوحة الأوامر): يتركها لماسحها المحلّيّ بلا خطفٍ ولا Enter.
+      if (ignoreInputFields && inField) return;
+
       // Enter: نعترضه حين تكون ومضةٌ نشطة — إمّا نُصدر الباركود (بلغ الحدّ الأدنى) وإمّا نستعيد
       // النصّ القصير عبر finish (يعيد البادئة + الخام) بلا فقد. غير النشط يمرّ للنموذج/الحقل.
       if (e.key === "Enter") {
@@ -85,9 +92,21 @@ export function useBarcodeScanner(
           e.preventDefault();
           e.stopPropagation();
           finish();
+          return;
+        }
+        clearTimeout(timer);
+        detector.reset();
+        // قارئٌ بطيء لم يُكتشَف كومضة (تسرّب حرفاً حرفاً في حقل): استردّ باركوداً واثقاً من محتوى
+        // الحقل بدل تركه بحثاً نصّياً فاشلاً. غير النشط بلا حقلٍ أو بلا رمزٍ واثق يمرّ للنموذج.
+        const recovered = inputEl ? recoverSlowScanCode(inputEl.value, minLength) : null;
+        if (recovered) {
+          e.preventDefault();
+          e.stopPropagation();
+          inputEl!.value = "";
+          inputEl!.dispatchEvent(new Event("input", { bubbles: true }));
+          clearField();
+          stableOnScan(recovered);
         } else {
-          clearTimeout(timer);
-          detector.reset();
           clearField();
         }
         return;
@@ -134,5 +153,5 @@ export function useBarcodeScanner(
       document.removeEventListener("focusin", onFocusChange);
       clearTimeout(timer);
     };
-  }, [enabled, minLength, thresholdMs, stableOnScan]);
+  }, [enabled, minLength, thresholdMs, ignoreInputFields, stableOnScan]);
 }
