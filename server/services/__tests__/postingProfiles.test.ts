@@ -266,6 +266,49 @@ describe("posting profile registry and executable policies", () => {
     ).toThrow(InvalidPostingIntentError);
   });
 
+  it("عكس تسليم أمر الشغل (RETURN_SALE_FLEX_WORKORDER) يجتاز فحص المصدر — حارس انقلاب الإشارة (م١)", () => {
+    // يعيد بناء ما يمرّره المنتج الوحيد reversal/executors/workOrderDelivery.ts لعكس أمرٍ مُسلَّم:
+    // يَدين SALES_FLEX ويُدائن AR (وWIP↔COGS للخامة، وAR↔OTHER_LIABILITY للعربون المُقفَل)،
+    // ويمرّر revenue/cost **سالبَين** (اصطلاح المرتجع). كانت تأكيدات الخريطة مقلوبةَ الإشارة
+    // فتُفشِل الفحص ⇒ يتراجع عكسُ كل أمرٍ مُسلَّم في ACTIVE (المخرج الوحيد له). هذا الحارس يمنع عودة الانقلاب.
+    const total = "100000.00";
+    const materialsCost = "30000.00";
+    const depositClosed = "40000.00";
+    const lines = [
+      debitLine("SALES_FLEX", total),
+      creditLine("AR", total),
+      debitLine("WORK_IN_PROGRESS", materialsCost),
+      creditLine("COGS", materialsCost),
+      debitLine("AR", depositClosed),
+      creditLine("OTHER_LIABILITY", depositClosed),
+    ];
+    const components = {
+      roleDebits: { SALES_FLEX: total, WORK_IN_PROGRESS: materialsCost, AR: depositClosed },
+      roleCredits: { AR: total, COGS: materialsCost, OTHER_LIABILITY: depositClosed },
+    };
+    const source: PostingSourceAmounts = {
+      revenue: money(total).neg().toFixed(2),
+      cost: money(materialsCost).neg().toFixed(2),
+      ...components,
+    };
+    const intent = createPostingIntent(
+      "RETURN_SALE_FLEX_WORKORDER",
+      "RETURN",
+      lines,
+      components,
+    );
+    // مطابقٌ لِما يفعله postEntry عند ACTIVE — يجب ألّا يرمي.
+    expect(() => validatePostingIntentPolicy(intent, "RETURN", source)).not.toThrow();
+    // وللتوثيق: تمريرُ الإيراد/التكلفة موجبَين (الانقلاب القديم) يُرفَض ⇒ الفحص يحرس الاتّجاه فعلاً.
+    expect(() =>
+      validatePostingIntentPolicy(intent, "RETURN", {
+        ...source,
+        revenue: total,
+        cost: materialsCost,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+  });
+
   it("keeps interbranch receipt clearing branch-specific and role-exact", () => {
     const sender = createPostingIntent(
       "INTERBRANCH_CLEARING_OUT",

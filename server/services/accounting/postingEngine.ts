@@ -1414,9 +1414,16 @@ export const PROFILE_POLICIES = Object.freeze({
       reversible: false,
       requiredDebitRoles: ["SALES_FLEX"],
       requiredCreditRoles: ["AR"],
+      // إصلاح م١ (تدقيق المحرّك ١٣/٩): كانت الإشارتان مقلوبتَين. المنتج الوحيد
+      // (reversal/executors/workOrderDelivery.ts) يمرّر revenue/cost **سالبَين** (اصطلاح المرتجع)
+      // ويَدين SALES_FLEX ويُدائن COGS ⇒ المقياس الصحيح: الإيراد CREDIT_MINUS_DEBIT (=−total)
+      // والتكلفة DEBIT_MINUS_CREDIT (=−cost) — مطابقةً لشقيقَيه RETURN_SALE_FLEX
+      // وRETURN_SALE_DIGITAL. القيمُ المقلوبة (DEBIT_MINUS_CREDIT/CREDIT_MINUS_DEBIT) كانت تُفشل
+      // فحص المصدر لكل عكس تسليمٍ لأمر شغل: في ACTIVE يتراجع العكس (المخرج الوحيد للأمر المُسلَّم)،
+      // وفي SHADOW يتراكم فجوةً. يحرسه الآن workOrderReversalPosting في postingProfiles.test.ts.
       sourceAssertions: [
-        sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
-        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["COGS"]),
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["COGS"]),
       ],
       requireRoleComponents: [
         "AR",
