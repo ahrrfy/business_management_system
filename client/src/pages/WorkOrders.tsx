@@ -6,7 +6,7 @@ import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X, Zap } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -216,7 +216,52 @@ export default function WorkOrders() {
     }
     setKanban.mutate({ workOrderId: orderId, kanbanState: next });
   };
-  const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending;
+  const activeBranchId = canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined;
+
+  const autoClearReady = trpc.workOrders.autoClearReady.useMutation({
+    onSuccess: (res) => {
+      if (res.clearedCount > 0) {
+        notify.ok(
+          "تم التصريف التلقائي",
+          `تم تصريف ${fmtInt(res.clearedCount)} طلب (${fmtInt(res.dispatchedCount)} إرسال للتوصيل، ${fmtInt(res.deliveredCount)} تسليم مباشر).`,
+        );
+      } else {
+        notify.warn(
+          "لا توجد طلبات مؤهلة للتصريف",
+          "طلبات التوصيل تتطلب جهة توصيل نشطة، وطلبات الاستلام المباشر تتطلب دفع كامل المبلغ مقدماً.",
+        );
+      }
+      invalidateAll();
+    },
+    onError: (e) => {
+      notify.err(e);
+      invalidateAll();
+    },
+  });
+
+  const onQuickDispatch = (order: WO) => {
+    autoClearReady.mutate(
+      { workOrderId: order.id, branchId: order.branchId },
+      {
+        onSuccess: (res) => {
+          if (res.dispatchedCount > 0) {
+            notify.ok("تم الإرسال للتوصيل", `تم إسناد الطلب ${order.orderNumber} لشركة التوصيل.`);
+          } else {
+            notify.warn("تعذّر الإرسال للتوصيل", "تأكد من وجود جهة توصيل نشطة للفرع.");
+          }
+        },
+      },
+    );
+  };
+
+  const onQuickDeliver = (order: WO) => {
+    deliver.mutate({
+      workOrderId: order.id,
+      clientRequestId: newClientRequestId(),
+    });
+  };
+
+  const busy = start.isPending || markReady.isPending || deliver.isPending || assign.isPending || autoClearReady.isPending;
 
   const operation = useMemo(() => ({
     getOperation: (order: WO) => ({
@@ -774,6 +819,20 @@ export default function WorkOrders() {
                           )}
                         </div>
                       )}
+                      {s.key === "READY" && canDeliver && list.length > 0 && (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => autoClearReady.mutate({ branchId: activeBranchId })}
+                            disabled={autoClearReady.isPending}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-md bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] active:scale-95 transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                            title="تصريف تلقائي لكافة الطلبات الجاهزة (إرسال للتوصيل أو تسليم مباشر للمدفوع)"
+                          >
+                            <Zap aria-hidden className="size-3" />
+                            <span>تصريف تلقائي ({fmtInt(list.length)})</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                     {/* عمود «مُسلَّم» يعرض نافذة الأحدث فقط — العدّاد من الخادم يحمل الإجمالي الحقيقي.
                         Codex #3 (الجولة ٣): يُستعمل عدّاد الخادم فقط حين لا فلترَ عميليّ (بما فيه
@@ -810,6 +869,9 @@ export default function WorkOrders() {
                         // (عرضاً غير-NORMAL فقط — بلا زرّ يفشل بـFORBIDDEN).
                         onCycleKanban={canSetKanban ? ((orderId, current) => onCycleKanbanState(orderId, current)) : undefined}
                         kanbanBusy={setKanban.isPending}
+                        onQuickDispatch={canDeliver ? onQuickDispatch : undefined}
+                        onQuickDeliver={canDeliver ? onQuickDeliver : undefined}
+                        quickActionPending={autoClearReady.isPending || deliver.isPending}
                       />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}

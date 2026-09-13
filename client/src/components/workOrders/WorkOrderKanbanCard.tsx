@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type React from "react";
 import { AppSelect } from "@/components/ui/AppSelect";
-import { Calendar, ChevronRight, Package, Printer, Timer, Truck } from "lucide-react";
+import { Calendar, CheckCircle2, ChevronRight, Clock, Package, Printer, Timer, Truck } from "lucide-react";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { RowActions } from "@/components/list";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
@@ -9,6 +9,7 @@ import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { CopyInline } from "@/components/CopyButton";
 import { workOrderStatusHue } from "@shared/workOrderStatus";
+import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import {
   isKanbanStateApplicable,
   isWorkOrderKanbanState,
@@ -30,7 +31,21 @@ import {
   printWoShippingLabel,
 } from "./workOrderTypes";
 
-export function WorkOrderKanbanCard({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending, onOpenCustomer, onCycleKanban, kanbanBusy }: {
+export function WorkOrderKanbanCard({
+  o,
+  onPointerDown,
+  dragging,
+  ghost,
+  inboxAssign,
+  staff,
+  assignPending,
+  onOpenCustomer,
+  onCycleKanban,
+  kanbanBusy,
+  onQuickDeliver,
+  onQuickDispatch,
+  quickActionPending,
+}: {
   o: WO;
   onPointerDown?: (e: React.PointerEvent) => void;
   dragging?: boolean;
@@ -44,7 +59,22 @@ export function WorkOrderKanbanCard({ o, onPointerDown, dragging, ghost, inboxAs
   /** الموجة ١ — نقر نقطة الكانبان يدور إشارةَ الفنّيّ (NORMAL→READY→BLOCKED→NORMAL). */
   onCycleKanban?: (orderId: number, current: WorkOrderKanbanState) => void;
   kanbanBusy?: boolean;
+  /** تصريف سريع: تسليم فوري للأمر المباشر المدفوع بالكامل */
+  onQuickDeliver?: (o: WO) => void;
+  /** تصريف سريع: إسناد وإرسال للتوصيل */
+  onQuickDispatch?: (o: WO) => void;
+  quickActionPending?: boolean;
 }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    // تحديث دوري للعداد النشط كل دقيقة
+    const isRunning = o.status === "RECEIVED" || o.status === "IN_PROGRESS";
+    if (!isRunning) return;
+    const interval = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(interval);
+  }, [o.status]);
+
+  const timing = computeOrderLifecycleTiming(o);
   const pr = progressOf(o.status);
   const di = dueInfo(o);
   const chLabel = receptionChannelLabel(o.receptionChannel);
@@ -170,6 +200,23 @@ export function WorkOrderKanbanCard({ o, onPointerDown, dragging, ghost, inboxAs
       <div className="wob-meta">
         <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
         <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
+        {timing.state !== "UNKNOWN" && (
+          <span
+            className={`wob-meta-pill inline-flex items-center gap-1 ${
+              timing.state === "RUNNING"
+                ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+            }`}
+            title={timing.tooltip}
+          >
+            {timing.state === "RUNNING" ? (
+              <Clock aria-hidden className="size-3 animate-pulse shrink-0" />
+            ) : (
+              <CheckCircle2 aria-hidden className="size-3 shrink-0" />
+            )}
+            <span>{timing.badgeLabel}</span>
+          </span>
+        )}
         {/* ٨/٨ — شارة التوصيل: يظهر التوصيل في التنفيذ (كان «غير موجود بالتنفيذ»). الأجرة تمريرٌ
             لا إيراد ⇒ تُعرَض للعِلم فقط. العنوان في التلميح. */}
         {o.hasDelivery && (
@@ -187,7 +234,20 @@ export function WorkOrderKanbanCard({ o, onPointerDown, dragging, ghost, inboxAs
       </div>
       <div className="wob-prog">
         <div className="wob-prog-bar"><div className="wob-prog-fill" style={{ width: pr.pct + "%", background: `oklch(0.6 0.17 ${hue})` }} /></div>
-        <div className="wob-prog-row"><span>المرحلة {pr.idx + 1}/4</span><span>{pr.pct}%</span></div>
+        <div className="wob-prog-row">
+          <span>المرحلة {pr.idx + 1}/4</span>
+          {timing.state === "RUNNING" && (
+            <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium" title={timing.tooltip}>
+              <Clock aria-hidden className="size-3 animate-pulse" /> {timing.formattedDuration}
+            </span>
+          )}
+          {timing.state === "STOPPED" && (
+            <span className="inline-flex items-center gap-1 text-[var(--sem-pos)] font-medium" title={timing.tooltip}>
+              <CheckCircle2 aria-hidden className="size-3" /> {timing.formattedDuration}
+            </span>
+          )}
+          <span>{pr.pct}%</span>
+        </div>
       </div>
       <div className="wob-foot">
         <div className="wob-who">
@@ -210,6 +270,37 @@ export function WorkOrderKanbanCard({ o, onPointerDown, dragging, ghost, inboxAs
           />
         </span>
       </div>
+      {/* تصريف سريع للأوامر الجاهزة */}
+      {!ghost && o.status === "READY" && (
+        <>
+          {onQuickDispatch && o.hasDelivery && (
+            <div className="mt-2 pt-2 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md text-xs font-bold bg-[var(--sem-warn)] text-background hover:bg-[var(--sem-warn-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
+                disabled={quickActionPending}
+                onClick={() => onQuickDispatch(o)}
+                title="إسناد وإرسال فوري إلى شركة/مندوب التوصيل"
+              >
+                <Truck aria-hidden className="size-3.5" /> إرسال للتوصيل
+              </button>
+            </div>
+          )}
+          {onQuickDeliver && !o.hasDelivery && Number(o.deposit ?? 0) >= Number(o.salePrice) && (
+            <div className="mt-2 pt-2 border-t border-[var(--border)]" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-md text-xs font-bold bg-[var(--sem-pos)] text-background hover:bg-[var(--sem-pos-hover)] shadow-xs active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
+                disabled={quickActionPending}
+                onClick={() => onQuickDeliver(o)}
+                title="تسليم فوري للأمر وإصدار الفاتورة (مدفوع بالكامل)"
+              >
+                <CheckCircle2 aria-hidden className="size-3.5" /> تسليم فوري (مدفوع)
+              </button>
+            </div>
+          )}
+        </>
+      )}
       {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
       {inboxAssign && staff && !ghost && (
         <div className="wob-inbox-assign" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>

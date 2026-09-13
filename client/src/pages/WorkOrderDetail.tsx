@@ -28,7 +28,8 @@ import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
-import { Printer, MessageCircle, Truck } from "lucide-react";
+import { Printer, MessageCircle, Truck, CheckCircle2, Clock } from "lucide-react";
+import { computeOrderLifecycleTiming } from "@shared/workOrderTimer";
 import { CopyInline } from "@/components/CopyButton";
 import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { WorkOrderTimelineCard } from "@/components/workorder/WorkOrderTimelineCard";
@@ -657,6 +658,27 @@ export default function WorkOrderDetail() {
               <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${workOrderStatusBadgeCls(data.status)}`}>
                 {displayStatus}
               </span>
+              {(() => {
+                const timing = computeOrderLifecycleTiming(data);
+                if (timing.state === "UNKNOWN") return null;
+                return (
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium inline-flex items-center gap-1 ${
+                      timing.state === "RUNNING"
+                        ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                        : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                    }`}
+                    title={timing.tooltip}
+                  >
+                    {timing.state === "RUNNING" ? (
+                      <Clock aria-hidden className="size-3.5 animate-pulse" />
+                    ) : (
+                      <CheckCircle2 aria-hidden className="size-3.5" />
+                    )}
+                    {timing.badgeLabel}
+                  </span>
+                );
+              })()}
             </span>
           </CardTitle>
         </CardHeader>
@@ -672,6 +694,29 @@ export default function WorkOrderDetail() {
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
+              <Field label="عداد الوقت / المدة">
+                {(() => {
+                  const timing = computeOrderLifecycleTiming(data);
+                  if (timing.state === "UNKNOWN") return "—";
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                        timing.state === "RUNNING"
+                          ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                          : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]"
+                      }`}
+                      title={timing.tooltip}
+                    >
+                      {timing.state === "RUNNING" ? (
+                        <Clock aria-hidden className="size-3 animate-pulse" />
+                      ) : (
+                        <CheckCircle2 aria-hidden className="size-3" />
+                      )}
+                      {timing.badgeLabel}
+                    </span>
+                  );
+                })()}
+              </Field>
               {/* ش٥ (0220): الزبون يرى **طلباً واحداً** — والأمرُ كان لا يعرف إخوته، فيُشحَن
                   نصفُ الطلب صامتاً بينما نصفُه الآخر لم يبدأ. */}
               {data.siblings && data.siblings.total > 1 && (

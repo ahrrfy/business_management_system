@@ -46,6 +46,7 @@ import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { setWorkOrderKanbanState } from "../services/workOrder/kanbanState";
+import { dispatchToDelivery } from "../services/deliveryService";
 import { WO_KANBAN_STATES } from "@shared/workOrderKanban";
 import { nextActionTerminalReason } from "@shared/nextAction";
 import { deriveWorkOrderNextActionFromRow } from "../services/nextActionDerivation";
@@ -628,6 +629,7 @@ export const workOrderRouter = router({
       const rows = await db
         .select({
           id: workOrders.id,
+          branchId: workOrders.branchId,
           customerId: workOrders.customerId,
           // ش٥: ملخص الطلب الجامع مشتقّ من المسوّدة، كي تعرض نقاط الدخول حالة الطلب كاملة.
           draftId: workOrders.draftId,
@@ -664,6 +666,8 @@ export const workOrderRouter = router({
           // `computeStateAgeMinutes` (shared/orderSla.ts) — READY = workStartedAt + workSeconds.
           workStartedAt: workOrders.workStartedAt,
           workSeconds: workOrders.workSeconds,
+          deliveredAt: workOrders.deliveredAt,
+          updatedAt: workOrders.updatedAt,
           createdBy: workOrders.createdBy,
           createdByName: workOrderCreatorDisplayName,
           assignedTo: workOrders.assignedTo,
@@ -2059,6 +2063,137 @@ export const workOrderRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
+    }),
+
+  /**
+   * **التصريف التلقائي للطلبات الجاهزة** — كاشير أو مدير:
+   * يقوم بتصريف كافة أوامر الشغل العالقة في عمود «جاهز للتسليم»:
+   * - إرسال أوامر التوصيل تلقائياً لجهة التوصيل النشطة للفرع
+   * - تسليم الأوامر المباشرة المدفوعة بالكامل وإصدار فواتيرها
+   */
+  autoClearReady: workordersCashierProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().optional(),
+          workOrderId: z.number().optional(),
+        })
+        .optional(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const branchId = ctx.user.role === "admin" && input?.branchId != null
+        ? Number(input.branchId)
+        : (ctx.user.branchId ?? 1);
+      const conds = [eq(workOrders.status, "READY")];
+      if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
+      if (input?.workOrderId != null) conds.push(eq(workOrders.id, input.workOrderId));
+
+      const readyOrders = await db
+        .select({
+          id: workOrders.id,
+          branchId: workOrders.branchId,
+          hasDelivery: workOrders.hasDelivery,
+          deposit: workOrders.deposit,
+          salePrice: workOrders.salePrice,
+          deliveryCost: workOrders.deliveryCost,
+          deliveryAddress: workOrders.deliveryAddress,
+          deliveryPhone: workOrders.deliveryPhone,
+          contactName: workOrders.contactName,
+          assignedTo: workOrders.assignedTo,
+          createdBy: workOrders.createdBy,
+        })
+        .from(workOrders)
+        .where(and(...conds));
+
+      let dispatchedCount = 0;
+      let deliveredCount = 0;
+
+      for (const wo of readyOrders) {
+        if (wo.hasDelivery) {
+          // فحص هل يوجد إرسالية غير ملغاة مرتبطة بالأمر
+          const existingCn = (
+            await db
+              .select({ id: deliveryConsignments.id, status: deliveryConsignments.status })
+              .from(deliveryConsignments)
+              .where(
+                and(
+                  eq(deliveryConsignments.workOrderId, Number(wo.id)),
+                  notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (existingCn) continue;
+
+          // جلب جهة التوصيل النشطة للفرع
+          const parties = await db
+            .select({ id: deliveryParties.id })
+            .from(deliveryParties)
+            .where(
+              and(
+                or(eq(deliveryParties.branchId, Number(wo.branchId)), isNull(deliveryParties.branchId)),
+                eq(deliveryParties.isActive, true),
+              ),
+            )
+            .limit(1);
+
+          if (parties[0]) {
+            try {
+              await dispatchToDelivery(
+                {
+                  workOrderId: Number(wo.id),
+                  partyId: Number(parties[0].id),
+                  deliveryFee: wo.deliveryCost ? String(wo.deliveryCost) : undefined,
+                  deliveryAddress: wo.deliveryAddress ?? undefined,
+                  recipientPhone: wo.deliveryPhone ?? undefined,
+                  recipientName: wo.contactName ?? undefined,
+                  clientRequestId: `autoclear-dispatch-${wo.id}-${Date.now()}`,
+                },
+                {
+                  userId: ctx.user.id,
+                  branchId: Number(wo.branchId),
+                  role: ctx.user.role,
+                },
+              );
+              dispatchedCount++;
+            } catch (e) {
+              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر إرسال الأمر للتوصيل");
+            }
+          }
+        } else {
+          // استلام مباشر: تسليم فوري إذا كان مدفوعاً بالكامل مقدماً
+          const depositD = Number(wo.deposit ?? 0);
+          const salePriceD = Number(wo.salePrice ?? 0);
+          if (depositD >= salePriceD && salePriceD >= 0) {
+            try {
+              await deliverWorkOrder(
+                {
+                  workOrderId: Number(wo.id),
+                  payment: null,
+                  clientRequestId: `autoclear-deliver-${wo.id}-${Date.now()}`,
+                },
+                {
+                  userId: ctx.user.id,
+                  branchId: Number(wo.branchId),
+                  role: ctx.user.role,
+                },
+              );
+              deliveredCount++;
+            } catch (e) {
+              logger.warn({ err: e, workOrderId: wo.id }, "autoClearReady: تعذّر التسليم التلقائي");
+            }
+          }
+        }
+      }
+
+      return {
+        totalEvaluated: readyOrders.length,
+        dispatchedCount,
+        deliveredCount,
+        clearedCount: dispatchedCount + deliveredCount,
+      };
     }),
 
   /**

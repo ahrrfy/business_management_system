@@ -79,9 +79,15 @@ function OwnerWorkOrderRefundApprovals() {
     onError: (error) => notify.err(error),
   });
 
+  const rows = queue.data ?? [];
+  // إخفاء تلقائي عند الصفر: لا نثقل الشاشة بصندوق فارغ ما لم توجد طلبات معلقة أو نتيجة حديثة
+  if (rows.length === 0 && !lastResult) {
+    return null;
+  }
+
   return (
     <WorkOrderRefundApprovalsView
-      rows={queue.data ?? []}
+      rows={rows}
       isLoading={queue.isLoading}
       errorMessage={queue.error?.message ?? null}
       lastResult={lastResult}
