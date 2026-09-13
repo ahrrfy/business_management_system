@@ -1,19 +1,16 @@
 // دورة تنفيذ الأمر: سحب ذاتي (claim) ← بدء التنفيذ (يستهلك المواد) ← جاهز (بلا تغيير مخزون).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   customers,
-  deliveryParties,
   products,
   productVariants,
   users,
   workOrderMaterials,
   workOrders,
 } from "../../../drizzle/schema";
-import { deliverWorkOrder } from "./deliver";
-import { dispatchToDelivery } from "../delivery/dispatch";
 import { logger } from "../../logger";
 import { canCrossBranches } from "../../lib/branchAuthority";
 import { hasModuleAccess } from "@shared/permissions";
@@ -603,15 +600,6 @@ export async function markWorkOrderReady(
       branchId: Number(wo.branchId),
       customerId: wo.customerId != null ? Number(wo.customerId) : null,
       orderNumber: wo.orderNumber,
-      hasDelivery: Boolean(wo.hasDelivery),
-      deposit: wo.deposit,
-      salePrice: wo.salePrice,
-      deliveryCost: wo.deliveryCost,
-      deliveryAddress: wo.deliveryAddress,
-      deliveryPhone: wo.deliveryPhone,
-      contactName: wo.contactName,
-      assignedTo: wo.assignedTo,
-      createdBy: wo.createdBy,
     };
   });
 
@@ -630,81 +618,7 @@ export async function markWorkOrderReady(
     );
   }
 
-  let autoDispatched = false;
-  let autoDelivered = false;
-  let finalStatus: string = result.status;
-
-  // تصريف تلقائي لأوامر الشغل عند بلوغ الجاهزية (Auto-transition & clearance)
-  if (result.hasDelivery) {
-    // أمر توصيل: إسناد تلقائي إلى جهة التوصيل النشطة للفرع إن وُجدت
-    try {
-      const db = requireDb();
-      const parties = await db
-        .select({ id: deliveryParties.id })
-        .from(deliveryParties)
-        .where(
-          and(
-            or(eq(deliveryParties.branchId, result.branchId), isNull(deliveryParties.branchId)),
-            eq(deliveryParties.isActive, true),
-          ),
-        )
-        .limit(1);
-
-      if (parties[0]) {
-        await dispatchToDelivery(
-          {
-            workOrderId: result.workOrderId,
-            partyId: Number(parties[0].id),
-            deliveryFee: result.deliveryCost ? String(result.deliveryCost) : undefined,
-            deliveryAddress: result.deliveryAddress ?? undefined,
-            recipientPhone: result.deliveryPhone ?? undefined,
-            recipientName: result.contactName ?? undefined,
-            clientRequestId: `auto-dispatch-wo-${result.workOrderId}-${Date.now()}`,
-          },
-          {
-            userId: actor?.userId ?? Number(result.assignedTo ?? result.createdBy ?? 1),
-            branchId: result.branchId,
-            role: actor?.role ?? "cashier",
-          },
-        );
-        autoDispatched = true;
-      }
-    } catch (e) {
-      logger.warn(
-        { err: e instanceof Error ? e.message : String(e), workOrderId: result.workOrderId },
-        "workOrder: تعذّر الإرسال التلقائي للتوصيل — يبقى في حالة الجاهزية",
-      );
-    }
-  } else {
-    // استلام مباشر: تسليم فوري وتوليد الفاتورة إذا كان مدفوعاً بالكامل مقدماً (deposit >= salePrice)
-    const depositD = Number(result.deposit ?? 0);
-    const salePriceD = Number(result.salePrice ?? 0);
-    if (depositD >= salePriceD && salePriceD >= 0) {
-      try {
-        await deliverWorkOrder(
-          {
-            workOrderId: result.workOrderId,
-            payment: null,
-            clientRequestId: `auto-deliver-wo-${result.workOrderId}-${Date.now()}`,
-          },
-          {
-            userId: actor?.userId ?? Number(result.assignedTo ?? result.createdBy ?? 1),
-            branchId: result.branchId,
-            role: actor?.role ?? "cashier",
-          },
-        );
-        autoDelivered = true;
-        finalStatus = "DELIVERED";
-      } catch (e) {
-        logger.warn(
-          { err: e instanceof Error ? e.message : String(e), workOrderId: result.workOrderId },
-          "workOrder: تعذّر التسليم التلقائي لأمر الشغل المدفوع بالكامل — يبقى في حالة الجاهزية",
-        );
-      }
-    }
-  }
-
-  return { workOrderId: result.workOrderId, status: finalStatus, autoDispatched, autoDelivered };
+  return { workOrderId: result.workOrderId, status: result.status };
 }
 
 /** يجلب هاتف/اسم عميل الأمر (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
