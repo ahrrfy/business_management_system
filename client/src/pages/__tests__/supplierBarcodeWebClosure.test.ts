@@ -8,8 +8,11 @@ function source(path: string): string {
 }
 
 describe("supplier barcode web closure", () => {
-  it("يبقي مسافتي Code39 الداخليتين حرفاً بحرف", () => {
-    expect(canonicalizeBarcodeInput("\t1  0095\r")).toBe("1  0095");
+  it("يُسقط المسافة الداخلية الزائدة (ضجيج «1  XXXX») ويقلّم الطرفين (١٣/٩)", () => {
+    // كانت المسافة الداخلية تُحفَظ (حرف Code39)؛ صارت تُسقَط لأنّ ١٢٥ صنفاً في الإنتاج
+    // خُزِّنت بمسافتين داخليتين فأصبحت غير قابلة للمسح — والفحص أثبت صفرَ تصادم عند إسقاطها.
+    expect(canonicalizeBarcodeInput("\t1  0095\r")).toBe("10095");
+    expect(canonicalizeBarcodeInput("1 0095")).toBe("10095");
   });
 
   it("يربط إدارة صور الاستوديو فعلياً بـHID ويمنع Enter مزدوجاً", () => {

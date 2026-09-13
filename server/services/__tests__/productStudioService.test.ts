@@ -1342,7 +1342,9 @@ describe("product studio governed workflow", () => {
     await d.update(s.productUnits).set({ barcode: "1  0095" }).where(eq(s.productUnits.id, 109));
     await expect(resolveStudioBarcode(worker, "1  0095")).resolves.toMatchObject({ productId: 109, unitId: 109 });
     await expect(listStudioProducts(manager, { search: "1  0095" })).resolves.toMatchObject({ rows: [{ unitId: 109, matchKind: "BARCODE_PRIMARY" }] });
-    await expect(resolveStudioBarcode(worker, "10095")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // المسافة الداخلية ضجيجٌ لا هوية (١٣/٩): «10095» صار يحلّ إلى الوحدة نفسها المخزَّنة «1  0095»
+    // — كان هذا يُرفَض NOT_FOUND حين كانت المسافة معنويّة، وهو جذرُ عطب المسح على ١٢٥ صنفاً.
+    await expect(resolveStudioBarcode(worker, "10095")).resolves.toMatchObject({ productId: 109, unitId: 109 });
   });
 
   it("(٤/٩، Codex P1) يرفض الغموض: باركودان إرثيّان لمنتجين يتطبّعان لنفس الرمز ⇒ لا يفتح عملاً لمنتجٍ خاطئ", async () => {

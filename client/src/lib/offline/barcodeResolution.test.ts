@@ -32,7 +32,7 @@ function row(overrides: Partial<OfflineCatalogRow>): OfflineCatalogRow {
 }
 
 describe("resolveOfflineBarcodeRows", () => {
-  it("يحافظ على مسافتي Code39 الداخليتين ويحل alias إلى صفه", () => {
+  it("يُسقط المسافة الداخلية الزائدة ويحل alias إلى صفه (١٣/٩)", () => {
     const candidate = row({ barcode: null, allBarcodes: ["1  0095"] });
     expect(resolveOfflineBarcodeRows([candidate], "\t1  0095\r")).toEqual({
       status: "FOUND",

@@ -63,7 +63,7 @@ export function getProductUnitResolutionState(input: {
 export function buildStudioBarcodeAliasInput(productUnitId: number, barcode: string) {
   return {
     productUnitId,
-    // لا نقلّم هنا: مخطّط API هو حدّ التطبيع الحاكم، والمسافات الداخليّة في Code39 معنويّة.
+    // لا نُطبّع هنا: مخطّط API هو حدّ التطبيع الحاكم (يُسقط المسافة الداخلية ويطوي الأرقام).
     barcode,
     note: "رُبط من استوديو المنتجات",
   };
