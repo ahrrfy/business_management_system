@@ -12,4 +12,9 @@ describe("hasLocalScanner", () => {
     expect(hasLocalScanner("/inventory", "?tab=products")).toBe(false);
     expect(hasLocalScanner("/inventory", "?tab=stocktakes")).toBe(false);
   });
+
+  it("يمنح بوابة المرتجعات ماسحها المحلي (ProductSearchBar) كي لا يخطف البحث الشامل مسح السلة ويُنقّل للمخزون", () => {
+    expect(hasLocalScanner("/returns", "")).toBe(true);
+    expect(hasLocalScanner("/returns", "?portal=purchases")).toBe(true);
+  });
 });

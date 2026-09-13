@@ -7,7 +7,7 @@
 // فحين تنكسر الومضة قصيرةً نستعيد البادئة + الحروف الخام بدل مسحها.
 
 import { useCallback, useMemo, useRef } from "react";
-import { ScanBurstDetector, resolveScanSettle } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
 import { SCAN_MS } from "./posShared";
 
 /** أدنى طولٍ لاعتبار الومضة باركوداً في الكاشير (رموز المنتجات ≥٤؛ الأقصر يبقى بحثاً بشرياً). */
@@ -35,10 +35,20 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => {
       if (e.key === "Enter") {
-        // اعترض Enter فقط حين تكون ومضةٌ نشطة: أصدِر الباركود أو استعِد النصّ القصير بلا فقد.
         if (detector.isActive) {
+          // ومضةٌ نشطة: أصدِر الباركود أو استعِد النصّ القصير بلا فقد.
           e.preventDefault();
           fire(setValue);
+          return;
+        }
+        // قارئٌ بطيء تسرّب حرفاً حرفاً: استردّ باركوداً واثقاً من قيمة الحقل بدل بحثٍ نصّيّ.
+        const recovered = recoverSlowScanCode(curVal, POS_SCAN_MIN_LENGTH);
+        if (recovered) {
+          e.preventDefault();
+          detector.reset();
+          prefixRef.current = "";
+          setValue("");
+          void onBarcode(recovered);
         }
         return;
       }
@@ -60,7 +70,8 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
       e.preventDefault();
       if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، أبقِ البادئة
       clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => fire(setValue), SCAN_MS * 6);
+      // مهلة سكونٍ أقصر (استجابةٌ أسرع للقارئ بلا لاحقة Enter).
+      timerRef.current = setTimeout(() => fire(setValue), Math.max(180, SCAN_MS + 80));
     },
     [fire, detector],
   );

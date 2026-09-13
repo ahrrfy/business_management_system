@@ -9,7 +9,7 @@
  * أو عند Enter.
  */
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
-import { ScanBurstDetector, resolveScanSettle } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
 
 type SetInputValue = (value: string) => void;
 
@@ -25,7 +25,10 @@ export function useBarcodeInput(
     // باركودات الموردين الداخلية قد تكون من 3 محارف (مثل B1X). أقلّ من ذلك يبقى
     // كتابةً بشرية لتجنّب سرقة Enter من حقول البحث والنماذج.
     minLength = DEFAULT_BARCODE_INPUT_MIN_LENGTH,
-    thresholdMs = 80,
+    // ١٢٠مي (رُفع من 80، موحّدٌ مع الخطّاف العالميّ): يلتقط القارئات الأبطأ قليلاً كي يُحجَب المسح
+    // مباشرةً (بلا تسرّبٍ لشاشة البحث) دون بلوغ سرعة الكتابة البشرية المستدامة (>١٣٠مي/حرف عبر
+    // مصطلحٍ كامل). القارئ البطيء جداً يُغطّيه استرداد Enter أدناه، والحلّ الجذريّ ضبطُ القارئ.
+    thresholdMs = 120,
   }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
 ) {
   const onScanRef = useRef(onScan);
@@ -58,11 +61,20 @@ export function useBarcodeInput(
     if (!enabled) return;
 
     if (event.key === "Enter") {
-      // نعترض Enter فقط حين تكون ومضةٌ نشطة (≥ حرفين سريعين): إمّا نُصدر الباركود، وإمّا نستعيد
-      // النصّ القصير بلا فقد. الحرف المفرد أو السكون يترك Enter للنموذج/الحقل بقيمته الظاهرة.
       if (detector.isActive) {
+        // ومضةٌ نشطة (≥ حرفين سريعين): أصدِر الباركود أو استعِد النصّ القصير بلا فقد.
         event.preventDefault();
         settle(setValue);
+        return;
+      }
+      // قارئٌ بطيء لم يُكتشَف كومضة (تسرّب حرفاً حرفاً): إن كان محتوى الحقل باركوداً واثقاً،
+      // فكّه واستعلمه بدل تركه بحثاً نصّياً فاشلاً. وإلّا اترك Enter للنموذج/الحقل.
+      const recovered = recoverSlowScanCode(event.currentTarget.value, minLength);
+      if (recovered) {
+        event.preventDefault();
+        reset();
+        setValue("");
+        onScanRef.current(recovered);
       } else {
         reset();
       }
@@ -85,7 +97,8 @@ export function useBarcodeInput(
     event.preventDefault();
     if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، وأبقِ البادئة
     clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => settle(setValue), Math.max(250, Math.min(thresholdMs * 6, 600)));
+    // مهلة سكونٍ أقصر (استجابةٌ أسرع للقارئ بلا لاحقة Enter): أطول من فاصل الومضة، أقصر ملحوظياً.
+    timerRef.current = setTimeout(() => settle(setValue), Math.max(180, Math.min(thresholdMs + 80, 320)));
   }, [enabled, settle, minLength, reset, detector, thresholdMs]);
 
   useEffect(() => reset, [reset]);
