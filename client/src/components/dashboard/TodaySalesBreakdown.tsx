@@ -24,11 +24,21 @@ export function TodaySalesBreakdown({
   );
   if (!canView || q.isError || !q.data) return null;
   const d = q.data;
-  const cells = [
+  // بندٌ غير صفريّ: وجودُ رقمٍ غير صفر (فحصُ عرضٍ، بلا حسابٍ على المال).
+  const hasVal = (v: string) => /[1-9]/.test(v);
+  const cells: { label: string; value: string; color: string }[] = [
     { label: "نقداً — يدخل الدرج", value: d.cash, color: "var(--sem-pos)" },
-    { label: "بطاقة/تحويل/محفظة — للبنك لا الدرج", value: d.nonCash, color: "var(--sem-info)" },
-    { label: "آجل — لم يُقبض بعد", value: d.credit, color: "var(--sem-warn)" },
   ];
+  // نقد الخزينة (ردٌّ/قبضٌ عبر الخزينة الإدارية) يظهر فقط حين يوجد — لا يُخلط بنقد الدرج.
+  if (hasVal(d.treasuryCash)) {
+    cells.push({ label: "نقد الخزينة — لا الدرج", value: d.treasuryCash, color: "var(--sem-info)" });
+  }
+  cells.push({ label: "بطاقة/تحويل/محفظة — للبنك لا الدرج", value: d.nonCash, color: "var(--sem-info)" });
+  cells.push({ label: "آجل — لم يُقبض بعد", value: d.credit, color: "var(--sem-warn)" });
+  // ردٌّ معلّق: مالٌ يُردّ للعميل (مرتجعُ اليوم بردٍّ غير مكتمل) — يُخصم، لا دينٌ عليه؛ يظهر عند وجوده.
+  if (hasVal(d.pendingRefund)) {
+    cells.push({ label: "ردٌّ معلّق للعميل — يُخصم", value: d.pendingRefund, color: "var(--sem-neg)" });
+  }
   return (
     <div
       style={{
@@ -53,7 +63,7 @@ export function TodaySalesBreakdown({
           تحصيل مبيعات اليوم
         </span>
         <span style={{ fontSize: "0.6875rem", color: "var(--dash-muted)" }}>
-          الإجمالي {fmtAr(d.total)} د.ع = نقد + غير نقديّ + آجل
+          الإجمالي {fmtAr(d.total)} د.ع
         </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>

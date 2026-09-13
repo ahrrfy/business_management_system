@@ -144,4 +144,47 @@ describe("كشف حركة الخزينة النقدية — رصيدٌ جارٍ"
     expect(r.closingBalance).toBe("500000.00");
     expect(r.count).toBe(1);
   });
+
+  it("تمويل الوردية الإضافيّ (STF-) يُصنَّف مميّزاً لا «سحب نقديّ» عامّ (#484)", async () => {
+    await tRec({ dir: "OUT", amount: "80000", date: "2026-09-05T09:00:00Z", ref: "STF-7" });
+    const r = await getTreasuryStatement({ from: "2026-09-01", to: "2026-09-30", branchId: 1 });
+    expect(r.movements).toHaveLength(1);
+    expect(r.movements[0].reasonKey).toBe("SHIFT_FUNDING_EXTRA");
+    expect(r.movements[0].reason).toBe("تمويل وردية إضافيّ");
+  });
+
+  it("كلّ حركةٍ تحمل منشئَها ومعتمِدَها (§٥: فاعلٌ منسوب) (#481)", async () => {
+    await db().insert(s.users).values({
+      id: 2, openId: "mgr2", name: "سارة المعتمِدة", role: "admin", loginMethod: "local", branchId: 1,
+    });
+    await db().insert(s.receipts).values({
+      id: 300, branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "OUT", amount: "50000",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      voucherNumber: "PV-1-20260905-00009",
+      createdAt: new Date("2026-09-05T09:00:00Z"), createdBy: 1, approvedBy: 2,
+    });
+    const r = await getTreasuryStatement({ from: "2026-09-01", to: "2026-09-30", branchId: 1 });
+    const m = r.movements.find((x) => x.receiptId === 300)!;
+    expect(m.createdByName).toBe("أحمد المدير");
+    expect(m.approvedByName).toBe("سارة المعتمِدة");
+  });
+
+  it("سند صرفٍ من الخزينة: المستفيد والغرض من صفّ المصروف لا الإيصال (#491، §٥)", async () => {
+    // إيصال خزينة OUT بلا counterpartyName/description على الإيصال نفسه — هما على صفّ المصروف.
+    await db().insert(s.receipts).values({
+      id: 400, branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "OUT", amount: "75000",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      createdAt: new Date("2026-09-05T09:00:00Z"), createdBy: 1,
+    });
+    await db().insert(s.expenses).values({
+      branchId: 1, expenseDate: "2026-09-05", amount: "75000", category: "MAINTENANCE",
+      cashBucket: "TREASURY", payee: "شركة الصيانة", description: "صيانة مكيّفات", receiptId: 400,
+    });
+    const r = await getTreasuryStatement({ from: "2026-09-01", to: "2026-09-30", branchId: 1 });
+    const m = r.movements.find((x) => x.receiptId === 400)!;
+    expect(m.reasonKey).toBe("EXPENSE");
+    expect(m.reason).toBe("مصروف — الصيانة");
+    expect(m.counterparty).toBe("شركة الصيانة"); // COALESCE(r.counterpartyName, e.payee)
+    expect(m.description).toBe("صيانة مكيّفات"); // COALESCE(r.description, e.description)
+  });
 });

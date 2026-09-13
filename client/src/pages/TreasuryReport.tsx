@@ -146,6 +146,7 @@ export default function TreasuryReport() {
           { key: "at", header: "التاريخ", map: (r) => fmtDateTime(r.at) },
           { key: "reason", header: "الحركة", map: (r) => (r.reversed ? `${r.reason} (معكوس)` : r.reason) },
           { key: "detail", header: "الطرف/البيان", map: (r) => r.counterparty ?? r.description ?? r.voucherNumber ?? "" },
+          { key: "actor", header: "المنشئ/المعتمِد", map: (r) => (r.approvedByName && r.approvedByName !== r.createdByName ? `${r.createdByName ?? "—"} · اعتمد: ${r.approvedByName}` : (r.createdByName ?? "—")) },
           { key: "in", header: "وارد", money: true, map: (r) => (r.direction === "IN" ? Number(r.amount) : "") },
           { key: "out", header: "صادر", money: true, map: (r) => (r.direction === "OUT" ? Number(r.amount) : "") },
           { key: "running", header: "الرصيد بعد الحركة", money: true, map: (r) => Number(r.runningBalance) },
@@ -341,6 +342,19 @@ export default function TreasuryReport() {
       ),
     },
     {
+      id: "actor", header: "المنشئ / المعتمِد",
+      accessorFn: (m) => m.createdByName ?? "—",
+      meta: { kind: "text" },
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {row.original.createdByName ?? "—"}
+          {row.original.approvedByName && row.original.approvedByName !== row.original.createdByName && (
+            <span className="text-[10px]"> · اعتمد: {row.original.approvedByName}</span>
+          )}
+        </span>
+      ),
+    },
+    {
       id: "in", header: "وارد",
       accessorFn: (m) => (m.direction === "IN" ? Number(m.amount) : 0),
       meta: { kind: "money" },
@@ -453,8 +467,8 @@ export default function TreasuryReport() {
             emptyText="لا حركات خزينة نقدية في الفترة."
           />
           {stmt && stmt.truncated && (
-            <p className="border-t px-4 py-2 text-xs text-muted-foreground">
-              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count}. ضيّق الفترة أو صدّر Excel للتفصيل الكامل.
+            <p className="border-t px-4 py-2 text-xs text-money-negative">
+              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count} — والتصدير يشمل المعروض فقط. ضيّق الفترة لعرض بقيّة الحركات.
             </p>
           )}
         </CardContent>

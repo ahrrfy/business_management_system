@@ -10,7 +10,7 @@ import { getTodaySalesComposition, getTodayNetSales } from "../reports/todaySale
 // يومٌ ثابت (ظهر UTC = يوم بغداد نفسه) — يمنع تذبذب حدّ يوم بغداد قرب منتصف الليل.
 const NOW = new Date(Date.UTC(2026, 8, 10, 12, 0, 0));
 
-const TABLES = ["receipts", "invoiceItems", "invoices", "branches", "users"];
+const TABLES = ["orderPayments", "receipts", "invoiceItems", "invoices", "workOrders", "branches", "users"];
 
 function db() {
   const d = getDb();
@@ -61,22 +61,27 @@ async function invoice(o: {
 }
 
 async function receipt(o: {
-  invoiceId: number;
+  invoiceId?: number | null;
   branchId?: number;
   direction: "IN" | "OUT";
   amount: string;
   method: "CASH" | "CARD" | "TRANSFER" | "WALLET";
+  bucket?: "DRAWER" | "TREASURY" | null; // افتراض CASH=DRAWER؛ صريحٌ للخزينة أو NULL
+  status?: "COMPLETED" | "PENDING" | "REVERSED";
+  approval?: "APPROVED" | "PENDING_APPROVAL";
+  id?: number;
 }) {
   await db().insert(s.receipts).values({
+    id: o.id,
     branchId: o.branchId ?? 1,
-    invoiceId: o.invoiceId,
+    invoiceId: o.invoiceId ?? null,
     shiftId: null,
-    cashBucket: o.method === "CASH" ? "DRAWER" : null,
+    cashBucket: o.bucket !== undefined ? o.bucket : o.method === "CASH" ? "DRAWER" : null,
     direction: o.direction,
     amount: o.amount,
     paymentMethod: o.method,
-    status: "COMPLETED",
-    approvalStatus: "APPROVED",
+    status: o.status ?? "COMPLETED",
+    approvalStatus: o.approval ?? "APPROVED",
     createdBy: 1,
     createdAt: NOW,
   });
@@ -149,6 +154,60 @@ describe("تركيب مبيعات اليوم — نقد/غير نقد/آجل", (
     expect(c.cash).toBe("0.00");
     expect(c.nonCash).toBe("0.00");
     expect(c.credit).toBe("0.00");
+    expect(c.treasuryCash).toBe("0.00");
+    expect(c.pendingRefund).toBe("0.00");
     expect(c.invoiceCount).toBe(0);
+  });
+
+  it("ردٌّ نقديٌّ من الخزينة لا يُخصَم من نقد الدرج المعروض (#485)", async () => {
+    await invoice({ id: 1, total: "100000", returnedTotal: "30000" }); // صافي 70k
+    await receipt({ invoiceId: 1, direction: "IN", amount: "100000", method: "CASH" }); // درج
+    await receipt({ invoiceId: 1, direction: "OUT", amount: "30000", method: "CASH", bucket: "TREASURY" }); // ردٌّ من الخزينة
+
+    const c = await getTodaySalesComposition(1, NOW);
+    expect(c.total).toBe("70000.00");
+    expect(c.cash).toBe("100000.00"); // الدرج كاملٌ — لم يُخصَم منه ردّ الخزينة
+    expect(c.treasuryCash).toBe("-30000.00"); // صافي خروجٍ من الخزينة الإدارية، مفصولاً
+    expect(c.credit).toBe("0.00");
+    expect(c.pendingRefund).toBe("0.00");
+    // الثابت: total = cash + treasuryCash + nonCash + credit − pendingRefund
+    const identity =
+      Number(c.cash) + Number(c.treasuryCash) + Number(c.nonCash) + Number(c.credit) - Number(c.pendingRefund);
+    expect(identity.toFixed(2)).toBe("70000.00");
+  });
+
+  it("ردٌّ معلّق (غير مكتمل) يُفصَل عن الائتمان — لا يُعرَض «آجل» سالباً (#487)", async () => {
+    await invoice({ id: 1, total: "100000", returnedTotal: "100000" }); // صافي 0
+    await receipt({ invoiceId: 1, direction: "IN", amount: "100000", method: "CASH" }); // قبضٌ معتمد
+    // ردّ OUT لم يُعتمد بعد ⇒ مُستبعَد من التحصيل (receiptApprovalStatus <> APPROVED)
+    await receipt({ invoiceId: 1, direction: "OUT", amount: "100000", method: "CASH", status: "PENDING", approval: "PENDING_APPROVAL" });
+
+    const c = await getTodaySalesComposition(1, NOW);
+    expect(c.total).toBe("0.00");
+    expect(c.cash).toBe("100000.00"); // القبض المعتمد وحده
+    expect(c.credit).toBe("0.00"); // ليس آجلاً
+    expect(c.pendingRefund).toBe("100000.00"); // مالٌ يُردّ للعميل، مفصولاً بوضوح
+  });
+
+  it("دفعةٌ مُوزَّعة على أوامر شغل (إيصالها invoiceId=NULL) تُحتسَب مُحصَّلةً لا آجلاً (#478)", async () => {
+    // فاتورة أمر شغلٍ مُسلَّمة اليوم، مدفوعةٌ كاملاً بعربونٍ مُوزَّع — لا إيصالٌ مربوطٌ بها مباشرة.
+    await invoice({ id: 1, total: "30000", paidAmount: "30000" });
+    const d = db();
+    // نتجاوز سلسلة FK الثقيلة (receptionDrafts/customers) — نبذر ما تلمسه استعلامات الجسر فقط.
+    await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    await d.insert(s.workOrders).values({ id: 10, orderNumber: "WO-10", branchId: 1, title: "درع", invoiceId: 1 });
+    // إيصال العربون غير مربوطٍ بالفاتورة (invoiceId=NULL) ⇒ يُسقطه الـJOIN المباشر (استعلام أ).
+    await receipt({ id: 200, invoiceId: null, direction: "IN", amount: "30000", method: "CASH" });
+    // COLLECTION (الأب: يحمل الطريقة والإيصال) + APPLICATION على أمر الشغل (استعلام ب يضمّها).
+    await d.insert(s.orderPayments).values([
+      { id: 1, draftId: 999, branchId: 1, kind: "COLLECTION", method: "CASH", amount: "30000", receiptId: 200, status: "APPLIED", createdBy: 1 },
+      { id: 2, draftId: 999, branchId: 1, kind: "APPLICATION", amount: "30000", parentPaymentId: 1, appliedKind: "WORKORDER", appliedId: 10, createdBy: 1 },
+    ]);
+    await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+    const c = await getTodaySalesComposition(1, NOW);
+    expect(c.total).toBe("30000.00");
+    expect(c.cash).toBe("30000.00"); // العربون المُوزَّع مُحصَّلٌ نقداً
+    expect(c.credit).toBe("0.00"); // لولا ضمّ الدفعات المُوزَّعة لظهر 30000 آجلاً زوراً
   });
 });
