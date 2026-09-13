@@ -18,6 +18,8 @@ import { fmtDateTime } from "@/lib/date";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
+type TStmt = RouterOutputs["reports"]["treasuryStatement"];
+type TSMove = TStmt["movements"][number];
 
 const NOTE =
   "أساس نقدي مباشر: من المقبوضات/المدفوعات المكتملة (لا أساس الاستحقاق). الفروقات حسب الورديات المفتوحة في الفترة (تاريخ الفتح). النقد حسب الفرع المحدّد.";
@@ -44,6 +46,12 @@ export default function TreasuryReport() {
     branchId: branchId ? Number(branchId) : undefined,
   });
   const ts: TS | undefined = q.data;
+  const stmtQ = trpc.reports.treasuryStatement.useQuery({
+    from: period.from,
+    to: period.to,
+    branchId: branchId ? Number(branchId) : undefined,
+  });
+  const stmt: TStmt | undefined = stmtQ.data;
 
   const kpis: KpiItem[] = ts
     ? [
@@ -123,6 +131,26 @@ export default function TreasuryReport() {
           { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
         ],
         totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
+      } as SheetSpec<any>,
+      {
+        sheetName: "كشف حركة الخزينة",
+        title: "كشف حركة الخزينة النقدية (رصيدٌ جارٍ)",
+        meta: [
+          { label: "الفترة", value: `${period.from} — ${period.to}` },
+          { label: "الفرع", value: branchLabel },
+          { label: "رصيد افتتاحيّ", value: stmt ? fmtAr(stmt.openingBalance) : "—" },
+          { label: "رصيد ختاميّ", value: stmt ? fmtAr(stmt.closingBalance) : "—" },
+        ],
+        rows: stmt?.movements ?? [],
+        columns: [
+          { key: "at", header: "التاريخ", map: (r) => fmtDateTime(r.at) },
+          { key: "reason", header: "الحركة", map: (r) => (r.reversed ? `${r.reason} (معكوس)` : r.reason) },
+          { key: "detail", header: "الطرف/البيان", map: (r) => r.counterparty ?? r.description ?? r.voucherNumber ?? "" },
+          { key: "actor", header: "المنشئ/المعتمِد", map: (r) => (r.approvedByName && r.approvedByName !== r.createdByName ? `${r.createdByName ?? "—"} · اعتمد: ${r.approvedByName}` : (r.createdByName ?? "—")) },
+          { key: "in", header: "وارد", money: true, map: (r) => (r.direction === "IN" ? Number(r.amount) : "") },
+          { key: "out", header: "صادر", money: true, map: (r) => (r.direction === "OUT" ? Number(r.amount) : "") },
+          { key: "running", header: "الرصيد بعد الحركة", money: true, map: (r) => Number(r.runningBalance) },
+        ],
       } as SheetSpec<any>,
     ]);
   }
@@ -283,6 +311,77 @@ export default function TreasuryReport() {
     },
   ], []);
 
+  /** أعمدة كشف حركة الخزينة النقدية — رصيدٌ جارٍ. */
+  const stmtColumns = useMemo<ColumnDef<TSMove, unknown>[]>(() => [
+    {
+      id: "at", header: "التاريخ",
+      accessorFn: (m) => m.at,
+      meta: { kind: "datetime" },
+      cell: ({ row }) => <span className="text-xs">{fmtDateTime(row.original.at)}</span>,
+    },
+    {
+      id: "reason", header: "الحركة",
+      accessorFn: (m) => m.reason,
+      meta: { kind: "text" },
+      cell: ({ row }) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-medium">{row.original.reason}</span>
+          {row.original.reversed && (
+            <span className="rounded-full bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[10px] text-[var(--sem-neg)]">معكوس</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "detail", header: "الطرف / البيان",
+      accessorFn: (m) => m.counterparty ?? m.description ?? m.voucherNumber ?? "—",
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {row.original.counterparty ?? row.original.description ?? row.original.voucherNumber ?? "—"}
+        </span>
+      ),
+    },
+    {
+      id: "actor", header: "المنشئ / المعتمِد",
+      accessorFn: (m) => m.createdByName ?? "—",
+      meta: { kind: "text" },
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground">
+          {row.original.createdByName ?? "—"}
+          {row.original.approvedByName && row.original.approvedByName !== row.original.createdByName && (
+            <span className="text-[10px]"> · اعتمد: {row.original.approvedByName}</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      id: "in", header: "وارد",
+      accessorFn: (m) => (m.direction === "IN" ? Number(m.amount) : 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => row.original.direction === "IN"
+        ? <span className="text-money-positive"><CopyInline value={row.original.amount} display={fmtAr(row.original.amount)} mono={false} /></span>
+        : <span className="text-muted-foreground">—</span>,
+    },
+    {
+      id: "out", header: "صادر",
+      accessorFn: (m) => (m.direction === "OUT" ? Number(m.amount) : 0),
+      meta: { kind: "money" },
+      cell: ({ row }) => row.original.direction === "OUT"
+        ? <span className="text-money-negative"><CopyInline value={row.original.amount} display={fmtAr(row.original.amount)} mono={false} /></span>
+        : <span className="text-muted-foreground">—</span>,
+    },
+    {
+      id: "running", header: "الرصيد بعد الحركة",
+      accessorFn: (m) => Number(m.runningBalance),
+      meta: { kind: "money" },
+      cell: ({ row }) => (
+        <span className="font-semibold tabular-nums" dir="ltr">
+          <CopyInline value={row.original.runningBalance} display={fmtAr(row.original.runningBalance)} mono={false} />
+        </span>
+      ),
+    },
+  ], []);
+
   return (
     <ReportShell
       title="تقرير الخزينة"
@@ -330,6 +429,48 @@ export default function TreasuryReport() {
             errorState={{ isError: q.isError, message: "تعذّر تحميل التقرير.", onRetry: () => void q.refetch() }}
             emptyText="لا حركات في الفترة."
           />
+        </CardContent>
+      </Card>
+
+      {/* كشف حركة الخزينة النقدية — رصيدٌ جارٍ يشرح كل داخل/خارج؛ ختامُه = رصيد الخزينة الفعليّ */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="border-b px-4 py-3">
+            <h2 className="text-sm font-bold">كشف حركة الخزينة النقدية (رصيدٌ جارٍ)</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              كل إيداعٍ وصرفٍ نقديّ في الخزينة مرتّباً زمنياً برصيدٍ جارٍ. الرصيد الختاميّ = رصيد الخزينة النقديّ الفعليّ عند نهاية الفترة (يُطابق ما تعرضه لوحة الخزينة).
+            </p>
+          </div>
+          {stmt && (
+            <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-4">
+              {[
+                { label: "رصيد افتتاحيّ", value: stmt.openingBalance, tone: "" },
+                { label: "إجمالي الوارد", value: stmt.totalIn, tone: "text-money-positive" },
+                { label: "إجمالي الصادر", value: stmt.totalOut, tone: "text-money-negative" },
+                { label: "الرصيد الختاميّ", value: stmt.closingBalance, tone: D(stmt.closingBalance).lt(0) ? "text-money-negative" : "text-money-positive" },
+              ].map((k) => (
+                <div key={k.label} className="bg-card px-3 py-2 text-center">
+                  <p className="text-[11px] text-muted-foreground">{k.label}</p>
+                  <p className={`text-base font-bold tabular-nums ${k.tone}`} dir="ltr">
+                    <CopyInline value={String(k.value)} display={fmtAr(k.value)} mono={false} />
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+          <DataTable<TSMove>
+            columns={stmtColumns}
+            data={stmt?.movements ?? []}
+            loading={stmtQ.isLoading}
+            searchable={false}
+            errorState={{ isError: stmtQ.isError, message: "تعذّر تحميل كشف الحركة.", onRetry: () => void stmtQ.refetch() }}
+            emptyText="لا حركات خزينة نقدية في الفترة."
+          />
+          {stmt && stmt.truncated && (
+            <p className="border-t px-4 py-2 text-xs text-money-negative">
+              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count} — والتصدير يشمل المعروض فقط. ضيّق الفترة لعرض بقيّة الحركات.
+            </p>
+          )}
         </CardContent>
       </Card>
 

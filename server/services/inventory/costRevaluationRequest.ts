@@ -502,9 +502,10 @@ export async function approveCostRevaluation(
       if (delta.isZero()) continue;
       const gain = delta.isPositive();
       const abs = delta.abs();
+      // حساب تسويةٍ مخصَّص لإعادة التقييم لا إيرادات/خسائر التشغيل (قرار المالك ١٣/٩ عن تدقيق م١).
       const postingSourceComponents = gain
-        ? { roleDebits: { INVENTORY: abs }, roleCredits: { OTHER_REVENUE: abs } }
-        : { roleDebits: { LOSSES: abs }, roleCredits: { INVENTORY: abs } };
+        ? { roleDebits: { INVENTORY: abs }, roleCredits: { INVENTORY_REVALUATION: abs } }
+        : { roleDebits: { INVENTORY_REVALUATION: abs }, roleCredits: { INVENTORY: abs } };
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: row.branchId,
@@ -516,16 +517,16 @@ export async function approveCostRevaluation(
         notes: `إعادة تقييم تكلفة (طلب #${id}، ${r.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"}) — ${r.reason}`,
         postingIntent: gain
           ? createPostingIntent(
-            "ADJUST_INVENTORY_GAIN",
+            "ADJUST_INVENTORY_REVALUATION_GAIN",
             "ADJUST",
-            [debitLine("INVENTORY", abs), creditLine("OTHER_REVENUE", abs)],
-            { roleDebits: { INVENTORY: abs }, roleCredits: { OTHER_REVENUE: abs } },
+            [debitLine("INVENTORY", abs), creditLine("INVENTORY_REVALUATION", abs)],
+            { roleDebits: { INVENTORY: abs }, roleCredits: { INVENTORY_REVALUATION: abs } },
           )
           : createPostingIntent(
-            "ADJUST_INVENTORY_LOSS",
+            "ADJUST_INVENTORY_REVALUATION_LOSS",
             "ADJUST",
-            [debitLine("LOSSES", abs), creditLine("INVENTORY", abs)],
-            { roleDebits: { LOSSES: abs }, roleCredits: { INVENTORY: abs } },
+            [debitLine("INVENTORY_REVALUATION", abs), creditLine("INVENTORY", abs)],
+            { roleDebits: { INVENTORY_REVALUATION: abs }, roleCredits: { INVENTORY: abs } },
           ),
         postingSourceComponents,
       });

@@ -16,6 +16,7 @@ import { ACTION_LABELS } from "@shared/actionLabels";
 import { motion } from "framer-motion";
 import { CashierHome } from "@/components/dashboard/CashierHome";
 import { DashboardShape } from "@/components/dashboard/DashboardShape";
+import { TodaySalesBreakdown } from "@/components/dashboard/TodaySalesBreakdown";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -567,6 +568,7 @@ function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
           );
         })}
       </div>
+      <TodaySalesBreakdown branchScope={branchScope} canView={canViewReports} ready={scopeReady} />
     </section>
   );
 }

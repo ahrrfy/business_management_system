@@ -233,6 +233,227 @@ export async function getTreasurySummary(opts: {
   };
 }
 
+/* ==================== كشف حركة الخزينة النقدية (رصيد جارٍ) ====================
+ * كشفٌ زمنيّ يشرح **كل دينار** دخل الخزينة أو خرج منها، برصيدٍ جارٍ — كي لا يبقى رصيد
+ * الخزينة رقماً غامضاً «يتراكم بلا سبب». الثابت الحاكم (money-trail §٥):
+ *   الرصيد الختاميّ ≡ computeTreasuryCashBalance (cashAvailability.ts) عند نفس التاريخ.
+ * نُحقّقه **بالبناء**: نفس شروط الرصيد القانونيّ حرفياً (TREASURY + CASH + COMPLETED/REVERSED +
+ * APPROVED)، والافتتاحيّ = صافي ما قبل from، والختاميّ = الافتتاحيّ + الوارد − الصادر خلال الفترة.
+ * فلا «رقمٌ ثانٍ ينجرف» عن اللوحة. REVERSED يظهر معلَّماً (يرافقه تعويضيٌّ معاكس ⇒ صفر أثر صافٍ).
+ */
+
+export interface TreasuryStatementMovement {
+  receiptId: number;
+  at: Date | string;
+  direction: "IN" | "OUT";
+  amount: string;
+  reasonKey: string;
+  reason: string;
+  reference: string | null;
+  voucherNumber: string | null;
+  counterparty: string | null;
+  description: string | null;
+  branchName: string | null;
+  /** منشئ الحركة (receipts.createdBy) — §٥: لكلّ دينارٍ فاعلٌ منسوبٌ يُظهره التقرير. */
+  createdByName: string | null;
+  /** معتمِد الحركة (receipts.approvedBy) — من أذن بالصرف/القبض (NULL إن لم يستلزم اعتماداً). */
+  approvedByName: string | null;
+  /** أصلٌ معكوس (يرافقه تعويضيٌّ معاكس فيصفر الأثر) — يُعلَّم كي لا يُقرأ خطأً حركةً حيّة. */
+  reversed: boolean;
+  /** الرصيد بعد هذه الحركة (الافتتاحيّ + صافي الحركات المعروضة حتى هنا). */
+  runningBalance: string;
+}
+
+export interface TreasuryStatementResult {
+  period: { from: string; to: string };
+  /** رصيد الخزينة النقديّ قبل بداية الفترة (بدلالة computeTreasuryCashBalance). */
+  openingBalance: string;
+  totalIn: string;
+  totalOut: string;
+  /** الافتتاحيّ + الوارد − الصادر ≡ رصيد الخزينة النقديّ كما تعرضه اللوحة عند to. */
+  closingBalance: string;
+  /** إجمالي الحركات في الفترة (قد يتجاوز المعروض إن اقتُطع). */
+  count: number;
+  shownCount: number;
+  truncated: boolean;
+  movements: TreasuryStatementMovement[];
+}
+
+// شروط رصيد الخزينة النقديّ — مطابقة حرفيّة لـcomputeTreasuryCashBalance كي يساوي الرصيد
+// الختاميّ للكشف رصيدَ الخزينة المعروض دائماً (شرح كل دينار، لا رقمٌ ثانٍ ينجرف).
+const TREASURY_CASH_CONDS_SQL = sql`r.cashBucket = 'TREASURY' AND r.paymentMethod = 'CASH' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'`;
+
+/** سبب الحركة من بادئة المرجع/السند/المصروف — بلا تخمين (البوادئ يكتبها منشئوها). */
+function treasuryMovementReason(row: {
+  direction: "IN" | "OUT";
+  referenceNumber: string | null;
+  voucherNumber: string | null;
+  expenseId: number | null;
+  expenseCategory: string | null;
+}): { key: string; label: string } {
+  const ref = row.referenceNumber ?? "";
+  if (/^CANCEL-CT-/.test(ref)) return { key: "CANCEL_TRANSFER", label: "عكس تحويل بين الفروع" };
+  if (/^CANCEL-VCH-/.test(ref)) return { key: "CANCEL_VOUCHER", label: "عكس سند" };
+  if (/^CANCEL-EXP-/.test(ref)) return { key: "CANCEL_EXPENSE", label: "عكس مصروف" };
+  // STF- تمويل وردية إضافيّ من الخزينة (shiftFundingService.REFERENCE_PREFIX). يُفحَص قبل SF-
+  // كي لا يُلتقط خطأً كعهدة افتتاح، ويُعطى تسميةً مميّزة بدل «سحب نقديّ» العامّ.
+  if (/^STF-/.test(ref)) return { key: "SHIFT_FUNDING_EXTRA", label: "تمويل وردية إضافيّ" };
+  if (/^SF-/.test(ref)) return { key: "SHIFT_FLOAT_OUT", label: "عهدة افتتاح وردية" };
+  if (/^CH-/.test(ref)) return { key: "CASH_HANDOVER", label: "توريد إغلاق وردية" };
+  if (/^CD-/.test(ref)) return { key: "CASH_DROP", label: "تسليم نقديّ من الدرج" };
+  if (/^CT-/.test(ref)) return { key: "CASH_TRANSFER", label: row.direction === "IN" ? "تحويل وارد بين الفروع" : "تحويل صادر بين الفروع" };
+  if (/^TF-/.test(ref)) return { key: "TREASURY_FUNDING", label: "تمويل الخزينة" };
+  if (row.expenseId != null) {
+    const cat = row.expenseCategory ? (EXPENSE_CATEGORY_AR[row.expenseCategory] ?? row.expenseCategory) : null;
+    return { key: "EXPENSE", label: cat ? `مصروف — ${cat}` : "مصروف" };
+  }
+  if (row.voucherNumber != null) {
+    return row.direction === "IN"
+      ? { key: "VOUCHER_IN", label: "سند قبض" }
+      : { key: "VOUCHER_OUT", label: "سند صرف" };
+  }
+  return { key: "OTHER", label: row.direction === "IN" ? "إيداع نقديّ" : "سحب نقديّ" };
+}
+
+export async function getTreasuryStatement(opts: {
+  from: string;
+  to: string;
+  branchId?: number;
+  limit?: number;
+}): Promise<TreasuryStatementResult> {
+  const db = getDb();
+  const base: TreasuryStatementResult = {
+    period: { from: opts.from, to: opts.to },
+    openingBalance: "0",
+    totalIn: "0",
+    totalOut: "0",
+    closingBalance: "0",
+    count: 0,
+    shownCount: 0,
+    truncated: false,
+    movements: [],
+  };
+  if (!db) return base;
+
+  const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
+  const branchFilter = opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``;
+
+  // لقطةٌ واحدةٌ متّسقة: القراءات الثلاث داخل معاملةٍ واحدة (REPEATABLE READ الافتراضيّة في
+  // InnoDB) ⇒ يستحيل أن تُضاف حركةٌ معتمَدةٌ بين استعلام الإجماليّ واستعلام التفصيل فتظهر في
+  // الصفوف والرصيد الجارٍ وتغيب عن count/الإجماليّات/closingBalance (تناقضٌ داخليّ — عين شكوى
+  // «الأرقام المتناقضة»). الثلاثة تقرأ اللقطة نفسها.
+  const snap = await db.transaction(async (tx) => {
+    // (أ) الرصيد الافتتاحيّ = صافي حركات الخزينة النقديّة قبل from.
+    const openRow = rowsOf(
+      await tx.execute(sql`
+        SELECT CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END), 0) AS CHAR) AS opening
+        FROM receipts r
+        WHERE ${TREASURY_CASH_CONDS_SQL}
+          AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) < ${opts.from}
+          ${branchFilter}
+      `),
+    )[0] ?? { opening: "0" };
+
+    // (ب) إجماليّات الفترة كاملةً (بلا اعتماد على المقتطَع) ⇒ الختاميّ صحيحٌ حتى مع الاقتطاع.
+    const aggRow = rowsOf(
+      await tx.execute(sql`
+        SELECT COUNT(*) AS cnt,
+          CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE 0 END), 0) AS CHAR) AS totalIn,
+          CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' THEN r.amount ELSE 0 END), 0) AS CHAR) AS totalOut
+        FROM receipts r
+        WHERE ${TREASURY_CASH_CONDS_SQL}
+          AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) >= ${opts.from}
+          AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) <= ${opts.to}
+          ${branchFilter}
+      `),
+    )[0] ?? { cnt: 0, totalIn: "0", totalOut: "0" };
+
+    // (ج) تفصيل الحركات مرتّباً زمنياً. يحمل كلُّ صفٍّ منشئَه ومعتمِدَه (§٥: فاعلٌ منسوب)، ويُكمِل
+    //     الطرفَ/البيانَ من صفّ المصروف حين لا يحملهما الإيصال (سند صرفٍ من الخزينة: المستفيد
+    //     والغرض مخزَّنان على expenses لا على receipts فكانا يظهران «—»).
+    const rows = rowsOf(
+      await tx.execute(sql`
+        SELECT
+          r.id AS receiptId,
+          ${RECEIPT_CASH_EVENT_AT_SQL} AS at,
+          r.direction AS direction,
+          CAST(r.amount AS CHAR) AS amount,
+          r.receiptStatus AS receiptStatus,
+          r.referenceNumber AS referenceNumber,
+          r.voucherNumber AS voucherNumber,
+          COALESCE(r.counterpartyName, e.payee) AS counterparty,
+          COALESCE(r.description, e.description) AS description,
+          b.name AS branchName,
+          cu.name AS createdByName,
+          au.name AS approvedByName,
+          e.id AS expenseId,
+          e.expenseCategory AS expenseCategory
+        FROM receipts r
+        LEFT JOIN branches b ON b.id = r.branchId
+        LEFT JOIN expenses e ON e.receiptId = r.id
+        LEFT JOIN users cu ON cu.id = r.createdBy
+        LEFT JOIN users au ON au.id = r.approvedBy
+        WHERE ${TREASURY_CASH_CONDS_SQL}
+          AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) >= ${opts.from}
+          AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) <= ${opts.to}
+          ${branchFilter}
+        ORDER BY ${RECEIPT_CASH_EVENT_AT_SQL} ASC, r.id ASC
+        LIMIT ${limit}
+      `),
+    );
+    return { openRow, aggRow, rows };
+  });
+
+  const openingBalance = money(snap.openRow.opening ?? 0);
+  const count = Number(snap.aggRow.cnt ?? 0);
+  const totalIn = money(snap.aggRow.totalIn ?? 0);
+  const totalOut = money(snap.aggRow.totalOut ?? 0);
+  const closingBalance = openingBalance.plus(totalIn).minus(totalOut);
+
+  let running = openingBalance;
+  const movements: TreasuryStatementMovement[] = snap.rows.map((r) => {
+    const amt = money(r.amount ?? 0);
+    const dir: "IN" | "OUT" = r.direction === "OUT" ? "OUT" : "IN";
+    running = dir === "IN" ? running.plus(amt) : running.minus(amt);
+    const reason = treasuryMovementReason({
+      direction: dir,
+      referenceNumber: r.referenceNumber ?? null,
+      voucherNumber: r.voucherNumber ?? null,
+      expenseId: r.expenseId != null ? Number(r.expenseId) : null,
+      expenseCategory: r.expenseCategory ?? null,
+    });
+    return {
+      receiptId: Number(r.receiptId),
+      at: r.at,
+      direction: dir,
+      amount: toDbMoney(amt),
+      reasonKey: reason.key,
+      reason: reason.label,
+      reference: r.referenceNumber ?? null,
+      voucherNumber: r.voucherNumber ?? null,
+      counterparty: r.counterparty ?? null,
+      description: r.description ?? null,
+      branchName: r.branchName ?? null,
+      createdByName: r.createdByName ?? null,
+      approvedByName: r.approvedByName ?? null,
+      reversed: String(r.receiptStatus) === "REVERSED",
+      runningBalance: toDbMoney(running),
+    };
+  });
+
+  return {
+    period: { from: opts.from, to: opts.to },
+    openingBalance: toDbMoney(openingBalance),
+    totalIn: toDbMoney(totalIn),
+    totalOut: toDbMoney(totalOut),
+    closingBalance: toDbMoney(closingBalance),
+    count,
+    shownCount: movements.length,
+    truncated: count > movements.length,
+    movements,
+  };
+}
+
 /* ============================ تقرير المصروفات ============================ */
 
 export interface ExpenseCategoryLine {

@@ -66,6 +66,7 @@ export const ACCOUNT_ROLES = [
   "ASSET_DISPOSAL_GAIN",
   "ASSET_DISPOSAL_LOSS",
   "PURCHASE_PRICE_VARIANCE",
+  "INVENTORY_REVALUATION",
   "LOSSES",
   "OTHER_EXPENSE",
 ] as const;
@@ -143,6 +144,8 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_INVENTORY_REVALUATION_GAIN"
+  | "ADJUST_INVENTORY_REVALUATION_LOSS"
   | "ADJUST_WIP_CONSUME"
   | "ADJUST_WIP_WASTE"
   | "ADJUST_WIP_CANCEL"
@@ -317,6 +320,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_INVENTORY_REVALUATION_GAIN",
+    "ADJUST_INVENTORY_REVALUATION_LOSS",
     "ADJUST_WIP_CONSUME",
     "ADJUST_WIP_CANCEL",
     "ADJUST_WIP_WASTE",
@@ -639,6 +644,7 @@ const EXPENSE_ROLES = [
   "ROUNDING_DIFF",
   "ASSET_DISPOSAL_LOSS",
   "PURCHASE_PRICE_VARIANCE",
+  "INVENTORY_REVALUATION",
   "LOSSES",
   "OTHER_EXPENSE",
 ] as const;
@@ -1414,9 +1420,16 @@ export const PROFILE_POLICIES = Object.freeze({
       reversible: false,
       requiredDebitRoles: ["SALES_FLEX"],
       requiredCreditRoles: ["AR"],
+      // إصلاح م١ (تدقيق المحرّك ١٣/٩): كانت الإشارتان مقلوبتَين. المنتج الوحيد
+      // (reversal/executors/workOrderDelivery.ts) يمرّر revenue/cost **سالبَين** (اصطلاح المرتجع)
+      // ويَدين SALES_FLEX ويُدائن COGS ⇒ المقياس الصحيح: الإيراد CREDIT_MINUS_DEBIT (=−total)
+      // والتكلفة DEBIT_MINUS_CREDIT (=−cost) — مطابقةً لشقيقَيه RETURN_SALE_FLEX
+      // وRETURN_SALE_DIGITAL. القيمُ المقلوبة (DEBIT_MINUS_CREDIT/CREDIT_MINUS_DEBIT) كانت تُفشل
+      // فحص المصدر لكل عكس تسليمٍ لأمر شغل: في ACTIVE يتراجع العكس (المخرج الوحيد للأمر المُسلَّم)،
+      // وفي SHADOW يتراكم فجوةً. يحرسه الآن workOrderReversalPosting في postingProfiles.test.ts.
       sourceAssertions: [
-        sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
-        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["COGS"]),
+        sourceAssertion("revenue", "CREDIT_MINUS_DEBIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
+        sourceAssertion("cost", "DEBIT_MINUS_CREDIT", ["COGS"]),
       ],
       requireRoleComponents: [
         "AR",
@@ -1601,6 +1614,21 @@ export const PROFILE_POLICIES = Object.freeze({
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
   }),
+  // إعادة تقييم تكلفة المخزون (تصحيح WAVG بلا تغيّر كميّة) — حسابُ تسويةٍ مخصَّص (INVENTORY_REVALUATION)
+  // لا يخلطها بإيرادات/خسائر التشغيل (قرار المالك ١٣/٩ عن تدقيق م١). تبقى ADJUST_INVENTORY_GAIN/LOSS
+  // لتسويات الكمّية الفعليّة (جرد · عجز نقل · تسوية مخزون). المخزونُ يتحرّك مقابل حساب التسوية.
+  ADJUST_INVENTORY_REVALUATION_GAIN: profilePolicy(
+    "ADJUST",
+    ["INVENTORY"],
+    ["INVENTORY_REVALUATION"],
+    { requireRoleComponents: ["INVENTORY", "INVENTORY_REVALUATION"] },
+  ),
+  ADJUST_INVENTORY_REVALUATION_LOSS: profilePolicy(
+    "ADJUST",
+    ["INVENTORY_REVALUATION"],
+    ["INVENTORY"],
+    { requireRoleComponents: ["INVENTORY_REVALUATION", "INVENTORY"] },
+  ),
   ADJUST_WIP_CONSUME: profilePolicy(
     "ADJUST",
     ["WORK_IN_PROGRESS"],
