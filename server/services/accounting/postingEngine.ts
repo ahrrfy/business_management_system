@@ -66,6 +66,7 @@ export const ACCOUNT_ROLES = [
   "ASSET_DISPOSAL_GAIN",
   "ASSET_DISPOSAL_LOSS",
   "PURCHASE_PRICE_VARIANCE",
+  "INVENTORY_REVALUATION",
   "LOSSES",
   "OTHER_EXPENSE",
 ] as const;
@@ -143,6 +144,8 @@ export type PostingProfile =
   | "RETURN_PURCHASE_CONSIGNMENT"
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
+  | "ADJUST_INVENTORY_REVALUATION_GAIN"
+  | "ADJUST_INVENTORY_REVALUATION_LOSS"
   | "ADJUST_WIP_CONSUME"
   | "ADJUST_WIP_WASTE"
   | "ADJUST_WIP_CANCEL"
@@ -317,6 +320,8 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "SUPPLIER_INVOICE_GRNI_REVERSAL",
     "ADJUST_INVENTORY_GAIN",
     "ADJUST_INVENTORY_LOSS",
+    "ADJUST_INVENTORY_REVALUATION_GAIN",
+    "ADJUST_INVENTORY_REVALUATION_LOSS",
     "ADJUST_WIP_CONSUME",
     "ADJUST_WIP_CANCEL",
     "ADJUST_WIP_WASTE",
@@ -639,6 +644,7 @@ const EXPENSE_ROLES = [
   "ROUNDING_DIFF",
   "ASSET_DISPOSAL_LOSS",
   "PURCHASE_PRICE_VARIANCE",
+  "INVENTORY_REVALUATION",
   "LOSSES",
   "OTHER_EXPENSE",
 ] as const;
@@ -1608,6 +1614,21 @@ export const PROFILE_POLICIES = Object.freeze({
   ADJUST_INVENTORY_LOSS: profilePolicy("ADJUST", ["LOSSES"], ["INVENTORY"], {
     requireRoleComponents: ["LOSSES", "INVENTORY"],
   }),
+  // إعادة تقييم تكلفة المخزون (تصحيح WAVG بلا تغيّر كميّة) — حسابُ تسويةٍ مخصَّص (INVENTORY_REVALUATION)
+  // لا يخلطها بإيرادات/خسائر التشغيل (قرار المالك ١٣/٩ عن تدقيق م١). تبقى ADJUST_INVENTORY_GAIN/LOSS
+  // لتسويات الكمّية الفعليّة (جرد · عجز نقل · تسوية مخزون). المخزونُ يتحرّك مقابل حساب التسوية.
+  ADJUST_INVENTORY_REVALUATION_GAIN: profilePolicy(
+    "ADJUST",
+    ["INVENTORY"],
+    ["INVENTORY_REVALUATION"],
+    { requireRoleComponents: ["INVENTORY", "INVENTORY_REVALUATION"] },
+  ),
+  ADJUST_INVENTORY_REVALUATION_LOSS: profilePolicy(
+    "ADJUST",
+    ["INVENTORY_REVALUATION"],
+    ["INVENTORY"],
+    { requireRoleComponents: ["INVENTORY_REVALUATION", "INVENTORY"] },
+  ),
   ADJUST_WIP_CONSUME: profilePolicy(
     "ADJUST",
     ["WORK_IN_PROGRESS"],

@@ -152,9 +152,11 @@ export async function postCostRevaluation(
     if (valueDelta.isZero()) continue;
     const gain = valueDelta.isPositive();
     const absoluteDelta = valueDelta.abs();
+    // إعادة تقييم التكلفة تُقيَّد في حساب تسويةٍ مخصَّص (INVENTORY_REVALUATION) لا في إيرادات/خسائر
+    // التشغيل (قرار المالك ١٣/٩ عن تدقيق م١): مكسبٌ ⇒ دائن التسوية، خسارةٌ ⇒ مدين التسوية.
     const postingSourceComponents = gain
-      ? { roleDebits: { INVENTORY: absoluteDelta }, roleCredits: { OTHER_REVENUE: absoluteDelta } }
-      : { roleDebits: { LOSSES: absoluteDelta }, roleCredits: { INVENTORY: absoluteDelta } };
+      ? { roleDebits: { INVENTORY: absoluteDelta }, roleCredits: { INVENTORY_REVALUATION: absoluteDelta } }
+      : { roleDebits: { INVENTORY_REVALUATION: absoluteDelta }, roleCredits: { INVENTORY: absoluteDelta } };
 
     await postEntry(tx, {
       entryType: "ADJUST",
@@ -167,15 +169,15 @@ export async function postCostRevaluation(
       createdBy: actor.userId,
       postingIntent: gain
         ? createPostingIntent(
-          "ADJUST_INVENTORY_GAIN",
+          "ADJUST_INVENTORY_REVALUATION_GAIN",
           "ADJUST",
-          [debitLine("INVENTORY", absoluteDelta), creditLine("OTHER_REVENUE", absoluteDelta)],
+          [debitLine("INVENTORY", absoluteDelta), creditLine("INVENTORY_REVALUATION", absoluteDelta)],
           postingSourceComponents,
         )
         : createPostingIntent(
-          "ADJUST_INVENTORY_LOSS",
+          "ADJUST_INVENTORY_REVALUATION_LOSS",
           "ADJUST",
-          [debitLine("LOSSES", absoluteDelta), creditLine("INVENTORY", absoluteDelta)],
+          [debitLine("INVENTORY_REVALUATION", absoluteDelta), creditLine("INVENTORY", absoluteDelta)],
           postingSourceComponents,
         ),
       postingSourceComponents,

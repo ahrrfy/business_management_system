@@ -2262,6 +2262,13 @@
 			"when": 1788148811000,
 			"tag": "0353_barcode_strip_internal_space",
 			"breakpoints": true
+		},
+		{
+			"idx": 354,
+			"version": "5",
+			"when": 1788148812000,
+			"tag": "0354_inventory_revaluation_account",
+			"breakpoints": true
 		}
 	]
 }

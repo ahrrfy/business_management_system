@@ -626,4 +626,13 @@ export const CHART_ACCOUNTS: SeedAccount[] = [
     systemRole: "GRNI",
     sortOrder: 215,
   },
+  {
+    id: 69,
+    code: "5680",
+    name: "تسوية تقييم المخزون",
+    type: "EXPENSE",
+    parentId: 24,
+    systemRole: "INVENTORY_REVALUATION",
+    sortOrder: 568,
+  },
 ];
