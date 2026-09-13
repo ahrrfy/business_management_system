@@ -43,16 +43,33 @@ describe("ScanBurstDetector — كشف الومضة", () => {
     expect(code).toBe("6281"); // مع الحرف الأوّل المستعاد، لا "281"
   });
 
-  it("لا يستعيد حرفاً مُسقطاً قديماً خارج نافذة الاستعادة (حرفٌ شاردٌ قبل المسح)", () => {
+  it("يستعيد الحرف الأوّل حتى مع تأخير بدءٍ كبير (بلاغ المالك ١٤/٩: «B51822572015» فقدت الـB)", () => {
+    // قارئ المالك يُرسل الحرف الأوّل بتأخيرٍ ملموس (٨٠٠مي هنا) ثمّ البقيّة سريعاً؛ النافذة الموسَّعة
+    // (١٥٠٠مي) تستعيده فلا يُبتَر أوّلُ الباركود — حرفاً كان «B» أو رقماً.
+    const det = new ScanBurstDetector({ minLength: 4, intraGapMs: 120 });
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyB", key: "B", shiftKey: true },
+      { code: "Digit5", key: "5" },
+      { code: "Digit1", key: "1" },
+      { code: "Digit8", key: "8" },
+    ];
+    feedSequence(det, events, [800, 12, 12]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("B518"); // الـB مستعادة، لا "518"
+  });
+
+  it("لا يستعيد حرفاً مُسقطاً قديماً خارج نافذة الاستعادة الموسَّعة (حرفٌ شاردٌ قبل المسح)", () => {
     const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
-    // «a» شاردٌ ثمّ فجوةٌ كبيرة (400مي) ثمّ مسحٌ سريع: يجب ألّا يُلحَق «a» بالباركود.
+    // النافذة وُسِّعت إلى ١٥٠٠مي (بلاغ المالك ١٤/٩: قارئٌ بطيء البدء يُسقط الحرف الأوّل «B»/رقماً).
+    // «a» شاردٌ ثمّ فجوةٌ أكبر من النافذة (2000مي) ثمّ مسحٌ سريع: يجب ألّا يُلحَق «a» بالباركود.
     const events: ScannerKeyEvent[] = [
       { code: "KeyA", key: "a" },
       { code: "Digit6", key: "6" },
       { code: "Digit2", key: "2" },
       { code: "Digit8", key: "8" },
     ];
-    feedSequence(det, events, [400, 10, 10]);
+    feedSequence(det, events, [2000, 10, 10]);
     const { code } = det.flush();
     expect(code).toBe("628");
   });
