@@ -2255,6 +2255,13 @@
 			"when": 1788148809000,
 			"tag": "0351_quotation_item_catalog_unit_price",
 			"breakpoints": true
+		},
+		{
+			"idx": 353,
+			"version": "5",
+			"when": 1788148811000,
+			"tag": "0353_barcode_strip_internal_space",
+			"breakpoints": true
 		}
 	]
 }

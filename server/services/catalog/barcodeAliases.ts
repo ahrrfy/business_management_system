@@ -70,7 +70,8 @@ export function normalizedStoredBarcodeSql(column: SQLWrapper): SQL {
     visible = sql`replace(${visible}, ${mark}, '')`;
   }
   const edge = "[\\x{0000}-\\x{0020}\\x{007f}-\\x{00a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]";
-  const trimmed = sql`regexp_replace(${visible}, ${`^${edge}+|${edge}+$`}, '')`;
+  // ثمّ تُسقَط مسافةُ ASCII الداخليّة (0x20) نظيرَ `canonicalizeBarcodeInput` (ملصقات «1  XXXX»، ١٣/٩).
+  const trimmed = sql`replace(regexp_replace(${visible}, ${`^${edge}+|${edge}+$`}, ''), ${" "}, '')`;
   return foldDigitsSql(sql`lower(${trimmed})`);
 }
 

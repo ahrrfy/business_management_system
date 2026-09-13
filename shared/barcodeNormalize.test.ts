@@ -18,10 +18,14 @@ describe("canonicalizeBarcodeInput — تطبيع مدخل الباركود (م�
     expect(canonicalizeBarcodeInput("ALR٠٠٠١٠٨٤")).toBe("ALR0001084");
   });
 
-  it("لا يلمس حالة الأحرف ولا المسافة الداخلية (Code39 يسمح بها حرفاً معنوياً)", () => {
+  it("لا يلمس حالة الأحرف لكنه يُسقط مسافة ASCII الداخلية (ضجيج «1  XXXX»، ١٣/٩)", () => {
     expect(canonicalizeBarcodeInput("MLZ6A")).toBe("MLZ6A");
     expect(canonicalizeBarcodeInput("NASR-6A")).toBe("NASR-6A");
-    expect(canonicalizeBarcodeInput("AB 12")).toBe("AB 12");
+    // مسافةٌ داخلية = ضجيجُ لصقِ Excel/إدخالٍ يدويّ؛ تُسقَط فتُصبح كلّ صور «1  XXXX» هويةً واحدة.
+    expect(canonicalizeBarcodeInput("AB 12")).toBe("AB12");
+    expect(canonicalizeBarcodeInput("1  1172")).toBe("11172");
+    expect(canonicalizeBarcodeInput("1 1172")).toBe("11172");
+    expect(canonicalizeBarcodeInput("11172")).toBe("11172");
   });
 
   it("الفارغ والمسافات وحدها ⇒ سلسلة فارغة (يرفضها المخطّط لا الدالّة)", () => {
@@ -30,7 +34,7 @@ describe("canonicalizeBarcodeInput — تطبيع مدخل الباركود (م�
   });
 
   it("مُتعادِل: تطبيع المُطبَّع لا يغيّره", () => {
-    for (const v of ["10095", "6001000000017", "MLZ6A", "AB 12", "ALR0001084"]) {
+    for (const v of ["10095", "6001000000017", "MLZ6A", "AB12", "ALR0001084"]) {
       expect(canonicalizeBarcodeInput(canonicalizeBarcodeInput(v))).toBe(v);
     }
   });

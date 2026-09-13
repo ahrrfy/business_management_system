@@ -15,6 +15,10 @@ export function barcodeIdentitySql(column: string): string {
   }
   const edge = "[\\x{0000}-\\x{0020}\\x{007f}-\\x{00a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]";
   value = `LOWER(REGEXP_REPLACE(${value}, ${literal(`^${edge}+|${edge}+$`)}, ''))`;
+  // Strip internal ASCII spaces (0x20) — mirrors canonicalizeBarcodeInput. The "1  XXXX"
+  // double-space label noise (bytes 20 20) is not a barcode identity; dropping it makes those
+  // items scannable/searchable. Internal control chars (tab, etc.) stay and are rejected upstream.
+  value = `REPLACE(${value}, ${literal(" ")}, '')`;
   for (const digits of ["٠١٢٣٤٥٦٧٨٩", "۰۱۲۳۴۵۶۷۸۹"]) {
     Array.from(digits).forEach((digit, index) => { value = `REPLACE(${value}, ${literal(digit)}, '${index}')`; });
   }
