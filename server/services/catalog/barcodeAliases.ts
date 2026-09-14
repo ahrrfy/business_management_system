@@ -10,7 +10,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { ProductBarcodeMatchKind } from "@shared/productScan";
-import { barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { BARCODE_DIGIT_CORE_MIN_LENGTH, barcodeDigitCore, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type DB, type Tx } from "../../db";
 import { productUnits, productUnitBarcodes, productVariants, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
@@ -83,6 +83,12 @@ export function normalizedMatchAny(column: SQLWrapper, codes: string[]): SQL | u
   );
   if (!lows.length) return undefined;
   return inArray(normalizedStoredBarcodeSql(column), lows);
+}
+
+/** نظير SQL لـ`barcodeDigitCore` (JS): يُسقط بادئةً غير رقمية من الهوية المخزَّنة المُطبَّعة المُصغَّرة.
+ *  يحرس تطابقَ الطرفين اختبار `barcodeAliases.test.ts`. */
+function storedBarcodeDigitCoreSql(column: SQLWrapper): SQL {
+  return sql`regexp_replace(${normalizedStoredBarcodeSql(column)}, ${"^[^0-9]+"}, '')`;
 }
 
 async function findPrimaryOwners(db: DbOrTx, where: SQL): Promise<BarcodeOwner[]> {
@@ -245,6 +251,81 @@ async function resolveNormalizedOwner(db: DbOrTx, candidates: string[]): Promise
   } };
 }
 
+/**
+ * مسار «نواة الأرقام» (١٤/٩): مسارٌ احتياطيٌّ أخير بعد فشل التامّ والمُطبَّع معاً — يطابق نواةَ أرقام
+ * المُدخل بنواة أرقام العمود المخزَّن (`storedBarcodeDigitCoreSql`)، فيُحلّ الملصقُ الذي يقرؤه الماسحُ
+ * «51822572015» إلى وحدةٍ خُزِّن باركودُها «B51822572015» (بادئةُ مقاسٍ لا يُنتجها الماسح). لا يُشغَّل إلّا
+ * حين لا يجد المساران السابقان شيئاً، فلا انحدار على أيّ باركودٍ يُحلّ اليوم. ومحسومٌ بالتفرّد: مالكٌ
+ * واحدٌ فقط يُعاد، وإلّا **NOT_FOUND** (صفرٌ أو تعدّد). لماذا لا «غموضٌ صريح» عند التعدّد كنظيره المُطبَّع؟
+ * لأنّ هذا مسارٌ متساهلٌ (يُسقط بادئةً) يُشغَّل على مسحٍ لم يطابق تامّاً؛ فقد يكون صنفاً **أجنبياً** ليس
+ * من الكتالوج تتصادم نواتُه مع صنفين (Codex ١٤/٩) — فرفعُ CONFLICT «صحّح باركوداتك المتعارضة» يُربك
+ * الكاشيرَ بخطأٍ عن صنفٍ ليس له. الإغلاق الصامت (NOT_FOUND ⇒ «غير موجود، ابحث يدوياً») أأمنُ وأوضح، ولا
+ * يُسعّر شيئاً لغير صاحبه (§٥). يجمع المُلّاك المتمايزين بمعرّف الوحدة عبر الجدولين (أساسيّ ثمّ بديل).
+ */
+async function resolveDigitCoreOwner(db: DbOrTx, digitCore: string): Promise<BarcodeOwnerResolution> {
+  if (digitCore.length < BARCODE_DIGIT_CORE_MIN_LENGTH) return { status: "NOT_FOUND" };
+  const primUnits = await db
+    .select({ id: productUnits.id })
+    .from(productUnits)
+    .where(eq(storedBarcodeDigitCoreSql(productUnits.barcode), digitCore))
+    .groupBy(productUnits.id)
+    .limit(2);
+  const ownerIds = new Set<number>(primUnits.map((r) => Number(r.id)));
+  if (ownerIds.size < 2) {
+    const aliUnits = await db
+      .select({ id: productUnitBarcodes.productUnitId })
+      .from(productUnitBarcodes)
+      .where(eq(storedBarcodeDigitCoreSql(productUnitBarcodes.barcode), digitCore))
+      .groupBy(productUnitBarcodes.productUnitId)
+      .limit(2);
+    for (const r of aliUnits) ownerIds.add(Number(r.id));
+  }
+  // تعدّدٌ أو غياب ⇒ NOT_FOUND (لا CONFLICT): المسارُ المتساهلُ لا يُصعّد مسحاً غير مطابقٍ تامّاً إلى خطأٍ
+  // صاخب قد يخصّ صنفاً أجنبياً (انظر رأس الدالّة). مالكٌ واحدٌ فقط يُحسَم.
+  if (ownerIds.size !== 1) return { status: "NOT_FOUND" };
+  const unitId = ownerIds.values().next().value as number;
+  const isPrimary = primUnits.some((r) => Number(r.id) === unitId);
+  const [row] = await db
+    .select({
+      productId: products.id,
+      variantId: productVariants.id,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      unitName: productUnits.unitName,
+      sku: productVariants.sku,
+      primaryBarcode: productUnits.barcode,
+      factor: productUnits.conversionFactor,
+      productActive: products.isActive,
+      variantActive: productVariants.isActive,
+      unitActive: productUnits.isActive,
+      isBundle: products.isBundle,
+      isService: products.isService,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productUnits.id, unitId))
+    .limit(1);
+  if (!row) return { status: "NOT_FOUND" };
+  return { status: "FOUND", owner: {
+    productUnitId: unitId,
+    productId: Number(row.productId),
+    variantId: Number(row.variantId),
+    productName: row.productName,
+    variantName: row.variantName,
+    unitName: row.unitName,
+    sku: row.sku,
+    matchKind: isPrimary ? "PRIMARY" : "ALIAS",
+    primaryBarcode: row.primaryBarcode,
+    factor: Number(row.factor),
+    productActive: Boolean(row.productActive),
+    variantActive: Boolean(row.variantActive),
+    unitActive: Boolean(row.unitActive),
+    isBundle: Boolean(row.isBundle),
+    isService: Boolean(row.isService),
+  } };
+}
+
 /** يحلّ باركوداً واحداً إلى وحدة المنتج المالكة — أساسيّاً كان أو بديلاً. للاستعمال الداخليّ. */
 export async function resolveBarcodeOwnerResult(
   db: DbOrTx,
@@ -269,7 +350,14 @@ export async function resolveBarcodeOwnerResult(
   // المساواة الخامّة تُخطئه رغم أنّ الباركود «هو نفسه» بعين الإنسان والماسح. نقرأ هوية العمود المولّدة
   // والمفهرسة ونقارنها بالمُدخل المُطبَّع، **رافضين الحسمَ عند تعدّد المالك** (لئلّا يُسعَّر المسحُ لغير صاحبه).
   // العمود المولّد وفهرسه يجعلان هذا بحث هوية مفهرساً؛ لم يعد full scan احتياطياً.
-  return resolveNormalizedOwner(db, candidates);
+  const normalized = await resolveNormalizedOwner(db, candidates);
+  if (normalized.status !== "NOT_FOUND") return normalized;
+  // مسارٌ احتياطيٌّ أخير (١٤/٩): بادئةٌ غير رقمية على الملصق (مقاس «B5»…) لا يُنتجها الماسح ⇒ يقرأ
+  // «51822572015» لِمخزَّنٍ «B51822572015». نطابق نواةَ الأرقام، محسومين بالتفرّد (التعدّد ⇒ NOT_FOUND).
+  // ⚠️ أداء: `regexp_replace` على العمود يمنع استعمال فهرس barcodeNormalized ⇒ مسحٌ كاملٌ للجدولين على
+  // مسار الإخفاق وحده (بضعة ms على ٦٠٠٠ صنف — مقبولٌ الآن). إن كبُر الكتالوج أو فئةُ البادئة غير الرقمية،
+  // فالترقيةُ عمودٌ مولَّدٌ مفهرسٌ `barcodeDigitCore` (متابعةٌ مستقلّة تلمس المخطّط + هجرة + لقطة الأوفلاين).
+  return resolveDigitCoreOwner(db, barcodeDigitCore(code));
 }
 
 export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<BarcodeOwner | null> {
