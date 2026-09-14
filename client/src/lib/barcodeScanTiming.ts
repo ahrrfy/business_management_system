@@ -23,7 +23,7 @@
  */
 import { scannerCharFromEvent, type ScannerKeyEvent } from "@shared/barcodeKeyDecode";
 import { normalizeBarcodeScannerInput, looksLikeSystemBarcode } from "@shared/barcodeScanner";
-import { hasUnsupportedBarcodeCharacters } from "@shared/barcodeNormalize";
+import { barcodeDigitCore, hasUnsupportedBarcodeCharacters } from "@shared/barcodeNormalize";
 
 export interface ScanBurstOptions {
   /** أدنى طولٍ لاعتبار الومضة باركوداً (افتراضي 3؛ حقول القارئ المخصَّصة قد تخفضه إلى 2). */
@@ -179,6 +179,16 @@ export function recoverSlowScanCode(rawFieldValue: string, minLength: number): s
   if (code.length < Math.max(4, minLength)) return null;
   if (hasUnsupportedBarcodeCharacters(code)) return null;
   const digitsOnly = code.replace(/\s+/g, "");
-  const confident = /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code);
+  // بادئةُ حرفٍ قصيرة على باركودٍ رقميّ (مقاس مصنعٍ «B5»…): ١٤/٩ بلاغ المالك — القارئُ البطيء تحت
+  // **تخطيط عربيّ** يُنتج «لا51822572015» (الحرف B ⇐ لا)؛ يترجمها `normalizeBarcodeScannerInput` إلى
+  // «b51822572015» لكنّ البوّابة الرقمية المحضة كانت ترفضها فتضيع. نقبلها إن **لاصقت** البادئةُ (حرفٌ
+  // أو حرفان، بلا أيّ فراغ) نواةً رقميّة (يحلّها مسارُ «نواة الأرقام» الخادميّ #1119) — فلا تتأثّر
+  // القراءةُ بلغة الكيبورد. ⚠️ مراجعة Codex: نقيس الالتصاقَ على `code` بمسافاته لا على `digitsOnly` —
+  // وإلّا عُدَّ بحثٌ بشريّ «حرفان + فراغ + رقم» («في 2026» ⇐ «td 2026») باركوداً خطأً (§٥). المسافةُ
+  // بين البادئة والرقم دليلُ عبارةٍ بشرية، فتبقى بحثاً.
+  const shortLetterPrefixedDigits =
+    /^[^\d\s]{1,2}\d+$/.test(code) && barcodeDigitCore(code).length >= Math.max(4, minLength);
+  const confident =
+    /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code) || shortLetterPrefixedDigits;
   return confident ? code : null;
 }
