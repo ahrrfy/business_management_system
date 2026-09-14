@@ -81,15 +81,12 @@ import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilest
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
+import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
 
-export function storefrontTurnstileSubmissionReady(
-  orderingEnabled: boolean,
-  siteKey: string | null | undefined,
-  token: string | null | undefined,
-): boolean {
+export function storefrontTurnstileSubmissionReady(orderingEnabled: boolean, siteKey: string | null | undefined, token: string | null | undefined): boolean {
   return orderingEnabled && !!siteKey?.trim() && !!token?.trim();
 }
 
@@ -408,6 +405,7 @@ function saveStorefrontWishlist(ids: Set<number>): void {
 
 function storefrontShareUrl(params: Record<string, string>): string {
   if (typeof window === "undefined") return "https://alarabiya.online/store";
+  if (params.product) return `${window.location.origin}/store/product/${params.product}`;
   const url = new URL("/store", window.location.origin);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   return url.toString();
@@ -1499,6 +1497,7 @@ function StorefrontContent() {
     },
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  useStorefrontUrlSync({ selectedId, setSelectedId, selectedProductTitle: detailQ.data?.productName, categoryId, setCategoryId });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const recommendationClickM = trpc.storefront.trackRecommendationClick.useMutation();
@@ -1554,8 +1553,6 @@ function StorefrontContent() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const sharedProductId = Number(params.get("product"));
-    if (Number.isInteger(sharedProductId) && sharedProductId > 0) setSelectedId(sharedProductId);
     const token = params.get("cartToken")?.trim();
     if (!token || !/^[A-Za-z0-9_-]{20,32}$/.test(token)) return;
     let cancelled = false;

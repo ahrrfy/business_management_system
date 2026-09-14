@@ -378,10 +378,12 @@ export default function App() {
       </Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
-      {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
-      <Route path="/store" component={Storefront} />
       {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
       <Route path="/store/mobile-turnstile" component={MobileTurnstile} />
+      {/* متجر الزبون (B2C) — روابط مباشرة للمنتجات والأقسام للتسويق والـ SEO ومحركات البحث */}
+      <Route path="/store/product/:productId" component={Storefront} />
+      <Route path="/store/category/:categoryId" component={Storefront} />
+      <Route path="/store" component={Storefront} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
