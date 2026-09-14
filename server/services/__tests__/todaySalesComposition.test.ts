@@ -234,4 +234,26 @@ describe("تركيب مبيعات اليوم — نقد/غير نقد/آجل", (
     expect(c.treasuryCash).toBe("30000.00");
     expect(c.credit).toBe("0.00");
   });
+
+  it("دفعةٌ واحدة موزَّعة بين فاتورةٍ مباشرة وأمر شغل تُضمّ بكامل تطبيقاتها بلا ازدواج (#478)", async () => {
+    await invoice({ id: 1, total: "20000", paidAmount: "20000" });
+    await invoice({ id: 2, total: "30000", paidAmount: "30000" });
+    const d = db();
+    await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    await d.insert(s.workOrders).values({ id: 10, orderNumber: "WO-10", branchId: 1, title: "درع", invoiceId: 2 });
+    // الإيصال موزَّع على هدفين، لذلك يبقى invoiceId=NULL وتبقى الحقيقة في APPLICATION كلّها.
+    await receipt({ id: 200, invoiceId: null, direction: "IN", amount: "50000", method: "CASH" });
+    await d.insert(s.orderPayments).values([
+      { id: 1, draftId: 999, branchId: 1, kind: "COLLECTION", method: "CASH", amount: "50000", receiptId: 200, status: "APPLIED", createdBy: 1 },
+      { id: 2, draftId: 999, branchId: 1, kind: "APPLICATION", amount: "20000", parentPaymentId: 1, appliedKind: "INVOICE", appliedId: 1, createdBy: 1 },
+      { id: 3, draftId: 999, branchId: 1, kind: "APPLICATION", amount: "30000", parentPaymentId: 1, appliedKind: "WORKORDER", appliedId: 10, createdBy: 1 },
+    ]);
+    await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+
+    const c = await getTodaySalesComposition(1, NOW);
+    expect(c.total).toBe("50000.00");
+    expect(c.cash).toBe("50000.00");
+    expect(c.credit).toBe("0.00");
+    expect(c.pendingRefund).toBe("0.00");
+  });
 });
