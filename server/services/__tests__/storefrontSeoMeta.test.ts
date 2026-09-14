@@ -25,7 +25,11 @@ describe("storefrontSeoMetaService", () => {
     expect(meta!.title).toContain("المكتبة العربية");
     expect(meta!.canonicalUrl).toBe("https://alarabiya.online/store");
     expect(meta!.ogType).toBe("website");
-    expect(meta!.jsonLd).toHaveLength(2); // WebSite and Store
+    expect(meta!.jsonLd).toHaveLength(3); // WebSite, Store, and FAQPage
+    const storeObj = meta!.jsonLd[1] as Record<string, unknown>;
+    expect(storeObj["telephone"]).toBe("+9647838666999");
+    const faqObj = meta!.jsonLd[2] as Record<string, unknown>;
+    expect(faqObj["@type"]).toBe("FAQPage");
   });
 
   it("injects SEO meta and structured data into HTML for store homepage", async () => {
@@ -41,6 +45,8 @@ describe("storefrontSeoMetaService", () => {
     expect(result).toContain("application/ld+json");
     expect(result).toContain('"@type": "WebSite"');
     expect(result).toContain('"@type": "Store"');
+    expect(result).toContain('"@type": "FAQPage"');
+    expect(result).toContain("+9647838666999");
     expect(result).toContain('rel="canonical" href="https://alarabiya.online/store"');
   });
 

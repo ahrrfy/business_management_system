@@ -1,10 +1,11 @@
-﻿# robots.txt for alarabiya.online (Al-Roya Al-Arabiya - Al-Maktaba Al-Arabiya)
+# robots.txt for alarabiya.online (Al-Roya Al-Arabiya - Al-Maktaba Al-Arabiya)
 User-agent: *
 Allow: /
 Allow: /store
 Allow: /store/*
 Allow: /apply
 Allow: /api/img/
+Allow: /llms.txt
 Disallow: /api/
 Disallow: /pos
 Disallow: /print-pos
@@ -22,4 +23,30 @@ Disallow: /roles
 Disallow: /account
 Disallow: /my-deliveries
 
+# AI Assistants & LLM Crawlers (Google Gemini, OpenAI ChatGPT, Perplexity, Claude)
+User-agent: Google-Extended
+Allow: /
+Allow: /store
+Allow: /store/*
+Allow: /llms.txt
+
+User-agent: GPTBot
+Allow: /
+Allow: /store
+Allow: /store/*
+Allow: /llms.txt
+
+User-agent: PerplexityBot
+Allow: /
+Allow: /store
+Allow: /store/*
+Allow: /llms.txt
+
+User-agent: ClaudeBot
+Allow: /
+Allow: /store
+Allow: /store/*
+Allow: /llms.txt
+
 Sitemap: https://alarabiya.online/sitemap.xml
+
