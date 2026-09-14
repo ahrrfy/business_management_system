@@ -1,0 +1,25 @@
+﻿# robots.txt for alarabiya.online (Al-Roya Al-Arabiya - Al-Maktaba Al-Arabiya)
+User-agent: *
+Allow: /
+Allow: /store
+Allow: /store/*
+Allow: /apply
+Allow: /api/img/
+Disallow: /api/
+Disallow: /pos
+Disallow: /print-pos
+Disallow: /reception
+Disallow: /inventory
+Disallow: /reports
+Disallow: /store-admin
+Disallow: /crm
+Disallow: /settings
+Disallow: /invoices
+Disallow: /closing
+Disallow: /audit
+Disallow: /users
+Disallow: /roles
+Disallow: /account
+Disallow: /my-deliveries
+
+Sitemap: https://alarabiya.online/sitemap.xml
