@@ -338,8 +338,8 @@ export async function getTreasuryStatement(opts: {
   const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
   const branchFilter = opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``;
 
-  // لقطةٌ واحدةٌ متّسقة: القراءات الثلاث داخل معاملةٍ واحدة (REPEATABLE READ الافتراضيّة في
-  // InnoDB) ⇒ يستحيل أن تُضاف حركةٌ معتمَدةٌ بين استعلام الإجماليّ واستعلام التفصيل فتظهر في
+  // لقطةٌ واحدةٌ متّسقة: القراءات الثلاث داخل معاملة READ ONLY + REPEATABLE READ صريحة؛ لا
+  // نعتمد على إعداد عزل الخادم الافتراضيّ. يستحيل أن تُضاف حركةٌ معتمَدةٌ بين الإجماليّ والتفصيل فتظهر في
   // الصفوف والرصيد الجارٍ وتغيب عن count/الإجماليّات/closingBalance (تناقضٌ داخليّ — عين شكوى
   // «الأرقام المتناقضة»). الثلاثة تقرأ اللقطة نفسها.
   const snap = await db.transaction(async (tx) => {
@@ -402,7 +402,7 @@ export async function getTreasuryStatement(opts: {
       `),
     );
     return { openRow, aggRow, rows };
-  });
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 
   const openingBalance = money(snap.openRow.opening ?? 0);
   const count = Number(snap.aggRow.cnt ?? 0);
