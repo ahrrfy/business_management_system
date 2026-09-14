@@ -283,6 +283,10 @@ export async function offlineFindByBarcode(
     .anyOfIgnoreCase(barcodeIdentityCandidates(canonical))
     .toArray();
   const resolution = resolveOfflineBarcodeRows(rows, canonical);
+  // ملاحظة (١٤/٩): مسارُ الخادم يضيف احتياطيّ «نواةِ الأرقام» (بادئةٌ غير رقمية على الملصق لا يُنتجها
+  // الماسح) — لكنّه **خادميٌّ فقط عمداً**: أوفلاين يقرّر التفرّد على لقطةٍ قد تكون قديمةً، فنواةٌ فريدةٌ
+  // محلّياً قد تكون غامضةً في الكتالوج الكامل ⇒ خطرُ حسمٍ خاطئ (§٥، أمسكته المراجعة العدائية). الكاشير
+  // المنقطع يبحث يدوياً عن هذه الفئة النادرة (٢-٣ أصناف بحرفٍ بادئ)، والاتصالُ يحلّها تلقائياً.
   if (resolution.status !== "FOUND") return null;
   const cachedBranch = await getCachedStockBranchId();
   return toPosRow(resolution.row, tier, branchId, cachedBranch);

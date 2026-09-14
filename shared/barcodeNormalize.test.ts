@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  barcodeDigitCore,
   barcodeIdentityCandidates,
   barcodesEquivalent,
   canonicalizeBarcodeInput,
@@ -60,5 +61,30 @@ describe("barcodeIdentityCandidates — صور الهوية التي قد تعي
     expect(barcodeIdentityCandidates("96385074")).toEqual(["96385074"]);
     expect(barcodeIdentityCandidates("10012345678902")).toEqual(["10012345678902"]);
     expect(barcodeIdentityCandidates("ALR000123")).toEqual(["ALR000123"]);
+  });
+});
+
+describe("barcodeDigitCore — نواة الأرقام (بادئةٌ غير رقمية لا يُنتجها الماسح، ١٤/٩)", () => {
+  it("يُسقط بادئةً غير رقمية ويُصغّر الحالة — «B51822572015» ⇒ «51822572015»", () => {
+    expect(barcodeDigitCore("B51822572015")).toBe("51822572015");
+    expect(barcodeDigitCore("b51822572015")).toBe("51822572015");
+    expect(barcodeDigitCore("AB-95")).toBe("95");
+    expect(barcodeDigitCore("$X 007 2")).toBe("0072"); // المسافةُ الداخلية تُسقَط أولاً ثمّ البادئة غير الرقمية
+  });
+
+  it("لا يمسّ رمزاً رقميّاً بحتاً (نواته = هويته)", () => {
+    expect(barcodeDigitCore("51822572015")).toBe("51822572015");
+    expect(barcodeDigitCore("٠١٧٢")).toBe("0172"); // طيّ الأرقام العربية أولاً
+    expect(barcodeDigitCore("01721")).toBe("01721"); // الصفرُ البادئ رقمٌ — يبقى
+  });
+
+  it("يُبقي حرفاً داخلياً بعد أوّل رقم (البادئة فقط تُسقَط)", () => {
+    expect(barcodeDigitCore("B5A8")).toBe("5a8");
+    expect(barcodeDigitCore("XY12Z34")).toBe("12z34");
+  });
+
+  it("رمزٌ بلا أرقام ⇒ نواةٌ فارغة (لا يُطابَق)", () => {
+    expect(barcodeDigitCore("ABC")).toBe("");
+    expect(barcodeDigitCore("")).toBe("");
   });
 });

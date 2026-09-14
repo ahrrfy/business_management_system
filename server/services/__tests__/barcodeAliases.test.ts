@@ -23,7 +23,7 @@ import { assignBarcode } from "../catalog/barcode";
 import { createProduct } from "../catalog/productCreate";
 import { lookupByBarcode } from "../catalog/pos";
 import { kioskLookup } from "../kioskService";
-import { barcodeComparisonKey } from "../../../shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeDigitCore } from "../../../shared/barcodeNormalize";
 
 const TABLES = [
   "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "productImages", "products",
@@ -506,6 +506,63 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await checkBarcodesTakenAcrossBoth(["١٠٠٩٥"])).toHaveLength(1);
       // والتحديث الذاتيّ لا يصطدم بنفسه.
       expect(await findBarcodeClashes(d, ["10095"], { ignorePrimaryUnitIds: [3] })).toHaveLength(0);
+    });
+  });
+
+  describe("A9 (١٤/٩): نواة الأرقام — بادئةٌ غير رقمية على الملصق لا يُنتجها الماسح", () => {
+    // الجذر (بلاغ المالك، مُثبَتٌ باختبار Notepad): وحدةٌ خُزِّن باركودها «B51822572015» (بادئةُ مقاس
+    // «B5» من المصنع) بينما ملصقُها المطبوع يقرؤه الماسح «51822572015» بلا B. المسارُ الاحتياطيّ الأخير
+    // يطابق نواةَ الأرقام، محسوماً بالتفرّد (§٥: الغموض يسأل، لا يخمّن).
+    it("يحلّ مسحَ «51822572015» إلى وحدةٍ خُزِّن باركودها «B51822572015» (أساسيّ وبديل)", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "B51822572015" }).where(eq(s.productUnits.id, 1));
+      expect(await resolveBarcodeOwner(d, "51822572015")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      // الكاشير (POS) يمرّ بالحلّال نفسه.
+      expect(await lookupByBarcode("51822572015", 1, "RETAIL")).toMatchObject({ productUnitId: 1 });
+      // كتابةُ الباركود كاملاً بالـB تبقى تُحلّ بالمسار التامّ (بلا احتياطيّ).
+      expect(await resolveBarcodeOwner(d, "B51822572015")).toMatchObject({ productUnitId: 1, matchKind: "PRIMARY" });
+      // والبديلُ ذو البادئة يُحلّ بنواته أيضاً.
+      await db().insert(s.productUnitBarcodes).values({ productUnitId: 3, barcode: "A66600012345" });
+      expect(await resolveBarcodeOwner(d, "66600012345")).toMatchObject({ productUnitId: 3, matchKind: "ALIAS" });
+    });
+
+    it("التطابق التامّ يفوز على نواة الأرقام (لا يُختطَف مسحٌ يخصّ صاحبه)", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "B51822572015" }).where(eq(s.productUnits.id, 1));
+      await d.update(s.productUnits).set({ barcode: "51822572015" }).where(eq(s.productUnits.id, 3));
+      // «51822572015» موجودٌ تامّاً على الوحدة 3 ⇒ يُحسَم لها، ولا يُشغَّل الاحتياطيّ أصلاً.
+      expect(await resolveBarcodeOwner(d, "51822572015")).toMatchObject({ productUnitId: 3, matchKind: "PRIMARY" });
+    });
+
+    it("تعدّد المالك على نواة الأرقام ⇒ NOT_FOUND (إغلاقٌ صامت لا CONFLICT عن صنفٍ قد يكون أجنبياً — §٥)", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "B51822572015" }).where(eq(s.productUnits.id, 1));
+      await d.update(s.productUnits).set({ barcode: "A51822572015" }).where(eq(s.productUnits.id, 3));
+      // نواةٌ متصادمةٌ على مسحٍ لم يطابق تامّاً: قد يكون صنفاً أجنبياً ليس من الكتالوج ⇒ لا نُصعّد إلى
+      // CONFLICT «صحّح باركوداتك» (يُربك عن صنفٍ ليس له)، بل «غير موجود» فيبحث الكاشير يدوياً. لا يُسعَّر شيء.
+      expect(await resolveBarcodeOwnerResult(d, "51822572015")).toEqual({ status: "NOT_FOUND" });
+      expect(await resolveBarcodeOwner(d, "51822572015")).toBeNull();
+      expect(await lookupByBarcode("51822572015", 1, "RETAIL")).toBeNull();
+    });
+
+    it("نواةٌ أقصرُ من الحدّ الأدنى لا تُطابَق (تمنع ضجيجاً عرَضياً)", async () => {
+      const d = db();
+      await d.update(s.productUnits).set({ barcode: "B159" }).where(eq(s.productUnits.id, 1));
+      // نواة «159» طولها ٣ < ٤ ⇒ لا يُشغَّل الاحتياطيّ ⇒ غير موجود (لا يُختطَف بمطابقةٍ قصيرة).
+      expect(await resolveBarcodeOwner(d, "159")).toBeNull();
+    });
+
+    it("نظير SQL لِـ`barcodeDigitCore` يطابق حساب JS حرفاً بحرف (يحرس انحراف الطرفين)", async () => {
+      const d = db();
+      const samples = ["B51822572015", "B5 1 0172", "AB-95", "٠١٧٢", "51822572015", "$X 007 2"];
+      for (const raw of samples) {
+        await d.update(s.productUnits).set({ barcode: raw }).where(eq(s.productUnits.id, 1));
+        const [row] = await d
+          .select({ core: sql<string>`regexp_replace(${s.productUnits.barcodeNormalized}, ${"^[^0-9]+"}, '')` })
+          .from(s.productUnits)
+          .where(eq(s.productUnits.id, 1));
+        expect(row.core).toBe(barcodeDigitCore(raw));
+      }
     });
   });
 
