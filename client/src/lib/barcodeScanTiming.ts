@@ -14,8 +14,8 @@
  *      الحقيقية تتذبذب (استقصاء USB + جدولة النظام) فتتجاوزها لحظياً ⇒ يتسرّب الحرف الأوّل دائماً
  *      ويضيع من الباركود. هنا الفاصل السخيّ (افتراض 120مي) يغطّي التذبذب، وبمجرّد بدء الومضة
  *      تُلتقط كلّ الأحرف حتى سكونٍ واضح أو Enter.
- *   ٣. **التسريب:** حرفٌ واحدٌ فقط قد يظهر لحظياً في الحقل (المرشّح الأوّل قبل تأكيد الومضة)،
- *      ويُستعاد فوراً عند بدء الومضة عبر `startBurst` — فلا يبقى رمزٌ مرئيّ ولا يضيع حرفٌ من الباركود.
+ *   ٣. **التسريب:** قد يظهر المرشّح الأوّل لحظياً في الحقل قبل تأكيد الومضة؛ يُزال عند
+ *      `startBurst` مع إبقاء النصّ السابق للحقل كما هو.
  *
  * القرار التصميميّ: نحتفظ بالضغطات كاملةً (`ScannerKeyEvent[]`) ونقرّر عند الإفراغ — فإن كانت
  * ومضةً حقيقية نفكّها فيزيائياً (لاتينيّ نظيف)، وإن كانت كتابةً بشريّة قصيرة نعيد **الحروف الخام**
@@ -37,9 +37,9 @@ export interface ScanBurstOptions {
 }
 
 export type FeedAction =
-  /** حرفٌ مرشّحٌ أوّل (قد يكون بشرياً أو بداية مسح): يظهر في الحقل، لا يُحجب. */
+  /** حرفٌ مرشّح (قد يكون بشرياً أو بداية مسح): يظهر في الحقل، لا يُحجب. */
   | "pass"
-  /** بدأت ومضةٌ مؤكَّدة: احجب هذا الحرف، واستعِد الحرف المرشّح الأوّل الذي تسرّب للحقل. */
+  /** بدأت ومضةٌ مؤكَّدة: احجب هذا الحرف، وأزل المرشّح السابق الذي تسرّب للحقل. */
   | "startBurst"
   /** ضمن ومضةٍ جارية: احجب الحرف. */
   | "capture";
@@ -57,9 +57,10 @@ export class ScanBurstDetector {
   private keys: ScannerKeyEvent[] = [];
   private lastMs = 0;
   private active = false;
-  // آخر حرفٍ أُسقط عند فاصلٍ بطيء + فاصلُه — لاستعادته إن بدأت ومضةٌ سريعةٌ بعده مباشرةً (قارئٌ
-  // بطيء البدء: أوّل فاصلٍ كبيرٌ ثمّ بقيّةُ الأحرف سريعة). بلا هذا يُبتَر الحرفُ الأوّل من الباركود.
-  private lookback: { key: ScannerKeyEvent; gap: number } | null = null;
+  // وجود مرشّحٍ سابق ضمن نافذة الاستعادة البرمجية المقترحة يجعل الومضة التالية ملتبسة: قد يكون
+  // أولَ حرفٍ بطيئاً من القارئ أو مفتاحاً يدوياً سبق المسح. لا يوجد دليل توقيتي يفرّق بينهما،
+  // لذلك نرفضها بدلاً من إصدار باركودٍ ملوّث أو مبتور.
+  private ambiguousStart = false;
 
   readonly minLength: number;
   readonly intraGapMs: number;
@@ -96,32 +97,28 @@ export class ScanBurstDetector {
     // الحرف الثاني وصل بسرعة القارئ بعد المرشّح الأوّل ⇒ ومضةٌ مؤكَّدة.
     if (this.keys.length === 1 && gap <= this.intraGapMs) {
       this.active = true;
-      // استعِد الحرف المُسقَط قبل المرشّح إن كان ضمن نافذة الاستعادة (بدءُ قارئٍ بطيء): نافذةٌ أوسع
-      // من عتبة الومضة لكنّها لا تزيد الإيجابيات الكاذبة — تُطبَّق فقط بعد تأكّد الومضة بزوجٍ سريع.
-      if (this.lookback && this.lookback.gap <= this.lookbackMs) {
-        this.keys.unshift(this.lookback.key);
-      }
-      this.lookback = null;
       this.keys.push(input);
       return "startBurst";
     }
 
-    // فاصلٌ بشريّ (أو أوّل ضغطةٍ على الإطلاق) ⇒ ابدأ مرشّحاً جديداً يظهر في الحقل، واحفظ المُسقَط
-    // مع فاصله لاستعادةٍ محتملة إن تبيّن أنّه أوّلُ ومضةٍ من قارئٍ بطيء البدء.
-    this.lookback = this.keys.length ? { key: this.keys[0], gap } : null;
+    // فاصلٌ بشريّ (أو أوّل ضغطةٍ على الإطلاق) ⇒ ابدأ مرشّحاً جديداً يظهر في الحقل. إن كان لدينا
+    // مرشّح سابق فالبداية التالية ملتبسة، فلا نقبل لاحقتها كباركود. لا نضمّ
+    // المفتاح السابق لاحقاً: التوقيت وحده لا يميّز أولَ حرفٍ من قارئ بطيء البدء عن كتابةٍ يدوية
+    // سبقت مسحاً سريعاً، واستعادته قد تغيّر هوية الباركود إلى صنفٍ آخر.
+    this.ambiguousStart = this.keys.length > 0 && gap <= this.ambiguousStartMs;
     this.keys = [input];
     return "pass";
   }
 
-  /** نافذة استعادة الحرف الأوّل: أوسع من عتبة الومضة لتحمّل بطء أوّل فاصلٍ من القارئ. */
-  private get lookbackMs(): number {
-    return Math.max(this.intraGapMs * 2, 260);
+  /** نافذة البداية الملتبسة: تغطي اقتراح 1.5ث في #1114 لكن نتيجتها الرفض الآمن لا الاستعادة. */
+  private get ambiguousStartMs(): number {
+    return Math.max(this.intraGapMs * 2, 1_500);
   }
 
   /** يفرّغ الحالة ويعيد القرار النهائيّ (ومضةٌ مقبولة أم كتابةٌ تُستعاد). */
   flush(): FlushResult {
     const keys = this.keys;
-    const accepted = this.active && keys.length >= this.minLength;
+    const accepted = this.active && !this.ambiguousStart && keys.length >= this.minLength;
     const text = keys.map((k) => k.key).join("");
     const code = normalizeBarcodeScannerInput(keys.map((k) => scannerCharFromEvent(k)).join(""));
     this.reset();
@@ -133,7 +130,7 @@ export class ScanBurstDetector {
     this.keys = [];
     this.lastMs = 0;
     this.active = false;
-    this.lookback = null;
+    this.ambiguousStart = false;
   }
 }
 

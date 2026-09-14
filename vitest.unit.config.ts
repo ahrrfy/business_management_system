@@ -352,6 +352,7 @@ export default defineConfig({
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب
       "shared/barcodeKeyDecode.test.ts",
       "client/src/lib/barcodeScanTiming.test.ts",
+      "client/src/hooks/useBarcodeScanner.test.tsx",
       "client/src/lib/barcodeScannerInput.test.ts",
       // بوابة /returns تملك ماسحها المحلّيّ (ProductSearchBar) كي لا يخطف الماسح العالميّ مسحَ السلة.
       "client/src/components/CommandPalette.test.ts",

@@ -7,7 +7,7 @@
  * كلّ منطق التوقيت والفكّ الفيزيائيّ موحَّدٌ في `ScanBurstDetector` (نواةٌ نقيّة مُختبَرة) — فلا
  * ينجرف عن `useBarcodeInput`/`useSmartScanInput`، ويصحّح ثلاث علل معاً: الرموز العربية (فكّ
  * `event.code` المستقلّ عن التخطيط)، و«يعمل أحياناً» (تسامحٌ مع تذبذب توقيت USB)، والتسريب
- * (استعادةٌ فوريّة للحرف المرشّح عند بدء الومضة). راجع `client/src/lib/barcodeScanTiming.ts`.
+ * (إزالةٌ فوريّة للحرف المرشّح عند بدء الومضة). راجع `client/src/lib/barcodeScanTiming.ts`.
  *
  * @param onScan     — يُستدعى بالباركود المفكوك الكامل عند اكتمال المسح.
  * @param enabled    — يُعطَّل عند فتح المودالات لتجنّب التعارض.
@@ -55,11 +55,12 @@ export function useBarcodeScanner(
       valBefore = "";
     };
 
-    const restore = (value: string) => {
+    const setFieldValueAndNotify = (value: string) => {
       if (!fieldTarget) return;
+      if (fieldTarget.value === value) return;
       // ضبطٌ عبر الـsetter الأصليّ (لا الخاصية المرقَّعة من React) ثمّ إرسال حدث input: الإسناد
       // المباشر لـ`.value` يُحدِّث متتبِّع React فيُقرأ الحدثُ «بلا تغيير» ولا يُطلَق onChange، فتبقى
-      // حالة React (مثل نصّ البحث) غير مصحَّحة. هذا التمرير يجعل الاستعادة تصحّح الحالة فعلاً.
+      // حالة React (مثل نصّ البحث) غير مصحَّحة. هذا التمرير يزامن المسح والاستعادة مع الحالة فعلاً.
       const proto = fieldTarget instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
         : HTMLInputElement.prototype;
@@ -73,12 +74,12 @@ export function useBarcodeScanner(
       clearTimeout(timer);
       const { accepted, code, text } = detector.flush();
       if (accepted && code.length >= minLength) {
-        // نجحت الومضة: الحقل نُظّف بالفعل عند بدئها؛ نصدر الباركود المفكوك.
+        // أزال startBurst مرشّح المسح من الحقل؛ أبقِ النصّ اليدوي السابق كما هو.
         clearField();
         onScanRef.current(code);
       } else {
         // كتابةٌ بشرية قصيرة صُنّفت سريعاً بالخطأ: أعِد الحروف الخام للحقل بلا ابتلاع.
-        if (text) restore(valBefore + text);
+        if (text) setFieldValueAndNotify(valBefore + text);
         clearField();
       }
     };
@@ -136,7 +137,7 @@ export function useBarcodeScanner(
       e.stopPropagation();
       if (action === "startBurst" && inputEl && fieldTarget === inputEl) {
         // استعِد الحرف المرشّح الأوّل الذي تسرّب — صفر رمزٍ مرئيّ.
-        restore(valBefore);
+        setFieldValueAndNotify(valBefore);
       }
       armIdle();
     };
