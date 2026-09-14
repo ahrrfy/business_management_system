@@ -37,8 +37,10 @@ const RECONCILIATION_LABEL: Record<string, string> = {
 };
 
 export default function TreasuryReport() {
+  const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [exporting, setExporting] = useState(false);
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.treasurySummary.useQuery({
     from: period.from,
@@ -95,64 +97,78 @@ export default function TreasuryReport() {
   }, [ts, period.from, period.to, branchLabel]);
 
   function onExport() {
-    if (!ts) return;
-    exportSheets(`الخزينة-${period.from}-${period.to}`, [
-      {
-        sheetName: "طرق الدفع",
-        title: "تقرير الخزينة — طرق الدفع",
-        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
-        rows,
-        columns: [
-          { key: "label", header: "طريقة الدفع" },
-          { key: "settlementLabel", header: "مكان التسوية" },
-          { key: "in", header: "مقبوضات", money: true, map: (r) => Number(r.in) },
-          { key: "out", header: "مدفوعات", money: true, map: (r) => Number(r.out) },
-          { key: "net", header: "الصافي", money: true, map: (r) => Number(r.net) },
-        ],
-        totalsRow: { label: "الإجمالي", in: Number(ts.totalIn), out: Number(ts.totalOut), net: Number(ts.net) },
-      } as SheetSpec<any>,
-      {
-        sheetName: "تسوية الورديات",
-        title: "تقرير الخزينة — تسوية الورديات النقدية",
-        meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
-        rows: ts.shifts.rows,
-        columns: [
-          { key: "id", header: "رقم الوردية" },
-          { key: "branchName", header: "الفرع" },
-          { key: "cashierName", header: "الكاشير" },
-          { key: "shiftType", header: "النوع", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
-          { key: "status", header: "الحالة", map: (r) => r.status === "CLOSED" ? "مغلقة" : "مفتوحة" },
-          { key: "openedAt", header: "فُتحت", map: (r) => fmtDateTime(r.openedAt) },
-          { key: "closedAt", header: "أُغلقت", map: (r) => r.closedAt ? fmtDateTime(r.closedAt) : "—" },
-          { key: "openingBalance", header: "افتتاحي", money: true, map: (r) => Number(r.openingBalance) },
-          { key: "expectedCash", header: "نقد متوقّع", money: true, map: (r) => r.expectedCash == null ? "" : Number(r.expectedCash) },
-          { key: "countedCash", header: "نقد معدود", money: true, map: (r) => r.countedCash == null ? "" : Number(r.countedCash) },
-          { key: "variance", header: "الفرق", money: true, map: (r) => r.variance == null ? "" : Number(r.variance) },
-          { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
-        ],
-        totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
-      } as SheetSpec<any>,
-      {
-        sheetName: "كشف حركة الخزينة",
-        title: "كشف حركة الخزينة النقدية (رصيدٌ جارٍ)",
-        meta: [
-          { label: "الفترة", value: `${period.from} — ${period.to}` },
-          { label: "الفرع", value: branchLabel },
-          { label: "رصيد افتتاحيّ", value: stmt ? fmtAr(stmt.openingBalance) : "—" },
-          { label: "رصيد ختاميّ", value: stmt ? fmtAr(stmt.closingBalance) : "—" },
-        ],
-        rows: stmt?.movements ?? [],
-        columns: [
-          { key: "at", header: "التاريخ", map: (r) => fmtDateTime(r.at) },
-          { key: "reason", header: "الحركة", map: (r) => (r.reversed ? `${r.reason} (معكوس)` : r.reason) },
-          { key: "detail", header: "الطرف/البيان", map: (r) => r.counterparty ?? r.description ?? r.voucherNumber ?? "" },
-          { key: "actor", header: "المنشئ/المعتمِد", map: (r) => (r.approvedByName && r.approvedByName !== r.createdByName ? `${r.createdByName ?? "—"} · اعتمد: ${r.approvedByName}` : (r.createdByName ?? "—")) },
-          { key: "in", header: "وارد", money: true, map: (r) => (r.direction === "IN" ? Number(r.amount) : "") },
-          { key: "out", header: "صادر", money: true, map: (r) => (r.direction === "OUT" ? Number(r.amount) : "") },
-          { key: "running", header: "الرصيد بعد الحركة", money: true, map: (r) => Number(r.runningBalance) },
-        ],
-      } as SheetSpec<any>,
-    ]);
+    if (!ts || exporting) return;
+    setExporting(true);
+    // نمرّر الجلب نفسه إلى exportSheets كي يُفتح حوار «حفظ باسم» داخل إيماءة النقر، بالتوازي
+    // مع طلب كلّ الحركات. جدول الشاشة وحده يبقى محدوداً دفاعياً.
+    exportSheets(`الخزينة-${period.from}-${period.to}`, async () => {
+      try {
+        const exportStmt = await utils.reports.treasuryStatementExport.fetch({
+          from: period.from,
+          to: period.to,
+          branchId: branchId ? Number(branchId) : undefined,
+        }, { staleTime: 0 });
+        return [
+          {
+            sheetName: "طرق الدفع",
+            title: "تقرير الخزينة — طرق الدفع",
+            meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+            rows,
+            columns: [
+              { key: "label", header: "طريقة الدفع" },
+              { key: "settlementLabel", header: "مكان التسوية" },
+              { key: "in", header: "مقبوضات", money: true, map: (r) => Number(r.in) },
+              { key: "out", header: "مدفوعات", money: true, map: (r) => Number(r.out) },
+              { key: "net", header: "الصافي", money: true, map: (r) => Number(r.net) },
+            ],
+            totalsRow: { label: "الإجمالي", in: Number(ts.totalIn), out: Number(ts.totalOut), net: Number(ts.net) },
+          } as SheetSpec<any>,
+          {
+            sheetName: "تسوية الورديات",
+            title: "تقرير الخزينة — تسوية الورديات النقدية",
+            meta: [{ label: "الفترة", value: `${period.from} — ${period.to}` }, { label: "الفرع", value: branchLabel }],
+            rows: ts.shifts.rows,
+            columns: [
+              { key: "id", header: "رقم الوردية" },
+              { key: "branchName", header: "الفرع" },
+              { key: "cashierName", header: "الكاشير" },
+              { key: "shiftType", header: "النوع", map: (r) => SHIFT_TYPE_LABEL[r.shiftType] ?? r.shiftType },
+              { key: "status", header: "الحالة", map: (r) => r.status === "CLOSED" ? "مغلقة" : "مفتوحة" },
+              { key: "openedAt", header: "فُتحت", map: (r) => fmtDateTime(r.openedAt) },
+              { key: "closedAt", header: "أُغلقت", map: (r) => r.closedAt ? fmtDateTime(r.closedAt) : "—" },
+              { key: "openingBalance", header: "افتتاحي", money: true, map: (r) => Number(r.openingBalance) },
+              { key: "expectedCash", header: "نقد متوقّع", money: true, map: (r) => r.expectedCash == null ? "" : Number(r.expectedCash) },
+              { key: "countedCash", header: "نقد معدود", money: true, map: (r) => r.countedCash == null ? "" : Number(r.countedCash) },
+              { key: "variance", header: "الفرق", money: true, map: (r) => r.variance == null ? "" : Number(r.variance) },
+              { key: "reconciliationStatus", header: "التسوية", map: (r) => r.reconciliationStatus ? (RECONCILIATION_LABEL[r.reconciliationStatus] ?? r.reconciliationStatus) : "بانتظار الإغلاق" },
+            ],
+            totalsRow: { id: "الإجمالي", countedCash: Number(ts.shifts.totalCounted), variance: Number(ts.shifts.totalVariance) },
+          } as SheetSpec<any>,
+          {
+            sheetName: "كشف حركة الخزينة",
+            title: "كشف حركة الخزينة النقدية (رصيدٌ جارٍ)",
+            meta: [
+              { label: "الفترة", value: `${period.from} — ${period.to}` },
+              { label: "الفرع", value: branchLabel },
+              { label: "رصيد افتتاحيّ", value: fmtAr(exportStmt.openingBalance) },
+              { label: "رصيد ختاميّ", value: fmtAr(exportStmt.closingBalance) },
+            ],
+            rows: exportStmt.movements,
+            columns: [
+              { key: "at", header: "التاريخ", map: (r) => fmtDateTime(r.at) },
+              { key: "reason", header: "الحركة", map: (r) => (r.reversed ? `${r.reason} (معكوس)` : r.reason) },
+              { key: "detail", header: "الطرف/البيان", map: (r) => r.counterparty ?? r.description ?? r.voucherNumber ?? "" },
+              { key: "actor", header: "المنشئ/المعتمِد", map: (r) => (r.approvedByName && r.approvedByName !== r.createdByName ? `${r.createdByName ?? "—"} · اعتمد: ${r.approvedByName}` : (r.createdByName ?? "—")) },
+              { key: "in", header: "وارد", money: true, map: (r) => (r.direction === "IN" ? Number(r.amount) : "") },
+              { key: "out", header: "صادر", money: true, map: (r) => (r.direction === "OUT" ? Number(r.amount) : "") },
+              { key: "running", header: "الرصيد بعد الحركة", money: true, map: (r) => Number(r.runningBalance) },
+            ],
+          } as SheetSpec<any>,
+        ];
+      } finally {
+        setExporting(false);
+      }
+    });
   }
 
   // طباعة A4 — وثيقة توقيع واعتماد (أمين الصندوق/المحاسب/المدير)، لا جدول تقرير مجرّد
@@ -395,7 +411,7 @@ export default function TreasuryReport() {
       }
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!ts}
+      exportDisabled={!ts || exporting}
       printDisabled={!ts}
       filters={
         <div className="flex flex-wrap items-end gap-3">
@@ -468,7 +484,7 @@ export default function TreasuryReport() {
           />
           {stmt && stmt.truncated && (
             <p className="border-t px-4 py-2 text-xs text-money-negative">
-              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count} — والتصدير يشمل المعروض فقط. ضيّق الفترة لعرض بقيّة الحركات.
+              تُعرض أوّل {stmt.shownCount} حركة من أصل {stmt.count} — تصدير Excel يجلب الحركات كلّها.
             </p>
           )}
         </CardContent>

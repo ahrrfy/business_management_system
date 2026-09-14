@@ -7,8 +7,9 @@ const source = readFileSync(
 );
 
 describe("عقد صدق تصدير كشف الخزينة", () => {
-  it("يصرّح بأن ملف Excel يضم الصفوف المعروضة فقط عند اقتطاع الكشف", () => {
-    expect(source).toContain("التصدير يشمل المعروض فقط");
-    expect(source).not.toContain("صدّر Excel للتفصيل الكامل");
+  it("يجلب ملف Excel من مسار التصدير الكامل ولا يصفه بالمعروض فقط", () => {
+    expect(source).toContain("treasuryStatementExport.fetch");
+    expect(source).toContain("تصدير Excel يجلب الحركات كلّها");
+    expect(source).not.toContain("التصدير يشمل المعروض فقط");
   });
 });

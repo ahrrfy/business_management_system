@@ -48,8 +48,9 @@ export async function getTodayNetSales(branchId?: number, now: Date = new Date()
  * «المُحصَّل» = مصدران بلا ازدواج: (أ) إيصالاتٌ مرتبطةٌ بفاتورة اليوم مباشرةً، صافيةً (IN − OUT)
  * بحالة COMPLETED/REVERSED معتمدة، مُبوَّبةً حسب (الطريقة، دلو النقد) — فنقدُ الخزينة (ردٌّ من
  * الخزينة حين لا درج) لا يُخصَم من نقد الدرج المعروض؛ (ب) تطبيقات دفعةٍ مُوزَّعةٍ على عدّة أهداف
- * (`orderPayments`: فاتورة مباشرة أو أمر شغل) التي يُترك إيصالُها invoiceId=NULL عمداً لكنها
- * داخلةٌ في paidAmount — يُسقطها الـJOIN المباشر فتظهر آجلاً زوراً، فنضمّها من طريقة الأب ودلوه.
+ * (`orderPayments`) التي يُترك إيصالُها invoiceId=NULL عمداً لكنها داخلةٌ في paidAmount
+ * للفاتورة — يُسقطها الـJOIN المباشر فتظهر آجلاً زوراً، فنضمّ حصصها من إيصال القبض الفعليّ
+ * مع الحفاظ على دلو النقد. يشمل الهدف فاتورةً مباشرةً أو أمرَ شغلٍ صار له invoiceId عند التسليم.
  */
 export async function getTodaySalesComposition(
   branchId?: number,
@@ -91,34 +92,37 @@ export async function getTodaySalesComposition(
   `);
   const rowsA = (resA as unknown as [Array<Record<string, unknown>>])[0] ?? [];
 
-  // (ب) تطبيقات دفعةٍ مُوزَّعةٍ على أهدافها (فاتورة مباشرة أو أمر شغل؛ invoiceId على الإيصال
-  //     = NULL عمداً). نضمّ المبلغ المُطبَّق من طريقة الأب ودلو إيصال القبض، ونمنع الازدواج
-  //     باستبعاد ما إيصالُ أبيه مربوطٌ بالفاتورة أصلاً (فقد احتُسب في أ). أسماء أعمدة enum الخام:
-  //     orderPayKind/orderPayMethod/orderPayAppliedKind.
+  // (ب) تطبيقات دفعةٍ مُوزَّعةٍ (invoiceId على إيصالها = NULL عمداً). نضمّ المبلغ المطبَّق
+  //     بطريقة ودلو **إيصال القبض الفعليّ** لا بافتراض أن CASH دخل الدرج. ويشمل الربط هدفَ
+  //     INVOICE المباشر وهدفَ WORKORDER بعد تسليمه. أيّ إيصالٍ خُتم على فاتورةٍ يُستبعَد كلّياً
+  //     هنا لأنّ (أ) احتسبه بمبلغه الكامل؛ استبعاده من تطبيق فاتورته وحدها يضاعفه لو وُجدت له
+  //     تطبيقات أخرى. أسماء أعمدة enum الخام: orderPayKind/orderPayAppliedKind/…
   const resB = await db.execute(sql`
-    SELECT p.orderPayMethod AS method,
+    SELECT pr.paymentMethod AS method,
       pr.cashBucket AS bucket,
       CAST(COALESCE(SUM(a.amount), 0) AS CHAR) AS applied
     FROM orderPayments a
-    JOIN orderPayments p ON p.id = a.parentPaymentId
-    LEFT JOIN receipts pr ON pr.id = p.receiptId
     LEFT JOIN workOrders wo
-      ON a.orderPayAppliedKind = 'WORKORDER'
-      AND wo.id = a.appliedId
+      ON a.orderPayAppliedKind = 'WORKORDER' AND wo.id = a.appliedId
     JOIN invoices i
       ON i.id = CASE
         WHEN a.orderPayAppliedKind = 'INVOICE' THEN a.appliedId
-        WHEN a.orderPayAppliedKind = 'WORKORDER' THEN wo.invoiceId
-        ELSE NULL
+        ELSE wo.invoiceId
       END
+    JOIN orderPayments p ON p.id = a.parentPaymentId
+    JOIN receipts pr ON pr.id = p.receiptId
     WHERE a.orderPayKind = 'APPLICATION'
       AND a.orderPayAppliedKind IN ('INVOICE', 'WORKORDER')
+      AND p.orderPayKind = 'COLLECTION'
+      AND pr.direction = 'IN'
+      AND pr.receiptStatus IN ('COMPLETED', 'REVERSED')
+      AND pr.receiptApprovalStatus = 'APPROVED'
       AND i.invoiceDate >= ${start}
       AND i.invoiceDate < ${endExclusive}
       AND i.invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
-      AND (pr.invoiceId IS NULL OR pr.invoiceId <> i.id)
+      AND pr.invoiceId IS NULL
       ${branchId != null ? sql`AND i.branchId = ${branchId}` : sql``}
-    GROUP BY p.orderPayMethod, pr.cashBucket
+    GROUP BY pr.paymentMethod, pr.cashBucket
   `);
   const rowsB = (resB as unknown as [Array<Record<string, unknown>>])[0] ?? [];
 
@@ -143,7 +147,8 @@ export async function getTodaySalesComposition(
       default: otherMethod = otherMethod.add(amt); break;
     }
   }
-  // تطبيقات الدفعات المُوزَّعة مقبوضةٌ سلفاً؛ نقدُها يتبع دلو إيصال الأب، وغيره يتبع طريقته.
+  // تطبيقات الدفعات المُوزَّعة عربونٌ مقبوضٌ سلفاً؛ دلو نقدها من إيصال القبض نفسه، فلا يتحول
+  // نقد خزينةٍ إلى درج لمجرّد أن الحقيقة وصلت عبر orderPayments بدلاً من invoiceId.
   for (const r of rowsB) {
     const amt = money(String(r.applied ?? 0));
     const bucket = r.bucket == null ? null : String(r.bucket);

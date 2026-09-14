@@ -57,6 +57,7 @@ import {
 import {
   getTreasurySummary,
   getTreasuryStatement,
+  getTreasuryStatementExport,
   getExpensesReport,
   getCashOrphansReport,
 } from "../services/reportsTreasuryService";
@@ -1092,6 +1093,24 @@ export const reportsRouter = router({
         to: input.to,
         branchId,
         limit: input.limit,
+      });
+    }),
+
+  /** تصدير كشف الخزينة كاملاً — مسار مستقلّ بلا حدّ العرض، من لقطة ذرّية واحدة. */
+  treasuryStatementExport: reportsBranchScoped
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getTreasuryStatementExport({
+        from: input.from,
+        to: input.to,
+        branchId,
       });
     }),
 

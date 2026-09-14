@@ -315,12 +315,16 @@ function treasuryMovementReason(row: {
   return { key: "OTHER", label: row.direction === "IN" ? "إيداع نقديّ" : "سحب نقديّ" };
 }
 
-export async function getTreasuryStatement(opts: {
+type TreasuryStatementScope = {
   from: string;
   to: string;
   branchId?: number;
-  limit?: number;
-}): Promise<TreasuryStatementResult> {
+};
+
+async function queryTreasuryStatement(
+  opts: TreasuryStatementScope,
+  rowLimit: number | null,
+): Promise<TreasuryStatementResult> {
   const db = getDb();
   const base: TreasuryStatementResult = {
     period: { from: opts.from, to: opts.to },
@@ -335,11 +339,11 @@ export async function getTreasuryStatement(opts: {
   };
   if (!db) return base;
 
-  const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
   const branchFilter = opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``;
+  const limitSql = rowLimit == null ? sql`` : sql`LIMIT ${rowLimit}`;
 
-  // لقطةٌ واحدةٌ متّسقة: القراءات الثلاث داخل معاملة READ ONLY + REPEATABLE READ صريحة؛ لا
-  // نعتمد على إعداد عزل الخادم الافتراضيّ. يستحيل أن تُضاف حركةٌ معتمَدةٌ بين الإجماليّ والتفصيل فتظهر في
+  // لقطةٌ واحدةٌ متّسقة: القراءات الثلاث داخل معاملة READ ONLY صريحة بعزل REPEATABLE READ
+  // ⇒ يستحيل أن تُضاف حركةٌ معتمَدةٌ بين استعلام الإجماليّ واستعلام التفصيل فتظهر في
   // الصفوف والرصيد الجارٍ وتغيب عن count/الإجماليّات/closingBalance (تناقضٌ داخليّ — عين شكوى
   // «الأرقام المتناقضة»). الثلاثة تقرأ اللقطة نفسها.
   const snap = await db.transaction(async (tx) => {
@@ -398,11 +402,16 @@ export async function getTreasuryStatement(opts: {
           AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) <= ${opts.to}
           ${branchFilter}
         ORDER BY ${RECEIPT_CASH_EVENT_AT_SQL} ASC, r.id ASC
-        LIMIT ${limit}
+        ${limitSql}
       `),
     );
     return { openRow, aggRow, rows };
-  }, { isolationLevel: "repeatable read", accessMode: "read only" });
+  }, {
+    // لا نعتمد إعداد الخادم الافتراضيّ: قد يكون READ COMMITTED في بيئةٍ أخرى فيعود count/closing
+    // من لقطةٍ والصفوف من لقطةٍ أحدث. التصدير الكامل يمرّ من العقد نفسه أيضاً.
+    isolationLevel: "repeatable read",
+    accessMode: "read only",
+  });
 
   const openingBalance = money(snap.openRow.opening ?? 0);
   const count = Number(snap.aggRow.cnt ?? 0);
@@ -452,6 +461,17 @@ export async function getTreasuryStatement(opts: {
     truncated: count > movements.length,
     movements,
   };
+}
+
+/** نسخة العرض: حدٌّ دفاعيّ للجدول، بينما الإجماليات تبقى على كامل الفترة. */
+export function getTreasuryStatement(opts: TreasuryStatementScope & { limit?: number }) {
+  const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
+  return queryTreasuryStatement(opts, limit);
+}
+
+/** نسخة التصدير: كل حركات الفترة من لقطة REPEATABLE READ واحدة، بلا اقتطاع صامت. */
+export function getTreasuryStatementExport(opts: TreasuryStatementScope) {
+  return queryTreasuryStatement(opts, null);
 }
 
 /* ============================ تقرير المصروفات ============================ */

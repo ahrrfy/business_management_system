@@ -3,10 +3,10 @@
 // نُثبت: الافتتاحيّ من قبل الفترة، تراكم الرصيد الجارٍ، مطابقة الرصيد القانونيّ، تعليم المعكوس،
 // عزل الفرع، واستبعاد غير النقد.
 import { sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { getTreasuryStatement } from "../reportsTreasuryService";
+import { getTreasuryStatement, getTreasuryStatementExport } from "../reportsTreasuryService";
 import { withTx } from "../tx";
 import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 import { toDbMoney } from "../money";
@@ -107,6 +107,47 @@ describe("كشف حركة الخزينة النقدية — رصيدٌ جارٍ"
 
     expect(r.closingBalance).toBe(toDbMoney(canonical));
     expect(r.closingBalance).toBe("820000.00");
+  });
+
+  it("يثبّت لقطة الكشف صراحةً على REPEATABLE READ وREAD ONLY", async () => {
+    await tRec({ dir: "IN", amount: "100000", date: "2026-09-02T09:00:00Z", ref: "TF-1" });
+    const txSpy = vi.spyOn(db(), "transaction");
+    try {
+      await getTreasuryStatement({ from: "2026-09-01", to: "2026-09-30", branchId: 1 });
+      expect(txSpy).toHaveBeenCalledWith(expect.any(Function), {
+        isolationLevel: "repeatable read",
+        accessMode: "read only",
+      });
+    } finally {
+      txSpy.mockRestore();
+    }
+  });
+
+  it("التصدير يعيد كل الحركات رغم اقتطاع جدول العرض، وبرصيده الجاري الكامل", async () => {
+    await tRec({ dir: "IN", amount: "100000", date: "2026-09-02T09:00:00Z", ref: "TF-1" });
+    await tRec({ dir: "OUT", amount: "25000", date: "2026-09-03T09:00:00Z", ref: "SF-1" });
+    await tRec({ dir: "IN", amount: "50000", date: "2026-09-04T09:00:00Z", ref: "CH-1" });
+
+    const shown = await getTreasuryStatement({
+      from: "2026-09-01",
+      to: "2026-09-30",
+      branchId: 1,
+      limit: 2,
+    });
+    const exported = await getTreasuryStatementExport({
+      from: "2026-09-01",
+      to: "2026-09-30",
+      branchId: 1,
+    });
+
+    expect(shown).toMatchObject({ count: 3, shownCount: 2, truncated: true });
+    expect(exported).toMatchObject({ count: 3, shownCount: 3, truncated: false });
+    expect(exported.movements.map((m) => m.runningBalance)).toEqual([
+      "100000.00",
+      "75000.00",
+      "125000.00",
+    ]);
+    expect(exported.movements[exported.movements.length - 1]?.runningBalance).toBe(exported.closingBalance);
   });
 
   it("الأصل المعكوس يُعلَّم reversed ويبقى في الكشف بدلالة الرصيد القانونيّ (صافٍ صفر مع تعويضِه)", async () => {
