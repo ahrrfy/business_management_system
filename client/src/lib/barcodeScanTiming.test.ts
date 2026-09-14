@@ -33,17 +33,51 @@ describe("ScanBurstDetector — كشف الومضة", () => {
     expect(code).toBe("6281");
   });
 
-  it("يستعيد الحرف الأوّل حين يكون أوّل فاصلٍ بطيئاً (بدءُ قارئٍ بطيء) — لا يُبتَر الباركود", () => {
+  it("لا يضمّ مفتاحاً يدوياً سابقاً إلى الومضة اللاحقة ويرفض المصدر الملتبس", () => {
     const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
-    // أوّل فاصلٍ 150مي (>العتبة) ثمّ سريع: يجب ألّا يسقط «6».
-    const actions = feedSequence(det, ["6", "2", "8", "1"].map(digit), [150, 10, 10]);
-    expect(actions).toEqual(["pass", "pass", "startBurst", "capture"]);
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyA", key: "A", shiftKey: true }, // كتابة يدوية لا تنتمي إلى المسح
+      { code: "KeyB", key: "B", shiftKey: true },
+      digit("5"),
+      digit("1"),
+      digit("8"),
+    ];
+    const actions = feedSequence(det, events, [800, 10, 10, 10]);
+    expect(actions).toEqual(["pass", "pass", "startBurst", "capture", "capture"]);
     const { accepted, code } = det.flush();
-    expect(accepted).toBe(true);
-    expect(code).toBe("6281"); // مع الحرف الأوّل المستعاد، لا "281"
+    expect(accepted).toBe(false);
+    expect(code).toBe("B518");
   });
 
-  it("لا يستعيد حرفاً مُسقطاً قديماً خارج نافذة الاستعادة (حرفٌ شاردٌ قبل المسح)", () => {
+  it("يرفض لاحقة المسح المبتورة عند نمط البدء البطيء لأنّ التوقيت وحده لا يثبت مصدر السلف", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyB", key: "B", shiftKey: true },
+      digit("5"),
+      digit("1"),
+      digit("8"),
+    ];
+    feedSequence(det, events, [150, 10, 10]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(false);
+    expect(code).toBe("518");
+  });
+
+  it("يرفض لاحقة قارئٍ ذي فجوة بدء 800مي بدلاً من إصدار رمزٍ مبتور", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const events: ScannerKeyEvent[] = [
+      { code: "KeyB", key: "B", shiftKey: true },
+      digit("5"),
+      digit("1"),
+      digit("8"),
+    ];
+    feedSequence(det, events, [800, 10, 10]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(false);
+    expect(code).toBe("518");
+  });
+
+  it("لا يلحق حرفاً شارداً سابقاً بلاحقةٍ سريعة ضمن نافذة الالتباس", () => {
     const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
     // «a» شاردٌ ثمّ فجوةٌ كبيرة (400مي) ثمّ مسحٌ سريع: يجب ألّا يُلحَق «a» بالباركود.
     const events: ScannerKeyEvent[] = [
@@ -53,7 +87,8 @@ describe("ScanBurstDetector — كشف الومضة", () => {
       { code: "Digit8", key: "8" },
     ];
     feedSequence(det, events, [400, 10, 10]);
-    const { code } = det.flush();
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(false);
     expect(code).toBe("628");
   });
 
