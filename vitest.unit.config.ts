@@ -360,6 +360,8 @@ export default defineConfig({
       "client/src/components/kiosk/kioskWindow.test.ts",
       // حارس إبقاء شاشة الكشك وقارئ الأسعار مستيقظة ومنع السكون
       "client/src/lib/screenWakeLock.test.ts",
+      // سيو المتجر وبيانات Schema.org وFAQPage للذكاء الاصطناعي (منطق نقي بلا قاعدة)
+      "server/services/__tests__/storefrontSeoMeta.test.ts",
     ],
   },
 });
