@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { injectStorefrontSeoMeta, resolveStorefrontSeoMeta } from "../storefrontSeoMetaService";
 import type { Request } from "express";
 
@@ -56,5 +56,20 @@ describe("storefrontSeoMetaService", () => {
     const result = await injectStorefrontSeoMeta(sampleHtml, mockReq);
     expect(result).toContain('<meta name="google-site-verification" content="test-google-code-123" />');
     delete process.env.GOOGLE_SITE_VERIFICATION;
+  });
+
+  it("handles Express wildcard routing where req.path is '/' and req.originalUrl holds the route", async () => {
+    const mockReq = {
+      path: "/",
+      baseUrl: "/store",
+      originalUrl: "/store",
+      url: "/",
+      get: (h: string) => (h === "host" ? "alarabiya.online" : undefined),
+      protocol: "https",
+    } as unknown as Request;
+
+    const result = await injectStorefrontSeoMeta(sampleHtml, mockReq);
+    expect(result).toContain("<title>المكتبة العربية | قرطاسية وطباعة وتجهيزات في العراق</title>");
+    expect(result).toContain('rel="canonical" href="https://alarabiya.online/store"');
   });
 });

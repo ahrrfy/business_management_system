@@ -209,8 +209,10 @@ export async function injectStorefrontSeoMeta(
   req: Request
 ): Promise<string> {
   const baseOrigin = resolvePublicOrigin(req);
-  const pathname = req.path || "/";
-  const search = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  const fullUrl = req.originalUrl || req.url || req.path || "/";
+  const questionIndex = fullUrl.indexOf("?");
+  const pathname = questionIndex >= 0 ? fullUrl.slice(0, questionIndex) : fullUrl;
+  const search = questionIndex >= 0 ? fullUrl.slice(questionIndex) : "";
 
   const meta = await resolveStorefrontSeoMeta(pathname, search, baseOrigin);
   if (!meta) {
