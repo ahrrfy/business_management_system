@@ -91,8 +91,10 @@ export async function resolveStorefrontSeoMeta(
             availability: prod.inStock ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
             itemCondition: "https://schema.org/NewCondition",
             seller: {
-              "@type": "Organization",
+              "@type": "Store",
               name: "المكتبة العربية",
+              telephone: "+9647838666999",
+              url: `${baseOrigin}/store`,
             },
           },
         };
@@ -183,12 +185,82 @@ export async function resolveStorefrontSeoMeta(
       url: `${baseOrigin}/store`,
       logo: `${baseOrigin}/icon-512.png`,
       image: `${baseOrigin}/icon-512.png`,
+      telephone: "+9647838666999",
       priceRange: "IQD",
+      currenciesAccepted: "IQD",
+      paymentAccepted: "Cash, Cash on Delivery, KeyCard, Qi Card",
+      areaServed: [
+        {
+          "@type": "Country",
+          name: "العراق",
+        },
+        {
+          "@type": "AdministrativeArea",
+          name: "بغداد",
+        },
+        {
+          "@type": "AdministrativeArea",
+          name: "كافة المحافظات العراقية",
+        },
+      ],
       address: {
         "@type": "PostalAddress",
         addressCountry: "IQ",
         addressLocality: "Baghdad",
       },
+      hasOfferCatalog: {
+        "@type": "OfferCatalog",
+        name: "أقسام وخدمات المكتبة العربية",
+        itemListElement: [
+          {
+            "@type": "OfferCatalog",
+            name: "القرطاسية المدرسية والمكتبية",
+          },
+          {
+            "@type": "OfferCatalog",
+            name: "خدمات الطباعة المتكاملة والتصميم",
+          },
+          {
+            "@type": "OfferCatalog",
+            name: "الكتب والروايات والقصص",
+          },
+          {
+            "@type": "OfferCatalog",
+            name: "الهدايا والألعاب التعليمية",
+          },
+        ],
+      },
+    };
+
+    const faqSchema: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      mainEntity: [
+        {
+          "@type": "Question",
+          name: "هل توفر المكتبة العربية التوصيل لجميع محافظات العراق؟",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "نعم، توفر المكتبة العربية خدمة التوصيل السريع لكافة محافظات العراق الـ 18 مع خدمة الدفع نقد عند الاستلام (COD).",
+          },
+        },
+        {
+          "@type": "Question",
+          name: "ما هي المنتجات والخدمات التي تقدمها المكتبة العربية؟",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "توفر المكتبة العربية مستلزمات القرطاسية المدرسية والمكتبية والهندسية، خدمات الطباعة الرقمية والتجليد، الكتب والروايات، ومستلزمات الهدايا والألعاب التعليمية وتجهيز الشركات والمدارس.",
+          },
+        },
+        {
+          "@type": "Question",
+          name: "كيف يمكنني الطلب من المكتبة العربية؟",
+          acceptedAnswer: {
+            "@type": "Answer",
+            text: "يمكنك الشراء والطلب مباشرة عبر المتجر الإلكتروني https://alarabiya.online/store أو عبر طلب سريع من واتساب على الرقم 9647838666999+ دون الحاجة لتسجيل حساب مسبق.",
+          },
+        },
+      ],
     };
 
     return {
@@ -197,7 +269,7 @@ export async function resolveStorefrontSeoMeta(
       canonicalUrl,
       imageUrl,
       ogType: "website",
-      jsonLd: [websiteSchema, storeSchema],
+      jsonLd: [websiteSchema, storeSchema, faqSchema],
     };
   }
 
