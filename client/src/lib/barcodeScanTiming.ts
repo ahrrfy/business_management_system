@@ -181,13 +181,13 @@ export function recoverSlowScanCode(rawFieldValue: string, minLength: number): s
   const digitsOnly = code.replace(/\s+/g, "");
   // بادئةُ حرفٍ قصيرة على باركودٍ رقميّ (مقاس مصنعٍ «B5»…): ١٤/٩ بلاغ المالك — القارئُ البطيء تحت
   // **تخطيط عربيّ** يُنتج «لا51822572015» (الحرف B ⇐ لا)؛ يترجمها `normalizeBarcodeScannerInput` إلى
-  // «b51822572015» لكنّ البوّابة الرقمية المحضة كانت ترفضها فتضيع. نقبلها إن كانت البادئةُ غير الرقمية
-  // ≤ حرفين ونواتُها رقميّةٌ محضة (يحلّها مسارُ «نواة الأرقام» الخادميّ #1119) — فلا تتأثّر القراءةُ
-  // بلغة الكيبورد. كلمةُ بحثٍ عربية («قلم4» ⇐ «rgl4») بادئتُها ≥ ٣ فتبقى بحثاً (§٥).
-  const core = barcodeDigitCore(code);
-  const leadRun = digitsOnly.match(/^[^0-9]*/)![0];
+  // «b51822572015» لكنّ البوّابة الرقمية المحضة كانت ترفضها فتضيع. نقبلها إن **لاصقت** البادئةُ (حرفٌ
+  // أو حرفان، بلا أيّ فراغ) نواةً رقميّة (يحلّها مسارُ «نواة الأرقام» الخادميّ #1119) — فلا تتأثّر
+  // القراءةُ بلغة الكيبورد. ⚠️ مراجعة Codex: نقيس الالتصاقَ على `code` بمسافاته لا على `digitsOnly` —
+  // وإلّا عُدَّ بحثٌ بشريّ «حرفان + فراغ + رقم» («في 2026» ⇐ «td 2026») باركوداً خطأً (§٥). المسافةُ
+  // بين البادئة والرقم دليلُ عبارةٍ بشرية، فتبقى بحثاً.
   const shortLetterPrefixedDigits =
-    leadRun.length >= 1 && leadRun.length <= 2 && core.length >= Math.max(4, minLength) && /^\d+$/.test(core);
+    /^[^\d\s]{1,2}\d+$/.test(code) && barcodeDigitCore(code).length >= Math.max(4, minLength);
   const confident =
     /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code) || shortLetterPrefixedDigits;
   return confident ? code : null;

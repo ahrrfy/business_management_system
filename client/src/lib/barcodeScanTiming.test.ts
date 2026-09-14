@@ -226,6 +226,11 @@ describe("recoverSlowScanCode — استرداد مسح القارئ البطي�
     expect(recoverSlowScanCode("B51822572015", 3)).toBe("B51822572015");
     // بادئةٌ أطول من حرفين (كلمةُ بحثٍ بشرية) تبقى بحثاً، لا باركوداً.
     expect(recoverSlowScanCode("abc12345", 3)).toBeNull();
+    // مراجعة Codex: «حرفان + فراغ + أرقام» = عبارةُ بحثٍ بشرية لا باركود — الفراغُ يفصل البادئة عن النواة.
+    // «في 2026» ⇐ «td 2026» يجب أن تبقى بحثاً (البادئةُ لا تلاصق الرقم).
+    expect(recoverSlowScanCode("في 2026", 3)).toBeNull();
+    expect(recoverSlowScanCode("td 2026", 3)).toBeNull();
+    expect(recoverSlowScanCode("x 12345", 3)).toBeNull();
   });
 
   it("لا يخطف بحثاً بشرياً عربياً (يُفكّ حروفاً بلا أرقام)", () => {
