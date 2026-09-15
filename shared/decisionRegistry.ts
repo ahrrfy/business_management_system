@@ -755,7 +755,7 @@ const SALES: Record<string, DecisionSpec> = {
   "sales.returnRequest.approve": spec({
     kind: "sales.returnRequest.approve",
     title: "اعتماد طلب مرتجع بيع",
-    why: "الاعتماد يعيد البضاعة الى المخزن ويرد مالا للعميل وينقص الايراد. والمرتجع الوهمي هو اسهل طريق لسحب نقد من الدرج بورقة سليمة الشكل.",
+    why: "الاعتماد يعكس البيع ويحدد مصير البضاعة. لا يخرج مال الا بقدر المقبوض الذي يصبح مستحقا للعميل؛ والمرتجع الوهمي على فاتورة مقبوضة طريق لسحب نقد بورقة سليمة الشكل.",
     decidesOn: [
       "الفاتورة الاصلية ورقمها",
       "الاصناف والكميات المرتجعة",
@@ -767,14 +767,14 @@ const SALES: Record<string, DecisionSpec> = {
     approver: "MANAGER",
     withdrawable: false,
     procedure: { router: "returns", name: "approveRequest" },
-    href: () => "/invoices?tab=returns",
+    href: (requestId) => `/returns?requestId=${requestId}`,
   }),
 
   /** [`returnRouter.ts:315`](../server/routers/returnRouter.ts#L315) ⇐ `rejectReturnRequest`. */
   "sales.returnRequest.reject": spec({
     kind: "sales.returnRequest.reject",
     title: "رفض طلب مرتجع بيع",
-    why: "الرفض يعني ان العميل لن يسترد ماله ولن تعود البضاعة. السبب المكتوب هو ما يحمله الكاشير الى العميل، وبدونه يصير الرفض خصومة شخصية.",
+    why: "الرفض يغلق الطلب بلا رد مال وبلا حركة مخزون أو عكس بيع. السبب المكتوب هو ما يحمله الكاشير الى العميل، وبدونه يصير الرفض خصومة شخصية.",
     decidesOn: [
       "الفاتورة الاصلية ورقمها",
       "الاصناف والكميات المطلوب ارجاعها",
@@ -785,7 +785,7 @@ const SALES: Record<string, DecisionSpec> = {
     approver: "MANAGER",
     withdrawable: false,
     procedure: { router: "returns", name: "rejectRequest" },
-    href: () => "/invoices?tab=returns",
+    href: (requestId) => `/returns?requestId=${requestId}`,
   }),
 
   /**
@@ -1687,6 +1687,8 @@ export interface DecisionSummaryItem {
   qty?: number | string | null;
   unit?: string | null;
   unitPrice?: string | null;
+  /** لحظة ISO تُصيّغها الواجهة محلياً؛ لا يجمّد الخادم منطقةً زمنيةً داخل النص. */
+  timestamp?: string | null;
 }
 
 /** حالةُ الطلب كما يقرؤها الصندوق قبل الحسم — لا ثالثَ للمعلَّق إلّا «حُسم» أو «زال». */
@@ -1729,6 +1731,8 @@ export interface DecisionRowModel {
   reason: string | null;
   allowedActions: DecisionAction[];
   href: string;
+  /** تسميةُ رابط العمل حين يكون أدقّ من «افتح الشاشة الكاملة». */
+  openActionLabel?: string | null;
   /** قفلٌ تفاؤليّ يُعاد إلى الخادم مع الحسم حيث تشترطه الخدمة. */
   expectedVersion: number | null;
   /** إقراراتٌ يلزم أن يوافق عليها المُقرِّر قبل الاعتماد (مثل «وصلت البضاعة كاملة»). */

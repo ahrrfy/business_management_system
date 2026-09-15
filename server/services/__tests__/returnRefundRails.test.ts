@@ -20,7 +20,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { returnSale } from "../returnService";
-import { loadRefundCaps } from "../returns/refundCaps";
+import { loadRefundCaps, loadRefundCapsByInvoiceIds } from "../returns/refundCaps";
 import { createSale } from "../saleService";
 import { getShiftReport } from "../shiftService";
 
@@ -110,7 +110,11 @@ describe("سقوف الردّ — الوعاء عابرٌ للطرق", () => {
     const { invoiceId } = await sellPaidByCard(shift, 5); // 50.00 بالبطاقة
 
     const caps = await loadRefundCaps(db(), invoiceId);
+    const batchedCaps = (await loadRefundCapsByInvoiceIds(db(), [invoiceId])).get(invoiceId);
     expect(caps.pool.toFixed(2)).toBe("50.00");
+    expect(batchedCaps?.pool.toFixed(2)).toBe(caps.pool.toFixed(2));
+    expect(batchedCaps?.grossIn.toFixed(2)).toBe(caps.grossIn.toFixed(2));
+    expect(batchedCaps?.grossOut.toFixed(2)).toBe(caps.grossOut.toFixed(2));
     expect(caps.capByMethod.get("CASH")!.toFixed(2)).toBe("50.00");
     expect(caps.capByMethod.get("CARD")!.toFixed(2)).toBe("50.00");
     // الإفصاح يبقى صادقاً: لم يُقبض نقداً شيء (يشرح للموظف مصدر المال).

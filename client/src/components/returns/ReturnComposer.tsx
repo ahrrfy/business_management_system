@@ -132,11 +132,12 @@ export function ReturnComposer({
   const lockedLines = approvingRequestId ? requestDetail.data?.lines ?? null : null;
   // تُملأ الكمّيات من الطلب مرّةً عند وصولها، فتحسب الشاشة (القيمة/السقف/الحوار) على ما سيُنفَّذ.
   useEffect(() => {
-    if (!lockedLines) return;
+    if (!lockedLines || !requestDetail.data) return;
     const next: Record<number, number> = {};
     for (const l of lockedLines) next[l.invoiceItemId] = l.baseQuantity;
     setQty(next);
-  }, [lockedLines]);
+    setReason(requestDetail.data.reason);
+  }, [lockedLines, requestDetail.data]);
 
   const inv = detail.data;
   const isWalkIn = !!inv?.walkInResolutionPolicy;
@@ -223,8 +224,11 @@ export function ReturnComposer({
       setManualAmount(null);
       setReason("");
       setClientRequestId(crypto.randomUUID());
-      await utils.returns.requests.invalidate();
-      await utils.returns.getInvoice.invalidate({ invoiceId });
+      await Promise.all([
+        utils.returns.requests.invalidate(),
+        utils.returns.getInvoice.invalidate({ invoiceId }),
+        utils.decisions.inbox.invalidate(),
+      ]);
       onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
     },
     onError: (e) => setError(e.message),
@@ -409,6 +413,13 @@ export function ReturnComposer({
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
     if (isLocked) return "هذه الفاتورة مرتجعة/ملغاة — لا يمكن تسجيل مرتجع جديد.";
+    if (
+      approvingRequestId &&
+      requestDetail.data &&
+      requestDetail.data.invoiceId !== invoiceId
+    ) {
+      return "طلب المرتجع لا يعود إلى هذه الفاتورة — أُوقف الاعتماد حمايةً من تنفيذ طلب على مستند آخر.";
+    }
     // لا اعتماد قبل أن تصل بنود الطلب — وإلّا اعتمد المدير على جدولٍ فارغ لا يمثّل ما سيُنفَّذ.
     if (approvingRequestId && !lockedLines) return "جارٍ تحميل بنود الطلب المطلوب اعتماده…";
     // طلبٌ معلّقٌ قائم ⇒ الخادم يرفض الثاني بالفهرس الفريد. نقولها هنا بدل خطأٍ خامّ بعد الملء.
@@ -435,7 +446,7 @@ export function ReturnComposer({
     }
     if (reason.trim().length < 3) return "اكتب سبب المرتجع (٣ أحرف على الأقل) لتوثيق الطلب.";
     return null;
-  }, [isLocked, pending, approvingRequestId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
+  }, [isLocked, pending, approvingRequestId, requestDetail.data, invoiceId, lockedLines, me.data?.role, me.data?.id, inv?.refundShifts, selectedLines.length, isWalkIn, returnValue, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, refundD, railState, reason]);
 
   async function submit() {
     setError("");
@@ -642,6 +653,21 @@ export function ReturnComposer({
 
   return (
     <div className="space-y-4">
+      {approvingRequestId && requestDetail.data && (
+        <Card className="border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)]/35">
+          <CardContent className="flex items-start gap-2 p-4 text-sm">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]" />
+            <div className="space-y-1">
+              <p className="font-bold text-[var(--sem-info)]">
+                مراجعة طلب الإرجاع #{requestDetail.data.id} — البنود والكميات والسبب مقفلة من الطلب الأصلي.
+              </p>
+              <p className="text-muted-foreground">
+                طلبه {requestDetail.data.createdByName ?? `المستخدم ${requestDetail.data.createdBy}`}؛ السبب: {requestDetail.data.reason}.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       {/* الطلب المعلق إن وجد */}
       {pending && !approvingRequestId && (
         <Card className="border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)]/30">
@@ -841,7 +867,7 @@ export function ReturnComposer({
                     <button
                       key={qr}
                       type="button"
-                      disabled={isLocked}
+                      disabled={isLocked || qtyLocked}
                       onClick={() => {
                         setReason(qr);
                         setError("");
@@ -861,7 +887,7 @@ export function ReturnComposer({
                   id="ret-reason"
                   value={reason}
                   maxLength={500}
-                  disabled={isLocked}
+                  disabled={isLocked || qtyLocked}
                   onChange={(event) => { setReason(event.target.value); setError(""); }}
                   placeholder="اختر سبباً من الأزرار أو اكتب هنا..."
                   className="h-9 text-xs"
@@ -1011,7 +1037,7 @@ export function ReturnComposer({
         <Button
           variant="secondary"
           onClick={triggerExpressReturn}
-          disabled={isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
+          disabled={qtyLocked || isLocked || items.every((it) => it.remaining <= 0) || create.isPending || approve.isPending}
           className="font-bold text-xs sm:text-sm gap-1.5"
         >
           <Zap className="size-4" aria-hidden />
@@ -1020,6 +1046,7 @@ export function ReturnComposer({
 
         <Button
           variant="outline"
+          disabled={qtyLocked}
           onClick={() => { setQty({}); setManualAmount(null); setReason(""); setError(""); setDone(""); setFastBarcode(""); }}
           className="text-xs sm:text-sm gap-1 text-muted-foreground"
         >
