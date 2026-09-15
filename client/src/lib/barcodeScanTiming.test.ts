@@ -167,6 +167,37 @@ describe("ScanBurstDetector — الفكّ الفيزيائيّ تحت التخ�
   });
 });
 
+describe("ScanBurstDetector — المسافة: قارئٌ سريع تُلتقَط، كتابةٌ بطيئة تُمرَّر (١٥/٩)", () => {
+  const letter = (c: string): ScannerKeyEvent => ({ code: `Key${c.toUpperCase()}`, key: c, shiftKey: /[A-Z]/.test(c) });
+  const SP: ScannerKeyEvent = { code: "Space", key: " ", shiftKey: false };
+
+  it("مسافةٌ بسرعة القارئ داخل الباركود لا تبتر البادئة — «A 1234» يُمسَح كاملاً (مراجعة Codex)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const actions = feedSequence(det, [letter("A"), SP, ...["1", "2", "3", "4"].map(digit)], [10, 10, 10, 10, 10]);
+    expect(actions).toEqual(["pass", "startBurst", "capture", "capture", "capture", "capture"]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("A 1234"); // البادئة «A» محفوظةٌ والفراغ ملتقط
+  });
+
+  it("باركود المصنع ذو الفراغ المزدوج «1  0172» يُمسَح كاملاً بسرعة القارئ (لا بتر)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det, [digit("1"), SP, SP, ...["0", "1", "7", "2"].map(digit)], [10, 10, 10, 10, 10, 10]);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true);
+    expect(code).toBe("1  0172");
+  });
+
+  it("مسافةٌ بسرعةٍ بشرية (فاصلُ كلمات) تُمرَّر وتكسر المرشّح فلا يُختطَف البحث — «A␣1» بلا ومضة", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    const actions = feedSequence(det, [letter("A"), SP, digit("1")], [200, 200]);
+    expect(actions).toEqual(["pass", "pass", "pass"]); // لا startBurst
+    expect(det.isActive).toBe(false);
+    const { accepted } = det.flush();
+    expect(accepted).toBe(false); // كتابةٌ بشرية تُستعاد نصّاً، لا تُصدَر باركوداً
+  });
+});
+
 describe("resolveScanSettle — صون البادئة والكتابة البشرية (ملاحظتا مراجعة #1107)", () => {
   const mk = (accepted: boolean, code: string, text: string): FlushResult => ({ accepted, code, text });
 
