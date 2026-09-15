@@ -71,6 +71,11 @@ export default function StudioPhotographerWorkspace({
 
   const { selectedTaskQuery, onlineSelected } = useStudioSelectedTask("MINE", selectedId, offline, [], null);
 
+  const previousImages = trpc.productStudio.taskPreviousImages.useQuery(
+    { taskId: Number(selectedId) },
+    { enabled: !!selectedId && !offline && !captured }
+  );
+
   const selected = onlineSelected ?? (offline && offlineSelectedDraft
     ? ({
         id: offlineSelectedDraft.taskSnapshot.taskId,
@@ -512,6 +517,23 @@ export default function StudioPhotographerWorkspace({
                     <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-destructive">
                       <p className="font-bold">مرفوضة وتحتاج لتعديل:</p>
                       <p className="text-sm">{selected.rejectionReason}</p>
+                    </div>
+                  )}
+
+                  {previousImages.data && previousImages.data.length > 0 && (
+                    <div className="mb-4 rounded-md border p-3">
+                      <p className="mb-2 text-sm font-medium">ط§ظ„طµظˆط± ط§ظ„ط³ط§ط¨ظ‚ط© ط§ظ„ظ…ط¹طھظ…ط¯ط© ظ„ظ‡ط°ط§ ط§ظ„ظ…ظ†طھط¬ ({previousImages.data.length})</p>
+                      <div className="flex flex-wrap gap-2">
+                        {previousImages.data.map((img) => (
+                          <div key={img.id} className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md border">
+                            {img.thumbDataUrl ? (
+                              <img src={img.thumbDataUrl} alt="طµظˆط±ط© ط³ط§ط¨ظ‚ط©" className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center bg-muted text-xs text-muted-foreground">ط¨ظ„ط§ ظ…طµط؛ظ‘ط±</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 

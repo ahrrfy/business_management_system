@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -22,10 +22,16 @@ export function StudioCampaignsPanel({
   offline,
   branchId,
   selectedCampaignId,
+  prefilledProductIds,
+  prefilledCategoryId,
+  onPrefillConsumed,
 }: {
   offline: boolean;
   branchId?: number;
   selectedCampaignId: number | null;
+  prefilledProductIds?: number[];
+  prefilledCategoryId?: number | null;
+  onPrefillConsumed?: () => void;
 }) {
   const [campaignName, setCampaignName] = useState("");
   const [campaignBranchId, setCampaignBranchId] = useState("");
@@ -45,6 +51,18 @@ export function StudioCampaignsPanel({
   const [editCampaignDueAt, setEditCampaignDueAt] = useState("");
   const [campaignEditOpen, setCampaignEditOpen] = useState(false);
   const [backlogCancelReason, setBacklogCancelReason] = useState("");
+
+  useEffect(() => {
+    if (prefilledProductIds && prefilledProductIds.length > 0) {
+      setCampaignScope("PRODUCTS");
+      setCampaignProductIds(prefilledProductIds);
+      onPrefillConsumed?.();
+    } else if (prefilledCategoryId) {
+      setCampaignScope("CATEGORY");
+      setCampaignCategoryId(String(prefilledCategoryId));
+      onPrefillConsumed?.();
+    }
+  }, [prefilledProductIds, prefilledCategoryId, onPrefillConsumed]);
 
   const utils = trpc.useUtils();
   const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: !offline });

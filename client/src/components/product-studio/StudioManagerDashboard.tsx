@@ -23,6 +23,8 @@ export default function StudioManagerDashboard({
   dashboardData: any;
 }) {
   const utils = trpc.useUtils();
+  const [prefilledProductIds, setPrefilledProductIds] = useState<number[]>([]);
+  const [prefilledCategoryId, setPrefilledCategoryId] = useState<number | null>(null);
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
 
   const capabilities = studioOfflineCapabilities({
@@ -108,12 +110,16 @@ export default function StudioManagerDashboard({
       {!offline && (
         <StudioImageDiscoveryPanel
           onCreateCampaignFromProducts={(productIds) => {
-            // Future linking
-            notify.ok(`اُختيرت ${productIds.length} منتجات.`);
+            setPrefilledProductIds(productIds);
+            setPrefilledCategoryId(null);
+            notify.ok(`تم تجهيز ${productIds.length} منتج. انتقل للأسفل لإنشاء الحملة.`);
+            document.getElementById("new-campaign")?.scrollIntoView({ behavior: "smooth" });
           }}
           onCreateCampaignFromCategory={(categoryId) => {
-            // Future linking
-            notify.ok(`اُختيرت الفئة ${categoryId}.`);
+            setPrefilledCategoryId(categoryId);
+            setPrefilledProductIds([]);
+            notify.ok(`تم تجهيز الفئة. انتقل للأسفل لإنشاء الحملة.`);
+            document.getElementById("new-campaign")?.scrollIntoView({ behavior: "smooth" });
           }}
         />
       )}
@@ -123,6 +129,12 @@ export default function StudioManagerDashboard({
         offline={offline}
         branchId={dashboardData?.branchId}
         selectedCampaignId={selectedCampaignId}
+        prefilledProductIds={prefilledProductIds}
+        prefilledCategoryId={prefilledCategoryId}
+        onPrefillConsumed={() => {
+          setPrefilledProductIds([]);
+          setPrefilledCategoryId(null);
+        }}
       />
       
       <StudioManualTaskCreator offline={offline} storageActionsDisabled={storageActionsDisabled} />
