@@ -5,10 +5,10 @@ const station = readFileSync(
   new URL("./StudioCaptureStation.tsx", import.meta.url),
   "utf8",
 );
-const page = readFileSync(
-  new URL("../../pages/ProductImageStudio.tsx", import.meta.url),
-  "utf8",
-);
+const page = 
+  readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8") + 
+  readFileSync(new URL("./StudioProductPicker.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("./StudioPhotographerWorkspace.tsx", import.meta.url), "utf8");
 const media = readFileSync(
   new URL("../product/ProductMediaContentSection.tsx", import.meta.url),
   "utf8",

@@ -71,7 +71,7 @@ describe("catalog media UI gate", () => {
   });
 
   it("does not turn an unknown server refresh into a destructive draft conflict", () => {
-    const page = source("client/src/pages/ProductImageStudio.tsx");
+    const page = source("client/src/components/product-studio/StudioPhotographerWorkspace.tsx");
     // Reconciliation must fetch the exact task, not infer absence from a list page.
     const selection = source("client/src/components/product-studio/useStudioSelectedTask.ts");
     expect(page).toContain("useStudioSelectedTask(scope, selectedId, offline, taskItems, scannedTask)");

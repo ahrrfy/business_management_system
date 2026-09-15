@@ -41,7 +41,11 @@ describe("mobile studio workflow", () => {
    * فعلاً يُستخرَج إلى هذا الملف ويُختبَر كالدوالّ أعلاه.
    */
   it("markup regression net: key mobile tokens still present in source", () => {
-    const page = readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8");
+    const page = 
+      readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8") +
+      readFileSync(new URL("../../components/product-studio/StudioPhotographerWorkspace.tsx", import.meta.url), "utf8") +
+      readFileSync(new URL("../../components/product-studio/StudioManagerDashboard.tsx", import.meta.url), "utf8") +
+      readFileSync(new URL("../../components/product-studio/StudioCampaignsPanel.tsx", import.meta.url), "utf8");
     const uploader = readFileSync(new URL("../../components/form/ImageUploader.tsx", import.meta.url), "utf8");
     const studioUploader = readFileSync(new URL("../../components/product/ImageStudioUploader.tsx", import.meta.url), "utf8");
     const picker = readFileSync(new URL("../../components/product-studio/StudioProductPicker.tsx", import.meta.url), "utf8");
