@@ -53,6 +53,9 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, formatIqd, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
+import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
+import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
@@ -192,7 +195,6 @@ export default function Reception() {
   const offline = isDisconnected(connState);
   useOfflineCatalogSync(me.data ? branchId : null);
   const utils = trpc.useUtils();
-
   // وردية خدمة العملاء (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
   const branchesQ = trpc.branches.list.useQuery();
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
@@ -333,6 +335,51 @@ export default function Reception() {
   /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
   const [linkedConversationId, setLinkedConversationId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [cardsOpen, setCardsOpen] = useState(false);
+  const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
+  const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
+  const digitalCheckoutRef = useRef<{ appliedPaidD: import('decimal.js').Decimal; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "CREDIT" | "CREDIT_OVERPAY" | "MIXED"; customerId: number | null } | null>(null);
+
+  const resetScreen = () => {
+    setCart([]);
+    setAddTick(0);
+    setSelKey(null);
+    setSearch("");
+    setPayInput("");
+    setDeferred(false);
+    setMethod("CASH");
+    setPaymentReference("");
+    setActiveDraft(null);
+    setDraftHeld("0.00");
+    setDraftInfo(null);
+    setOrderDelivery(null);
+    setCustomerContextId(null);
+    setTierOverride(null);
+    setCouponInput("");
+    setInvoiceDiscountPct("");
+    setCouponCode(null);
+    setCouponLabel(null);
+    setLinkedConversationId(null);
+    setCustomer({ customerId: null, name: "", phone: null, isNew: false });
+    setReceptionPhone("");
+  };
+
+  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
+    onMutate: () => setDigitalFinalizeError(null),
+    onSuccess: (res: any) => {
+      if (res.outcome === "SUCCESS") {
+        setFulfillIntentId(null);
+        digitalCheckoutRef.current = null;
+        reqIdRef.current = crypto.randomUUID();
+        notify.ok("تم إتمام الطلب (بما فيه البطاقات الرقمية)");
+        resetScreen();
+      } else {
+        setDigitalFinalizeError(res.message ?? "فشل الإتمام");
+      }
+    },
+    onError: (err: any) => setDigitalFinalizeError(err.message),
+  });
+
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
     enabled: false,
@@ -870,7 +917,7 @@ export default function Reception() {
     if (!shift) { notify.errBig("افتح وردية استقبال أولاً", "العربون يدخل درجك وتُحاسَب عليه عند الإغلاق."); return; }
     try {
       if (!activeDraft) {
-        const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+        const p = await promoteM.mutateAsync({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
         setDraftInfo({ draftNumber: p.draftNumber });
       } else {
         // مراجعة ش٤: تفريغ المزامنة المؤجَّلة قبل فتح الحوار (نمط مسار التثبيت) — سقف الحوار
@@ -879,7 +926,7 @@ export default function Reception() {
         if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
         const live = activeDraftRef.current ?? activeDraft;
         try {
-          await syncM.mutateAsync({ draftId: live.id, version: live.version, ...buildDraftPayload() });
+          await syncM.mutateAsync({ draftId: live.id, version: live.version, ...getDraftPayload() });
         } catch {
           // syncM.onError عالج (CONFLICT ⇒ إعادة ربط، انغلاق ⇒ فكّ) — لا نفتح على أسطرٍ متقادمة.
           notify.warn("تعذّرت مزامنة الطلب قبل القبض", "تحقّق من الاتصال ثم أعد المحاولة");
@@ -1021,50 +1068,16 @@ export default function Reception() {
     notify.ok(`فُتح طلبٌ من محادثة ${v.displayName ?? v.channelHandle} — أضف ما يطلبه الزبون`);
   }
 
-  function buildDraftPayload(customerIdOverride?: number | null) {
-    const effectiveCustomerId = customerIdOverride ?? customer.customerId ?? null;
-    const header = {
-      customerId: effectiveCustomerId,
-      contactName: effectiveCustomerId == null ? (customer.name.trim() || null) : null,
-      contactPhone: effectiveCustomerId == null ? (customer.phone?.trim() || null) : null,
-      priceTier: effectiveTier,
+  function getDraftPayload(customerIdOverride?: number | null) {
+    return buildDraftPayload({
+      customer,
+      effectiveTier,
       channel,
-      // ش١: المعرّف والمحادثة يسافران مع الرأس — وإلّا ضاع رقم مُرسِل الطلب عند التثبيت.
-      channelHandle: channelHandle.trim() || null,
-      conversationId: linkedConversationId,
-    };
-    const lines = cart.map((c, i) => {
-      const eff = round2(D(effectivePrice(c))).toFixed(2);
-      if (c.custom) {
-        return {
-          lineKind: "CUSTOM" as const,
-          sortOrder: i,
-          variantId: c.manualService ? null : (c.row.variantId || null),
-          productUnitId: c.manualService ? null : (c.row.productUnitId || null),
-          quantity: String(c.qty),
-          unitPrice: eff,
-          title: c.custom.title.trim() || c.row.productName,
-          customizationText: composeCustomizationText(c.custom) || null,
-          designImages: c.custom.designImages.length
-            ? JSON.stringify(c.custom.designImages.map((img, ix) => ({ url: img.dataUrl, caption: img.name ?? null, sortOrder: ix })))
-            : null,
-          // المواصفة كاملةً عدا الصور — الاستئناف الوفيّ (I22: الصور في عمودها وحدها).
-          printSpec: JSON.stringify({ ...c.custom, designImages: [], paymentReceiptImages: [] }),
-          dueDate: c.custom.dueDate || null,
-          assignedTo: c.custom.assignedTo ?? null,
-        };
-      }
-      return {
-        lineKind: c.row.isPrintService ? ("PRINT" as const) : ("GOODS" as const),
-        sortOrder: i,
-        variantId: c.row.variantId,
-        productUnitId: c.row.productUnitId,
-        quantity: String(c.qty),
-        unitPrice: eff,
-        title: `${c.row.productName} (${c.row.unitName})`,
-      };
+      channelHandle,
+      linkedConversationId,
+      cart,
+      customerIdOverride
     });
-    return { header, lines };
   }
 
   const promoteM = trpc.reception.draftPromote.useMutation({
@@ -1114,7 +1127,7 @@ export default function Reception() {
 
   function saveDraft() {
     if (cart.length === 0 || !!activeDraft || offline) return;
-    promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...buildDraftPayload() });
+    promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
   }
   /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
   const commitDraftM = trpc.reception.draftCommit.useMutation();
@@ -1127,7 +1140,7 @@ export default function Reception() {
     draftSyncTimer.current = setTimeout(() => {
       const live = activeDraftRef.current;
       if (!live) return;
-      syncM.mutate({ draftId: live.id, version: live.version, ...buildDraftPayload() });
+      syncM.mutate({ draftId: live.id, version: live.version, ...getDraftPayload() });
     }, 800);
     return () => {
       if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
@@ -1527,7 +1540,7 @@ export default function Reception() {
                 draftId: live.id,
                 version: live.version,
                 // مراجعة PR #495: العميل المُنشأ للتوّ يُمرَّر صراحةً (حالة React لم تُحدَّث بعد).
-                ...buildDraftPayload(customerId),
+                ...getDraftPayload(customerId),
               });
               commitVersion = synced.version;
             } catch (syncErr) {
@@ -2654,91 +2667,21 @@ export default function Reception() {
       )}
 
       {/* ─── ش٤: حوار قبض العربون (على الطلب المحفوظ النشط) ─── */}
-      {depositOpen && activeDraft && (
-        <DepositDialog
-          draftId={activeDraft.id}
-          draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`}
-          contactName={customer.name?.trim() || null}
-          orderTotal={round2(grandTotalD).toFixed(2)}
-          heldTotal={draftHeld}
-          suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)}
-          currentShiftId={shift?.id ?? null}
-          branchName={branchName}
-          cashierName={me.data?.name ?? null}
-          onClose={() => setDepositOpen(false)}
-          onCollected={(total) => {
-            setDraftHeld(total);
-            setPayInput("");
-            void utils.reception.draftList.invalidate();
-          }}
-        />
-      )}
+      {depositOpen && activeDraft && <DepositDialog draftId={activeDraft.id} draftNumber={draftInfo?.draftNumber ?? `طلب #${activeDraft.id}`} contactName={customer.name?.trim() || null} orderTotal={round2(grandTotalD).toFixed(2)} heldTotal={draftHeld} suggestedAmount={paidD.gt(0) ? round2(paidD).toFixed(2) : round2(sumCustomD.times(0.25)).toFixed(0)} currentShiftId={shift?.id ?? null} branchName={branchName} cashierName={me.data?.name ?? null} onClose={() => setDepositOpen(false)} onCollected={(total) => { setDraftHeld(total); setPayInput(""); void utils.reception.draftList.invalidate(); }} />}
 
       {/* ─── نافذة التخصيص ─── */}
-      {showCustomization && (
-        <CustomizationDialog
-          open
-          productName={showCustomization.row.productName}
-          price={showCustomization.row.price ?? "0"}
-          quantity={
-            showCustomization.editingKey
-              ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1
-              : 1
-          }
-          initial={
-            showCustomization.editingKey
-              ? cart.find((c) => c.key === showCustomization.editingKey)?.custom
-              : emptyCustomization(showCustomization.row.productName)
-          }
-          staff={(staffQ.data ?? []).map((member) => ({
-            id: Number(member.id),
-            name: member.name ?? null,
-            role: member.role ?? null,
-          }))}
-          canEditInternalCost={isElevatedRole}
-          onAddPlain={
-            !showCustomization.editingKey && showCustomization.row.variantId !== 0
-              ? () => addPlain(showCustomization.row)
-              : undefined
-          }
-          onCancel={() => setShowCustomization(null)}
-          onSave={saveCustomization}
-        />
-      )}
+      {showCustomization && <CustomizationDialog open productName={showCustomization.row.productName} price={showCustomization.row.price ?? "0"} quantity={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.qty ?? 1 : 1} initial={showCustomization.editingKey ? cart.find((c) => c.key === showCustomization.editingKey)?.custom : emptyCustomization(showCustomization.row.productName)} staff={(staffQ.data ?? []).map((member) => ({ id: Number(member.id), name: member.name ?? null, role: member.role ?? null }))} canEditInternalCost={isElevatedRole} onAddPlain={!showCustomization.editingKey && showCustomization.row.variantId !== 0 ? () => addPlain(showCustomization.row) : undefined} onCancel={() => setShowCustomization(null)} onSave={saveCustomization} />}
 
-      {customerContextId != null && (
-        <Contact360Panel
-          kind="customer"
-          id={customerContextId}
-          onClose={() => setCustomerContextId(null)}
-          onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }}
-        />
-      )}
+      {customerContextId != null && <Contact360Panel kind="customer" id={customerContextId} onClose={() => setCustomerContextId(null)} onOpenContact={(kind, id) => { if (kind === "customer") setCustomerContextId(id); }} />}
 
       {/* ش١ (§٨.٦) — نافذة الإيصال بعد الإتمام: الفكّة بخطٍّ ضخم + المستندات + إعادة الطباعة وانطلاق التوصيل. */}
-      {showReceiptOverlay && lastSale && (
-        <ReceiptOverlay
-          lastSale={lastSale}
-          deliveryDeparture={deliveryDeparture}
-          onCloseDeliveryDeparture={() => setDeliveryDeparture(null)}
-          onReprint={() => reprintLastRef.current?.()}
-          onClose={() => setShowReceiptOverlay(false)}
-        />
-      )}
+      {showReceiptOverlay && lastSale && <ReceiptOverlay lastSale={lastSale} deliveryDeparture={deliveryDeparture} onCloseDeliveryDeparture={() => setDeliveryDeparture(null)} onReprint={() => reprintLastRef.current?.()} onClose={() => setShowReceiptOverlay(false)} />}
 
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
-      {approvalAsk && (
-        <ManagerApprovalDialog
-          pct={approvalAsk.pct}
-          onCancel={() => setApprovalAsk(null)}
-          onApprove={(email, password) => {
-            mgrCredsRef.current = { email, password };
-            setLineDiscount(approvalAsk.lineKey, approvalAsk.pct);
-            setApprovalAsk(null);
-            notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب");
-          }}
-        />
-      )}
+      {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(email, password) => { mgrCredsRef.current = { email, password }; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
+
+      <DigitalCardsPickerDialog open={cardsOpen} branchId={branchId} offline={offline} onClose={() => setCardsOpen(false)} onPickBasket={(b) => b.lines.forEach(({ card }) => addRow({ branchId, productId: card.productId, productName: card.name, variantId: card.variantId, variantName: null, color: null, colorHex: null, size: null, sku: "", productUnitId: card.productUnitId, unitName: "بطاقة", conversionFactor: "1.0000", barcode: null, isBaseUnit: true, price: String(card.sellPrice || 0), isService: true } as PosRow))} />
+      <DigitalFulfillmentDialog intentId={fulfillIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }} onAllExecuted={(id: number) => { if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({ intentId: id, clientRequestId: reqIdRef.current, paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2), paymentMethod: digitalCheckoutRef.current.method as any, customerId: digitalCheckoutRef.current.customerId ?? undefined }); }} />
     </div>
   );
 }

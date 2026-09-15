@@ -1006,9 +1006,9 @@ export default function POS() {
     // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
     // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
     if (!codMode && isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
-        && selectedCustomer.creditLimit != null) {
+        && selectedCustomer.creditLimit != null && Number(selectedCustomer.currentBalance ?? 0) === 0) {
       notify.errBig(
-        "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
+        "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر وليس لديه تعامل سابق) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
       );
       return;
     }

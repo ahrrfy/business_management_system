@@ -193,12 +193,6 @@ export async function prepare(
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا كروت في السلة" });
   }
-  if (!ALLOWED_PAYMENT_METHODS.has(input.paymentMethod)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",
-    });
-  }
   if (input.paymentMethod === "CASH" && input.externalPaymentAttemptId != null) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
   }

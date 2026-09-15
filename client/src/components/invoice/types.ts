@@ -55,6 +55,14 @@ export interface InvoiceLine {
    * (شراء/عرض سعر/مرتجع) التي تُنشئ أسطراً بلا هذا الحقل. التسعير والتكلفة يحسمهما الخادم.
    */
   isGift?: boolean;
+  /** كروت واشتراكات رقمية (٧/٩) */
+  digital?: {
+    offeringId: number;
+    priceVersionId: number;
+    sellPriceSnapshot: string;
+    providerShareSnapshot: string;
+    internalLineToken: string;
+  };
 }
 
 export interface InvoiceState {

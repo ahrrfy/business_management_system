@@ -37,6 +37,8 @@ export const salesRouter = router({
         cartFingerprint: z.string().min(1).max(64),
         customerId: z.number().int().positive().nullish(),
         priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+        sourceType: z.enum(["POS", "INVOICE", "RECEPTION"]).default("POS"),
+        sourcePayload: z.any().optional(),
         regularLines: z.array(z.object({
           lineKey: z.string().min(1).max(64),
           variantId: z.number().int().positive(),
@@ -194,7 +196,7 @@ export const salesRouter = router({
         intentId: z.number().int().positive(),
         clientRequestId: z.string().min(8).max(80),
         paymentAmount: nonNegMoneyString,
-        paymentMethod: z.enum(["CASH", "CARD"]),
+        paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]),
         customerId: z.number().int().positive().nullish(),
       }),
     )
