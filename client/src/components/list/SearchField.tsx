@@ -69,9 +69,9 @@ export function SearchField({
     [onScan, onChange],
   );
 
-  // الوضع التمريريّ (١٥/٩): حقلُ بحثٍ بالاسم — لا يُحجَب حرفٌ ولا يُفكُّ عربيٌّ إلى إنجليزيّة؛
-  // المسحُ يُصدَر فقط لومضةٍ باركوديّة واثقة (بلاغ المالك: تنقلب الكتابة وتُفقَد المسافة).
-  const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode, passthrough: true });
+  // موحَّدٌ مع خطّاف الكاشير `useSmartScanInput` عبر `useBarcodeInput` (١٥/٩، بلاغ المالك): سلوكُ البحث
+  // بالاسم والمسح نفسُه في كلّ الشاشات — الكتابة العربية بالمسافة تُقبَل والمسح يُحلّ.
+  const barcodeInput = useBarcodeInput(handleScan, { enabled: barcode });
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (barcode) barcodeInput.handleKeyDown(event, onChange);

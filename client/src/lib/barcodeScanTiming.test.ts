@@ -306,7 +306,7 @@ describe("isConfidentScanCode — بوّابة الباركود الواثق (ت
   });
 });
 
-describe("عقد الوضع التمريريّ (passthrough) — ومضةُ الحروف تُقبَل توقيتاً لكنّها غيرُ واثقة فلا تُصدَر مسحاً", () => {
+describe("قبولُ الومضة وبوّابةُ الثقة (نواةُ خطّاف البحث الموحَّد مع الكاشير)", () => {
   const letter = (c: string): ScannerKeyEvent => ({ code: `Key${c.toUpperCase()}`, key: c, shiftKey: false });
 
   it("⭐ اسمٌ عربيّ سريع (يظهر ASCII بالفكّ) — accepted بالتوقيت، لكنّ isConfidentScanCode=false ⇒ يبقى بحثاً", () => {

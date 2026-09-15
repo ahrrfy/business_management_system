@@ -347,9 +347,9 @@ export function ProductSearchBar({
     }
   }
 
-  // الوضع التمريريّ (١٥/٩): حقلُ بحثٍ اسمُ المنتج فيه هو الأصل — لا يُحجَب أيّ حرفٍ ولا يُفكُّ عربيٌّ
-  // إلى إنجليزيّة، ويُصدَر المسحُ فقط لومضةٍ باركوديّة واثقة (بلاغ المالك: الكتابة تنقلب/تفقد المسافة).
-  const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); }, { passthrough: true });
+  // موحَّدٌ مع خطّاف الكاشير `useSmartScanInput` عبر `useBarcodeInput` (١٥/٩): بحثٌ بالاسم والمسحٌ
+  // بالسلوك نفسه في كلّ الشاشات — الكتابة العربية بالمسافة تُقبَل، والمسح (رقميّ/أبجديّ) يُحلّ.
+  const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); });
 
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
     barcodeInput.handleKeyDown(e, setQuery);
