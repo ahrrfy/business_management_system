@@ -41,6 +41,8 @@ export interface CheckoutSnapshotInput {
   branchId?: number;
   customerId?: number | null;
   priceTier?: PriceTier | null;
+  sourceType?: "POS" | "INVOICE" | "RECEPTION";
+  sourcePayload?: any;
   regularLines?: DigitalCheckoutRegularLineInput[];
 }
 
@@ -116,7 +118,13 @@ export function checkoutRequestFingerprint(
   input: CheckoutSnapshotInput,
 ): string {
   return createHash("sha256")
-    .update(JSON.stringify(normalizedRequest(input)))
+    .update(
+      [
+        JSON.stringify(normalizedRequest(input)),
+        input.sourceType ?? "POS",
+        JSON.stringify(input.sourcePayload ?? {}),
+      ].join("|"),
+    )
     .digest("hex");
 }
 
@@ -447,6 +455,8 @@ export async function prepareCheckoutSnapshot(
       sumMoney(regularLines.map((line) => line.total)),
     ),
     requestFingerprint: checkoutRequestFingerprint(input),
+    sourceType: input.sourceType,
+    sourcePayload: input.sourcePayload,
   };
 }
 

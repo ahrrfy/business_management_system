@@ -85,6 +85,8 @@ export interface PrepareInput {
   customerId?: number | null;
   priceTier?: PriceTier | null;
   regularLines?: DigitalCheckoutRegularLineInput[];
+  sourceType?: "POS" | "INVOICE" | "RECEPTION";
+  sourcePayload?: any;
 }
 
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
@@ -193,7 +195,10 @@ export async function prepare(
   if (!input.lines.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا كروت في السلة" });
   }
-  if (!ALLOWED_PAYMENT_METHODS.has(input.paymentMethod)) {
+  if (
+    (input.paymentMethod === "CREDIT" && input.sourceType !== "INVOICE") ||
+    (input.paymentMethod !== "CREDIT" && !ALLOWED_PAYMENT_METHODS.has(input.paymentMethod))
+  ) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",

@@ -41,6 +41,19 @@ export type CartLine = {
   disc?: number; // نسبة خصم
   custom?: CustomizationData; // إن كان مخصّصاً
   manualService?: boolean; // خدمة حرة لا ترتبط بمنتج/متغيّر من الكتالوج
+  digital?: {
+    offeringId: number;
+    priceVersionId: number;
+    providerId: number;
+    offeringType: "CARD" | "SUBSCRIPTION";
+    providerName: string;
+    providerReference: string;
+    providerBasketKey: string | null;
+    faceValue: string | null;
+    subscriptionDurationDays: number | null;
+    requiresStudentData: boolean;
+    student?: any; // StudentSnapshot
+  };
 };
 
 // مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل

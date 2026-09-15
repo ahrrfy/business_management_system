@@ -27,6 +27,7 @@ import { confirm } from "@/lib/confirm";
 import { D, round2, toBase, fmt } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems,
@@ -43,7 +44,9 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { releaseReservedPrintWindow, reservePrintWindow,
 } from "@/lib/printing/brand";
-import { AlertTriangle, Lock, FileWarning } from "lucide-react";
+import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
+import { AlertTriangle, Lock, FileWarning, CreditCard } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -74,6 +77,7 @@ import {
   type PaymentMethod,
   type PaymentTerm,
   type PriceTier,
+  type DiscountType,
 } from "@/components/invoice";
 import { ACTION_LABELS } from "@shared/actionLabels";
 
@@ -89,12 +93,12 @@ function toYmdUtc(v: unknown): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-export default function SalesInvoiceNew() {
+export default function SalesInvoice() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
 
-  const defaultBranchId = me.data?.branchId ?? 1;
+  const defaultBranchId = me.data?.branchId || 1;
 
   const [state, dispatch] = useReducer(
     invoiceReducer,
@@ -339,6 +343,7 @@ export default function SalesInvoiceNew() {
   const shareAfterSaveRef = useRef(false);
 
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [cardsOpen, setCardsOpen] = useState(false);
   const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
 
   // حوار موافقة المدير (يُفتح عند خطأ تجاوز حدّ الائتمان).
@@ -425,18 +430,44 @@ export default function SalesInvoiceNew() {
         setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false,
         });
       }
-      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId,
-        channel: externalChannel,
-      });
-      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true,
-      });
-      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`,
-      );
+      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId, channel: externalChannel });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`);
     } catch (error) {
-      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي",
-      );
+      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
     }
   }
+
+  /* ─── Digital Fulfillment ─────────────────────────────────────── */
+  const [digitalIntentId, setDigitalIntentId] = useState<number | null>(null);
+  const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
+  
+  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
+    onSuccess: (res) => {
+      setDigitalIntentId(res.intentId);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
+    onSuccess: (r) => {
+      utils.sales.list.invalidate();
+      const id = (r as { invoiceId: number }).invoiceId;
+      notify.ok("تم حفظ فاتورة البيع والكروت الرقمية واعتمادها");
+      setDigitalIntentId(null);
+      setDigitalFinalizeError(null);
+      setClientRequestId(crypto.randomUUID());
+      setCreditPrompt(null);
+      setMgrEmail("");
+      setMgrPwd("");
+      const printAfterSave = printAfterSaveRef.current;
+      const shareAfterSave = shareAfterSaveRef.current;
+      printAfterSaveRef.current = false;
+      shareAfterSaveRef.current = false;
+      navigate(`/invoices/${id}${printAfterSave ? "?print=1" : shareAfterSave ? "?share=1" : ""}`);
+    },
+    onError: (e) => setDigitalFinalizeError(e.message),
+  });
 
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.sales.create.useMutation({
@@ -683,6 +714,40 @@ export default function SalesInvoiceNew() {
     return null;
   }
 
+  function startDigitalFulfillment(payload: any) {
+    if (!currentShift.data) return;
+    const regular = state.items.filter((c) => !c.digital);
+    const digitalLines = state.items.filter((c) => c.digital);
+    if (!digitalLines.length) return;
+    prepareIntent.mutate({
+      branchId: Number(state.branchId),
+      shiftId: currentShift.data.id,
+      clientRequestId,
+      paymentMethod: state.paymentMethod,
+      externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
+      externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
+      cartFingerprint: clientRequestId,
+      customerId: state.entityId ?? undefined,
+      priceTier: state.tier,
+      sourceType: "INVOICE",
+      sourcePayload: payload,
+      regularLines: regular.map((l) => ({
+        lineKey: String(l.productUnitId),
+        variantId: l.variantId,
+        productUnitId: l.productUnitId,
+        quantity: String(l.qty),
+        unitPriceOverride: l.price,
+      })),
+      lines: digitalLines.map((c) => ({
+        lineKey: c.digital!.internalLineToken,
+        offeringId: c.digital!.offeringId,
+        priceVersionId: 1, // Using dummy price version since the backend handles it or it's fetched from the dialog
+        expectedSellPrice: c.digital!.sellPriceSnapshot,
+        providerReference: c.sku,
+      })),
+    });
+  }
+
   function handleSubmit(approval?: Approval) {
     // قيمة مالية غير رقمية (في المدفوع/الخصم) تجعل decimal.js يرمي — نلتقطها برسالة واضحة بدل تعطّل صامت.
     let err: string | null;
@@ -725,7 +790,12 @@ export default function SalesInvoiceNew() {
           reissue.mutate(correction);
         }
       } else {
-        create.mutate(buildPayload(approval));
+        const payload = buildPayload(approval);
+        if (state.items.some((c) => !!c.digital)) {
+          startDigitalFulfillment(payload);
+        } else {
+          create.mutate(payload);
+        }
       }
     } catch {
       releaseReservedPrintWindow();
@@ -1019,6 +1089,7 @@ export default function SalesInvoiceNew() {
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
+            onOpenDigitalCardsPicker={() => setCardsOpen(true)}
             onNotify={(msg, kind) =>
               kind === "error" ? notify.err(msg) : notify.info(msg)
             }
@@ -1032,6 +1103,8 @@ export default function SalesInvoiceNew() {
             branchId={state.branchId}
             tier={state.tier}
           />
+          
+          <DigitalCardsPickerDialog open={cardsOpen} branchId={state.branchId} offline={false} onClose={() => setCardsOpen(false)} onPickBasket={(b) => { dispatch({ type: "ADD_ITEMS", items: b.lines.map(({ card }) => ({ productId: card.productId, variantId: card.variantId, productUnitId: card.productUnitId, name: card.name, sku: b.providerReference || "", barcode: null, unit: "قطعة", qty: 1, conversionFactor: "1", stockBase: 9999, price: String(card.sellPrice || 0), costBase: "0", discount: "0", discountType: "amount" as DiscountType, note: "", digital: { offeringId: card.offeringId, priceVersionId: card.priceVersionId, sellPriceSnapshot: String(card.sellPrice || 0), providerShareSnapshot: "0", internalLineToken: `D-${Date.now()}-${Math.random()}` } })) }); setCardsOpen(false); }} existingCardCount={state.items.filter(i => i.digital).length} />
         </div>
 
         <aside className="flex w-full shrink-0 flex-col gap-2 xl:w-80">
@@ -1056,7 +1129,7 @@ export default function SalesInvoiceNew() {
           />
           {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لكل قبض مبيعات. */}
           {externalNeeded && (
-            <div className="rounded-xl border bg-card p-3">
+            <Card className="p-3">
               <PaymentReferenceField
                 value={paymentRef}
                 onChange={(v) => { setPaymentRef(v); setExternalAttempt(null); }}
@@ -1070,7 +1143,7 @@ export default function SalesInvoiceNew() {
                   fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-pos)",
                 }}
               />
-            </div>
+            </Card>
           )}
           {isCorrection && (
             <CorrectionPanel
@@ -1166,21 +1239,13 @@ export default function SalesInvoiceNew() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DigitalFulfillmentDialog intentId={digitalIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setDigitalIntentId(null); setDigitalFinalizeError(null); }} onAllExecuted={(id) => { if (!finalizeSale.isPending) finalizeSale.mutate({ intentId: id, clientRequestId: clientRequestId, paymentAmount: externalAmount, paymentMethod: state.paymentMethod as any, customerId: state.entityId ?? undefined }); }} />
     </div>
   );
 }
 
-/** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */
-function CorrRow({ label, value, className,
-}: { label: string; value: string; className?: string;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={className ?? "font-semibold tabular-nums"} dir="ltr">{value}</span>
-    </div>
-  );
-}
+/** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */ function CorrRow({ label, value, className }: { label: string; value: string; className?: string; }) { return (<div className="flex items-center justify-between gap-2"><span className="text-muted-foreground">{label}</span><span className={className ?? "font-semibold tabular-nums"} dir="ltr">{value}</span></div>); }
 
 interface CorrectionPanelProps {
   original: { invoiceNumber?: string | null } | null;
@@ -1207,19 +1272,7 @@ interface CorrectionPanelProps {
  *   فائض (الإجمالي < المدفوع) ⇒ خيار «استرداد نقديّ» أو «رصيد دائن» (الأخير يلزمه عميل).
  * لا منطقَ ماليّ هنا — كلّه عرضٌ وتحقّقٌ عميليّ يُماثل validateCorrection؛ الخادم هو الحكم.
  */
-function CorrectionPanel({
-  original,
-  originalPaid,
-  grandTotal,
-  reason,
-  setReason,
-  correctionKind,
-  setCorrectionKind,
-  collectNow,
-  setCollectNow,
-  paymentMethod,
-  setPaymentMethod,
-  overpayHandling,
+function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason, correctionKind, setCorrectionKind, collectNow, setCollectNow, paymentMethod, setPaymentMethod, overpayHandling,
   setOverpayHandling,
   hasCustomer,
 }: CorrectionPanelProps) {
@@ -1271,7 +1324,7 @@ function CorrectionPanel({
         />
       </div>
 
-      <div className="space-y-1 rounded-md border bg-card p-2 text-xs">
+      <Card className="space-y-1 p-2 text-xs">
         <CorrRow label="مدفوعٌ على الأصل" value={fmt(originalPaid.toString())} />
         <CorrRow label="إجمالي بعد التصحيح" value={fmt(grandTotal)} />
         <div className="my-1 h-px bg-border" />
@@ -1282,7 +1335,7 @@ function CorrectionPanel({
         ) : (
           <CorrRow label="فائضٌ للزبون" value={fmt(diff.abs().toString())} className="font-bold tabular-nums text-money-positive" />
         )}
-      </div>
+      </Card>
 
       {isShort && (
         <div className="space-y-1">
@@ -1304,7 +1357,7 @@ function CorrectionPanel({
                       type="button"
                       onClick={() => setPaymentMethod(m.value)}
                       aria-pressed={active}
-                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-bold transition outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                         active
                           ? "border-primary bg-primary/10 text-primary"
                           : "border-input bg-card text-foreground hover:bg-muted"

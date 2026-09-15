@@ -71,4 +71,6 @@ export interface DigitalCheckoutSnapshot {
   priceTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   regularLines: DigitalCheckoutRegularLineSnapshot[];
   expectedSubtotal: string;
+  sourceType?: "POS" | "INVOICE" | "RECEPTION";
+  sourcePayload?: any;
 }
