@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_PRICE_DECIMALS } from "../../shared/moneyPrecision";
-import { canonicalizeBarcodeInput, hasUnsupportedBarcodeCharacters } from "../../shared/barcodeNormalize";
+import { canonicalizeBarcodeInput, canonicalizeBarcodeForStorage, hasUnsupportedBarcodeCharacters } from "../../shared/barcodeNormalize";
 
 /** سلسلة مالية بـ٢ خانات عشرية على الأكثر، تَقبل السالب (للمرتجعات/التعديلات).
  *  متّسق مع toDbMoney(string) في server/services/money.ts.
@@ -81,6 +81,28 @@ export const optionalBarcodeString = z
   .string()
   .nullish()
   .transform((s) => (s == null ? null : canonicalizeBarcodeInput(s) || null))
+  .refine((s) => s == null || s.length <= 64, "الباركود أطول من ٦٤ خانة")
+  .refine((s) => s == null || !hasUnsupportedBarcodeCharacters(s), "الباركود يحوي محارف تحكّم أو فراغات غير مدعومة");
+
+/**
+ * حقل باركود **تخزين** — لمسارات الإدخال (إنشاء/تعديل المنتج، إسناد باركود، إضافة بديل) حيث يُحفَظ
+ * الباركود «كما هو من المصنع» بمسافته الداخلية (قرار المالك ١٥/٩). يُطبَّع بـ`canonicalizeBarcodeForStorage`
+ * (يُبقي المسافة الداخلية، يُزيل الخفيّ والطرفيّ فقط، يطوي الأرقام) — بخلاف `barcodeString` الذي يُسقط المسافة
+ * للهوية. ⚠️ لا تستعمله لمسارات المسح/البحث (تلك تبقى `barcodeString`): المخزَّن يُطابَق عبر `barcodeNormalized`.
+ * فحص «المحارف غير المدعومة» يقيس على الهوية (يُسقط المسافة داخليّاً) فالمسافة الداخلية مقبولة والتحكّم مرفوض.
+ */
+export const barcodeStorageString = z
+  .string()
+  .transform(canonicalizeBarcodeForStorage)
+  .refine((s) => s.length > 0, "الباركود فارغ")
+  .refine((s) => s.length <= 64, "الباركود أطول من ٦٤ خانة")
+  .refine((s) => !hasUnsupportedBarcodeCharacters(s), "الباركود يحوي محارف تحكّم أو فراغات غير مدعومة");
+
+/** نظير `optionalBarcodeString` لمسارات التخزين — يُبقي المسافة الداخلية؛ الفارغ بعده ⇒ `null`. */
+export const optionalBarcodeStorageString = z
+  .string()
+  .nullish()
+  .transform((s) => (s == null ? null : canonicalizeBarcodeForStorage(s) || null))
   .refine((s) => s == null || s.length <= 64, "الباركود أطول من ٦٤ خانة")
   .refine((s) => s == null || !hasUnsupportedBarcodeCharacters(s), "الباركود يحوي محارف تحكّم أو فراغات غير مدعومة");
 

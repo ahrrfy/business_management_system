@@ -10,7 +10,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { ProductBarcodeMatchKind } from "@shared/productScan";
-import { BARCODE_DIGIT_CORE_MIN_LENGTH, barcodeDigitCore, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { BARCODE_DIGIT_CORE_MIN_LENGTH, barcodeDigitCore, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { getDb, type DB, type Tx } from "../../db";
 import { productUnits, productUnitBarcodes, productVariants, products, stocktakeItems, stocktakeSessions } from "../../../drizzle/schema";
@@ -609,8 +609,8 @@ export async function addUnitBarcodeAlias(
 ) {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مُهيّأة." });
-  const clean = canonicalizeBarcodeInput(barcode);
-  await assertBarcodeFree(clean, { ignoreUnitId: productUnitId });
+  const identity = canonicalizeBarcodeInput(barcode); // الهوية (فحص التفرّد العالميّ)
+  await assertBarcodeFree(identity, { ignoreUnitId: productUnitId });
   // تحقّق أنّ الوحدة نفسها موجودة (تجنّب FK error غامضاً للمستخدم) وافحص عدم ارتباطها بجرد نشط.
   const [unit] = await db
     .select({ id: productUnits.id, variantId: productUnits.variantId })
@@ -623,7 +623,7 @@ export async function addUnitBarcodeAlias(
   }
   await db.insert(productUnitBarcodes).values({
     productUnitId,
-    barcode: clean,
+    barcode: canonicalizeBarcodeForStorage(barcode), // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)
     note: note?.trim() || null,
     createdBy,
   });

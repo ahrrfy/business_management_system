@@ -14,7 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
-import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, barcodesEquivalent, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import type { VariantKind } from "../../shared/variantDisplay";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -209,7 +209,9 @@ async function upsertVariantUnits(
   const inserted: Array<{ unitId: number; barcode: string | null }> = [];
   for (const t of template) {
     const name = t.unitName.trim();
-    const barcode = canonicalizeBarcodeInput(unitBarcodes[name] ?? "") || null;
+    // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)؛ المطابقة أدناه عبر `barcodesEquivalent`
+    // و`findBarcodeClashes` تُطبّع داخليّاً للهوية، فلا يتأثّر حلُّ الملكية ولا كشفُ التعارض.
+    const barcode = canonicalizeBarcodeForStorage(unitBarcodes[name] ?? "") || null;
     // مطابقة الوحدة القائمة الذكية (حل ملكية الباركود أولاً مع التطبيع المعياري):
     // ١. بالباركود أولاً إن كان محدداً (حامل الهوية الثابتة للوحدة عند إعادة تسميتها)
     //    نطابق بالتكافؤ المعياري (barcodesEquivalent) ونرفض الالتباس إن تطابقت وحدتان.

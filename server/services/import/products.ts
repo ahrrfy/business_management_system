@@ -20,7 +20,7 @@ import { logger } from "../../logger";
 import { setStock } from "../inventoryService";
 import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
-import { canonicalizeBarcodeInput } from "../../../shared/barcodeNormalize";
+import { canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "../../../shared/barcodeNormalize";
 import { normalizedMatchAny } from "../catalog/barcodeAliases";
 import { priceTier, type ProductImportRow } from "./schemas";
 import type { ImportOptions, ImportRowResult, ImportSummary } from "./types";
@@ -69,14 +69,15 @@ const EXPLICIT_PRICE_FIELDS = [
 ] as const;
 
 /** يفكّ عمود «بدائل الباركود»: مفصولة بفاصلة عربية «،» أو لاتينية «,» أو «;» — مع إسقاط الفراغ والتكرار.
- *  (٤/٩) كل قيمة تُطبَّع بـ`canonicalizeBarcodeInput` (تقليم + طيّ الأرقام العربية-الهندية): استيراد Excel
- *  هو أكبر مصدرٍ لباركوداتٍ بمسافةٍ طرفية أو أرقامٍ هندية ⇒ تُحفَظ فلا تُمسَح أبداً. */
+ *  (٤/٩، ١٥/٩) كل قيمة تُطبَّع بـ`canonicalizeBarcodeForStorage` (تقليم طرفيّ + طيّ الأرقام، **مع إبقاء
+ *  المسافة الداخلية** بصيغة المصنع): استيراد Excel أكبرُ مصدرٍ لمسافةٍ طرفية أو أرقامٍ هندية ⇒ تُنظَّف الحواف
+ *  دون تغيير التسلسل المرئيّ، والمطابقة تبقى عبر `barcodeNormalized`. */
 function parseAliases(raw?: string): string[] {
   if (!raw) return [];
   return uniq(
     raw
       .split(/[،,;]/)
-      .map((s) => canonicalizeBarcodeInput(s))
+      .map((s) => canonicalizeBarcodeForStorage(s))
       .filter(Boolean),
   );
 }
@@ -236,7 +237,7 @@ function aggregateImportRows(
       }
     }
 
-    const uBarcode = canonicalizeBarcodeInput(r.barcode ?? "") || undefined;
+    const uBarcode = canonicalizeBarcodeForStorage(r.barcode ?? "") || undefined; // حرفيّاً بصيغة المصنع (يُبقي المسافة)
     const rowAliases = parseAliases(r.barcodeAliases);
     let u = v.units.get(r.unitName);
     if (!u) {
