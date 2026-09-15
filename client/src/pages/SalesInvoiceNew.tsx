@@ -901,6 +901,10 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F9") {
         e.preventDefault();
+        if (isCorrection) {
+          notify.info("طباعة التصحيح متاحة بعد اعتماد الطلب وإصدار الفاتورة البديلة.");
+          return;
+        }
         if (!submitPending) {
           reservePrintWindow();
           printAfterSaveRef.current = true;
@@ -963,7 +967,7 @@ export default function SalesInvoiceNew() {
       {isCorrection && (
         <div className="flex items-center gap-2 rounded-md border-2 border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-extrabold text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4 shrink-0" />
-          <span>وضع تصحيح — سيُلغى الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل بمرجعه.</span>
+          <span>وضع تصحيح — سيُعكس الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل مرتبط به بعد الاعتماد.</span>
         </div>
       )}
       {/* شريط العنوان */}
@@ -1101,16 +1105,20 @@ export default function SalesInvoiceNew() {
             items={state.items}
             saving={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
-            availableActions={isCorrection ? ["save", "print"] : undefined}
+            availableActions={isCorrection ? ["save"] : undefined}
             primaryLabel={isCorrection ? correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
-            printLabel={isCorrection ? correctionKind === "EXCHANGE" ? "طلب استبدال" : "طلب إعادة إصدار" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>
 
-      <ShortcutsBar />
+      <ShortcutsBar shortcuts={isCorrection ? [
+        { key: "F2", label: "بحث" },
+        { key: "F4", label: "إرسال الطلب" },
+        { key: "F12", label: "تفريغ" },
+        { key: "Esc", label: "إلغاء" },
+      ] : undefined} />
 
       {/* حوار موافقة المدير (تجاوز حدّ الائتمان / بيع بأقل من التكلفة) */}
       <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) closeApprovalPrompt(); }}>
@@ -1245,7 +1253,7 @@ function CorrectionPanel({
         <span>تصحيح موثَّق{original?.invoiceNumber ? ` — ${original.invoiceNumber}` : ""}</span>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة.
+        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة، ثم تصبح البديلة جاهزة للطباعة.
       </p>
 
       <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">

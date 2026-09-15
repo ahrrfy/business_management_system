@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { Check, FileWarning, RefreshCcw, Undo2, X } from "lucide-react";
+import { Check, FileWarning, Printer, RefreshCcw, Undo2, X } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,10 @@ import {
 } from "@/components/ui/dialog";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
+import { printReceipt } from "@/lib/printing/print";
 import { trpc } from "@/lib/trpc";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import {
@@ -90,9 +94,48 @@ export default function SalesControlApprovals() {
   const [rejectReason, setRejectReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [printingInvoiceId, setPrintingInvoiceId] = useState<number | null>(null);
 
   async function refresh() {
     await pending.refetch();
+  }
+
+  async function printCorrectedInvoice(invoiceId: number, windowReserved = false) {
+    if (printingInvoiceId != null) return;
+    setPrintingInvoiceId(invoiceId);
+    try {
+      const invoice = await utils.sales.get.fetch({ invoiceId });
+      if (!invoice) {
+        if (windowReserved) releaseReservedPrintWindow();
+        notify.warn("تم التصحيح لكن تعذّر جلب الفاتورة البديلة للطباعة");
+        return;
+      }
+      const printed = await printReceipt(invoiceToReceipt(invoice));
+      if (!printed.ok) {
+        notify.warn(
+          "تم التصحيح وحُفظت الفاتورة البديلة",
+          "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم اضغط «طباعة البديلة».",
+        );
+      } else if (printed.via === "browser") {
+        notify.warn("تم التصحيح", `فُتحت نافذة طباعة الفاتورة البديلة ${invoice.invoiceNumber}.`);
+      } else {
+        if (windowReserved) releaseReservedPrintWindow();
+        notify.ok("تم التصحيح والطباعة", `الفاتورة البديلة ${invoice.invoiceNumber}`);
+      }
+    } catch (cause) {
+      if (windowReserved) releaseReservedPrintWindow();
+      notify.err(cause instanceof Error ? cause.message : "حُفظ التصحيح وتعذّرت الطباعة");
+    } finally {
+      setPrintingInvoiceId(null);
+    }
+  }
+
+  function requestCorrectedInvoicePrint(invoiceId: number) {
+    if (!reservePrintWindow()) {
+      notify.warn("تعذّر فتح نافذة الطباعة", "تحقّق من مانع النوافذ المنبثقة ثم أعد المحاولة.");
+      return;
+    }
+    void printCorrectedInvoice(invoiceId, true);
   }
 
   const approve = trpc.salesControl.approve.useMutation({
@@ -103,7 +146,18 @@ export default function SalesControlApprovals() {
         utils.salesControl.list.invalidate(),
         utils.sales.list.invalidate(),
         utils.returns.list.invalidate(),
+        utils.reception.invoiceQueue.invalidate(),
       ]);
+      const correctedInvoiceId = result.request.resultInvoiceId == null
+        ? null
+        : Number(result.request.resultInvoiceId);
+      if (
+        !result.replayed
+        && correctedInvoiceId != null
+        && (result.request.requestType === "SALES_REISSUE" || result.request.requestType === "SALES_EXCHANGE")
+      ) {
+        await printCorrectedInvoice(correctedInvoiceId);
+      }
     },
     onError: (cause) => { setError(cause.message); setMessage(""); },
   });
@@ -314,6 +368,27 @@ export default function SalesControlApprovals() {
                   >
                     <Undo2 aria-hidden className="me-1 size-4" />
                     سحب الطلب
+                  </Button>
+                </div>
+              )}
+              {request.status === "APPROVED"
+                && request.resultInvoiceId != null
+                && (request.requestType === "SALES_REISSUE" || request.requestType === "SALES_EXCHANGE") && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] p-2">
+                  <Link
+                    href={`/invoices/${request.resultInvoiceId}`}
+                    className="text-xs font-bold text-[var(--sem-pos)] hover:underline"
+                  >
+                    فتح الفاتورة البديلة
+                  </Link>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={printingInvoiceId != null}
+                    onClick={() => requestCorrectedInvoicePrint(Number(request.resultInvoiceId))}
+                  >
+                    <Printer aria-hidden className="me-1 size-4" />
+                    {printingInvoiceId === Number(request.resultInvoiceId) ? "جارٍ الطباعة…" : "طباعة البديلة"}
                   </Button>
                 </div>
               )}
