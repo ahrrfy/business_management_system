@@ -14,23 +14,34 @@ const POS_SCAN_MIN_LENGTH = 4;
 /** عتبة الومضة موحّدةٌ مع بقية الأسطح (١٢٠مي، لتحمّل تذبذب توقيت USB) — كانت 80 سهواً في الإعادة الهيكلية. */
 const POS_SCAN_GAP_MS = 120;
 
-export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
+export function useSmartScanInput(
+  onBarcode: (code: string) => void | Promise<void>,
+  // إضافيّان اختياريّان (١٥/٩): يسمحان بإعادة استعمال **نفس منطق الكاشير** حرفيّاً في بقية حقول البحث
+  // عبر `useBarcodeInput` — الكاشير يستدعيه بلا خيارات فيبقى سلوكُه كما هو (٤ محارف/١٢٠مي).
+  { minLength = POS_SCAN_MIN_LENGTH, gapMs = POS_SCAN_GAP_MS }: { minLength?: number; gapMs?: number } = {},
+) {
   const detector = useMemo(
-    () => new ScanBurstDetector({ minLength: POS_SCAN_MIN_LENGTH, intraGapMs: POS_SCAN_GAP_MS }),
-    [],
+    () => new ScanBurstDetector({ minLength, intraGapMs: gapMs }),
+    [minLength, gapMs],
   );
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const prefixRef = useRef("");
 
+  const reset = useCallback(() => {
+    clearTimeout(timerRef.current);
+    detector.reset();
+    prefixRef.current = "";
+  }, [detector]);
+
   const fire = useCallback(
     (setValue: (s: string) => void) => {
       clearTimeout(timerRef.current);
-      const decision = resolveScanSettle(detector.flush(), prefixRef.current, POS_SCAN_MIN_LENGTH);
+      const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength);
       prefixRef.current = "";
       setValue(decision.fieldValue);
       if (decision.scan) void onBarcode(decision.scan);
     },
-    [onBarcode, detector],
+    [onBarcode, detector, minLength],
   );
 
   const handleKeyDown = useCallback(
@@ -43,7 +54,7 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
           return;
         }
         // قارئٌ بطيء تسرّب حرفاً حرفاً: استردّ باركوداً واثقاً من قيمة الحقل بدل بحثٍ نصّيّ.
-        const recovered = recoverSlowScanCode(curVal, POS_SCAN_MIN_LENGTH);
+        const recovered = recoverSlowScanCode(curVal, minLength);
         if (recovered) {
           e.preventDefault();
           detector.reset();
@@ -72,10 +83,10 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
       if (action === "startBurst") setValue(prefixRef.current); // أزل الحرف المرشّح المتسرّب، أبقِ البادئة
       clearTimeout(timerRef.current);
       // مهلة سكونٍ سخيّة كي لا يقطع تذبذبُ التوقيت الومضةَ فيُصدِر بادئةً جزئيّة (مراجعة #1108).
-      timerRef.current = setTimeout(() => fire(setValue), Math.max(400, POS_SCAN_GAP_MS * 4));
+      timerRef.current = setTimeout(() => fire(setValue), Math.max(400, gapMs * 4));
     },
     [fire, detector],
   );
 
-  return { handleKeyDown };
+  return { handleKeyDown, reset };
 }
