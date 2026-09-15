@@ -7,6 +7,7 @@ import {
 import { getDb, type DB, type Tx } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getVerifiedStatutoryProfileDetails } from "./statutoryAccounting";
+import { appErrorMessage } from "@shared/errors";
 
 type DbExecutor = DB | Tx;
 
@@ -757,6 +758,18 @@ export async function getStatutoryAccountantPack(input: {
         });
       }
       requireCompleteAccountantPackJournal(generalJournal);
+      // §٥ — لا تُصدَّر حزمةٌ رسميّةٌ ناقصة: سطرٌ POSTED بلا حسابٍ نظاميّ يغيب عن كلّ الكشوفات
+      // صامتاً (INNER JOIN). البوّابة تمنع نشوءه، وهذا يمنع إخراج ورقةٍ رسميّةٍ ناقصةٍ لو حدث انجراف.
+      if (trialBalance.unmapped.lineCount > 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر إصدار الحزمة الرسمية",
+            why: `الدفتر يحوي ${trialBalance.unmapped.lineCount} سطراً مُرحَّلاً بلا حسابٍ نظاميّ لا يظهر في أيّ كشف`,
+            doThis: "أكمِل ربط الأدوار بالخريطة النظامية المعتمدة ثم أعِد إصدار الحزمة",
+          }),
+        });
+      }
       return {
         available: true as const,
         generatedAt: new Date().toISOString(),

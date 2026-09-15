@@ -126,7 +126,15 @@ export default function BalanceSheet() {
       { label: "الخصوم", amount: "" },
       ...sections.liabilities.map((r) => ({ label: `— ${r.label}`, amount: r.v })),
       { label: "إجمالي الخصوم", amount: p.totalLiabilities },
-      { label: "حقوق الملكية (مشتقّة)", amount: p.equity },
+      {
+        // عند تفعيل الدفتر: يحمل التصدير والطباعة تصريحَ أنّ الحقوق موازنةُ إجبار لا اشتقاقٌ من
+        // الدفتر (الميزانية المُدقّقة في الدليل المحاسبي النظاميّ) — لا يصل رقمُ الإجبار بلا إفصاح.
+        label:
+          p.accountingMode === "ACTIVE"
+            ? "حقوق الملكية (موازنةُ إجبار — الميزانية المُدقّقة في الدليل المحاسبي النظاميّ)"
+            : "حقوق الملكية (مشتقّة)",
+        amount: p.equity,
+      },
     ];
   }
 

@@ -321,6 +321,11 @@ describe("statutory accounting compliance", () => {
     expect(report.unmapped.lineCount).toBe(2);
     expect(report.unmapped.debit).toBe("40.00");
     expect(report.unmapped.credit).toBe("40.00");
+
+    // والحزمة الرسمية محجوبةٌ ما دام ثمّة سطرٌ غير مربوط (§٥) — لا إخراجَ ورقةٍ رسميّةٍ ناقصة.
+    await expect(
+      getStatutoryAccountantPack({ from: "2026-08-01", to: "2026-08-31" }),
+    ).rejects.toThrow(/بلا حسابٍ نظاميّ/);
   });
 
   it("يحجب بوابة ACTIVE بوضوح قبل وجود إصدار نظامي معتمد", async () => {
