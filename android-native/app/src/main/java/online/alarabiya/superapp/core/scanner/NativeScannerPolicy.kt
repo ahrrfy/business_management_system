@@ -32,11 +32,15 @@ private val InvisibleBarcodeMarks = Regex("[\\u00ad\\u061c\\u200b-\\u200f\\u202a
 private val EdgeScannerFraming = Regex("^[\\s\\u0000-\\u001f\\u007f-\\u009f]+|[\\s\\u0000-\\u001f\\u007f-\\u009f]+$")
 private val UnsupportedBarcodeWhitespace = Regex("[\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]")
 
-/** نفس عقد هوية الباركود في الخادم: framing طرفي، أرقام عربية، وعلامات RTL الخفية. */
+/** نفس عقد **هوية** الباركود في الخادم (`canonicalizeBarcodeInput`): framing طرفي، أرقام عربية، علامات
+ *  RTL الخفية، **وإسقاطُ مسافة ASCII الداخلية**. الأخيرُ لازمٌ منذ ١٥/٩: الخادم يُخزّن باركود المصنع
+ *  حرفيّاً «1  0172» ويرسله للعميل، والعمودُ المولَّد `barcodeNormalized` يُسقط المسافة للمطابقة — فلو لم
+ *  يُسقطها العميلُ الأصيل هنا لَصار مسحُ «10172» غيرَ مطابقٍ (NoMatch) لصنفٍ يعرفه الخادمُ والويب. */
 fun normalizeNativeBarcode(rawValue: String): String? {
     val visible = rawValue.replace(InvisibleBarcodeMarks, "").replace(EdgeScannerFraming, "")
     val normalized = buildString(visible.length) {
         visible.forEach { char ->
+            if (char == ' ') return@forEach // مسافةُ ASCII داخلية = ضجيجُ إدخال، تُسقَط (نظير الخادم)
             append(
                 when (char) {
                     in '٠'..'٩' -> ('0'.code + (char.code - '٠'.code)).toChar()

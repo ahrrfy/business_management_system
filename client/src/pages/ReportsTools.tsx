@@ -87,7 +87,12 @@ export default function ReportsTools() {
           { label: "أصول ثابتة", amount: Number(fp.fixedAssets) },
           { label: "ذمم دائنة (موردون)", amount: Number(fp.apCredit) },
           { label: "تسوية مشتريات نقدية معلّقة", amount: Number(fp.cashPurchaseClearingCredit) },
-          { label: "حقوق الملكية", amount: Number(fp.equity) },
+          {
+            // عند تفعيل الدفتر: نُصرّح أنّ الحقوق موازنةُ إجبار لا اشتقاقٌ من الدفتر (الميزانية
+            // المُدقّقة في الدليل المحاسبي النظاميّ) — كي لا يُقرأ رقمُ الإجبار في التصدير كأنه حقيقيّ.
+            label: fp.accountingMode === "ACTIVE" ? "حقوق الملكية (موازنةُ إجبار — انظر الدليل المحاسبي النظاميّ)" : "حقوق الملكية",
+            amount: Number(fp.equity),
+          },
         ];
         return { sheetName: SHEET_LABEL.position, title: SHEET_LABEL.position, meta, rows, columns: [{ key: "label", header: "البند" }, moneyCol("amount", "المبلغ")] };
       }

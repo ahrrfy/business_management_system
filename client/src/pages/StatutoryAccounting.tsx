@@ -546,7 +546,7 @@ function FinancialStatementsTab() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="max-w-full overflow-x-auto pb-1"><PeriodFilter value={period} onChange={setPeriod} /></div>
-        <Button disabled={!trial?.available || !income?.available || !balance?.available || trial.mode !== "ACTIVE"} onClick={exportAccountantPack}>
+        <Button disabled={!trial?.available || !income?.available || !balance?.available || trial.mode !== "ACTIVE" || trial.unmapped.lineCount > 0} onClick={exportAccountantPack}>
           <FileSpreadsheet className="size-4" aria-hidden />تصدير حزمة مراقب الحسابات
         </Button>
       </div>
@@ -555,6 +555,11 @@ function FinancialStatementsTab() {
       {trial?.available && trial.mode !== "ACTIVE" && (
         <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-base text-[var(--sem-warn)]">
           هذه أرقام معاينة من دورة SHADOW وليست قوائم رسمية. يتاح تصدير حزمة مراقب الحسابات بعد اجتياز بوابة ACTIVE فقط.
+        </div>
+      )}
+      {trial?.available && trial.unmapped.lineCount > 0 && (
+        <div className="rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-3 text-base text-[var(--sem-neg)]">
+          الدفتر يحوي {trial.unmapped.lineCount} سطراً مُرحَّلاً بلا حسابٍ نظاميّ ({fmtAr(trial.unmapped.debit)} مديناً / {fmtAr(trial.unmapped.credit)} دائناً) لا يظهر في الكشوفات أدناه — أكمِل ربط الأدوار بالخريطة النظامية المعتمدة؛ وتصدير الحزمة الرسمية محجوبٌ حتى يُعالَج (§٥: لا دينار يُسقَط صامتاً).
         </div>
       )}
       {trial?.available && income?.available && balance?.available && (

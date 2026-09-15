@@ -13,7 +13,7 @@ import {
   suppliers,
 } from "../../../drizzle/schema";
 import { appErrorMessage } from "@shared/errors";
-import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { assertValidUnitFactors } from "./unitFactors";
@@ -338,7 +338,9 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           variantId,
           unitName: u.unitName,
           conversionFactor: u.conversionFactor,
-          barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
+          // يُحفَظ حرفيّاً بصيغة المصنع (يُبقي المسافة الداخلية)؛ التفرّد فُحص أعلاه بالهوية المُطبَّعة،
+          // والمطابقة تبقى عبر `barcodeNormalized` المولَّد (§الباركود، ١٥/٩).
+          barcode: canonicalizeBarcodeForStorage(u.barcode ?? "") || null,
           isBaseUnit: u.isBaseUnit ?? false,
           isStoreSaleUnit: u.isStoreSaleUnit ?? u.isBaseUnit ?? false,
         });
@@ -352,11 +354,11 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
         // باركودات بديلة تُدرَج ذرّياً في نفس المعاملة — تفرّدها تم التحقّق منه في assertCatalogUniqueness.
         for (const a of u.barcodeAliases ?? []) {
-          const code = canonicalizeBarcodeInput(a.barcode ?? "");
-          if (!code) continue;
+          const identity = canonicalizeBarcodeInput(a.barcode ?? ""); // حارس الفراغ (يسقط المسافة/الفارغ)
+          if (!identity) continue;
           await tx.insert(productUnitBarcodes).values({
             productUnitId,
-            barcode: code,
+            barcode: canonicalizeBarcodeForStorage(a.barcode ?? ""), // يُحفَظ حرفيّاً بصيغة المصنع
             note: (a.note ?? "").trim() || null,
             createdBy: actor.userId,
           });

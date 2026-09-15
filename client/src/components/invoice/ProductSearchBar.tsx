@@ -347,7 +347,9 @@ export function ProductSearchBar({
     }
   }
 
-  const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); });
+  // الوضع التمريريّ (١٥/٩): حقلُ بحثٍ اسمُ المنتج فيه هو الأصل — لا يُحجَب أيّ حرفٍ ولا يُفكُّ عربيٌّ
+  // إلى إنجليزيّة، ويُصدَر المسحُ فقط لومضةٍ باركوديّة واثقة (بلاغ المالك: الكتابة تنقلب/تفقد المسافة).
+  const barcodeInput = useBarcodeInput((code) => { void resolveExactBarcode(code); }, { passthrough: true });
 
   const handleKey = async (e: KeyboardEvent<HTMLInputElement>) => {
     barcodeInput.handleKeyDown(e, setQuery);

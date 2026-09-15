@@ -938,6 +938,10 @@ export interface FinancialPosition {
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
+  /** أساس الحقوق: "FORCED_BALANCE" = موازنةُ إجبار (أصول − خصوم)، لا اشتقاقٌ من الدفتر. */
+  equityBasis: "FORCED_BALANCE";
+  /** وضع الدفتر المزدوج وقت اللقطة — عند "ACTIVE" توجّه الشاشةُ للميزانية النظامية المُدقّقة. */
+  accountingMode: "OFF" | "SHADOW" | "ACTIVE";
   branchScoped: boolean;
   // FI-02: حارس انحراف مرئي — AR/AP يُقرآن من currentBalance القابل للتحوّل؛ نطابقه (قراءة فقط)
   // مع المُتوقَّع المُشتقّ عبر reconcile* فيظهر أيّ انحراف صامت بدل أن يُمرَّر بصمت في القوائم.
@@ -991,6 +995,8 @@ export async function getFinancialPosition(
     totalAssets: zero,
     totalLiabilities: zero,
     equity: zero,
+    equityBasis: "FORCED_BALANCE",
+    accountingMode: "OFF",
     branchScoped: !!opts.branchId,
     arReconciled: true,
     apReconciled: true,
@@ -1591,6 +1597,11 @@ export async function getFinancialPosition(
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),
+    // الحقوق أعلاه موازنةُ إجبار (أصول − خصوم) تُبقي الميزانية متوازنةً بناءً — لا اشتقاقٌ من الدفتر.
+    // نُصرّح بالأساس والوضع صراحةً كي لا تُقرأ موازنةُ الإجبار كأنها حقوقٌ حقيقيّة؛ وعند ACTIVE توجّه
+    // الشاشةُ للميزانية المُدقّقة من الدفتر في الكشوفات النظامية (getStatutoryBalanceSheet) بدل التكرار.
+    equityBasis: "FORCED_BALANCE" as const,
+    accountingMode: (payrollMode?.mode ?? "OFF") as "OFF" | "SHADOW" | "ACTIVE",
     branchScoped: !!bId,
     arReconciled: arDrift.length === 0,
     apReconciled: apDrift.length === 0,

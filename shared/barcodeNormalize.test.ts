@@ -4,6 +4,7 @@ import {
   barcodeIdentityCandidates,
   barcodesEquivalent,
   canonicalizeBarcodeInput,
+  canonicalizeBarcodeForStorage,
   hasUnsupportedBarcodeCharacters,
 } from "./barcodeNormalize";
 
@@ -46,6 +47,52 @@ describe("canonicalizeBarcodeInput — تطبيع مدخل الباركود (م�
     expect(hasUnsupportedBarcodeCharacters("AB\t12")).toBe(true);
     expect(hasUnsupportedBarcodeCharacters("AB\u000012")).toBe(true);
     expect(canonicalizeBarcodeInput("AB\u2060\u00ad12")).toBe("AB12");
+  });
+});
+
+describe("canonicalizeBarcodeForStorage — حفظُ صيغة المصنع حرفيّاً (قرار المالك ١٥/٩)", () => {
+  it("يُبقي المسافة الداخلية (صيغة المصنع «1  0172») — لا إزالةَ ولا إضافة", () => {
+    expect(canonicalizeBarcodeForStorage("1  0172")).toBe("1  0172"); // مسافتان تبقيان كما هما
+    expect(canonicalizeBarcodeForStorage("1 0172")).toBe("1 0172");
+    expect(canonicalizeBarcodeForStorage("AB 12")).toBe("AB 12");
+    expect(canonicalizeBarcodeForStorage("10172")).toBe("10172"); // بلا مسافة أصلاً ⇒ كما هو
+  });
+
+  it("يقلّم الحواف غير المرئية فقط (لصق Excel/لاحقة الماسح) دون المساس بالتسلسل المرئيّ", () => {
+    expect(canonicalizeBarcodeForStorage("  1  0172 ")).toBe("1  0172"); // طرفيٌّ يُزال، داخليٌّ يبقى
+    expect(canonicalizeBarcodeForStorage("\t1  0172\n")).toBe("1  0172");
+    expect(canonicalizeBarcodeForStorage("‏ 1  0172 ⁦")).toBe("1  0172"); // علامات bidi تُسبّب القلب ⇒ تُزال
+  });
+
+  it("يطوي الأرقام العربية-الهندية إلى لاتينية (تسرّبُ تخطيطٍ لا رقمٌ مقصود) مع إبقاء المسافة", () => {
+    expect(canonicalizeBarcodeForStorage("١  ٠١٧٢")).toBe("1  0172");
+    expect(canonicalizeBarcodeForStorage("ALR٠٠٠١٠٨٤")).toBe("ALR0001084");
+  });
+
+  it("الفارغ والمسافات وحدها ⇒ سلسلة فارغة", () => {
+    expect(canonicalizeBarcodeForStorage("")).toBe("");
+    expect(canonicalizeBarcodeForStorage("   ")).toBe(""); // كلّها طرفية ⇒ تُقلَّم
+  });
+
+  it("مُتعادِل: تطبيعُ المُطبَّع لا يغيّره (idempotent) — لا قلبٌ ولا إعادةُ ترتيب", () => {
+    for (const v of ["1  0172", "1 0172", "AB 12", "10172", "ALR0001084"]) {
+      expect(canonicalizeBarcodeForStorage(canonicalizeBarcodeForStorage(v))).toBe(v);
+    }
+  });
+
+  it("⭐ العقد الحاكم: المخزَّن يحفظ المسافة، والهويةُ تُسقطها ⇒ المسحُ «10172» يطابق المخزَّن «1  0172»", () => {
+    const stored = canonicalizeBarcodeForStorage("1  0172");
+    expect(stored).toBe("1  0172"); // العرض/الطباعة: صيغة المصنع
+    // الهوية المشتقّة من المخزَّن (نظير عمود barcodeNormalized): تُسقط المسافة ⇒ تطابق المسحَ عديمَ المسافة
+    expect(canonicalizeBarcodeInput(stored)).toBe("10172");
+    expect(canonicalizeBarcodeInput("10172")).toBe("10172");
+    expect(barcodesEquivalent(stored, "10172")).toBe(true); // مسحٌ بلا مسافة يطابق مخزَّناً بمسافة
+  });
+
+  it("يوافق canonicalizeBarcodeInput حين لا مسافة داخلية (الفرقُ الوحيد هو المسافة)", () => {
+    for (const v of ["  10095 ", "١٠٠٩٥", "MLZ6A", "NASR-6A", "ALR٠٠٠١٠٨٤", "‏10095⁦"]) {
+      expect(canonicalizeBarcodeForStorage(v)).toBe(canonicalizeBarcodeInput(v));
+    }
   });
 });
 
