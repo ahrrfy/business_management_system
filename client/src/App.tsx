@@ -90,7 +90,7 @@ const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
 const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const StoreHub = lazy(() => import("@/pages/StoreHub"));
-const SalesInvoice = lazy(() => import("@/pages/SalesInvoice"));
+const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
 const ProductContentDrafts = lazy(() => import("@/pages/ProductContentDrafts"));
@@ -414,9 +414,9 @@ export default function App() {
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
-      <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoice /></RequireRole></Shell></Route>
+      <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       {/* تصحيح الفاتورة (0168): نفس شاشة البيع في وضع التصحيح (عكس + إعادة إصدار) — مديريّ فقط. */}
-      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoice /></RequireRole></Shell></Route>
+      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}

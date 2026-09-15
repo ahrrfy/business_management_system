@@ -50,7 +50,7 @@ export interface FinalizeInput {
   clientRequestId: string;
   /** المبلغ المقبوض فعلاً؛ يجب أن يساوي إجمالي النيّة (لا بيع رقميّ جزئيّ). */
   paymentAmount: string;
-  paymentMethod: PaymentMethod;
+  paymentMethod: PaymentMethod | "CREDIT";
   externalPaymentAttemptId?: number | null;
   deviceId?: string | null;
   customerId?: number | null;
@@ -142,6 +142,13 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       what: "تعذّر تثبيت السلة المختلطة",
       why: "العميل تغيّر بعد إعداد الكروت",
       doThis: "استعد النيّة المحفوظة بعميلها الأصلي؛ لا تُعِد إصدار الكروت",
+    }) });
+  }
+  if (input.paymentMethod !== "CREDIT" && !money(input.paymentAmount).eq(money(intent.expectedTotal))) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: appErrorMessage({
+      what: "المقبوض لا يطابق إجمالي الكروت والأصناف",
+      why: `إجمالي النيّة المحفوظة ${intent.expectedTotal}؛ لا بيع رقميّ جزئيّ`,
+      doThis: "حصّل إجمالي السلة المحفوظة كاملاً قبل التثبيت، ولا تُعد تمرير البطاقة إن تم قبض المبلغ",
     }) });
   }
   const boundExternalAttemptId = intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId);

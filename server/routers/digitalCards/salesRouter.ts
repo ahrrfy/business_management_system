@@ -196,7 +196,7 @@ export const salesRouter = router({
         intentId: z.number().int().positive(),
         clientRequestId: z.string().min(8).max(80),
         paymentAmount: nonNegMoneyString,
-        paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]),
+        paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "CREDIT"]),
         customerId: z.number().int().positive().nullish(),
       }),
     )
