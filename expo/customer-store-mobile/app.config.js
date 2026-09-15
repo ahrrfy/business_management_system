@@ -46,14 +46,14 @@ const bundleId =
     .toLowerCase()
     .split(".")
     .map((segment) => (/^[a-zA-Z]/.test(segment) ? segment : "x" + segment))
-    .join(".") || "space.manus.app";
+    .join(".") || "online.alarabiya.customerstore";
 // رابط عميق ثابت لتطبيق العملاء؛ يلزم بناء تطوير/إصدار رسمي لتجربته، لا Expo Go.
 const schemeFromBundleId = "maktabaalarabiya";
 
 const env = {
   appName: "مكتبة العربية",
   appSlug: "customer-store-mobile",
-  logoUrl: "/manus-storage/icon_0519150d.png",
+  logoUrl: "./assets/images/icon.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -152,7 +152,7 @@ const config = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["arm64-v8a"],
+          buildArchs: ["arm64-v8a", "armeabi-v7a"],
           minSdkVersion: 26,
         },
         ios: {

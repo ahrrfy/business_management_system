@@ -120,6 +120,7 @@ const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
+const LegalDocument = lazy(() => import("@/pages/LegalDocument"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
@@ -384,6 +385,11 @@ export default function App() {
       <Route path="/store/product/:productId" component={Storefront} />
       <Route path="/store/category/:categoryId" component={Storefront} />
       <Route path="/store" component={Storefront} />
+      {/* الصفحات القانونية وسياسة الخصوصية وحذف الحساب — عامة بلا دخول ومطلوبة لـ Google Play */}
+      <Route path="/legal/privacy" component={LegalDocument} />
+      <Route path="/legal/terms" component={LegalDocument} />
+      <Route path="/legal/returns" component={LegalDocument} />
+      <Route path="/legal/delete-account" component={LegalDocument} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
