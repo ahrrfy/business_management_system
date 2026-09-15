@@ -53,7 +53,7 @@ beforeEach(async () => {
  * بلا أيّ أثرٍ ماليّ أو مخزنيّ — وهذا ما يحرسه هذا الملف على حدود كل طفرةٍ في المحطة.
  */
 describe("رفض رصيد زين في كل منافذ قبض المحطة", () => {
-  it("يحفظ مسار الاستبدال وردية قبض الفرق النقدي ولا يقبل نقداً بلا وردية", async () => {
+  it("لا يجمّد طلب الاستبدال وردية قبض الفرق النقدي قبل الاعتماد", async () => {
     const caller = appRouter.createCaller(context());
     const request = {
       requestKey: "exchange-cash-shift-contract",
@@ -65,14 +65,9 @@ describe("رفض رصيد زين في كل منافذ قبض المحطة", () =
       },
     };
 
-    await expect(caller.salesControl.requestExchange(request)).rejects.toThrow(/وردية قبض فرق الاستبدال/);
-    await expect(caller.salesControl.requestExchange({
-      ...request,
-      payload: {
-        ...request.payload,
-        additionalPayment: { ...request.payload.additionalPayment, shiftId: 1 },
-      },
-    })).rejects.toThrow(/الفاتورة غير موجودة/);
+    // مرحلة الطلب صفرية الأثر؛ المراجع يختار ورديةً مفتوحة لحظة الاعتماد، لذلك يصل
+    // الطلب هنا إلى تحقق الفاتورة بدلاً من اشتراط درج قد يُغلق قبل المراجعة.
+    await expect(caller.salesControl.requestExchange(request)).rejects.toThrow(/الفاتورة غير موجودة/);
   });
 
   it("يرفض قبض البطاقة من طابور الاستقبال بلا محاولة SALES_COLLECTION مؤكدة", async () => {
