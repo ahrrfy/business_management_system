@@ -39,6 +39,8 @@ self.addEventListener("push", (event) => {
     lang: "ar",
     icon: "/icon-192.png",
     badge: "/icon-192.png",
+    silent: false,
+    sound: "/notification.wav",
     // نمط اهتزاز ملموس يعطي الهاتف إحساس التنبيه الأصلي
     vibrate: [150, 80, 150, 80, 250],
     // tag موحّد حسب نوع الإشعار أو فريد؛ يمنع التراكم المزعج
