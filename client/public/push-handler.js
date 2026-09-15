@@ -35,7 +35,10 @@ self.addEventListener("push", (event) => {
       badge: "/icon-192.png",
       // النقر يفتح URL؛ tag يمنع تراكم عدّة إشعارات صباحية بنفس اليوم إن حدث سباق.
       tag: payload?.kind || "brief",
-      renotify: false,
+      renotify: true,
+      silent: false,
+      vibrate: [200, 100, 200],
+      sound: "/notification.wav",
       data: { url },
     }),
   );
