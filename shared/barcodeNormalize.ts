@@ -39,12 +39,39 @@ const UNSUPPORTED_FORMAT = /[\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\
  *   والعمودُ المولَّد `barcodeNormalized` — يحرس تطابقَهما اختبار `barcodeAliases.test.ts`.
  */
 export function canonicalizeBarcodeInput(raw: string): string {
+  return normalizeBarcode(raw, { stripInternalSpace: true });
+}
+
+/**
+ * تطبيعُ **التخزين** — يُحفَظ الباركود «كما هو من المصنع» (قرار المالك ١٥/٩، بالصور): لا إزالةَ مسافةٍ
+ * داخلية، ولا إضافة، ولا إعادة ترتيب، ولا قلب/عكس. يختلف عن `canonicalizeBarcodeInput` في أمرٍ واحد:
+ * **يُبقي مسافةَ ASCII الداخلية (0x20)** فتُحفَظ صيغة المصنع «1  0172» حرفيّاً وتُطبَع/تُعرَض كما هي.
+ * ما يزال يُزيله (كلاهما غير مرئيّ ولا يُغيّر التسلسل المرئيّ للباركود):
+ * - علاماتُ الاتجاه/التنسيق الخفيّة (bidi/zero-width) — **وجودها هو ما يُسبِّب القلب/العكس** الذي حذّر
+ *   منه المالك، فإسقاطُها يصون التسلسل الأماميّ الصحيح لا يكسره.
+ * - الفراغُ/التحكّم الطرفيّ (لصقُ Excel، لاحقةُ الماسح CR/LF/Tab) — طرفيٌّ فقط، غيرُ مرئيّ، وليس جزءاً
+ *   من ملصق المصنع.
+ * - طيُّ الأرقام العربية-الهندية/الفارسية إلى لاتينية: لا ترميزَ باركودٍ يعتمدها، فظهورُها تسرّبُ تخطيطِ
+ *   لوحةٍ عربية لا رقمٌ مقصود — والطيُّ **يُطابق** المخزَّنَ بملصق المصنع اللاتينيّ لا يُخالفه (وعلى
+ *   الباركود اللاتينيّ الصحيح هو لا-عمليّة، فلا «تغيير» على ما يكتبه المستخدم فعلاً).
+ * المطابقةُ لا تعتمد هذا النصّ المخزَّن مباشرةً بل العمودَ المولَّد `barcodeNormalized` (يُسقط المسافة
+ * ويطوي ويصغّر للهوية) — فيُحفَظ المرئيُّ حرفيّاً ويُطابَق المسحُ عبر الهوية المُطبَّعة معاً.
+ */
+export function canonicalizeBarcodeForStorage(raw: string): string {
+  return normalizeBarcode(raw, { stripInternalSpace: false });
+}
+
+function normalizeBarcode(raw: string, opts: { stripInternalSpace: boolean }): string {
   const trimmed = (raw ?? "")
     .replace(INVISIBLE_FORMAT_MARKS, "")
     .replace(EDGE_SCANNER_FRAMING, "");
   let out = "";
   for (const ch of trimmed) {
-    if (ch === " ") continue; // مسافة ASCII داخلية = ضجيجُ إدخال، تُسقَط (انظر التوثيق أعلاه)
+    if (ch === " ") {
+      if (opts.stripInternalSpace) continue; // الهوية تُسقط المسافة؛ التخزين يُبقيها (صيغة المصنع)
+      out += ch;
+      continue;
+    }
     const ai = ARABIC_INDIC_DIGITS.indexOf(ch);
     if (ai >= 0) {
       out += String(ai);

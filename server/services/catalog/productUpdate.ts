@@ -4,7 +4,7 @@
 // لمعرّف الوحدة) ومسارُ القالب المشترك في `productEditService.ts`. لا حارسَ يُكتب هنا بيدٍ بعد اليوم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput } from "@shared/barcodeNormalize";
+import { barcodeComparisonKey, barcodeIdentityCandidates, canonicalizeBarcodeInput, canonicalizeBarcodeForStorage } from "@shared/barcodeNormalize";
 import { appErrorMessage } from "@shared/errors";
 import { findBarcodeClashes } from "./barcodeAliases";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
@@ -244,7 +244,7 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
             .set({
               unitName: u.unitName,
               conversionFactor: u.conversionFactor,
-              barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
+              barcode: canonicalizeBarcodeForStorage(u.barcode ?? "") || null, // حرفيّاً بصيغة المصنع
               isBaseUnit: !!u.isBaseUnit,
               isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
               isActive: true,
@@ -259,7 +259,7 @@ export async function updateProductTx(tx: Tx, input: UpdateProductInput, actor: 
             variantId: v.id,
             unitName: u.unitName,
             conversionFactor: u.conversionFactor,
-            barcode: canonicalizeBarcodeInput(u.barcode ?? "") || null,
+            barcode: canonicalizeBarcodeForStorage(u.barcode ?? "") || null, // حرفيّاً بصيغة المصنع
             isBaseUnit: !!u.isBaseUnit,
             isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
           });

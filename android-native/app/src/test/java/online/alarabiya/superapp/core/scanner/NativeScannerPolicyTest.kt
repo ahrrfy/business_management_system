@@ -45,6 +45,9 @@ class NativeScannerPolicyTest {
         assertTrue(nativeBarcodesEquivalent("0036000291452", "036000291452"))
         assertFalse(nativeBarcodesEquivalent("000123", "00123"))
         assertNull(normalizeNativeScanResult(NativeScanField.BARCODE, "A".repeat(65)))
+        // (١٥/٩) يُسقط مسافة ASCII الداخلية كالخادم: باركود المصنع المخزَّن «1  0172» يطابق مسحَ «10172».
+        assertEquals("10172", normalizeNativeBarcode("1  0172"))
+        assertTrue(nativeBarcodesEquivalent("1  0172", "10172"))
     }
 
     @Test

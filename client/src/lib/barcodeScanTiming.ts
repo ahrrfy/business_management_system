@@ -187,19 +187,29 @@ export function resolveScanSettle(result: FlushResult, prefix: string, minLength
  */
 export function recoverSlowScanCode(rawFieldValue: string, minLength: number): string | null {
   const code = normalizeBarcodeScannerInput(rawFieldValue);
-  if (code.length < Math.max(4, minLength)) return null;
-  if (hasUnsupportedBarcodeCharacters(code)) return null;
+  return isConfidentScanCode(code, minLength) ? code : null;
+}
+
+/**
+ * هل يبدو الرمزُ المُطبَّع (بعد `normalizeBarcodeScannerInput`/فكّ الومضة) **باركوداً واثقاً**؟
+ *
+ * بوّابةُ الثقة — تفصلُ مسحَ القارئ عن الكتابة البشرية السريعة التي صُنّفت خطأً كومضة: تحت تخطيطٍ
+ * عربيّ، الكتابةُ السريعة لاسمٍ عربيّ («عمار السلامي») تُفكّ عبر `event.code` إلى ASCII عشوائيّ يمرّ
+ * فحصَ الطول وحده ⇒ يُصدَر «مسحاً» فيُحوَّل البحثُ إلى إنجليزيّةٍ وتُبتَر المسافة (بلاغ المالك ١٥/٩).
+ * فنشترط أن يكون الرمز: رقميّاً محضاً (بعد طيّ الفراغ)، أو بادئةَ مستندٍ ALR، أو باركودَ نظامٍ معروفاً،
+ * أو بادئةَ حرفٍ قصيرة **لاصقة** لنواةٍ رقمية (مقاس مصنعٍ «B5»…). الأسماءُ العربية المفكوكة (حروفٌ بلا
+ * أرقام) تسقط ⇒ تبقى بحثاً نصّياً. نفسُ البوّابة يستعملها `recoverSlowScanCode` (قارئٌ بطيء عند Enter)
+ * والوضعُ التمريريّ في `useBarcodeInput` (حقولُ بحثِ الاسم) — مصدرٌ واحد لتعريف «الباركود الواثق».
+ * ⚠️ نقيس الالتصاق على `code` بمسافاته لا على `digitsOnly` — وإلّا عُدَّ «حرفان + فراغ + رقم» («في 2026»
+ * ⇐ «td 2026») باركوداً خطأً (§٥؛ مراجعة Codex ١٤/٩).
+ */
+export function isConfidentScanCode(code: string, minLength: number): boolean {
+  if (code.length < Math.max(4, minLength)) return false;
+  if (hasUnsupportedBarcodeCharacters(code)) return false;
   const digitsOnly = code.replace(/\s+/g, "");
-  // بادئةُ حرفٍ قصيرة على باركودٍ رقميّ (مقاس مصنعٍ «B5»…): ١٤/٩ بلاغ المالك — القارئُ البطيء تحت
-  // **تخطيط عربيّ** يُنتج «لا51822572015» (الحرف B ⇐ لا)؛ يترجمها `normalizeBarcodeScannerInput` إلى
-  // «b51822572015» لكنّ البوّابة الرقمية المحضة كانت ترفضها فتضيع. نقبلها إن **لاصقت** البادئةُ (حرفٌ
-  // أو حرفان، بلا أيّ فراغ) نواةً رقميّة (يحلّها مسارُ «نواة الأرقام» الخادميّ #1119) — فلا تتأثّر
-  // القراءةُ بلغة الكيبورد. ⚠️ مراجعة Codex: نقيس الالتصاقَ على `code` بمسافاته لا على `digitsOnly` —
-  // وإلّا عُدَّ بحثٌ بشريّ «حرفان + فراغ + رقم» («في 2026» ⇐ «td 2026») باركوداً خطأً (§٥). المسافةُ
-  // بين البادئة والرقم دليلُ عبارةٍ بشرية، فتبقى بحثاً.
   const shortLetterPrefixedDigits =
     /^[^\d\s]{1,2}\d+$/.test(code) && barcodeDigitCore(code).length >= Math.max(4, minLength);
-  const confident =
-    /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code) || shortLetterPrefixedDigits;
-  return confident ? code : null;
+  return (
+    /^\d+$/.test(digitsOnly) || /^ALR/i.test(code) || looksLikeSystemBarcode(code) || shortLetterPrefixedDigits
+  );
 }

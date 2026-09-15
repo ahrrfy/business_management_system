@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { reserveStudioImageTasks } from "../services/productStudioService";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { barcodeString } from "../lib/schemas";
+import { barcodeString, barcodeStorageString } from "../lib/schemas";
 import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, bulkReassignStudioTasks, bulkSetStudioPriority, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioTaskPreviousImages, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listMyStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, reassignStudioTask, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateCampaignAssignees, updateStudioCampaignDetails, updateStudioTaskSchedule, getStudioProductUnits, linkStudioBarcode, type ProductStudioActor } from "../services/productStudioService";
 import { logAudit } from "../services/auditService";
 import { deleteProductImage, listProductImagesForManager, reorderProductImages, setPrimaryProductImage } from "../services/productStudioImageManager";
@@ -184,7 +184,7 @@ export const productStudioRouter = router({
     .input(
       z.object({
         productUnitId: z.number().int().positive(),
-        barcode: barcodeString,
+        barcode: barcodeStorageString,
         note: z.string().max(255).nullish(),
       }),
     )
