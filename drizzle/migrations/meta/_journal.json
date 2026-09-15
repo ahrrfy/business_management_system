@@ -2269,6 +2269,13 @@
 			"when": 1788148812000,
 			"tag": "0354_inventory_revaluation_account",
 			"breakpoints": true
+		},
+		{
+			"idx": 356,
+			"version": "5",
+			"when": 1788148814000,
+			"tag": "0356_bundle_transfer_snapshot",
+			"breakpoints": true
 		}
 	]
 }

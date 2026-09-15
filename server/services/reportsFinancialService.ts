@@ -1190,10 +1190,15 @@ export async function getFinancialPosition(
     SELECT CAST(
       COALESCE(SUM(bs.quantity * pv.costPrice), 0)
       + COALESCE((
-          SELECT SUM((stl.quantitySent - COALESCE(stl.quantityReceived, 0)) * pv2.costPrice)
+          SELECT SUM(
+            (stl.quantitySent - COALESCE(stl.quantityReceived, 0))
+            * COALESCE(stlbc.componentBaseQuantity, 1)
+            * pv2.costPrice
+          )
           FROM stockTransfers st
           JOIN stockTransferLines stl ON stl.transferId = st.id
-          JOIN productVariants pv2 ON pv2.id = stl.variantId
+          LEFT JOIN stockTransferLineBundleComponents stlbc ON stlbc.transferLineId = stl.id
+          JOIN productVariants pv2 ON pv2.id = COALESCE(stlbc.componentVariantId, stl.variantId)
           JOIN products p2 ON p2.id = pv2.productId
           WHERE st.transferStatus = 'IN_TRANSIT'
             AND p2.isConsignment = false

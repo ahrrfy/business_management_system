@@ -523,6 +523,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   categories_name_unique: { field: "اسم الفئة", entity: "فئات المنتجات" },
   uq_recipe_name: { field: "اسم الوصفة", entity: "وصفات الإنتاج" },
   uq_bundle_component: { msg: "هذا المكوّن مُضاف مسبقاً لنفس البكج — عدّل كمية السطر الموجود بدل إضافته مرّة ثانية." },
+  uq_stlbc_line_component: { msg: "لقطة مكوّن البكج مثبتة مسبقاً على سطر التحويل — أعد تحميل السند قبل المحاولة مجدداً." },
 
   // ── تسعير الطباعة الرقمية ──
   uq_print_face_price: { msg: "لهذا المقاس والنمط سعر وجه مسجّل مسبقاً — عدّل السعر الموجود بدل إضافة سطر جديد." },

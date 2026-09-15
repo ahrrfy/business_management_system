@@ -49,12 +49,17 @@ const QUICK_REASONS = [
   "تلف أو كسر بالبضاعة",
 ];
 
-/** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
-function unitsLabel(base: number, factor: number, unitName: string): string {
+/** «٢ درزن (٢٤ قطعة)» أو «٢ بكج» — يحافظ على وحدة المستند التشغيلية. */
+export function returnQuantityLabel(
+  base: number,
+  factor: number,
+  unitName: string,
+  baseUnitName = "قطعة",
+): string {
   if (base <= 0) return "0";
-  if (factor <= 1) return `${base} ${unitName || "قطعة"}`;
-  if (base % factor !== 0) return `${base} قطعة`;
-  return `${base / factor} ${unitName} (${base} قطعة)`;
+  if (factor <= 1) return `${base} ${unitName || baseUnitName}`;
+  if (base % factor !== 0) return `${base} ${baseUnitName}`;
+  return `${base / factor} ${unitName} (${base} ${baseUnitName})`;
 }
 
 export interface ReturnComposerProps {
@@ -141,6 +146,10 @@ export function ReturnComposer({
   const inv = detail.data;
   const isWalkIn = !!inv?.walkInResolutionPolicy;
   const items = inv?.items ?? [];
+  const itemsById = useMemo(
+    () => new Map((inv?.items ?? []).map((item) => [item.invoiceItemId, item])),
+    [inv?.items],
+  );
 
   /** قيمة المرتجع — الصيغة في `lib/returnTotal` (مطابقةٌ لفرع الإرجاع الجزئيّ خادمياً، ومُختبَرة وحدها). */
   const returnValue = useMemo(
@@ -461,7 +470,6 @@ export function ReturnComposer({
         }
       : undefined;
 
-    const pieces = selectedLines.reduce((s, l) => s + l.baseQuantity, 0);
     const railLabel = pickedRail ? REFUND_RAIL_LABEL[pickedRail] : REFUND_RAIL_LABEL.DRAWER;
     const cashSource = usesTreasury ? "من خزينة الفرع" : "من الدرج المحدّد";
     const moneySentence = resolution
@@ -470,7 +478,18 @@ export function ReturnComposer({
         ? `يستلم الزبون ${fmt(refund.amount)} د.ع عبر ${railLabel}`
       : "بلا إرجاع نقود (تُخصَم من ذمّة العميل فقط)";
     const stockSentence = restock ? "والبضاعة تعود للرفّ" : "والبضاعة تالفة لا تعود للمخزون";
-    const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${pieces} قطعة)`;
+    const quantities = selectedLines.map((line) => {
+      const item = itemsById.get(line.invoiceItemId);
+      return item
+        ? `${item.productName}: ${returnQuantityLabel(
+          line.baseQuantity,
+          item.conversionFactor,
+          item.unitName,
+          item.baseUnitName,
+        )}`
+        : `${line.baseQuantity} وحدة`;
+    });
+    const scope = `${selectedLines.length === 1 ? "صنفٌ واحد" : `${selectedLines.length} أصناف`} (${quantities.join("، ")})`;
 
     /**
      * ⭐ حوارُ التأكيد يقول الحقيقة (تدقيق ١/٩/٢٦ — بلاغ «المرتجع وهميّ»).
@@ -789,12 +808,15 @@ export function ReturnComposer({
                     <tr key={it.invoiceItemId} className={`border-t ${v > 0 ? "bg-[var(--sem-info-bg)]/40" : ""}`}>
                       <td className="p-2">
                         <div className="font-semibold">{it.productName}{it.variantLabel ? ` — ${it.variantLabel}` : ""}</div>
+                        {it.isBundle && (
+                          <div className="text-[11px] font-medium text-primary">يُرجع كبكج كامل؛ وعند إعادته للمخزون يعيد النظام مكوّناته تلقائياً</div>
+                        )}
                         {it.conversionFactor > 1 && (
-                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} قطعة</div>
+                          <div className="text-[11px] text-muted-foreground">١ {it.unitName} = {it.conversionFactor} {it.baseUnitName}</div>
                         )}
                       </td>
-                      <td className="p-2 text-center">{unitsLabel(it.baseQuantity, it.conversionFactor, it.unitName)}</td>
-                      <td className="p-2 text-center">{it.returnedBaseQuantity > 0 ? unitsLabel(it.returnedBaseQuantity, it.conversionFactor, it.unitName) : "—"}</td>
+                      <td className="p-2 text-center">{returnQuantityLabel(it.baseQuantity, it.conversionFactor, it.unitName, it.baseUnitName)}</td>
+                      <td className="p-2 text-center">{it.returnedBaseQuantity > 0 ? returnQuantityLabel(it.returnedBaseQuantity, it.conversionFactor, it.unitName, it.baseUnitName) : "—"}</td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
                       <td className="p-2">
                         {it.remaining <= 0 ? (
@@ -805,7 +827,7 @@ export function ReturnComposer({
                               disabled={isLocked || qtyLocked || v <= 0} onClick={() => setQtyClamped(it.invoiceItemId, v - step, it.remaining)}>−</Button>
                             <Input dir="ltr" inputMode="numeric" className="h-8 w-16 text-center font-bold tabular-nums"
                               value={v > 0 ? String(v) : ""} placeholder="0" disabled={isLocked || qtyLocked}
-                              aria-label={`كمية إرجاع ${it.productName} بالقطعة`}
+                              aria-label={`كمية إرجاع ${it.productName} بوحدة ${it.unitName}`}
                               onChange={(e) => {
                                 const raw = e.target.value.replace(/[^\d]/g, "");
                                 setQtyClamped(it.invoiceItemId, raw ? parseInt(raw, 10) : 0, it.remaining);

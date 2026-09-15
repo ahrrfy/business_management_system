@@ -10,7 +10,7 @@ import { withTx } from "../tx";
 import { createWorkOrder } from "../workOrder/create";
 
 const TABLES = [
-  "auditLogs", "accountingEntries", "stockAdjustmentRequests", "stockTransferLines", "stockTransfers",
+  "auditLogs", "accountingEntries", "stockAdjustmentRequests", "stockTransferLineBundleComponents", "stockTransferLines", "stockTransfers",
   "productionLines", "productionOrders", "productionRecipeLines", "productionRecipes",
   "workOrderMaterials", "workOrders", "idempotencyKeys", "inventoryMovements", "branchStock",
   "productPrices", "productUnits", "productVariants", "products", "users", "branches",

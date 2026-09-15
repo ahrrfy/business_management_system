@@ -13,7 +13,7 @@ import { appRouter } from "../../routers";
  *  I5: عزل الفرع — الاستلام حصريّ للوجهة والإلغاء حصريّ للمصدر (غير المرفوعين).
  *  I6: لا استلام/إلغاء مزدوج (سند مقفل يرفض)، والاستلام idempotent بالمفتاح.
  */
-const TABLES = ["auditLogs", "idempotencyKeys", "journalLines", "journalEntries", "accountingEntries", "doubleEntrySettings", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "suppliers", "users", "branches"];
+const TABLES = ["auditLogs", "idempotencyKeys", "journalLines", "journalEntries", "accountingEntries", "doubleEntrySettings", "stockTransferLineBundleComponents", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "bundleComponents", "productVariants", "products", "suppliers", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -44,11 +44,17 @@ async function seed() {
     { id: 1, name: "ورق A4" },
     { id: 2, name: "قلم" },
     { id: 3, name: "ملزمة أمانة", isConsignment: true, consignorId: 9 },
+    { id: 4, name: "بكج مكتبي", isBundle: true },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PAP-1", costPrice: "5.00" },
     { id: 2, productId: 2, sku: "PEN-1", costPrice: "1.00" },
     { id: 3, productId: 3, sku: "CON-1", costPrice: "4.00" },
+    { id: 4, productId: 4, sku: "BUNDLE-1", costPrice: "0.00" },
+  ]);
+  await d.insert(s.bundleComponents).values([
+    { bundleVariantId: 4, componentVariantId: 1, componentBaseQuantity: 3 },
+    { bundleVariantId: 4, componentVariantId: 2, componentBaseQuantity: 1 },
   ]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 20 },
@@ -102,6 +108,135 @@ describe("I1: الإرسال ⇒ بالطريق (لا يظهر في رصيد أ�
     const wh1 = appRouter.createCaller(makeCtx(await userById(2)));
     expect(await wh2.inventory.transfersPendingIncoming()).toBe(1);
     expect(await wh1.inventory.transfersPendingIncoming()).toBe(0);
+  });
+});
+
+describe("I7: البكج وحدة تشغيلية في التحويل", () => {
+  it("يرسل بكجين كسطر بكج واحد ثم يستلمهما بتوسيع لقطة مكوّناتهما", async () => {
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      reason: "REBALANCE",
+      items: [{ variantId: 4, baseQuantity: 2 }],
+    });
+
+    expect(await stockOf(1, 1)).toBe(14);
+    expect(await stockOf(2, 1)).toBe(8);
+    expect(await stockOf(4, 1)).toBe(0);
+
+    const doc = await admin.inventory.transferGet({ id: created.transferId });
+    expect(doc.lines).toHaveLength(1);
+    expect(doc.lines[0]).toMatchObject({
+      variantId: 4,
+      quantitySent: 2,
+      isBundle: true,
+      unitLabel: "بكج",
+    });
+
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    await wh2.inventory.transferReceive({
+      transferId: created.transferId,
+      lines: [{ lineId: Number(doc.lines[0].id), quantityReceived: 2 }],
+    });
+
+    expect(await stockOf(1, 2)).toBe(6);
+    expect(await stockOf(2, 2)).toBe(2);
+    expect(await stockOf(4, 2)).toBe(0);
+  });
+
+  it("تعديل وصفة البكج بعد الإرسال لا يغيّر ما يستلمه الفرع الوجهة", async () => {
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      items: [{ variantId: 4, baseQuantity: 2 }],
+    });
+    const doc = await admin.inventory.transferGet({ id: created.transferId });
+
+    await db().delete(s.bundleComponents).where(eq(s.bundleComponents.bundleVariantId, 4));
+    await db().insert(s.bundleComponents).values({
+      bundleVariantId: 4,
+      componentVariantId: 1,
+      componentBaseQuantity: 1,
+    });
+
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    await wh2.inventory.transferReceive({
+      transferId: created.transferId,
+      lines: [{ lineId: Number(doc.lines[0].id), quantityReceived: 2 }],
+    });
+
+    expect(await stockOf(1, 2)).toBe(6);
+    expect(await stockOf(2, 2)).toBe(2);
+  });
+
+  it("إلغاء سند بكج يعكس مكوّنات الإرسال الفعلية ولا يعيد تفسير الوصفة الحالية", async () => {
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      items: [{ variantId: 4, baseQuantity: 2 }],
+    });
+
+    await db().delete(s.bundleComponents).where(eq(s.bundleComponents.bundleVariantId, 4));
+    await db().insert(s.bundleComponents).values({
+      bundleVariantId: 4,
+      componentVariantId: 2,
+      componentBaseQuantity: 4,
+    });
+    await admin.inventory.transferCancel({ transferId: created.transferId });
+
+    expect(await stockOf(1, 1)).toBe(20);
+    expect(await stockOf(2, 1)).toBe(10);
+    expect(await stockOf(4, 1)).toBe(0);
+  });
+
+  it("إلغاء سند بكج يبقى مسار تعافٍ آمناً عند فقدان لقطة المكوّنات", async () => {
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      items: [{ variantId: 4, baseQuantity: 2 }],
+    });
+    const doc = await admin.inventory.transferGet({ id: created.transferId });
+
+    await db()
+      .delete(s.stockTransferLineBundleComponents)
+      .where(eq(s.stockTransferLineBundleComponents.transferLineId, Number(doc.lines[0].id)));
+    await admin.inventory.transferCancel({ transferId: created.transferId });
+
+    expect(await stockOf(1, 1)).toBe(20);
+    expect(await stockOf(2, 1)).toBe(10);
+    expect(await stockOf(4, 1)).toBe(0);
+  });
+
+  it("عجز بكج واحد يُقيَّم بتكلفة مكوّناته المفقودة لا بتكلفة البكج الصفرية", async () => {
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      items: [{ variantId: 4, baseQuantity: 2 }],
+    });
+    const doc = await admin.inventory.transferGet({ id: created.transferId });
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    const received = await wh2.inventory.transferReceive({
+      transferId: created.transferId,
+      lines: [{
+        lineId: Number(doc.lines[0].id),
+        quantityReceived: 1,
+        note: "فُقد بكج واحد أثناء النقل",
+      }],
+    });
+
+    expect(received.discrepancyUnits).toBe(1);
+    expect(await stockOf(1, 2)).toBe(3);
+    expect(await stockOf(2, 2)).toBe(1);
+    const [loss] = await db()
+      .select({ cost: s.accountingEntries.cost })
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `TRANSFER_LOSS:${created.transferId}`));
+    expect(Number(loss?.cost)).toBe(16);
   });
 });
 

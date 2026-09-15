@@ -83,7 +83,7 @@ const transferColumns: ColumnDef<TransferRow, unknown>[] = [
   },
   {
     id: "units",
-    header: "الوحدات (مرسَل/مستلَم)",
+    header: "كميات الأسطر (مرسَل/مستلَم)",
     accessorFn: (r) => (r.totalReceivedBase != null ? `${fmtInt(r.totalSentBase)} / ${fmtInt(r.totalReceivedBase)}` : fmtInt(r.totalSentBase)),
     meta: { kind: "number", align: "center" },
     /* استثناءٌ مقصود: الخليّة رقمان في نصٍّ واحد («120 / 118») فالمقارنةُ المشتقّة تلصقهما
@@ -117,7 +117,7 @@ const transferColumns: ColumnDef<TransferRow, unknown>[] = [
 export default function TransfersLog() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const elevated = me.data?.role === "admin";
   const myBranch = me.data?.branchId == null ? null : Number(me.data.branchId);
 
   const [status, setStatus] = useState<"all" | "IN_TRANSIT" | "RECEIVED" | "CANCELLED">("all");
@@ -190,6 +190,19 @@ export default function TransfersLog() {
 
   const detail = trpc.inventory.transferGet.useQuery({ id: openId ?? 0 }, { enabled: openId != null });
   const doc = openId != null ? detail.data : undefined;
+  const bundleComponentLabelsByLine = useMemo(() => {
+    const labels = new Map<number, string>();
+    for (const line of doc?.lines ?? []) {
+      if (!line.isBundle) continue;
+      labels.set(
+        Number(line.id),
+        line.bundleComponents
+          .map((component) => `${fmtInt(component.baseQuantityPerBundle)} × ${component.productName}${component.variantName ? ` — ${component.variantName}` : ""}`)
+          .join(" + "),
+      );
+    }
+    return labels;
+  }, [doc]);
 
   // وضع الاستلام: كمية مستلَمة + ملاحظة لكل سطر (تُهيّأ عند فتح سند بالطريق بقيم المرسَل).
   const [recv, setRecv] = useState<Record<number, { qty: string; note: string }>>({});
@@ -230,17 +243,21 @@ export default function TransfersLog() {
     }, 0);
   }, [doc, recv]);
 
+  const invalidateTransferInventory = () => Promise.all([
+    utils.inventory.transfersList.invalidate(),
+    utils.inventory.transfersPendingIncoming.invalidate(),
+    utils.inventory.transferGet.invalidate(),
+    utils.catalog.forPurchase.invalidate(),
+    utils.catalog.posList.invalidate(),
+    utils.inventory.movements.invalidate(),
+    utils.inventory.movementsRich.invalidate(),
+  ]);
+
   const receive = trpc.inventory.transferReceive.useMutation({
     onSuccess: async (res) => {
-      notify.ok(res.discrepancyUnits > 0 ? `تمّ الاستلام مع توثيق عجز ${fmtInt(res.discrepancyUnits)} وحدة` : "تمّ الاستلام مطابقاً");
+      notify.ok(res.discrepancyUnits > 0 ? `تمّ الاستلام مع توثيق عجز ${fmtInt(res.discrepancyUnits)} من وحدات السند` : "تمّ الاستلام مطابقاً");
       setOpenId(null);
-      await Promise.all([
-        utils.inventory.transfersList.invalidate(),
-        utils.inventory.transfersPendingIncoming.invalidate(),
-        utils.inventory.transferGet.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-        utils.inventory.movements?.invalidate?.(),
-      ]);
+      await invalidateTransferInventory();
     },
     onError: (e) => notify.err(e.message),
   });
@@ -249,12 +266,7 @@ export default function TransfersLog() {
     onSuccess: async () => {
       notify.ok("أُلغي السند وأُعيدت الكمية لرصيد الفرع المرسل");
       setOpenId(null);
-      await Promise.all([
-        utils.inventory.transfersList.invalidate(),
-        utils.inventory.transfersPendingIncoming.invalidate(),
-        utils.inventory.transferGet.invalidate(),
-        utils.catalog.forPurchase.invalidate(),
-      ]);
+      await invalidateTransferInventory();
     },
     onError: (e) => notify.err(e.message),
   });
@@ -264,7 +276,7 @@ export default function TransfersLog() {
     if (totalDiscrepancy > 0) {
       const ok = await confirm({
         variant: "danger",
-        title: `استلام بعجز ${fmtInt(totalDiscrepancy)} وحدة`,
+        title: `استلام بعجز ${fmtInt(totalDiscrepancy)} من وحدات السند`,
         description: "العجز سيُوثَّق نهائياً على السند ويُخصم من مخزون النظام (خسارة نقل). متابعة؟",
         confirmText: "استلام وتوثيق العجز",
       });
@@ -300,6 +312,8 @@ export default function TransfersLog() {
         variantName: l.variantName,
         color: l.color,
         sku: l.sku,
+        unitLabel: l.unitLabel,
+        bundleComponents: l.bundleComponents,
         quantitySent: l.quantitySent,
         quantityReceived: l.quantityReceived == null ? null : Number(l.quantityReceived),
         note: l.note,
@@ -465,9 +479,17 @@ export default function TransfersLog() {
                         <tr key={Number(l.id)} className="border-t align-top">
                           <td className="p-2 px-3">
                             <div className="font-medium">{l.productName}{l.variantName ? ` — ${l.variantName}` : l.color ? ` — ${l.color}` : ""}</div>
+                            {l.isBundle && (
+                              <div className="mt-1 text-[11px] font-medium text-primary">
+                                بكج كامل — {bundleComponentLabelsByLine.get(Number(l.id))}
+                              </div>
+                            )}
                             <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">{l.sku}</div>
                           </td>
-                          <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.quantitySent)}</td>
+                          <td className="p-2 text-center tabular-nums" dir="ltr">
+                            {fmtInt(l.quantitySent)}
+                            <div className="text-[10px] font-normal text-muted-foreground" dir="rtl">{l.unitLabel}</div>
+                          </td>
                           <td className="p-2 text-center">
                             {canReceive ? (
                               <>
@@ -477,7 +499,7 @@ export default function TransfersLog() {
                                   value={st.qty}
                                   onChange={(e) => setLine(Number(l.id), l.quantitySent, { qty: e.target.value.replace(/[^\d]/g, "") })}
                                   className={`h-8 text-center ${recvErrors[i] ? "border-destructive" : ""}`}
-                                  aria-label={`الكمية المستلَمة — ${l.productName}`}
+                                  aria-label={`الكمية المستلَمة بوحدة ${l.unitLabel} — ${l.productName}`}
                                 />
                                 {recvErrors[i] && <p className="text-[10px] text-destructive mt-0.5">{recvErrors[i]}</p>}
                               </>
