@@ -327,4 +327,16 @@ describe("عقد الوضع التمريريّ (passthrough) — ومضةُ ال
     expect(isConfidentScanCode(code, 3)).toBe(true);
     expect(code).toBe("6281");
   });
+
+  it("⭐ باركودُ مورّدٍ أبجديّ سريع «MLZ6A» — accepted بالتوقيت لكن غيرُ واثق: يُصدَر عبر مسار Enter النشط لا التسوية (مراجعة Codex P1)", () => {
+    const det = new ScanBurstDetector({ minLength: 3, intraGapMs: 120 });
+    feedSequence(det, [letter("M"), letter("L"), letter("Z"), digit("6"), letter("A")], [10, 10, 10, 10]);
+    // نلتقط النشاطَ قبل الإفراغ — نظيرُ `wasActive` في مسار Enter بالخطّاف التمريريّ.
+    expect(det.isActive).toBe(true);
+    const { accepted, code } = det.flush();
+    expect(accepted).toBe(true); // ومضةٌ مؤكَّدة توقيتاً ⇒ Enter النشط يُصدرها
+    expect(code).toBe("mlz6a"); // الفكّ يُصغّر الحالة (المطابقةُ لا-حسّاسةٌ للحالة)
+    // لكنّها غيرُ واثقة ⇒ مسارُ التسوية (بلا Enter) لا يُصدرها فلا يُختطَف اسمٌ عربيّ سريع.
+    expect(isConfidentScanCode(code, 3)).toBe(false);
+  });
 });

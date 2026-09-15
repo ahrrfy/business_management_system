@@ -82,17 +82,22 @@ export function useBarcodeInput(
 
     if (event.key === "Enter") {
       if (passthrough) {
-        // وضعُ بحثِ الاسم: أصدِر المسحَ فقط إن كان باركوداً واثقاً (ومضةٌ سريعة أو قارئٌ بطيء تسرّب
-        // للحقل)، وإلّا اترك Enter لبحث الاسم بلا حجب. الأسماءُ العربية لا تُفكّ لِـASCII هنا.
         clearTimeout(timerRef.current);
+        // Enter **يُنهي ومضةً ما زالت نشطة** = نمطُ القارئ المؤكَّد (يُرسل الرمزَ ثمّ Enter فوراً قبل
+        // أن يسكن المؤقّتُ): نقبل الرمزَ المفكوكَ فيزيائياً **كما هو بلا بوّابةِ ثقة** — فباركودُ المورّد
+        // الأبجديّ «MLZ6A»/«NASR-6A» (لا يمرّ `isConfidentScanCode` لكنّه مسحٌ حقيقيّ) يُحلّ. الكتابةُ
+        // البشرية لا تُنهي بـEnter فوريّ على ومضةٍ نشطة (تسكن أوّلاً)، فلا تُفكّ لِـASCII (مراجعة Codex P1، ١٥/٩).
+        const wasActive = detector.isActive;
         const result = detector.flush();
         prefixRef.current = "";
-        if (result.accepted && isConfidentScanCode(result.code, minLength)) {
+        if (wasActive && result.accepted) {
           event.preventDefault();
           setValue("");
           onScanRef.current(result.code);
           return;
         }
+        // بلا ومضةٍ نشطة: قارئٌ بطيء تسرّب حرفاً حرفاً — افحص محتوى الحقل ببوّابةِ الثقة الصارمة
+        // (لا نُصدر مسحاً لاسمٍ عربيٍّ مفكوكٍ لِـASCII؛ نتركه لبحث الاسم).
         const recovered = recoverSlowScanCode(event.currentTarget.value, minLength);
         if (recovered) {
           event.preventDefault();
