@@ -121,6 +121,24 @@ export function useBarcodeInput(
       reset();
       return;
     }
+    // الوضع التمريريّ: مفتاحُ تحرير/تنقّل (Backspace/Delete/Tab/أسهم/…) يكسر افتراضَ ومضةِ المسح — أوقف
+    // أيّ ومضةٍ معلّقة كي لا يُطلق مؤقّتُ التسوية قيمةً **بائتة** على نصٍّ عدّله المستخدم (مراجعة Codex P2:
+    // «1234» سريعاً ثمّ Backspace يترك «123» لكنّ المؤقّت كان يُصدر onScan(«1234»)). لا نلمس مُبدّلات
+    // الكتابة (Shift/CapsLock) فلا نكسر مسحَ حروفٍ كبيرة.
+    if (
+      passthrough &&
+      (event.key === "Backspace" ||
+        event.key === "Delete" ||
+        event.key === "Tab" ||
+        event.key.startsWith("Arrow") ||
+        event.key === "Home" ||
+        event.key === "End" ||
+        event.key === "PageUp" ||
+        event.key === "PageDown")
+    ) {
+      reset();
+      return;
+    }
     // نقبل طول 1 أو 2: تخطيط عربي 101 يُنتج «لا/لأ/لآ» بحرفَين لضغطةٍ واحدة؛ الفكّ الفيزيائيّ
     // (event.code) يعيدها إلى ASCII بصرف النظر عن ذلك.
     if (event.ctrlKey || event.altKey || event.metaKey || event.key.length < 1 || event.key.length > 2) return;

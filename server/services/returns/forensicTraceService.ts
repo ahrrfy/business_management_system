@@ -571,23 +571,28 @@ export async function universalBarcodeScan(
   }
 
   // ٥) هل هو باركود صنف أو منتج؟ (EAN-13, SKU...)
-  const unitMatch = (
-    await db
-      .select({
-        unitId: productUnits.id,
-        productId: products.id,
-        productName: products.name,
-        barcode: productUnits.barcode,
-        sku: productVariants.sku,
-        variantId: productVariants.id,
-      })
-      .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      // الباركود عبر الهوية المُطبَّعة (المخزَّن «1  0172» يطابق المسحَ «10172»)؛ الـSKU خامٌّ كما هو.
-      .where(or(normalizedMatchAny(productUnits.barcode, [trimmed]), eq(productVariants.sku, trimmed)))
-      .limit(1)
-  )[0];
+  const unitMatches = await db
+    .select({
+      unitId: productUnits.id,
+      productId: products.id,
+      productName: products.name,
+      barcode: productUnits.barcode,
+      sku: productVariants.sku,
+      variantId: productVariants.id,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    // الباركود عبر الهوية المُطبَّعة (المخزَّن «1  0172» يطابق المسحَ «10172»)؛ الـSKU خامٌّ كما هو.
+    .where(or(normalizedMatchAny(productUnits.barcode, [trimmed]), eq(productVariants.sku, trimmed)))
+    .limit(2); // نقرأ اثنين لكشف الغموض (مراجعة Codex P2): لا نختار عشوائياً بـlimit(1)
+  // صنفان مختلفان يتطابقان على الهوية نفسها (مثلاً «10172» و«1  0172» أو باركودٌ يساوي SKU آخر) ⇒ غموضٌ
+  // يُبلَّغ ولا يُخمَّن (§٥: «لا دينار/مستند لغير صاحبه»). التنقّلُ لصنفٍ عشوائيّ أسوأ من الإبلاغ بالغموض.
+  const distinctVariants = new Set(unitMatches.map((u) => Number(u.variantId)));
+  if (distinctVariants.size > 1) {
+    return { recognized: false, kind: "UNKNOWN", number: trimmed, title: "باركود غامض: يطابق أكثر من صنف — صحّح الباركودات المتعارضة" };
+  }
+  const unitMatch = unitMatches[0];
 
   if (unitMatch) {
     return {

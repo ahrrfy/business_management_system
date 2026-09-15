@@ -481,8 +481,12 @@ async function detectExistingProducts(
     // أحد باركودات الملف لا تلتقطها المساواةُ الخامّة أعلاه ⇒ يُدرَج الشكلُ النظيف لسلعةٍ أخرى فيصير
     // لباركودٍ واحدٍ منطقيّاً مالكان. نلتقطها عبر العمود المُطبَّع ونُفهرسها بالمفتاح الذي يفتّش عنه
     // `classifyProductGroups` (باركود الملف بحالته). الحالة الغالبة (كتالوج نظيف) لا تُرجع صفوفاً إضافية.
+    // ⚠️ (١٥/٩، مراجعة Codex P1) يُفتَح بمفتاح **الهوية المُطبَّعة** لا صيغة الملف المخزَّنة: بعد صون
+    // مسافة المصنع صار باركود الملف «1  0172» يحمل مسافةً، فلو فُهرِس بـ`toLowerCase()` وحده (يُبقيها)
+    // لَفشل الاستعلامُ المُطبَّع أدناه (يُسقط المسافة) في إيجاده ⇒ مالكٌ في القاعدة على «10172» لا يُنسَب
+    // لصفّ الملف «1  0172» فيُدرَج ازدواجٌ صامتٌ لهويةٍ واحدة. المفتاح canonicalizeBarcodeInput(b) يوحّدهما.
     const importByLowerCanon = new Map<string, string>();
-    for (const b of allBarcodes) importByLowerCanon.set(b.toLowerCase(), b);
+    for (const b of allBarcodes) importByLowerCanon.set(canonicalizeBarcodeInput(b).toLowerCase(), b);
     const registerNormalizedOwner = (barcode: string | null, productName: string, sku: string) => {
       if (!barcode) return;
       const key = importByLowerCanon.get(canonicalizeBarcodeInput(barcode).toLowerCase());
@@ -689,8 +693,10 @@ async function planAliasMergeForExisting(
   // (٤/٩، مراجعة Codex P1) نفس معالجة `detectExistingProducts`: صفوفٌ إرثيّةٌ ملوّثة تتطبّع إلى بديلٍ
   // من الملف تُلتقَط عبر العمود المُطبَّع وتُفهرَس بمفتاح الملف المرشّح، فلا يُدرَج شكلُه النظيف على
   // وحدةٍ بينما يملكه إرثٌ ملوَّثٌ لوحدةٍ أخرى (يقلبه فحص السطر ٦٩٩ إلى فشلٍ صريح بدل ازدواجٍ صامت).
+  // ⚠️ (١٥/٩، مراجعة Codex P1) بمفتاح الهوية المُطبَّعة لا صيغة الملف (نظيرُ `importByLowerCanon` أعلاه):
+  // البديلُ المصون بمسافةٍ «1  0172» يجب أن يُطابَق ضدّ مالكٍ في القاعدة على «10172» فلا يُدرَج مالكاً ثانياً.
   const candidateByLowerCanon = new Map<string, string>();
-  for (const c of candidateCodes) candidateByLowerCanon.set(c.toLowerCase(), c);
+  for (const c of candidateCodes) candidateByLowerCanon.set(canonicalizeBarcodeInput(c).toLowerCase(), c);
   const primClause = normalizedMatchAny(productUnits.barcode, candidateCodes);
   if (primClause)
     for (const r of await db
