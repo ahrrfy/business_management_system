@@ -169,14 +169,19 @@ export function StudioImageDiscoveryPanel({
   const kpiCards: Array<{ label: string; value: number; state: Health; icon: React.ReactNode }> = useMemo(() => {
     const c = counts.data?.counts;
     if (!c) return [];
-    return [
-      { label: STATE_LABEL.NO_IMAGES, value: c.NO_IMAGES, state: "NO_IMAGES", icon: <ImageOff aria-hidden className="size-4" /> },
-      { label: STATE_LABEL.BUNDLE_NO_IMAGE, value: c.BUNDLE_NO_IMAGE, state: "BUNDLE_NO_IMAGE", icon: <Package aria-hidden className="size-4" /> },
-      { label: STATE_LABEL.SINGLE_IMAGE, value: c.SINGLE_IMAGE, state: "SINGLE_IMAGE", icon: <TrendingDown aria-hidden className="size-4" /> },
-      { label: STATE_LABEL.PARENT_ONLY_HAS_VARIANTS, value: c.PARENT_ONLY_HAS_VARIANTS, state: "PARENT_ONLY_HAS_VARIANTS", icon: <Layers aria-hidden className="size-4" /> },
-      { label: STATE_LABEL.VARIANTS_INCOMPLETE, value: c.VARIANTS_INCOMPLETE, state: "VARIANTS_INCOMPLETE", icon: <Layers aria-hidden className="size-4" /> },
-      { label: STATE_LABEL.HEALTHY, value: c.HEALTHY, state: "HEALTHY", icon: <CheckCircle2 aria-hidden className="size-4" /> },
-    ];
+      return [
+        { label: STATE_LABEL.HIGH_VALUE_NO_IMAGE, value: c.HIGH_VALUE_NO_IMAGE, state: "HIGH_VALUE_NO_IMAGE", icon: <TrendingDown aria-hidden className="size-4 text-destructive" /> },
+        { label: STATE_LABEL.CONSIGNMENT_NO_IMAGE, value: c.CONSIGNMENT_NO_IMAGE, state: "CONSIGNMENT_NO_IMAGE", icon: <Package aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.HAS_IMAGE_NO_BARCODE, value: c.HAS_IMAGE_NO_BARCODE, state: "HAS_IMAGE_NO_BARCODE", icon: <ImageOff aria-hidden className="size-4 text-destructive" /> },
+        { label: STATE_LABEL.CORRUPTED_OR_UNPROCESSED_IMAGE, value: c.CORRUPTED_OR_UNPROCESSED_IMAGE, state: "CORRUPTED_OR_UNPROCESSED_IMAGE", icon: <ImageOff aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.REDUNDANT_VARIANT_IMAGE, value: c.REDUNDANT_VARIANT_IMAGE, state: "REDUNDANT_VARIANT_IMAGE", icon: <Layers aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.NO_IMAGES, value: c.NO_IMAGES, state: "NO_IMAGES", icon: <ImageOff aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.BUNDLE_NO_IMAGE, value: c.BUNDLE_NO_IMAGE, state: "BUNDLE_NO_IMAGE", icon: <Package aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.SINGLE_IMAGE, value: c.SINGLE_IMAGE, state: "SINGLE_IMAGE", icon: <TrendingDown aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.PARENT_ONLY_HAS_VARIANTS, value: c.PARENT_ONLY_HAS_VARIANTS, state: "PARENT_ONLY_HAS_VARIANTS", icon: <Layers aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.VARIANTS_INCOMPLETE, value: c.VARIANTS_INCOMPLETE, state: "VARIANTS_INCOMPLETE", icon: <Layers aria-hidden className="size-4" /> },
+        { label: STATE_LABEL.HEALTHY, value: c.HEALTHY, state: "HEALTHY", icon: <CheckCircle2 aria-hidden className="size-4" /> },
+      ];
   }, [counts.data]);
 
   return (
