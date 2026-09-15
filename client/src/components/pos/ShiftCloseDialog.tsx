@@ -12,6 +12,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Check, AlertTriangle } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
+import { POS_STATION_LABEL, type PosStation } from "@shared/permissions";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { type ShiftData, fmt, type PosColors as C } from "./posShared";
@@ -59,12 +60,16 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
       const rep = report;
+      const deptLabel = shift?.shiftType && shift.shiftType in POS_STATION_LABEL
+        ? POS_STATION_LABEL[shift.shiftType as PosStation]
+        : undefined;
       void printShiftClose({
         shiftId:        r.shiftId,
         openedAt:       shift?.openedAt ?? null,
         closedAt:       new Date(),
         cashierName:    me?.name ?? "كاشير",
         branchName:     (branches ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        departmentName: deptLabel,
         openingBalance: r.openingBalance,
         invoiceCount:   rep?.invoiceCount ?? 0,
         salesTotal:     rep?.salesTotal ?? "0",
