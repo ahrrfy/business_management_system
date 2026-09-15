@@ -144,7 +144,7 @@ export default defineConfig(({ mode }) => {
         ],
       },
       manifest: {
-        id: "/",
+        id: "/store",
         name: "الرؤية العربية",
         short_name: "الرؤية العربية",
         description: "نظام إدارة أعمال الرؤية العربية والمكتبة للطباعة والقرطاسية والتجارة",

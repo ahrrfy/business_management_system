@@ -8,7 +8,7 @@ import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { setNotificationBadge } from "@/lib/push";
+import { clearNotificationBadge, setNotificationBadge } from "@/lib/push";
 
 const FAMILY_LABELS = {
   OPERATIONS: "تشغيلية",
@@ -81,6 +81,9 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
   useEffect(() => {
     if (!enabled) return;
     void setNotificationBadge(unreadCount);
+    return () => {
+      void clearNotificationBadge();
+    };
   }, [enabled, unreadCount]);
 
   useEffect(() => {
