@@ -9,8 +9,8 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, roundCashIQD, formatIqd } from "@/lib/money";
 import {
-  printDoc, printReceipt, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
-  getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData,
+  printShiftOpen, printReceipt, openCashDrawer, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
+  getServerBridgeStatus, serverPrintTest,
 } from "@/lib/printing/print";
 import { isCustomPriceSku } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -29,7 +29,7 @@ import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil, Vault } from "lucide-react";
 import { ACTION_LABELS } from "@shared/actionLabels";
 import { normalizeNumberInput } from "@shared/numberNormalize";
 import { CopyButton } from "@/components/CopyButton";
@@ -41,9 +41,10 @@ import { normalizeSearchText } from "@shared/searchNormalize";
 import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 import { ReceiptOverlay } from "@/components/pos/ReceiptOverlay";
 import { CreditApprovalDialog } from "@/components/pos/CreditApprovalDialog";
+import { buildBrandedReceipt, type Receipt, POS_COLORS } from "@/components/pos/posShared";
+import { ShiftCloseDialog } from "@/components/pos/ShiftCloseDialog";
 import { PrintCartList, type PrintCartLine as CartLine } from "@/components/printPos/PrintCartList";
 import { PrintServiceGrid } from "@/components/printPos/PrintServiceGrid";
-import { PrintShiftCloseDialog } from "@/components/printPos/PrintShiftCloseDialog";
 import { createPortal } from "react-dom";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -70,25 +71,6 @@ type Tab = {
   /** مرجع ومحاولة الدفع غير النقدي المؤكدة خادمياً. */
   paymentRef: string;
   externalPayment: ExternalPaymentDraft | null;
-};
-
-type Receipt = {
-  num: string;
-  invoiceId: number;
-  date: string;
-  printDate: string;
-  printTime: string;
-  cashier?: string;
-  customer?: string;
-  /** G3 (١١/٨): رقم وردية الطباعة — يُطبع في ترويسة الإيصال. */
-  shiftId?: number | null;
-  lines: { name: string; unit: string; qty: number; price: number; total: number }[];
-  total: number;
-  received: number;
-  change: number;
-  credit: number;
-  method: string;
-  isCredit: boolean;
 };
 
 // ─── Dark mode (يتبع الوضع العام للنظام عبر صنف <html>) ──────────────────────
@@ -133,17 +115,6 @@ let UID = 1;
 const newTab = (id: number, label?: string): Tab => ({
   id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null, paymentRef: "", externalPayment: null,
 });
-
-function brandedReceipt(r: Receipt): ReceiptBrowserData {
-  return {
-    receiptNumber: r.num, date: r.printDate, time: r.printTime,
-    cashierName: r.cashier ?? null, customerName: r.customer ?? null,
-    shiftId: r.shiftId ?? null,
-    items: r.lines.map((l) => ({ name: `${l.name} (${l.unit})`, quantity: l.qty, price: l.price, total: l.total })),
-    subtotal: r.total, total: r.total, paid: r.received,
-    change: r.isCredit ? null : r.change, credit: r.isCredit ? r.credit : null,
-  };
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 export default function PrintPOS() {
@@ -253,7 +224,7 @@ export default function PrintPOS() {
   // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
   const pendingRef = useRef<{
     lines: Receipt["lines"]; customerName?: string; method: PaymentMethod;
-    cashTotal: number; received: number; change: number; credit: number; isCredit: boolean;
+    cashTotal: number; rawTotal: number; cashRounding: number; received: number; change: number; credit: number; isCredit: boolean;
   } | null>(null);
 
   const effectiveCatId = catId ?? cats[0]?.id ?? null;
@@ -406,22 +377,32 @@ export default function PrintPOS() {
       const p = pendingRef.current;
       const now = new Date();
       const rec: Receipt = {
-        num: r.invoiceNumber, invoiceId: r.invoiceId,
+        invoiceId: r.invoiceId,
+        invoiceNumber: r.invoiceNumber,
+        num: r.invoiceNumber,
         date: fmtDateTime(now),
         printDate: fmtDate(now),
         printTime: fmtTime(now),
-        cashier: me.data?.name ?? undefined, customer: p?.customerName,
+        cashierName: me.data?.name ?? undefined,
+        customerName: p?.customerName,
         // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
         shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
-        lines: p?.lines ?? [],
-        total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
-        credit: p?.credit ?? 0, method: METHOD_LABEL[p?.method ?? "CASH"], isCredit: p?.isCredit ?? false,
+        lines: (p?.lines ?? []).map((l) => ({ ...l, disc: undefined })),
+        subtotal: p?.rawTotal ?? p?.cashTotal ?? 0,
+        cashRounding: p?.cashRounding,
+        total: p?.cashTotal ?? 0,
+        received: p?.received ?? 0,
+        change: p?.change ?? 0,
+        credit: p?.credit ?? 0,
+        method: METHOD_LABEL[p?.method ?? "CASH"],
+        methodCode: p?.method,
+        isCredit: p?.isCredit ?? false,
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
       setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
       setClientRequestId(crypto.randomUUID());
-      const printed = await printReceipt(brandedReceipt(rec));
+      const printed = await printReceipt(buildBrandedReceipt(rec));
       setMessage({
         kind: !printed.ok ? "err" : printed.via === "browser" ? "warn" : "ok",
         text: !printed.ok
@@ -576,20 +557,24 @@ export default function PrintPOS() {
 
     const now = new Date();
     const rec: Receipt = {
-      num: receiptNumber,
       invoiceId: 0, // لا فاتورة رسميّة بعد — الطباعة تستعمل الرقم المؤقّت.
+      invoiceNumber: receiptNumber,
+      num: receiptNumber,
       date: fmtDateTime(now),
       printDate: fmtDate(now),
       printTime: fmtTime(now),
-      cashier: me.data?.name ?? undefined,
-      customer: selectedCustomer?.name,
+      cashierName: me.data?.name ?? undefined,
+      customerName: selectedCustomer?.name,
       shiftId: shift?.id ?? null,
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
+      subtotal: total,
+      cashRounding: cashTotal - total,
       total: cashTotal,
       received: paid,
       change: Math.max(0, paid - cashTotal),
       credit: 0,
       method: METHOD_LABEL.CASH,
+      methodCode: "CASH",
       isCredit: false,
     };
     setReceipt(rec);
@@ -600,7 +585,7 @@ export default function PrintPOS() {
       kind: "ok",
       text: `بيع دون اتصال — إيصال مؤقّت ${receiptNumber}. الرقم الرسميّ يصدر تلقائياً عند عودة الاتصال.`,
     });
-    void printReceipt(brandedReceipt(rec)).then((printed) => {
+    void printReceipt(buildBrandedReceipt(rec)).then((printed) => {
       if (!printed.ok) setMessage({ kind: "err", text: `حُفظ الإيصال المؤقت ${receiptNumber}، لكن حجب المتصفح نافذة الطباعة` });
     }).catch(() => { /* فشل الطابعة لا يُلغي التقاطاً التزم محلياً */ });
     return true;
@@ -631,13 +616,17 @@ export default function PrintPOS() {
     const amount = isCredit ? paid.toFixed(2) : total.toFixed(2);
     // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
     const tendered = forceFullPayment ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    const finalTotal = cashFull ? cashTotal : total;
     pendingRef.current = {
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
       customerName: selectedCustomer?.name,
-      method, cashTotal,
-      received: isCredit ? paid : cashTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
-      change: isCredit ? 0 : Math.max(0, tendered - cashTotal),
-      credit: isCredit ? cashTotal - paid : 0,
+      method,
+      cashTotal: finalTotal,
+      rawTotal: total,
+      cashRounding: cashFull ? cashTotal - total : 0,
+      received: isCredit ? paid : finalTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
+      change: isCredit ? 0 : Math.max(0, tendered - finalTotal),
+      credit: isCredit ? Math.max(0, total - paid) : 0,
       isCredit,
     };
     sale.mutate({
@@ -670,11 +659,13 @@ export default function PrintPOS() {
             : "عهدة الافتتاح فاقت رصيد الخزينة (عجز). أبلغ المدير لتمويل الخزينة.",
         );
       }
-      await printDoc({
-        kind: "opening", title: SHOP, subtitle: "بيان الرصيد الافتتاحي — قسم الطباعة",
-        meta: [`وردية #${res.shiftId}`, fmtDateTime(new Date())],
-        totals: [{ label: "الرصيد الافتتاحي", value: fmt(Number(opening || 0)) }],
-        footer: "بداية الوردية",
+      void printShiftOpen({
+        shiftId:        res.shiftId,
+        openingBalance: Number(opening || 0),
+        cashierName:    me.data?.name ?? "كاشير",
+        branchName:     (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        openedAt:       new Date(),
+        departmentName: "خدمات طباعة",
       });
     },
     onError: (e) => setMessage({ kind: "err", text: e.message }),
@@ -689,6 +680,13 @@ export default function PrintPOS() {
       if (shifting) { if (e.key === "Escape") setShifting(false); return; }
       if (e.key === "F2") { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === "F4") { e.preventDefault(); submit(false); }
+      else if (e.key === "F10") {
+        e.preventDefault();
+        void openCashDrawer().then((res) => {
+          if (res.ok) notify.ok("تم فتح درج النقود");
+          else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها");
+        });
+      }
       else if (e.key === "F12") { e.preventDefault(); void clearCart(); }
     }
     window.addEventListener("keydown", onKey);
@@ -854,15 +852,37 @@ export default function PrintPOS() {
         <PrintServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} recentIds={recentIds} />
       </div>
 
-      {receipt && <ReceiptOverlay C={C} receipt={receipt} onDismiss={() => {
-        // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
-        // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
-        setReceipt(null);
-        setTimeout(() => searchRef.current?.focus(), 0);
-      }} onPrint={() => printReceipt(brandedReceipt(receipt)).then((printed) => {
-        if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
-      }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }))} />}
-      {shifting && <PrintShiftCloseDialog C={C} shift={shift} isElevatedRole={isElevatedRole} onClose={() => setShifting(false)} onClosed={() => { setShifting(false); shiftQ.refetch(); }} />}
+      {receipt && (
+        <ReceiptOverlay
+          C={C}
+          receipt={receipt}
+          onDismiss={() => {
+            // ٢٤/٨ (تدقيق ذاتيّ، مرآة POS.tsx): useModalFocus يعيد التركيز إلى «الزرّ الذي فتح الحوار»
+            // = زرّ الدفع. سكانرُ/كيبورد الكاشير التالي يبتلعه الزرّ بلا أثر ⇒ إعادةٌ صريحة للبحث.
+            setReceipt(null);
+            setTimeout(() => searchRef.current?.focus(), 0);
+          }}
+          onPrint={() => {
+            void printReceipt(buildBrandedReceipt(receipt)).then((printed) => {
+              if (!printed.ok) setMessage({ kind: "err", text: "حجب المتصفح نافذة الطباعة؛ اسمح بالنوافذ المنبثقة ثم أعد المحاولة" });
+            }).catch((error) => setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّرت الطباعة" }));
+          }}
+        />
+      )}
+      {shifting && (
+        <ShiftCloseDialog
+          C={POS_COLORS}
+          shift={shift}
+          branchId={branchId}
+          onClose={() => setShifting(false)}
+          onClosed={() => {
+            setShifting(false);
+            void shiftQ.refetch();
+          }}
+          me={me.data}
+          branches={branches.data}
+        />
+      )}
       {creditPrompt && (
         <CreditApprovalDialog C={C as any} message={creditPrompt} mgrEmail={mgrEmail} setMgrEmail={setMgrEmail} mgrPwd={mgrPwd} setMgrPwd={setMgrPwd}
           isPending={sale.isPending} onApprove={() => submit(false, { email: mgrEmail, password: mgrPwd })} onCancel={() => setCreditPrompt(null)} />
@@ -915,13 +935,27 @@ function PrintPosHeaderActions({
           type="button"
           onClick={onConnectPrinter}
           title={printerReady ? "الطابعة الافتراضية مربوطة — اضغط لتبديلها" : "ربط الطابعة الحرارية"}
-          aria-label={printerReady ? "الطابعة مربوطة" : "ربط الطابعة الحرارية"}
+          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط الطابعة الحرارية"}
           className="inline-flex size-[var(--ui-control)] shrink-0 items-center justify-center rounded-lg border"
           style={{ color: printerReady ? C.success : C.mutedFg, borderColor: printerReady ? C.success : C.border }}
         >
           <Printer aria-hidden size={16} />
         </button>
       )}
+      <button
+        type="button"
+        onClick={() => {
+          void openCashDrawer().then((res) => {
+            if (res.ok) notify.ok("تم فتح درج النقود");
+            else notify.err("تعذّر فتح الدرج", "تأكد من توصيل الطابعة الحرارية وربطها");
+          });
+        }}
+        title="فتح درج النقود يدوياً (F10)"
+        className="inline-flex h-[var(--ui-control)] shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2.5 text-xs font-bold active:scale-[0.98] transition-transform"
+      >
+        <Vault aria-hidden size={16} />
+        <span className="hidden 2xl:inline">فتح الدرج</span>
+      </button>
       <button
         type="button"
         onClick={onCloseShift}

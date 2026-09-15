@@ -1231,6 +1231,8 @@ export interface ShiftOpenData {
   branchName: string;
   /** وقت فتح الوردية — new Date() مباشرةً بعد onSuccess */
   openedAt: Date;
+  /** اختياري — اسم القسم/نوع الوردية (مثل: «قسم الطباعة والاستنساخ») */
+  departmentName?: string;
 }
 
 export function printShiftOpenBrowser(d: ShiftOpenData): void {
@@ -1241,6 +1243,7 @@ export function printShiftOpenBrowser(d: ShiftOpenData): void {
 
   const metaRows = [
     ['رقم الوردية', `#${d.shiftId}`],
+    ...(d.departmentName ? [['القسم', esc(d.departmentName)]] : []),
     ['التاريخ',     date],
     ['وقت الفتح',   time],
     ['الكاشير',     esc(d.cashierName)],
@@ -1339,6 +1342,8 @@ export interface ShiftCloseData {
   closedAt: Date;
   cashierName: string;
   branchName: string;
+  /** اختياري — اسم القسم/نوع الوردية (مثل: «قسم الطباعة والاستنساخ») */
+  departmentName?: string;
   /** من r.openingBalance (نتيجة shifts.close) */
   openingBalance: string | number;
   /** من rep?.invoiceCount (نتيجة shifts.report) */
@@ -1383,12 +1388,17 @@ export function printShiftCloseBrowser(d: ShiftCloseData): void {
   // صفوف بيانات الوردية
   const metaRows: [string, string, 'rtl' | 'ltr'][] = [
     ['رقم الوردية', `#${d.shiftId}`, 'ltr'],
+  ];
+  if (d.departmentName) {
+    metaRows.push(['القسم', esc(d.departmentName), 'rtl']);
+  }
+  metaRows.push(
     ['فُتحت',        esc(openedStr), 'ltr'],
     ['أُغلقت',       esc(closedStr), 'ltr'],
     ['مدة الوردية',  esc(duration), 'rtl'],
     ['الكاشير',      esc(d.cashierName), 'rtl'],
     ['الفرع',        esc(d.branchName), 'rtl'],
-  ];
+  );
   const metaRowsHtml = metaRows.map(([l, v, direction]) =>
     `<div data-shift-row style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #999;font-size:13px;">
       <span style="font-weight:600;color:#333;">${l}</span>

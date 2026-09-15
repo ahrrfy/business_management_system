@@ -259,6 +259,7 @@ export async function shiftOpenToCanvas(
 
   y += 16;
   y = metaRow(ctx, y, "رقم الوردية", `#${d.shiftId}`);
+  if (d.departmentName) y = metaRow(ctx, y, "القسم", d.departmentName);
   y = metaRow(ctx, y, "التاريخ", date);
   y = metaRow(ctx, y, "وقت الفتح", time);
   y = metaRow(ctx, y, "الكاشير", d.cashierName);
@@ -353,6 +354,7 @@ export async function shiftCloseToCanvas(
 
   y += 14;
   y = metaRow(ctx, y, "رقم الوردية", `#${d.shiftId}`, 48);
+  if (d.departmentName) y = metaRow(ctx, y, "القسم", d.departmentName, 48);
   y = metaRow(ctx, y, "فُتحت", openedStr, 48);
   y = metaRow(ctx, y, "أُغلقت", closedStr, 48);
   y = metaRow(ctx, y, "مدة الوردية", duration, 48);
