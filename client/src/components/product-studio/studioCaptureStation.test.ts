@@ -5,10 +5,11 @@ const station = readFileSync(
   new URL("./StudioCaptureStation.tsx", import.meta.url),
   "utf8",
 );
-const page = readFileSync(
-  new URL("../../pages/ProductImageStudio.tsx", import.meta.url),
-  "utf8",
-);
+const page = 
+  readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8") + 
+  readFileSync(new URL("./StudioProductPicker.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("./StudioTaskQueue.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("./StudioPhotographerWorkspace.tsx", import.meta.url), "utf8");
 const media = readFileSync(
   new URL("../product/ProductMediaContentSection.tsx", import.meta.url),
   "utf8",
@@ -31,12 +32,13 @@ describe("studio capture barcode workflow", () => {
   it("keeps the mobile scanner open on failure and closes it after success", () => {
     const mobileSuccess = page.slice(
       page.indexOf("const mobileClaimByBarcode"),
-      page.indexOf("function claimScannedBarcode"),
+      page.indexOf("export function StudioTaskQueue"),
     );
     const detect = page.slice(
-      page.indexOf("function claimScannedBarcode"),
-      page.indexOf("async function submitForReview"),
+      page.indexOf("onDetect={(barcode"),
+      page.indexOf("mobileClaimByBarcode.mutate"),
     );
+    expect(mobileSuccess.indexOf("setTaskScannerOpen(false)")).toBeGreaterThan(-1);
     expect(mobileSuccess.indexOf("setTaskScannerOpen(false)")).toBeLessThan(
       mobileSuccess.indexOf("applyStudioClaim({"),
     );
