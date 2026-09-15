@@ -9,7 +9,7 @@
  * أو عند Enter.
  */
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
-import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode } from "@/lib/barcodeScanTiming";
+import { ScanBurstDetector, resolveScanSettle, recoverSlowScanCode, isConfidentScanCode } from "@/lib/barcodeScanTiming";
 
 type SetInputValue = (value: string) => void;
 
@@ -29,7 +29,13 @@ export function useBarcodeInput(
     // مباشرةً (بلا تسرّبٍ لشاشة البحث) دون بلوغ سرعة الكتابة البشرية المستدامة (>١٣٠مي/حرف عبر
     // مصطلحٍ كامل). القارئ البطيء جداً يُغطّيه استرداد Enter أدناه، والحلّ الجذريّ ضبطُ القارئ.
     thresholdMs = 120,
-  }: { enabled?: boolean; minLength?: number; thresholdMs?: number } = {},
+    // الوضع التمريريّ (١٥/٩، بلاغ المالك) — لحقول **بحثِ الاسم** حيث الكتابةُ العربية هي الأصل والمسحُ
+    // ثانويّ. لا نُخفي أيّ ضغطة: الحرفُ يظهر كما كُتب (عربيّ + مسافة) بلا حجبٍ ولا فكٍّ لِـASCII، والكاشفُ
+    // يعمل للكشف فقط فيُصدر مسحاً **فقط** إن كانت الومضةُ باركوداً واثقاً (`isConfidentScanCode`). بذلك لا
+    // تُحوَّل الكتابةُ العربية السريعة إلى إنجليزيّة ولا تُبتَر المسافةُ ولا يُختطَف الحقل. المسحُ الحقيقيّ
+    // (رقميّ/ALR/نظام/بادئة حرفٍ+أرقام) يبقى يعمل: يُمسح الحقلُ ويُستعلَم عند اكتمال الومضة أو Enter.
+    passthrough = false,
+  }: { enabled?: boolean; minLength?: number; thresholdMs?: number; passthrough?: boolean } = {},
 ) {
   const onScanRef = useRef(onScan);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -51,16 +57,47 @@ export function useBarcodeInput(
 
   const settle = useCallback((setValue: SetInputValue) => {
     clearTimeout(timerRef.current);
-    const decision = resolveScanSettle(detector.flush(), prefixRef.current, minLength);
+    const result = detector.flush();
+    if (passthrough) {
+      // الحروفُ ظاهرةٌ أصلاً في الحقل (لم تُحجَب)؛ نُصدر مسحاً فقط إن كانت الومضةُ باركوداً واثقاً —
+      // وعندئذٍ نمسح النصّ المؤقّت ونستعلم. غيرُ الواثق (اسمٌ عربيّ سريع) يبقى نصّ بحثٍ كما كُتب.
+      prefixRef.current = "";
+      if (result.accepted && isConfidentScanCode(result.code, minLength)) {
+        setValue("");
+        onScanRef.current(result.code);
+      }
+      return;
+    }
+    const decision = resolveScanSettle(result, prefixRef.current, minLength);
     prefixRef.current = "";
     setValue(decision.fieldValue);
     if (decision.scan) onScanRef.current(decision.scan);
-  }, [detector, minLength]);
+  }, [detector, minLength, passthrough]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>, setValue: SetInputValue) => {
     if (!enabled) return;
 
     if (event.key === "Enter") {
+      if (passthrough) {
+        // وضعُ بحثِ الاسم: أصدِر المسحَ فقط إن كان باركوداً واثقاً (ومضةٌ سريعة أو قارئٌ بطيء تسرّب
+        // للحقل)، وإلّا اترك Enter لبحث الاسم بلا حجب. الأسماءُ العربية لا تُفكّ لِـASCII هنا.
+        clearTimeout(timerRef.current);
+        const result = detector.flush();
+        prefixRef.current = "";
+        if (result.accepted && isConfidentScanCode(result.code, minLength)) {
+          event.preventDefault();
+          setValue("");
+          onScanRef.current(result.code);
+          return;
+        }
+        const recovered = recoverSlowScanCode(event.currentTarget.value, minLength);
+        if (recovered) {
+          event.preventDefault();
+          setValue("");
+          onScanRef.current(recovered);
+        }
+        return;
+      }
       if (detector.isActive) {
         // ومضةٌ نشطة (≥ حرفين سريعين): أصدِر الباركود أو استعِد النصّ القصير بلا فقد.
         event.preventDefault();
@@ -89,6 +126,13 @@ export function useBarcodeInput(
     if (event.ctrlKey || event.altKey || event.metaKey || event.key.length < 1 || event.key.length > 2) return;
 
     const action = detector.feed({ code: event.code, key: event.key, shiftKey: event.shiftKey }, Date.now());
+    if (passthrough) {
+      // الوضع التمريريّ: لا نحجب أبداً — الحرفُ يظهر كما كُتب (عربيّ + مسافة، بلا فكٍّ لِـASCII).
+      // نُغذّي الكاشفَ للكشف فقط، والتسويةُ عند السكون تقرّر إن كانت ومضةً باركوديّة واثقة فتمسح وتستعلم.
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => settle(setValue), Math.max(400, Math.min(thresholdMs * 4, 600)));
+      return;
+    }
     if (action === "pass") {
       // حرفٌ مرشّح يظهر في الحقل؛ سجّل قيمة الحقل قبله (قبل إدراج هذا الحرف) لاستعادةٍ محتملة.
       prefixRef.current = event.currentTarget.value;
@@ -99,7 +143,7 @@ export function useBarcodeInput(
     clearTimeout(timerRef.current);
     // مهلة سكونٍ سخيّة كي لا يقطع تذبذبُ التوقيت الومضةَ فيُصدِر بادئةً جزئيّة (مراجعة #1108).
     timerRef.current = setTimeout(() => settle(setValue), Math.max(400, Math.min(thresholdMs * 4, 600)));
-  }, [enabled, settle, minLength, reset, detector, thresholdMs]);
+  }, [enabled, settle, minLength, reset, detector, thresholdMs, passthrough]);
 
   useEffect(() => reset, [reset]);
 
