@@ -192,6 +192,8 @@ export type CreateStorefrontOrderInput = {
   customerPhone: string;
   governorate: string;
   addressText: string;
+  latitude?: number | null;
+  longitude?: number | null;
   notes?: string;
   lines: StorefrontOrderLine[];
   expectedGrandTotal: string;
