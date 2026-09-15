@@ -59,6 +59,14 @@ export function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
         prefixRef.current = "";
         return;
       }
+      // مسافةٌ يكتبها الإنسان = فاصلُ كلمات في بحثٍ (اسم منتج)، لا جزءٌ من ومضة قارئ. خارجَ ومضةٍ نشطة
+      // نمرّرها كما هي ونكسر المرشّح — وإلّا حجبها الالتقاطُ حين تأتي سريعةً (بلاغ المالك ١٥/٩).
+      if (e.key === " " && !detector.isActive) {
+        clearTimeout(timerRef.current);
+        detector.reset();
+        prefixRef.current = "";
+        return;
+      }
       // طول 1 أو 2 (لِـ«لا/لأ/لآ» في العربي 101)؛ الفكّ الفيزيائيّ يعيدها ASCII.
       if (e.ctrlKey || e.altKey || e.metaKey || e.key.length < 1 || e.key.length > 2) return;
 
