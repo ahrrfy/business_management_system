@@ -18,7 +18,7 @@
  * لا تستخدم parseFloat/Number على الأموال (الجمع داخل calcTotals + decimal.js).
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Link, useLocation, useRoute } from "wouter";
+import { Link, useLocation, useRoute, useSearch } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -111,6 +111,7 @@ export default function SalesInvoice() {
   const [corrMatch, corrParams] = useRoute("/invoices/:id/correct");
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
+  const correctionFromReception = new URLSearchParams(useSearch()).get("from") === "reception-edit";
   const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection },
   );
   const correctionUnitIds = useMemo(
@@ -130,28 +131,6 @@ export default function SalesInvoice() {
   const [reason, setReason] = useState("");
   const [correctionKind, setCorrectionKind] = useState<"REISSUE" | "EXCHANGE">("REISSUE");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
-  // درج ردّ الفائض — يُجلب مع وضع التصحيح فقط، ويُختار درج المنفّذ افتراضاً (نمط ReturnComposer).
-  const [overpayShiftId, setOverpayShiftId] = useState<number | null>(null);
-  const correctionShiftsQ = trpc.treasury.getOpenShifts.useQuery(
-    { branchId: original.data?.branchId ?? defaultBranchId },
-    { enabled: isCorrection && !!original.data, retry: false },
-  );
-  const correctionOpenShifts = useMemo(
-    () => (correctionShiftsQ.data ?? []).map((s) => ({
-      shiftId: s.shiftId,
-      userName: s.userName,
-      expectedCash: s.expectedCash,
-      isMine: Number(s.userId) === Number(me.data?.id ?? -1),
-    })),
-    [correctionShiftsQ.data, me.data?.id],
-  );
-  // الافتراضي: درج المنفّذ نفسه إن كان مفتوحاً، وإلّا الوحيد المفتوح — فلا يقرّر الموظف ما لا يعرفه.
-  useEffect(() => {
-    if (overpayShiftId != null || correctionOpenShifts.length === 0) return;
-    const mine = correctionOpenShifts.find((s) => s.isMine);
-    setOverpayShiftId(mine ? mine.shiftId : correctionOpenShifts.length === 1 ? correctionOpenShifts[0].shiftId : null,
-    );
-  }, [correctionOpenShifts, overpayShiftId]);
   const [collectNow, setCollectNow] = useState("");
   const correctionHydratedRef = useRef(false);
   // مُعرَّف هنا (لا لاحقاً) كي تتمكّن هيدرة التصحيح من تثبيته ⇒ لا تطمس تهيئةُ الضريبة الافتراضية ضريبةَ الأصل.
@@ -167,7 +146,7 @@ export default function SalesInvoice() {
       });
     // شروط الدفع وطريقته من الأصل — لا تُترَك على افتراضيّ «نقدي». الشروط تُظهر حقل تاريخ
     // الاستحقاق للفاتورة الآجلة (كان يُرسَل مخفيّاً فلا يستطيع الموظّف تصحيحه)، والطريقة هي
-    // التي يُقبَض بها «المُحصَّل الآن» فلا تُفترَض نقداً على فاتورةٍ قُبِضت بالبطاقة.
+    // التي يُقترَح بها قبض الفرق عند الاعتماد فلا تُفترَض نقداً على فاتورةٍ قُبِضت بالبطاقة.
     dispatch({ type: "SET_FIELD", field: "paymentTerms", value: derivePaymentTerms(d),
     });
     if (d.paymentMethod && isPosPaymentMethodEnabled(d.paymentMethod as PaymentMethod)) {
@@ -237,6 +216,12 @@ export default function SalesInvoice() {
   // بذرة «نسخ لفاتورة جديدة» (من قائمة الفواتير): sessionStorage تُقرأ مرة واحدة عند التركيب
   // ثم تُحذف فوراً (read-once) كي لا تُزرع مجدداً عند العودة للصفحة. الأسطر بشكل InvoiceLine حرفياً.
   useEffect(() => {
+    // وضع التصحيح له مصدر حقيقة واحد هو الفاتورة المقفلة من الخادم. امسح أي بذرة نسخ
+    // متبقية كي لا تُدمج ADD_ITEMS معها فتضاعف الكمية أو تطمس العميل/الشروط بصمت.
+    if (isCorrection) {
+      sessionStorage.removeItem("invoice-seed");
+      return;
+    }
     const raw = sessionStorage.getItem("invoice-seed");
     if (!raw) return;
     sessionStorage.removeItem("invoice-seed");
@@ -263,7 +248,7 @@ export default function SalesInvoice() {
       /* بذرة معطوبة — تجاهل */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isCorrection]);
 
   // مزامنة فرع المستخدم مرة واحدة (إن وصل لاحقاً)؛ لا نطمس اختياره اليدوي بعدها.
   const syncedBranch = useRef(false);
@@ -347,7 +332,8 @@ export default function SalesInvoice() {
   // وردية مفتوحة للفرع (إن وُجدت) ⇒ تُسجَّل الدفعة النقدية في صندوق الوردية.
   const currentShift = trpc.shifts.current.useQuery(
     { branchId: state.branchId },
-    { enabled: !!state.branchId },
+    // التصحيح لا يكتب مالاً قبل الاعتماد؛ درج التنفيذ يختاره المراجع في شاشة الاعتماد.
+    { enabled: !!state.branchId && !isCorrection },
   );
 
   // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح / RESET).
@@ -402,11 +388,11 @@ export default function SalesInvoice() {
       confirmed: boolean;
     } | null
   >(null);
-  /** مبلغ الإثبات = ما يُرسَل فعلاً: `collectNow` في التصحيح، ومدفوع الفاتورة في الإنشاء. */
-  const externalAmountD = isCorrection ? D(collectNow.trim() || "0") : D(computePaidStr());
+  /** إثبات الدفع الخارجي هنا للبيع الجديد فقط؛ فرق التصحيح يُنفّذه المراجع عند الاعتماد. */
+  const externalAmountD = D(computePaidStr());
   const externalAmount = round2(externalAmountD).toFixed(2);
-  const externalNeeded = state.paymentMethod !== "CASH" && externalAmountD.gt(0);
-  const externalChannel = isCorrection ? "SALES_COLLECTION" as const : "POS" as const;
+  const externalNeeded = !isCorrection && state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const externalChannel = "POS" as const;
   const externalFingerprint = `${externalChannel}|${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
     !externalNeeded || (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
@@ -528,7 +514,7 @@ export default function SalesInvoice() {
         `الطلب #${r.requestId} بانتظار مراجع مستقل — لم تتغيّر الفاتورة أو المخزون أو المال بعد.`,
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
-      navigate(`/invoices/${correctInvoiceId}`);
+      navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
     onError: (e) => {
       if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))) {
@@ -546,7 +532,7 @@ export default function SalesInvoice() {
         `الطلب #${result.id} بانتظار مراجع مستقل — العكس والبديل وتسوية الفرق ستنفّذ ذرّياً عند الاعتماد.`,
       );
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
-      navigate(`/invoices/${correctInvoiceId}`);
+      navigate(correctionFromReception ? "/reception/workflow?section=edit" : `/invoices/${correctInvoiceId}`);
     },
     onError: (cause) => notify.err(cause),
   });
@@ -634,23 +620,27 @@ export default function SalesInvoice() {
     };
   }
 
-  /** حمولة تصحيح الفاتورة (sales.reissue): تعيد استعمال أسطر buildPayload؛ المدفوع سابقاً محمولٌ
-   *  خادمياً، فـadditionalPayment للنقص المُحصَّل الآن وoverpayHandling للفائض. */
+  /** حمولة طلب التصحيح: مبلغ/طريقة الفرق اقتراح؛ الدرج وإثبات المزوّد يحددهما المراجع. */
   function buildCorrectionPayload(approval?: Approval) {
     const base = buildPayload(approval);
     const diff = D(totals.grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
     const collect = D(collectNow.trim() || "0");
-    // أجرة التوصيل تُحسَب هنا (لا من `base` الذي نوعُه اتحادٌ بسبب حقول التوصيل الشرطية).
-    // إفصاح «التوصيل المجّانيّ» لا يُحمَل في تصحيح v1 (علَمٌ إفصاحيّ لا ماليّ).
+    // أجرة التوصيل وإفصاح التنازل يُحمَلان كما في عقد الإنشاء؛ المجاني لا يدخل الإجمالي.
     const deliveryFee =
       !state.shippingFree && D(totals.shipping).gt(0) ? totals.shipping : null;
     return {
       originalInvoiceId: correctInvoiceId!,
       customerId: base.customerId ?? null,
+      contactName: original.data?.contactName ?? null,
+      contactPhone: original.data?.contactPhone ?? null,
       priceTier: base.priceTier,
       lines: base.lines,
       invoiceDiscount: base.invoiceDiscount ?? null,
       deliveryFee,
+      deliveryFree: state.shippingFree,
+      deliveryWaivedAmount: state.shippingFree && D(state.shipping || "0").gt(0)
+        ? round2(D(state.shipping)).toFixed(2)
+        : null,
       taxRatePercent: base.taxRatePercent,
       dueDate: state.dueDate || null,
       notes: base.notes ?? null,
@@ -661,23 +651,12 @@ export default function SalesInvoice() {
             additionalPayment: {
               amount: round2(collect).toFixed(2),
               method: state.paymentMethod,
-              ...(state.paymentMethod === "CASH"
-                ? {}
-                : {
-                    reference: paymentRef.trim(),
-                    externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined,
-                    externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined,
-                  }),
             },
           }
         : {}),
       ...(diff.lt(0)
         ? {
             overpayHandling,
-            // الدرج مورد فرعٍ لا مستخدم — يُمرَّر صراحةً كي لا يرفض الخادم عند تعدّد الأدراج.
-            ...(overpayHandling === "CASH_REFUND" && overpayShiftId != null
-              ? { overpayRefundShiftId: overpayShiftId }
-              : {}),
           }
         : {}),
       ...(approval ? { managerApproval: approval } : {}),
@@ -690,14 +669,10 @@ export default function SalesInvoice() {
     const diff = D(totals.grandTotal).minus(originalPaid);
     const collect = D(collectNow.trim() || "0");
     if (diff.gt(0)) {
-      if (collect.gt(diff)) return `المُحصَّل الآن (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
-      if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد المُحصَّل الآن ذمّة — اختر عميلاً أو حصّل الفرق كاملاً.";
+      if (collect.gt(diff)) return `التحصيل المقترح (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
+      if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد التحصيل المقترح ذمّة — اختر عميلاً أو اقترح تحصيل الفرق كاملاً.";
     }
     if (diff.lt(0) && overpayHandling === "CREDIT" && !state.entityId) return "الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو اختر استرداداً نقدياً.";
-    if (diff.lt(0) && overpayHandling === "CASH_REFUND") {
-      if (correctionOpenShifts.length === 0) return "لا توجد وردية مفتوحة بالفرع لاسترداد الفائض نقداً — افتح وردية أو اختر رصيداً دائناً.";
-      if (overpayShiftId == null) return "حدّد الدرج الذي سيخرج منه الفائض نقداً.";
-    }
     return null;
   }
 
@@ -718,8 +693,7 @@ export default function SalesInvoice() {
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
-    // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
-    // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت محاولة مؤكدة للإنشاء أو التصحيح.
+    // في وضع التصحيح: الدفع مقترح فقط ويُثبت عند الاعتماد؛ بوابة الإثبات أدناه للبيع الجديد.
     if (externalNeeded) {
       if (!externalConfirmed || externalAttempt?.attemptId == null) {
         return "ثبّت تأكيد الدفع غير النقديّ قبل حفظ الفاتورة.";
@@ -971,6 +945,10 @@ export default function SalesInvoice() {
       }
       if (e.key === "F9") {
         e.preventDefault();
+        if (isCorrection) {
+          notify.info("طباعة التصحيح متاحة بعد اعتماد الطلب وإصدار الفاتورة البديلة.");
+          return;
+        }
         if (!submitPending) {
           reservePrintWindow();
           printAfterSaveRef.current = true;
@@ -1018,6 +996,26 @@ export default function SalesInvoice() {
     [state.items],
   );
 
+  if (isCorrection && original.isLoading) {
+    return <div className="p-10 text-center text-muted-foreground">جارٍ تحميل الفاتورة الأصلية…</div>;
+  }
+  if (isCorrection && (original.isError || !original.data)) {
+    return (
+      <div className="m-auto max-w-lg space-y-3 rounded-lg border border-destructive/40 p-5 text-center">
+        <div className="font-bold text-destructive">تعذّر تحميل الفاتورة الأصلية للتعديل.</div>
+        <Button variant="outline" onClick={() => void original.refetch()}>إعادة المحاولة</Button>
+      </div>
+    );
+  }
+  if (isCorrection && correctionUnitIds.length > 0 && correctionCatalog.isError) {
+    return (
+      <div className="m-auto max-w-lg space-y-3 rounded-lg border border-destructive/40 p-5 text-center">
+        <div className="font-bold text-destructive">تعذّر تحميل أصناف الفاتورة وأسعارها الحالية.</div>
+        <Button variant="outline" onClick={() => void correctionCatalog.refetch()}>إعادة تحميل الأصناف</Button>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -1033,7 +1031,7 @@ export default function SalesInvoice() {
       {isCorrection && (
         <div className="flex items-center gap-2 rounded-md border-2 border-[var(--sem-warn)]/60 bg-[var(--sem-warn-bg)] px-3 py-1.5 text-xs font-extrabold text-[var(--sem-warn)]">
           <AlertTriangle aria-hidden className="size-4 shrink-0" />
-          <span>وضع تصحيح — سيُلغى الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل بمرجعه.</span>
+          <span>وضع تصحيح — سيُعكس الأصل ({original.data?.invoiceNumber ?? "…"}) ويُصدَر بديل مرتبط به بعد الاعتماد.</span>
         </div>
       )}
       {/* شريط العنوان */}
@@ -1164,9 +1162,6 @@ export default function SalesInvoice() {
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
-              openShifts={correctionOpenShifts}
-              overpayShiftId={overpayShiftId}
-              setOverpayShiftId={setOverpayShiftId}
             />
           )}
           <ActionButtons
@@ -1174,16 +1169,20 @@ export default function SalesInvoice() {
             items={state.items}
             saving={isCorrection ? reissue.isPending || exchange.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
-            availableActions={isCorrection ? ["save", "print"] : undefined}
+            availableActions={isCorrection ? ["save"] : undefined}
             primaryLabel={isCorrection ? correctionKind === "EXCHANGE" ? "إرسال طلب الاستبدال" : "إرسال طلب إعادة الإصدار" : undefined}
-            printLabel={isCorrection ? correctionKind === "EXCHANGE" ? "طلب استبدال" : "طلب إعادة إصدار" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />
         </aside>
       </div>
 
-      <ShortcutsBar />
+      <ShortcutsBar shortcuts={isCorrection ? [
+        { key: "F2", label: "بحث" },
+        { key: "F4", label: "إرسال الطلب" },
+        { key: "F12", label: "تفريغ" },
+        { key: "Esc", label: "إلغاء" },
+      ] : undefined} />
 
       {/* حوار موافقة المدير (تجاوز حدّ الائتمان / بيع بأقل من التكلفة) */}
       <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) closeApprovalPrompt(); }}>
@@ -1248,21 +1247,34 @@ export default function SalesInvoice() {
 
 /** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */ function CorrRow({ label, value, className }: { label: string; value: string; className?: string; }) { return (<div className="flex items-center justify-between gap-2"><span className="text-muted-foreground">{label}</span><span className={className ?? "font-semibold tabular-nums"} dir="ltr">{value}</span></div>); }
 
-interface CorrectionPanelProps { original: { invoiceNumber?: string | null } | null; originalPaid: ReturnType<typeof D>; grandTotal: string; reason: string; setReason: (v: string) => void; correctionKind: "REISSUE" | "EXCHANGE"; setCorrectionKind: (v: "REISSUE" | "EXCHANGE") => void; collectNow: string; setCollectNow: (v: string) => void; paymentMethod: PaymentMethod; setPaymentMethod: (v: PaymentMethod) => void; overpayHandling: "CREDIT" | "CASH_REFUND"; setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void; hasCustomer: boolean; openShifts: Array<{ shiftId: number; userName: string; expectedCash: string; isMine: boolean; }>; overpayShiftId: number | null; setOverpayShiftId: (v: number | null) => void; }
+interface CorrectionPanelProps {
+  original: { invoiceNumber?: string | null } | null;
+  originalPaid: ReturnType<typeof D>;
+  grandTotal: string;
+  reason: string;
+  setReason: (v: string) => void;
+  correctionKind: "REISSUE" | "EXCHANGE";
+  setCorrectionKind: (v: "REISSUE" | "EXCHANGE") => void;
+  collectNow: string;
+  setCollectNow: (v: string) => void;
+  /** طريقة قبض «المُحصَّل الآن» — هنا لا في TotalsPanel: لوحة الدفع مخفيّة في التصحيح. */
+  paymentMethod: PaymentMethod;
+  setPaymentMethod: (v: PaymentMethod) => void;
+  overpayHandling: "CREDIT" | "CASH_REFUND";
+  setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
+  hasCustomer: boolean;
+}
 
 /**
  * لوحة تصحيح الفاتورة — تظهر فقط في وضع التصحيح (isCorrection). تعرض السبب الإلزاميّ، وفرق
  * المال بين المدفوع سابقاً وإجمالي التصحيح، وتفرّع حسب اتجاه الفرق:
- *   نقص (الإجمالي > المدفوع) ⇒ «المُحصَّل الآن» + تنبيه إن بقي جزءٌ ذمّةً بلا عميل.
+ *   نقص (الإجمالي > المدفوع) ⇒ اقتراح التحصيل عند الاعتماد + تنبيه إن بقي جزءٌ ذمّةً بلا عميل.
  *   فائض (الإجمالي < المدفوع) ⇒ خيار «استرداد نقديّ» أو «رصيد دائن» (الأخير يلزمه عميل).
  * لا منطقَ ماليّ هنا — كلّه عرضٌ وتحقّقٌ عميليّ يُماثل validateCorrection؛ الخادم هو الحكم.
  */
 function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason, correctionKind, setCorrectionKind, collectNow, setCollectNow, paymentMethod, setPaymentMethod, overpayHandling,
   setOverpayHandling,
   hasCustomer,
-  openShifts,
-  overpayShiftId,
-  setOverpayShiftId,
 }: CorrectionPanelProps) {
   const diff = D(grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
   const isShort = diff.gt(0);
@@ -1277,7 +1289,7 @@ function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason
         <span>تصحيح موثَّق{original?.invoiceNumber ? ` — ${original.invoiceNumber}` : ""}</span>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة.
+        الطلب لا يغيّر شيئاً الآن. عند الاعتماد يُعكس الأصل وتصدر الفاتورة البديلة وتسوى الفروق في معاملة واحدة، ثم تصبح البديلة جاهزة للطباعة.
       </p>
 
       <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="نوع العملية">
@@ -1327,8 +1339,8 @@ function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason
 
       {isShort && (
         <div className="space-y-1">
-          <Label className="text-xs font-semibold">المُحصَّل الآن</Label>
-          <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المُحصَّل الآن" />
+          <Label className="text-xs font-semibold">المبلغ المقترح تحصيله عند الاعتماد</Label>
+          <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المقترح تحصيله عند الاعتماد" />
           {/* الطرق تُشتقّ من السياسة المركزية (لا نصّ ثابت) — المعطَّلة لا تُعرَض أصلاً هنا
               لأنّ هذا منتقٍ مضغوط لا لوحة دفعٍ كاملة. */}
           {collect.gt(0) && (
@@ -1387,33 +1399,10 @@ function CorrectionPanel({ original, originalPaid, grandTotal, reason, setReason
           {overpayHandling === "CREDIT" && !hasCustomer && (
             <p className="text-xs text-destructive">الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو استرداداً نقدياً.</p>
           )}
-          {/* الدرج مورد فرعٍ لا مستخدم: حين يتعدّد الدرج المفتوح يفرض الخادم اختياراً صريحاً
-              (resolveBranchCashShiftTx). بلا هذا المنتقي كان الموظف يملأ كل شيء ثمّ يُرفض —
-              نفس العلّة التي عولجت في شاشة المرتجعات. */}
           {overpayHandling === "CASH_REFUND" && (
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold">من أيّ درج يخرج النقد؟</Label>
-              {openShifts.length === 0 ? (
-                <p className="text-xs text-destructive">
-                  لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو اختر رصيداً دائناً.
-                </p>
-              ) : (
-                <AppSelect
-                  size="sm"
-                  className="text-xs"
-                  aria-label="درج استرداد الفائض"
-                  value={overpayShiftId != null ? String(overpayShiftId) : ""}
-                  onValueChange={(v: string) => setOverpayShiftId(v ? Number(v) : null)}
-                  placeholder="اختر الدرج…"
-                >
-                  {openShifts.map((s) => (
-                    <option key={s.shiftId} value={String(s.shiftId)}>
-                      {s.isMine ? "درجي — " : ""}{s.userName} (نقد {fmt(s.expectedCash)})
-                    </option>
-                  ))}
-                </AppSelect>
-              )}
-            </div>
+            <p className="text-xs text-muted-foreground">
+              يختار المراجع الدرج المفتوح لحظة الاعتماد؛ لا يخرج أي نقد عند إرسال الطلب.
+            </p>
           )}
         </div>
       )}

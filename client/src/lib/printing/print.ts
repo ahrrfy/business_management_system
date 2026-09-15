@@ -99,7 +99,10 @@ export async function printDoc(doc: PrintDoc): Promise<PrintResult> {
  *  ١) جسر الخادم  ٢) WebUSB  ٣) نافذة المتصفّح (قالب الإيصال المُعلَّم نفسه).
  * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
  */
-export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> {
+export async function printReceipt(
+  d: ReceiptBrowserData,
+  options: { openDrawer?: boolean } = {},
+): Promise<PrintResult> {
   // ش٢ (§١٠) — حارسٌ بنيويّ: قالب الإيصال لمستندٍ محاسبيّ حقيقيّ حصراً. حمولةٌ بلا رقمٍ، أو
   // برقم مسوّدة (DRF-)، تُنتج ورقةً لا يميّزها الزبون عن إيصال دفعٍ فعليّ — تُطبَع المسوّدة
   // بقالبها المنفصل (printDraftTicket) الذي يعلن «غير محاسَبة» ويُمنع فيه سطرا مدفوع/الفكّة.
@@ -123,7 +126,9 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<PrintResult> 
   if (bridgeEnabled || isPaired()) {
     const raster = await receiptToRaster(d);
     if (raster) {
-      const bytes = new EscPos().init().raster(raster).feed(3).cut().openDrawer().bytes();
+      const command = new EscPos().init().raster(raster).feed(3).cut();
+      if (options.openDrawer !== false) command.openDrawer();
+      const bytes = command.bytes();
       if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);

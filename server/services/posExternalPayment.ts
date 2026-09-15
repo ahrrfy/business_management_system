@@ -10,7 +10,7 @@
 //   إلى الزرّ باسمه في الشاشة («تأكيد نجاح الدفع لدى المزوّد») لا إلى «راجع المدير».
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { digitalSaleIntents, externalPaymentAttempts, invoices, receipts,
+import { digitalSaleIntents, externalPaymentAttempts, invoices, receipts, salesControlRequests,
 } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -410,6 +410,181 @@ export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttem
   }
 }
 
+function correctionRequestId(value: string): number | null {
+  const match = /^sales-control-(\d+)-additional$/.exec(value);
+  return match ? Number(match[1]) : null;
+}
+
+async function isRecoverableStaleCorrectionProofTx(
+  tx: Tx,
+  previousRequestKey: string,
+  nextRequestKey: string,
+  actor: Actor,
+): Promise<boolean> {
+  const previousId = correctionRequestId(previousRequestKey);
+  const nextId = correctionRequestId(nextRequestKey);
+  if (previousId == null || nextId == null || previousId === nextId) return false;
+  const rows = await tx.select({
+    id: salesControlRequests.id,
+    invoiceId: salesControlRequests.invoiceId,
+    branchId: salesControlRequests.branchId,
+    requestType: salesControlRequests.requestType,
+    status: salesControlRequests.status,
+    reviewedBy: salesControlRequests.reviewedBy,
+  }).from(salesControlRequests).where(sql`${salesControlRequests.id} IN (${previousId}, ${nextId})`);
+  const previous = rows.find((row) => Number(row.id) === previousId);
+  const next = rows.find((row) => Number(row.id) === nextId);
+  return Boolean(
+    previous
+    && next
+    && previous.status === "STALE"
+    && Number(previous.reviewedBy) === actor.userId
+    && next.status === "PENDING"
+    && Number(previous.invoiceId) === Number(next.invoiceId)
+    && Number(previous.branchId) === Number(next.branchId)
+    && ["SALES_REISSUE", "SALES_EXCHANGE"].includes(previous.requestType)
+    && ["SALES_REISSUE", "SALES_EXCHANGE"].includes(next.requestType),
+  );
+}
+
+/**
+ * ينشئ إثبات قبضٍ غير نقدي مؤكداً داخل المعاملة التي يحددها المستدعي. في اعتماد التصحيح
+ * تُستعمل معاملة تمهيدية مستقلة عمداً: جهاز الدفع خارجي ولا يمكن لـROLLBACK إعادة المال؛
+ * لذلك يجب أن يبقى الدليل CONFIRMED قابلاً للاستهلاك عند إعادة المحاولة إن فشل ترحيل الفاتورة.
+ */
+export async function createConfirmedExternalPaymentAttemptTx(
+  tx: Tx,
+  input: ExternalPaymentAttemptInput,
+  actor: Actor,
+): Promise<LockedExternalPaymentAttempt> {
+  assertPosPaymentMethodEnabled(input.method);
+  assertVerificationInput(input);
+  const amount = money(input.amount);
+  if (!amount.isFinite() || !amount.gt(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد قبض فرق التصحيح",
+        why: "مبلغ الفرق غير النقدي ليس مبلغاً موجباً صالحاً",
+        doThis: "حدّث الطلب وتحقّق من مبلغ الفرق قبل تمرير العملية على جهاز الدفع",
+      }),
+    });
+  }
+  const reference = input.reference.trim();
+  const normalized = normalizedReference(reference);
+  const requestId = input.requestId.trim();
+  if (!requestId || requestId.length > 80) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد قبض فرق التصحيح",
+        why: "معرّف الاعتماد غير صالح لمنع تكرار القبض",
+        doThis: "حدّث شاشة الاعتماد ثم أعد المحاولة من الطلب نفسه",
+      }),
+    });
+  }
+  const deviceId = input.deviceId.trim();
+  if (!deviceId || deviceId.length > 64) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد قبض فرق التصحيح",
+        why: "هوية جهاز المراجع فارغة أو غير صالحة",
+        doThis: "حدّث الشاشة على الجهاز الذي نُفّذ عليه الدفع ثم أعد الاعتماد",
+      }),
+    });
+  }
+
+  const existing = (
+    await tx.select().from(externalPaymentAttempts).where(and(
+      eq(externalPaymentAttempts.createdBy, actor.userId),
+      eq(externalPaymentAttempts.requestId, requestId),
+    )).limit(1)
+  )[0];
+  if (existing) {
+    if (!fingerprintMatches(existing, input, actor) || existing.state !== "CONFIRMED") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: appErrorMessage({
+          what: "تعذّر اعتماد قبض فرق التصحيح",
+          why: "معرّف الاعتماد مرتبط بإثبات مختلف أو غير مؤكّد",
+          doThis: "حدّث شاشة الاعتماد وتحقّق من مرجع جهاز الدفع قبل إعادة المحاولة",
+        }),
+      });
+    }
+    return existing;
+  }
+
+  const duplicateReference = (
+    await tx.select()
+      .from(externalPaymentAttempts)
+      .where(eq(externalPaymentAttempts.normalizedReference, normalized))
+      .limit(1)
+  )[0];
+  if (duplicateReference) {
+    // إن أصبح طلب التصحيح STALE بعد قبض الجهاز، يبقى الدليل CONFIRMED بلا إيصال. يسمح طلب
+    // بديل للمراجع نفسه بإعادة استعمال المرجع/المبلغ/الجهاز المطابقين بدلاً من تمرير البطاقة
+    // ثانيةً. أي اختلاف يبقى تعارضاً صريحاً، والاستهلاك الأحادي يحسم السباق.
+    if (
+      duplicateReference.state === "CONFIRMED"
+      && duplicateReference.invoiceId == null
+      && duplicateReference.receiptId == null
+      && duplicateReference.consumedAt == null
+      && fingerprintMatches(duplicateReference, input, actor)
+      && await isRecoverableStaleCorrectionProofTx(
+        tx,
+        duplicateReference.requestId,
+        input.requestId,
+        actor,
+      )
+    ) {
+      return duplicateReference;
+    }
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد قبض فرق التصحيح",
+        why: `مرجع العملية «${normalized}» مسجّل سلفاً، والمرجع أحادي الاستعمال`,
+        doThis: "طابق المرجع مع قسيمة جهاز الدفع وأدخل مرجع العملية الجديدة الصحيح",
+      }),
+    });
+  }
+
+  const confirmedAt = new Date();
+  const inserted = await tx.insert(externalPaymentAttempts).values({
+    branchId: input.branchId,
+    channel: input.channel,
+    paymentMethod: input.method,
+    amount: toDbMoney(amount),
+    providerCode: providerCodeFor(input),
+    accountReference: accountReferenceFor(input),
+    deviceId,
+    externalReference: reference,
+    normalizedReference: normalized,
+    state: "CONFIRMED",
+    requestId,
+    createdBy: actor.userId,
+    confirmedBy: actor.userId,
+    confirmedAt,
+  });
+  const id = extractInsertId(inserted);
+  const row = (
+    await tx.select().from(externalPaymentAttempts)
+      .where(eq(externalPaymentAttempts.id, id)).limit(1)
+  )[0];
+  if (!row) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: appErrorMessage({
+        what: "تعذّر اعتماد قبض فرق التصحيح",
+        why: "لم يمكن استرجاع إثبات الدفع بعد تسجيله داخل المعاملة",
+        doThis: "تحقّق من حالة جهاز الدفع ثم أعد الاعتماد؛ لم تُحفظ الفاتورة البديلة",
+      }),
+    });
+  }
+  return row;
+}
+
 /** انتقال INITIATED→CONFIRMED مسجّل في الخادم؛ لا يغيّر الفاتورة أو الدفتر بعد. */
 export async function confirmExternalPaymentAttempt(
   input: { attemptId: number; branchId: number; channel: PosExternalPaymentChannel; deviceId: string;
@@ -622,7 +797,12 @@ export async function lockConfirmedExternalPaymentAttempt(
     && linkedIntent != null
     && Number(linkedIntent.id) === input.digitalSaleIntentId
     && (actor.role === "admin" || actor.role === "manager");
-  assertAttemptActorAuthority(row, verificationPolicy, actor, trustedDigitalRecovery);
+  assertAttemptActorAuthority(
+    row,
+    verificationPolicy,
+    actor,
+    trustedDigitalRecovery,
+  );
   return row;
 }
 
@@ -793,7 +973,11 @@ export async function consumeConfirmedExternalPaymentAttemptTx<T>(
     value: T;
   }>,
 ): Promise<T> {
-  const attempt = await lockConfirmedExternalPaymentAttempt(tx, input, actor);
+  const attempt = await lockConfirmedExternalPaymentAttempt(
+    tx,
+    input,
+    actor,
+  );
   const consumed = await consume(attempt);
   await bindExternalPaymentAttempt(
     tx,

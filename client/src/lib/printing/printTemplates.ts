@@ -858,6 +858,14 @@ export interface ReceiptBrowserData {
   time?: string | null;
   cashierName?: string | null;
   customerName?: string | null;
+  /** أثر النسخة المعدلة؛ يثبت رقم الأصل ومَن طلب/اعتمد التعديل على الحرارية. */
+  revision?: {
+    originalReceiptNumber: string;
+    revisedAt: string;
+    revisedByName: string;
+    approvedByName?: string | null;
+    approvedAt?: string | null;
+  } | null;
   items: {
     name: string;
     quantity: number;
@@ -971,6 +979,11 @@ export function printBrowserReceipt(d: ReceiptBrowserData): boolean {
   </div>
   ${d.shiftId != null ? `<div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:800;color:#000;margin-bottom:1mm;"><span>الوردية: <strong style="font-weight:900;">#${d.shiftId}</strong></span><span></span></div>` : ''}
   ${d.customerName ? `<div style="font-size:12.5px;font-weight:900;color:#000;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
+  ${d.revision ? `<div style="border:2px solid #000;padding:1.5mm;margin:1.5mm 0;font-size:10.5px;font-weight:800;color:#000;">
+    <div>فاتورة معدلة — بديلة عن: <strong>${esc(d.revision.originalReceiptNumber)}</strong></div>
+    <div>طلب التعديل: <strong>${esc(d.revision.revisedByName)}</strong> — ${esc(d.revision.revisedAt)}</div>
+    ${d.revision.approvedByName ? `<div>الاعتماد: <strong>${esc(d.revision.approvedByName)}</strong>${d.revision.approvedAt ? ` — ${esc(d.revision.approvedAt)}` : ''}</div>` : ''}
+  </div>` : ''}
   <div style="border-bottom:1.5px dashed #000;margin:2mm 0;"></div>
   <table style="width:100%;font-size:11.5px;border-collapse:collapse;color:#000;">
     <thead><tr style="border-bottom:2px solid #000;">

@@ -32,7 +32,7 @@ describe("salesControlAffectedAmount — ما يمسه القرار لا اجم�
     expect(salesControlAffectedAmount({ requestType: "SALES_CANCEL", payload: { refundPaymentMethod: "CASH" }, invoice, items, refundable: "40000.00" })).toEqual({ amount: "40000.00", label: "المقبوض القابل للرد عند الالغاء" });
   });
   it("اعادة الاصدار/الاستبدال: الدفعة الاضافية ان وجدت والا المقبوض المعاد تخصيصه", () => {
-    expect(salesControlAffectedAmount({ requestType: "SALES_EXCHANGE", payload: { lines: [], additionalPayment: { amount: "700", method: "CASH" } }, invoice, items, refundable: "40000.00" })).toEqual({ amount: "700.00", label: "دفعة اضافية تُحصَّل الآن" });
+    expect(salesControlAffectedAmount({ requestType: "SALES_EXCHANGE", payload: { lines: [], additionalPayment: { amount: "700", method: "CASH" } }, invoice, items, refundable: "40000.00" })).toEqual({ amount: "700.00", label: "دفعة اضافية تُحصَّل عند الاعتماد" });
     expect(salesControlAffectedAmount({ requestType: "SALES_REISSUE", payload: { lines: [] }, invoice, items, refundable: "40000.00" }).amount).toBe("40000.00");
     expect(salesControlAffectedAmount({ requestType: "SALES_REISSUE", payload: { lines: [] }, invoice, items, refundable: "0" })).toEqual({ amount: "0.00", label: "لا مقبوض يُعاد تخصيصه" });
   });
@@ -59,8 +59,9 @@ describe("salesControlInlineBlock — لا زر اعتماد يكذب", () => {
     expect(salesControlInlineBlock("SALES_RETURN", { lines: [], refund: { amount: "1", method: "CASH" } }, open)).toBeNull();
     expect(salesControlInlineBlock("SALES_RETURN", { lines: [{ invoiceItemId: 1, baseQuantity: 1 }], restock: true }, open)).toBeNull();
   });
-  it("الانواع بلا توجيه نقد تمر", () => {
-    expect(salesControlInlineBlock("SALES_REISSUE", { lines: [] }, open)).toBeNull();
+  it("التصحيح محجوب حتى يراجع كان/أصبح، والأنواع البسيطة تمر", () => {
+    expect(salesControlInlineBlock("SALES_REISSUE", { lines: [] }, open)).toMatch(/كان هكذا/);
+    expect(salesControlInlineBlock("SALES_EXCHANGE", { lines: [] }, open)).toMatch(/سيصبح هكذا/);
     expect(salesControlInlineBlock("SALES_DUE_DATE_CHANGE", { dueDate: null }, open)).toBeNull();
   });
   it("salesControlShiftIds يجمع ادراج الرد والعابر", () => {

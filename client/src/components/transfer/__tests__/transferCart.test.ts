@@ -24,6 +24,7 @@ function line(p: Partial<TransferCartLine> & { variantId: number; productUnitId:
     qty: p.qty ?? 1,
     conversionFactor: p.conversionFactor ?? "1",
     stockBase: p.stockBase ?? 100,
+    availableBase: p.availableBase ?? p.stockBase ?? 100,
   };
 }
 
@@ -34,7 +35,7 @@ describe("T1: التجميع بالوحدة الأساس", () => {
       line({ variantId: 7, productUnitId: 70, unit: "قطعة", conversionFactor: "1", qty: 3, stockBase: 50 }),
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ variantId: 7, baseQuantity: 15, stockBase: 50 });
+    expect(rows[0]).toMatchObject({ variantId: 7, baseQuantity: 15, stockBase: 50, availableBase: 50 });
   });
 
   it("يبقي المتغيّرات المختلفة بنوداً منفصلة ويضرب المعامل بالكمية", () => {
@@ -72,6 +73,12 @@ describe("T2: حالة المخزون بالطلب المجمَّع", () => {
     expect(st[0].availInUnit).toBe(2);
     expect(st[0].baseQty).toBe(24);
     expect(st[0].isShort).toBe(false);
+  });
+
+  it("الحجوزات تُنقص المتاح التشغيلي حتى لو كان الرصيد الفعلي كافياً", () => {
+    const st = computeLineStates([line({ variantId: 6, productUnitId: 60, qty: 6, stockBase: 100, availableBase: 5 })]);
+    expect(st[0].isShort).toBe(true);
+    expect(st[0].availInUnit).toBe(5);
   });
 });
 

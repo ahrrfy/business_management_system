@@ -10,6 +10,7 @@ import { salesControlFacts, type SalesControlFactsType } from "@shared/salesCont
 import {
   invoiceItems,
   invoices,
+  productUnits,
   receipts,
   returnRequests,
   salesControlRequests,
@@ -20,6 +21,7 @@ import {
 import { MATERIALIZED_RECEIPT_STATUSES } from "../../cash/cashAvailability";
 import { money } from "../../money";
 import { listReturnRequests, rejectReturnRequest } from "../../returns/requests";
+import { loadRefundCapsByInvoiceIds } from "../../returns/refundCaps";
 import { recordGovernedReturnExecution } from "../../sale/controlAudit";
 import { approveSalesControlRequest, listSalesControlRequests, rejectSalesControlRequest } from "../../sale/controlRequests";
 import { requireDb } from "../../tx";
@@ -28,13 +30,22 @@ import { approveWorkOrderControlRequest, listPendingWorkOrderControls, rejectWor
 import { serviceActor } from "../gate";
 import { buildRow, decided, defaultMessage, itemLabel, outcomeFor, statusOf } from "../rows";
 import type { DecisionSource } from "../types";
-import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, variantLabels, type Db } from "./common";
+import { branchNames, customerNames, freshnessFrom, ids, scopeBranch, sodHidden, userNames, variantLabels, type Db } from "./common";
+import { buildReturnRequestDecisionView, type ReturnRequestDecisionItem } from "./returnRequestView";
 import { salesControlAffectedAmount, salesControlInlineBlock, salesControlShiftIds, type SalesControlItemView } from "./salesControlView";
 
 const SALES_GATE = { type: "MODULE", moduleKey: "sales", roles: ["manager"] } as const;
 const WORKORDERS_GATE = { type: "MODULE", moduleKey: "workorders", roles: ["manager"] } as const;
 
-type RefundLine = { productName?: string; name?: string; quantity?: number | string; unitPrice?: string; total?: string };
+type RefundLine = {
+  invoiceItemId?: number | string;
+  baseQuantity?: number | string;
+  productName?: string;
+  name?: string;
+  quantity?: number | string;
+  unitPrice?: string;
+  total?: string;
+};
 
 /** بنودُ طلبٍ مخزَّنة JSON — نعرض ما نجد فيها بلا افتراض شكلٍ صارم. */
 function linesOf(payload: unknown): RefundLine[] {
@@ -74,6 +85,23 @@ async function refundableByInvoice(db: Db, invoiceIds: number[]): Promise<Map<nu
     sums.set(key, r.direction === "IN" ? current.plus(money(r.amount)) : current.minus(money(r.amount)));
   }
   return new Map(Array.from(sums, ([k, v]) => [k, v.toFixed(2)]));
+}
+
+/**
+ * الطلبات القديمة تحتاج **السقف الحاكم نفسه** الذي سيستعمله `returnSaleInTx`: الإيصالات
+ * المباشرة + العربون المطبّق + تحصيل المندوب − الردود، مع استبعاد أمانة التوصيل. الاستعلام
+ * المختصر أعلاه يكفي لعرض ضبط البيع الحديث، لكنه لا يجوز أن يصنّف طلباً قديماً «بلا خروج مال»
+ * إذا كان قبضُه من تلك المسارات. نحدّ التوازي كي لا يحوّل صندوقاً كبيراً إلى عاصفة استعلامات.
+ */
+async function refundableReturnRequestsByInvoice(
+  db: Db,
+  invoiceIds: number[],
+): Promise<Map<number, string>> {
+  const snapshots = await loadRefundCapsByInvoiceIds(db, invoiceIds);
+  return new Map(Array.from(snapshots, ([invoiceId, snapshot]) => [
+    invoiceId,
+    snapshot.pool.toFixed(2),
+  ]));
 }
 
 /**
@@ -223,9 +251,10 @@ export const salesControlSource: DecisionSource = {
 // ───────────────────────────── ٢) طلبات المرتجع ─────────────────────────────
 
 /**
- * [`returnRouter.ts:258`](../../../routers/returnRouter.ts). الاعتمادُ يحتاج قرارَ **رافد الردّ**
- * (نقد/بطاقة/ذمّة) والدرج والمرجع من المعتمِد لحظةَ الاعتماد — مدخلٌ لا يحمله الصفّ، فيُفتح
- * من شاشته؛ والرفضُ بسببه يقع هنا. الأقدمُ أوّلاً قبل قصّ الخدمة (200).
+ * [`returnRouter.ts:258`](../../../routers/returnRouter.ts). الطلب القديم لا يحمل أسماءَ البنود
+ * ولا قيمةَ الرد؛ لذلك نربطه ببنود الفاتورة وإيصالاتها قبل العرض. الاعتمادُ يحتاج قرارَ مصير
+ * البضاعة، ويحتاج رافدَ الردّ والدرج والمرجع فقط إذا كان هناك مالٌ قابل للخروج؛ فيُفتح مباشرةً
+ * برقم الطلب في شاشة المرتجعات. الأقدمُ أوّلاً قبل قصّ الخدمة (200).
  */
 export const returnRequestSource: DecisionSource = {
   key: "sales.returnRequest",
@@ -237,28 +266,111 @@ export const returnRequestSource: DecisionSource = {
     if (branchId === "NONE") return [];
     const db = requireDb();
     const rows = await listReturnRequests({ branchId, status: "PENDING_APPROVAL", order: "ASC" });
-    const [customers, branches] = await Promise.all([customerNames(db, ids(rows.map((r) => r.customerId))), branchNames(db, ids(rows.map((r) => r.branchId)))]);
+    if (!rows.length) return [];
+
+    const invoiceIds = ids(rows.map((r) => r.invoiceId));
+    const [customers, branches, creators, refundable] = await Promise.all([
+      customerNames(db, ids(rows.map((r) => r.customerId))),
+      branchNames(db, ids(rows.map((r) => r.branchId))),
+      userNames(db, ids(rows.map((r) => r.invoiceCreatedBy))),
+      refundableReturnRequestsByInvoice(db, invoiceIds),
+    ]);
+    const itemRows = invoiceIds.length
+      ? await db
+          .select({
+            id: invoiceItems.id,
+            invoiceId: invoiceItems.invoiceId,
+            variantId: invoiceItems.variantId,
+            itemNameSnapshot: invoiceItems.itemNameSnapshot,
+            unitName: productUnits.unitName,
+            conversionFactor: productUnits.conversionFactor,
+            total: invoiceItems.total,
+            baseQuantity: invoiceItems.baseQuantity,
+            returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+            unitPrice: invoiceItems.unitPrice,
+          })
+          .from(invoiceItems)
+          .leftJoin(productUnits, eq(productUnits.id, invoiceItems.productUnitId))
+          .where(inArray(invoiceItems.invoiceId, invoiceIds))
+      : [];
+    const variants = await variantLabels(db, ids(itemRows.map((item) => item.variantId)));
+    const itemsByInvoice = new Map<number, Array<ReturnRequestDecisionItem & { invoiceId: number }>>();
+    const itemsById = new Map(
+      itemRows.map((item) => {
+        const variant = variants.get(Number(item.variantId));
+        const normalized = {
+          id: Number(item.id),
+          invoiceId: Number(item.invoiceId),
+          itemNameSnapshot: item.itemNameSnapshot,
+          productName: variant?.productName ?? null,
+          variantName: variant?.variantName ?? null,
+          sku: variant?.sku ?? null,
+          unitName: item.unitName,
+          conversionFactor: Number(item.conversionFactor ?? 1),
+          total: item.total,
+          baseQuantity: Number(item.baseQuantity),
+          returnedBaseQuantity: Number(item.returnedBaseQuantity ?? 0),
+          unitPrice: item.unitPrice,
+        };
+        const invoiceItemsForDecision = itemsByInvoice.get(normalized.invoiceId) ?? [];
+        invoiceItemsForDecision.push(normalized);
+        itemsByInvoice.set(normalized.invoiceId, invoiceItemsForDecision);
+        return [normalized.id, normalized] as const;
+      }),
+    );
+
     return rows
-      .filter((r) => !sodHidden({ blocked: [r.createdBy], actor, trigger: "MONEY_OUT" }))
-      .map((r) =>
+      .map((r) => {
+        const lines = linesOf(r.linesJson).map((line) => ({
+          invoiceItemId: Number(line.invoiceItemId),
+          baseQuantity: Number(line.baseQuantity),
+        }));
+        const invoiceId = Number(r.invoiceId);
+        const view = buildReturnRequestDecisionView({
+          invoice: {
+            subtotal: r.invoiceSubtotal,
+            discountAmount: r.invoiceDiscountAmount,
+            taxAmount: r.invoiceTaxAmount,
+            total: r.invoiceTotal,
+            paidAmount: r.invoicePaid,
+            returnedTotal: r.invoiceReturnedTotal,
+            paymentMethod: r.invoicePaymentMethod,
+            createdAt: r.invoiceCreatedAt,
+            createdByName: r.invoiceCreatedBy == null
+              ? null
+              : creators.get(Number(r.invoiceCreatedBy)) ?? null,
+          },
+          lines,
+          items: itemsByInvoice.get(invoiceId) ?? [],
+          refundable: refundable.get(invoiceId) ?? "0.00",
+        });
+        return { row: r, view };
+      })
+      .filter(({ row: r }) => !sodHidden({ blocked: [r.createdBy, r.invoiceCreatedBy], actor }))
+      .map(({ row: r, view }) =>
         buildRow(
           {
             kind: "sales.returnRequest.approve",
             id: Number(r.id),
             title: `طلب مرتجع بيع · فاتورة ${r.invoiceNumber ?? `#${r.invoiceId}`}`,
             party: r.customerId != null ? (customers.get(Number(r.customerId)) ?? null) : null,
-            amount: r.invoiceTotal,
+            amount: view.amount,
             branchId: Number(r.branchId),
             branchName: branches.get(Number(r.branchId)) ?? null,
             requestedBy: Number(r.createdBy),
             requestedByName: r.createdByName ?? null,
             requestedAt: r.createdAt,
-            summaryItems: linesOf(r.linesJson).map((l) => ({ label: l.productName ?? l.name ?? "بند", qty: l.quantity ?? null, unitPrice: l.unitPrice ?? l.total ?? null })),
+            summaryItems: view.summaryItems,
             reason: r.reason,
-            hrefId: Number(r.invoiceId),
+            hrefId: Number(r.id),
             allowedActions: ["REJECT"],
-            approveBlockedReason: "اعتماد المرتجع يحتاج اختيار رافد الرد (نقد/بطاقة/ذمة) والدرج والمرجع — يقع من شاشة الفاتورة",
-            trigger: "MONEY_OUT",
+            approveBlockedReason: view.cashOutCap === "0.00"
+              ? "راجع البنود ومصير البضاعة في شاشة الاعتماد — لا يوجد رد مالي أو درج مطلوب لهذه الفاتورة"
+              : view.cashOutCap
+                ? "راجع البنود واختر رافد الرد والدرج أو مرجع البطاقة في شاشة الاعتماد"
+                : "تعذّر التحقق من قيمة الطلب وسقف الرد — راجعه في الشاشة الكاملة قبل الحسم",
+            openActionLabel: "مراجعة واعتماد",
+            trigger: view.trigger,
           },
           scope.now,
         ),

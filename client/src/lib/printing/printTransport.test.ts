@@ -47,6 +47,7 @@ vi.mock("./printTemplates", () => ({
 }));
 
 import { printDoc, printReceipt } from "./print";
+import { EscPos } from "./escpos";
 
 const doc = {
   kind: "opening" as const,
@@ -140,5 +141,15 @@ describe("print transport fallback", () => {
     expect(mocks.sendBytes).toHaveBeenCalledOnce();
     expect(res).toEqual({ via: "thermal", ok: true });
     expect(mocks.printBrowserReceipt).not.toHaveBeenCalled();
+  });
+
+  it("طباعة الفاتورة المصححة لا ترسل نبضة فتح الدرج", async () => {
+    const drawer = vi.spyOn(EscPos.prototype, "openDrawer");
+    mocks.isPaired.mockReturnValue(true);
+    mocks.sendBytes.mockResolvedValue(undefined);
+
+    await expect(printReceipt(receipt, { openDrawer: false })).resolves.toEqual({ via: "thermal", ok: true });
+    expect(drawer).not.toHaveBeenCalled();
+    drawer.mockRestore();
   });
 });

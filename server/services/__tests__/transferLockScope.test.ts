@@ -26,7 +26,7 @@ function db() {
 }
 
 const TABLES = [
-  "stockTransferLines", "stockTransfers", "inventoryMovements", "accountingEntries",
+  "stockTransferLineBundleComponents", "stockTransferLines", "stockTransfers", "inventoryMovements", "accountingEntries",
   "idempotencyKeys", "branchStock", "productUnits", "productVariants", "products",
   "categories", "users", "branches",
 ];

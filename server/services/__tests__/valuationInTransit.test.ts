@@ -5,15 +5,18 @@
  * يصل الوجهة بعد يختفي من الأصل طوال فترة الطريق (يعود عند الاستلام). الإصلاح: نجمع المتبقّي
  * من `stockTransferLines` للسندات IN_TRANSIT بتكلفة WAVG الحاليّة، وننسبه إلى الفرع المصدر.
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { extractInsertId } from "../../lib/insertId";
 import { readInventoryValuation } from "../inventory/valuation";
+import { getFinancialPosition } from "../reportsFinancialService";
 import { getInventoryValuation } from "../reportsInventoryService";
 import { withTx } from "../tx";
 
 const TABLES = [
+  "stockTransferLineBundleComponents",
   "stockTransferLines",
   "stockTransfers",
   "branchStock",
@@ -213,6 +216,52 @@ describe("قيمة المخزون بالطريق تدخل في الأصل (P1-#1
     });
     const v = await withTx((tx) => readInventoryValuation(tx));
     expect(v.inTransitTotal).toBe("0.00");
+  });
+
+  it("سند بكج بالطريق يُقيَّم من لقطة مكوّناته في المصدر والتقرير والميزانية", async () => {
+    const d = db();
+    await d.update(s.productVariants).set({ costPrice: "5.00" }).where(eq(s.productVariants.id, 1));
+    await d.insert(s.products).values([
+      { id: 3, name: "مشبك" },
+      { id: 4, name: "بكج مكتبي", isBundle: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 3, productId: 3, sku: "CLIP-1", costPrice: "1.00" },
+      { id: 4, productId: 4, sku: "BUNDLE-1", costPrice: "0.00" },
+    ]);
+    await d.insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 10 });
+    await d.insert(s.stockTransfers).values({
+      id: 20,
+      transferNumber: "T-BUNDLE-20",
+      fromBranchId: 1,
+      toBranchId: 2,
+      status: "IN_TRANSIT",
+      totalSentBase: 2,
+      createdBy: 1,
+    });
+    const insertedLine = await d.insert(s.stockTransferLines).values({
+      transferId: 20,
+      variantId: 4,
+      quantitySent: 2,
+    });
+    const transferLineId = extractInsertId(insertedLine);
+    await d.insert(s.stockTransferLineBundleComponents).values([
+      { transferLineId, componentVariantId: 1, componentBaseQuantity: 3 },
+      { transferLineId, componentVariantId: 3, componentBaseQuantity: 1 },
+    ]);
+    await d.execute(sql`UPDATE branchStock SET quantity = quantity - 6 WHERE variantId = 1 AND branchId = 1`);
+    await d.execute(sql`UPDATE branchStock SET quantity = quantity - 2 WHERE variantId = 3 AND branchId = 1`);
+
+    const source = await withTx((tx) => readInventoryValuation(tx));
+    expect(source.inTransitTotal).toBe("32.00");
+    expect(source.total).toBe("80.00");
+
+    const report = await getInventoryValuation();
+    expect(report.inTransit).toMatchObject({ items: 2, totalQty: 8, totalValue: "32.00" });
+    expect(report.totals.totalValue).toBe("80.00");
+
+    const financial = await getFinancialPosition();
+    expect(financial.inventory).toBe("80.00");
   });
 });
 

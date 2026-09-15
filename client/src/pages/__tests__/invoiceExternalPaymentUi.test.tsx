@@ -31,17 +31,12 @@ describe("إثبات القبض غير النقدي في شاشات المبيع
     );
   });
 
-  it("إعادة الإصدار تستهلك محاولة مستقلة لدفعة فرق التصحيح", () => {
-    const source = page("SalesInvoiceNew.tsx");
-    expect(source).toContain(
-      'const externalChannel = isCorrection ? "SALES_COLLECTION"',
-    );
-    expect(source).toContain(
-      "externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined",
-    );
-    expect(source).toContain(
-      "externalPaymentDeviceId: externalAttempt?.deviceId ?? undefined",
-    );
-    expect(source).toContain("confirmed={externalConfirmed}");
+  it("فرق إعادة الإصدار يُحجز ويُثبَت عند المراجع لا عند منشئ الطلب", () => {
+    const editor = page("SalesInvoiceNew.tsx");
+    const approvals = page("SalesControlApprovals.tsx");
+    expect(editor).toContain("فرق التصحيح يُنفّذه المراجع عند الاعتماد");
+    expect(approvals).toContain("claimCorrectionPayment");
+    expect(approvals).toContain("reference: referenceOverride");
+    expect(approvals).toContain("deviceId");
   });
 });

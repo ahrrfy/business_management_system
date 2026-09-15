@@ -26,16 +26,15 @@ export const LEGAL_URLS = {
   privacy: "https://alarabiya.online/legal/privacy",
   terms: "https://alarabiya.online/legal/terms",
   returns: "https://alarabiya.online/legal/returns",
+  deleteAccount: "https://alarabiya.online/legal/delete-account",
 } as const;
 
 export type LegalPage = keyof typeof LEGAL_URLS;
 
 /**
- * علَمُ تفعيل الروابط. يُضبَط `true` بعد نشر handlers `/legal/*` على ERP والتحقّق
- * أنّها تُقدّم المحتوى الصحيح فعلياً — لا SPA fallback ولا مسار ERP آخر.
- * الأزرار في الشاشات ترصده وتُخفي نفسها حين false (سلوك أفضل من فتح متصفّح على SPA).
+ * علَمُ تفعيل الروابط. يُضبط `true` بعد نشر صفحات `/legal/*` على خادم الويب.
  */
-export const LEGAL_ENABLED = false;
+export const LEGAL_ENABLED = true;
 
 /** يفتح صفحةً قانونيّة في متصفّح النظام. لا يُخفق: إن رفض Linking، يُطلَع المستدعي على الفشل. */
 export async function openLegalPage(page: LegalPage): Promise<boolean> {

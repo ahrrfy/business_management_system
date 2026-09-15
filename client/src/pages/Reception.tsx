@@ -11,7 +11,7 @@ import {
   Check,
   CheckCircle2,
   ClipboardList,
-  Copy,
+  Copy, FilePenLine,
   Globe,
   HandCoins,
   Instagram,
@@ -2558,8 +2558,7 @@ export default function Reception() {
                 </Button>
               </div>
             )}
-            {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
-            <div className="ms-auto flex items-center gap-1.5">
+            {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}<div className="ms-auto flex items-center gap-1.5"><a href="/reception/workflow?section=edit" className="inline-flex items-center gap-1.5 rounded-lg border border-primary/50 bg-primary/5 px-2 py-1 text-xs font-extrabold text-primary hover:bg-primary/10"><FilePenLine aria-hidden className="size-3.5" /> تعديل فاتورة</a>
               <a
                 href="/reception/handover"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-green-500 bg-green-50 px-2 py-1 text-xs font-extrabold text-green-700 hover:bg-green-100"

@@ -29,6 +29,7 @@ import {
   branchStock,
   productVariants,
   products,
+  stockTransferLineBundleComponents,
   stockTransferLines,
   stockTransfers,
 } from "../../../drizzle/schema";
@@ -77,17 +78,29 @@ export async function readInventoryValuation(tx: Tx): Promise<InventoryValuation
   // ⭐ P1-#1: الحمل بالطريق مجمَّعاً بفرعِ المصدر — نفس شرط الأمانة (isConsignment=false) كي يبقى
   // التعريف موحَّداً مع الأصل المستقرّ. الكميّةُ = quantitySent − COALESCE(quantityReceived,0):
   // ما دام السند IN_TRANSIT، quantityReceived تكون NULL فتصير القيمة = المرسَل كاملاً؛ الحالات
-  // RECEIVED/CANCELLED تخرج بشرط status صراحةً كي لا نحتسب سنداً مقفولاً. التكلفةُ = WAVG الحالي
+  // RECEIVED/CANCELLED تخرج بشرط status صراحةً كي لا نحتسب سنداً مقفولاً. سطر البكج التشغيلي
+  // يُوسَّع عبر لقطة مكوّناته؛ السطر العادي يمرّ مرةً واحدة عبر COALESCE. التكلفةُ = WAVG الحالي
   // (نفس ما يُطبَّق على branchStock) — الاتّساقُ أهمّ من دقّة اللقطة التاريخيّة في المرحلة ١؛
   // لقطةٌ تاريخيّة مؤرَّشة كاملةٌ هي البند P1-#2 في تقرير المراجعة.
   const inTransitRows = await tx
     .select({
       fromBranchId: stockTransfers.fromBranchId,
-      value: sql<string>`CAST(COALESCE(SUM((${stockTransferLines.quantitySent} - COALESCE(${stockTransferLines.quantityReceived}, 0)) * ${productVariants.costPrice}), 0) AS CHAR)`,
+      value: sql<string>`CAST(COALESCE(SUM(
+        (${stockTransferLines.quantitySent} - COALESCE(${stockTransferLines.quantityReceived}, 0))
+        * COALESCE(${stockTransferLineBundleComponents.componentBaseQuantity}, 1)
+        * ${productVariants.costPrice}
+      ), 0) AS CHAR)`,
     })
     .from(stockTransfers)
     .innerJoin(stockTransferLines, eq(stockTransferLines.transferId, stockTransfers.id))
-    .innerJoin(productVariants, eq(productVariants.id, stockTransferLines.variantId))
+    .leftJoin(
+      stockTransferLineBundleComponents,
+      eq(stockTransferLineBundleComponents.transferLineId, stockTransferLines.id),
+    )
+    .innerJoin(
+      productVariants,
+      sql`${productVariants.id} = COALESCE(${stockTransferLineBundleComponents.componentVariantId}, ${stockTransferLines.variantId})`,
+    )
     .innerJoin(products, eq(products.id, productVariants.productId))
     .where(and(eq(stockTransfers.status, "IN_TRANSIT"), eq(products.isConsignment, false)))
     .groupBy(stockTransfers.fromBranchId);

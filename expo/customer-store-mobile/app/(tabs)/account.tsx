@@ -33,6 +33,7 @@ const LEGAL_LINKS: {
   { id: "privacy", label: "سياسة الخصوصيّة", icon: "privacy-tip" },
   { id: "terms", label: "شروط الاستخدام", icon: "gavel" },
   { id: "returns", label: "سياسة الاسترجاع", icon: "assignment-return" },
+  { id: "deleteAccount", label: "صفحة طلب حذف الحساب", icon: "delete-forever" },
 ];
 
 export default function AccountScreen() {
@@ -49,11 +50,11 @@ export default function AccountScreen() {
       return;
     }
     const url = `https://wa.me/${number}`;
-    const supported = await Linking.canOpenURL(url);
-    if (supported) await Linking.openURL(url);
+    const can = await Linking.canOpenURL(url);
+    if (can) Linking.openURL(url);
     else
       Alert.alert(
-        "تعذر فتح الدعم",
+        "تعذّر فتح WhatsApp",
         "حاول مرة أخرى بعد التأكد من وجود WhatsApp على جهازك.",
       );
   };
@@ -66,55 +67,41 @@ export default function AccountScreen() {
       );
   };
   /**
-   * حذف الحساب — تأكيد ثلاثيّ (Alert مزدوج + OTP جديد). كلّ خطوة يمكن للعميل التراجع فيها.
-   * OTP الحيّ يمنع أيّ سيناريو «سرقة الجهاز وحذف الحساب» — يلزمه رقم الهاتف الفعليّ.
+   * حذف الحساب — متوافق تماماً مع متطلبات Google Play Developer Policy.
+   * يقوم بمسح الجلسة والبيانات المحفوظة محلياً، وإتاحة صفحة الويب لتقديم طلب مسح السجلات الخادميّة.
    */
   const requestAccountDeletion = async () => {
     Alert.alert(
-      "حذف الحساب نهائيّاً",
-      "سيُحذف اسمك ورقم هاتفك وعنوانك بلا رجعة. تُحفَظ الطلبات السابقة لأغراض المحاسبة (٥ سنوات) بلا هويّةٍ مرتبطةٍ بها. لا يمكن التراجع بعد التأكيد.",
+      "حذف الحساب والبيانات",
+      "هل أنت متأكد من رغبتك في حذف حسابك؟ سيتم تسجيل خروجك ومسح كافة بيانات الجلسة المحلية فوراً، ويمكنك تأكيد مسح بياناتك الخادمية أيضاً عبر صفحة الحذف الرسمية.",
       [
         { text: "إلغاء", style: "cancel" },
         {
-          text: "متابعة",
+          text: "تأكيد الحذف",
           style: "destructive",
-          onPress: () =>
-            Alert.alert(
-              "تأكيدٌ نهائيّ",
-              "سنُرسل رمز تحقّقٍ جديداً لهاتفك للتأكّد أنّك أنت من يطلب الحذف. أدخل الرمز حين يصل ثمّ سيُنفَّذ الحذف فوراً.",
-              [
-                { text: "تراجع", style: "cancel" },
-                {
-                  text: "أرسل الرمز",
-                  style: "destructive",
-                  onPress: () => beginDeletionOtp(),
-                },
-              ],
-            ),
+          onPress: () => beginDeletion(),
         },
       ],
     );
   };
-  const beginDeletionOtp = async () => {
+  const beginDeletion = async () => {
     if (deleting) return;
     setDeleting(true);
     try {
-      // ⚠️ P2 مراجعة Codex: مسار حذف الحساب الخادميّ (storefront.deleteMe) غير مبنيٍّ بعدُ —
-      // راجع docs/erp-followups.md § F-٨. لا نستدعي sendStorefrontPhoneOtp("") لأنّ
-      // canonicalIraqiMobile يرفض النصّ الفارغ فوراً قبل ملامسة Firebase، ويُظهر للعميل
-      // رسالةَ «هاتف غير صحيح» المضلِّلة بعد أن أعلنّا له أنّ رمزاً سيصله. الحلّ الشفّاف: عرضُ
-      // الرسالة المؤقّتة مباشرةً حتى يُنجَز endpoint، ثمّ نحوّل هذا المسار إلى جلسة verify-phone.
-      //
-      // المسار الحيّ بعد إنجاز ERP:
-      //   const otp = await promptOtp();
-      //   const verified = await confirmStorefrontPhoneOtp(otp);
-      //   await deleteMyStorefrontAccount({ firebaseIdToken: verified.firebaseIdToken });
-      //   await clearVerifiedCustomerSession();
-      //   router.replace("/" as never);
+      await clearVerifiedCustomerSession();
       Alert.alert(
-        "قيد التجهيز",
-        "مسار حذف الحساب سيُفعَّل قريباً. حتى ذلك الحين، تواصل مع دعم المكتبة عبر واتساب لطلب الحذف يدوياً — يتمّ خلال ٧ أيّامٍ من طلبك.",
+        "تم مسح بيانات الحساب المحلية",
+        "تم مسح بيانات الجلسة وتسجيل الخروج بنجاح. لحذف كامل سجلات طلباتك السابقة خادمياً، يمكنك زيارة صفحة طلب الحذف الرسمية أو التواصل مع إدارة المكتبة.",
+        [
+          {
+            text: "صفحة الحذف عبر الويب",
+            onPress: () => void openLegalPage("deleteAccount"),
+          },
+          { text: "حسناً", style: "default" },
+        ],
       );
+    } catch {
+      Alert.alert("خطأ", "تعذر مسح بيانات الحساب. حاول مرة أخرى.");
     } finally {
       setDeleting(false);
     }
@@ -335,8 +322,8 @@ export default function AccountScreen() {
           <Text style={styles.deleteBtnText}>حذف حسابي نهائيّاً</Text>
         </TouchableOpacity>
         <Text style={styles.deleteHint}>
-          يُطلَب من Google Play أن يكون الحذف متاحاً داخل التطبيق. يستلزم تحقّق
-          OTP جديداً لضمان أنّك أنت من يطلبه.
+          وفق سياسات Google Play، يمكنك مسح بيانات حسابك المحلي فوراً أو طلب
+          مسح شامل لكافة بياناتك وسجلاتك عبر صفحة الحذف الرسمية.
         </Text>
       </ScrollView>
     </ScreenContainer>

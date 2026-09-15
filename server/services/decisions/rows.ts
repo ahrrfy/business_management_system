@@ -44,6 +44,7 @@ export interface RowInput {
   approveReason?: "REQUIRED" | "OPTIONAL";
   reasonMinLength?: number;
   approveBlockedReason?: string | null;
+  openActionLabel?: string | null;
   /** صيغُ الاعتماد حين يتعدّد (انظر `DecisionRowModel.approveVariants`). */
   approveVariants?: Array<{ key: string; label: string }>;
   trigger?: DecisionTrigger | null;
@@ -88,6 +89,7 @@ export function buildRow(input: RowInput, now: Date): DecisionRowModel {
     reason: input.reason?.trim() || null,
     allowedActions: input.allowedActions ?? ["APPROVE", "REJECT"],
     href: spec.href(input.hrefId ?? input.id),
+    openActionLabel: input.openActionLabel?.trim() || null,
     expectedVersion: input.expectedVersion ?? null,
     confirmations: input.confirmations ?? [],
     requiredReference: input.requiredReference ?? null,

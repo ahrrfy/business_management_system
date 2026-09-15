@@ -24,6 +24,7 @@ import {
   Heart,
   Loader2,
   LogIn,
+  MapPin,
   MessageCircle,
   Minus,
   Layers,
@@ -81,6 +82,7 @@ import { StorefrontMilestoneBar } from "@/components/storefront/StorefrontMilest
 import { StorefrontStickyFilter } from "@/components/storefront/StorefrontStickyFilter";
 import { StorefrontThematicGrid } from "@/components/storefront/StorefrontThematicGrid";
 import { StorefrontPanelShell } from "@/components/storefront/StorefrontPanelShell";
+import { StorefrontLocationPicker } from "@/components/storefront/StorefrontLocationPicker";
 import { useStorefrontUrlSync } from "@/hooks/useStorefrontUrlSync";
 
 const STORE_NAME = "المكتبة العربية";
@@ -308,7 +310,15 @@ export function reconcileStorefrontCartQuote(
 
 // حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
 // السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
-export type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
+export type CheckoutForm = {
+  name: string;
+  phone: string;
+  governorate: string;
+  address: string;
+  notes: string;
+  latitude?: number | null;
+  longitude?: number | null;
+};
 export type CheckoutFieldErrors = Partial<Record<"name" | "phone" | "governorate" | "address", string>>;
 
 export function validateStorefrontCheckout(form: CheckoutForm): CheckoutFieldErrors {
@@ -319,71 +329,15 @@ export function validateStorefrontCheckout(form: CheckoutForm): CheckoutFieldErr
   if (form.address.trim().length < 3) errors.address = "اكتب عنواناً واضحاً من 3 أحرف على الأقل.";
   return errors;
 }
-const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" };
+const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "", latitude: null, longitude: null };
+
 const CART_STORAGE_KEY = "alroya-store-cart-v1";
 const CHECKOUT_STORAGE_KEY = "alroya-store-checkout-v1";
 const CHECKOUT_ATTEMPT_STORAGE_KEY = "alroya-store-checkout-attempt-v1";
-const GUEST_TRACKING_STORAGE_KEY = "alroya-store-guest-tracking-v1";
+import { type GuestTrackingOrder, loadGuestTrackingOrders, rememberGuestTrackingOrder } from "@/lib/storefrontGuestTracking";
+
 const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
 const STOREFRONT_WISHLIST_KEY = "alroya-store-wishlist-v1";
-
-export type GuestTrackingOrder = {
-  orderNumber: string;
-  trackingToken: string;
-  expiresAt: string;
-  savedAt: number;
-};
-
-type GuestTrackingStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
-
-function validGuestTrackingOrder(value: unknown, now: number): value is GuestTrackingOrder {
-  if (!value || typeof value !== "object") return false;
-  const order = value as Partial<GuestTrackingOrder>;
-  const expiry = typeof order.expiresAt === "string" ? Date.parse(order.expiresAt) : Number.NaN;
-  return typeof order.orderNumber === "string" && order.orderNumber.trim().length > 0 && order.orderNumber.length <= 50 &&
-    typeof order.trackingToken === "string" && order.trackingToken.trim().length >= 60 && order.trackingToken.length <= 160 &&
-    Number.isFinite(expiry) && expiry > now && typeof order.savedAt === "number" && Number.isFinite(order.savedAt);
-}
-
-/** لا تُحفظ أيّ هوية عميل: فقط ملكية الطلب قصيرة العمر الصادرة من الخادم. */
-export function loadGuestTrackingOrders(
-  storage: GuestTrackingStorage = localStorage,
-  now = Date.now(),
-): GuestTrackingOrder[] {
-  try {
-    const parsed = JSON.parse(storage.getItem(GUEST_TRACKING_STORAGE_KEY) ?? "[]") as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((order): order is GuestTrackingOrder => validGuestTrackingOrder(order, now))
-      .sort((a, b) => b.savedAt - a.savedAt)
-      .slice(0, 5)
-      .map(({ orderNumber, trackingToken, expiresAt, savedAt }) => ({ orderNumber, trackingToken, expiresAt, savedAt }));
-  } catch {
-    return [];
-  }
-}
-
-export function rememberGuestTrackingOrder(
-  input: Pick<GuestTrackingOrder, "orderNumber" | "trackingToken" | "expiresAt">,
-  storage: GuestTrackingStorage = localStorage,
-  now = Date.now(),
-): GuestTrackingOrder[] {
-  const candidate: GuestTrackingOrder = {
-    orderNumber: input.orderNumber.trim(),
-    trackingToken: input.trackingToken.trim(),
-    expiresAt: input.expiresAt,
-    savedAt: now,
-  };
-  if (!validGuestTrackingOrder(candidate, now)) return loadGuestTrackingOrders(storage, now);
-  const next = [candidate, ...loadGuestTrackingOrders(storage, now)
-    .filter((order) => order.orderNumber !== candidate.orderNumber && order.trackingToken !== candidate.trackingToken)]
-    .slice(0, 5);
-  try {
-    storage.setItem(GUEST_TRACKING_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    /* التتبّع يظل متاحاً بلصق الرمز حتى لو حُظر التخزين المحلي. */
-  }
-  return next;
-}
 
 function loadStorefrontWishlist(): Set<number> {
   try {
@@ -471,6 +425,8 @@ function loadForm(): CheckoutForm {
       governorate: typeof f.governorate === "string" ? f.governorate : DEFAULT_FORM.governorate,
       address: typeof f.address === "string" ? f.address : DEFAULT_FORM.address,
       notes: typeof f.notes === "string" ? f.notes : DEFAULT_FORM.notes,
+      latitude: typeof f.latitude === "number" && !isNaN(f.latitude) ? f.latitude : null,
+      longitude: typeof f.longitude === "number" && !isNaN(f.longitude) ? f.longitude : null,
     };
   } catch {
     return { ...DEFAULT_FORM };
@@ -2270,9 +2226,12 @@ function StorefrontContent() {
     setTurnstileResetKey((key) => key + 1);
     setPanel("checkout");
   }
-  function updateCheckoutField(field: keyof CheckoutForm, value: string) {
+  function updateCheckoutField<K extends keyof CheckoutForm>(field: K, value: CheckoutForm[K]) {
     setForm((current) => ({ ...current, [field]: value }));
-    const errorField: keyof CheckoutFieldErrors | null = field === "notes" ? null : field;
+    const errorField: keyof CheckoutFieldErrors | null =
+      field === "notes" || field === "latitude" || field === "longitude"
+        ? null
+        : (field as keyof CheckoutFieldErrors);
     if (errorField) {
       setCheckoutErrors((current) => {
         if (!current[errorField]) return current;
@@ -2348,6 +2307,8 @@ function StorefrontContent() {
       customerPhone: phone,
       governorate: form.governorate,
       addressText: address,
+      latitude: form.latitude ?? undefined,
+      longitude: form.longitude ?? undefined,
       notes: orderNotes || undefined,
       lines: cartLines.map((l) => ({
         productUnitId: l.productUnitId,
@@ -3234,6 +3195,17 @@ function StorefrontContent() {
             <Field icon={<Package aria-hidden className="size-4" />} label="العنوان بالتفصيل" htmlFor="storefront-checkout-address" required error={checkoutErrors.address} tone="mint">
               <textarea id="storefront-checkout-address" value={form.address} onChange={(e) => updateCheckoutField("address", e.target.value)} required aria-invalid={Boolean(checkoutErrors.address)} aria-describedby={checkoutErrors.address ? "storefront-checkout-address-error" : undefined} rows={2} placeholder="المنطقة، الشارع، أقرب نقطة دالة…" className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-[#6c747b]" />
             </Field>
+
+            {/* بطاقة تثبيت الموقع على الخريطة */}
+            <StorefrontLocationPicker
+              latitude={form.latitude ?? null}
+              longitude={form.longitude ?? null}
+              onChange={(coords) => {
+                updateCheckoutField("latitude", coords.latitude);
+                updateCheckoutField("longitude", coords.longitude);
+              }}
+              disabled={orderInFlightRef.current}
+            />
             <Field icon={<MessageCircle aria-hidden className="size-4" />} label="ملاحظة (اختياري)" htmlFor="storefront-checkout-notes" tone="lilac">
               <input id="storefront-checkout-notes" value={form.notes} onChange={(e) => updateCheckoutField("notes", e.target.value)} placeholder="مثال: الاتصال قبل التوصيل" className="w-full bg-transparent text-sm outline-none placeholder:text-[#6c747b]" />
             </Field>
