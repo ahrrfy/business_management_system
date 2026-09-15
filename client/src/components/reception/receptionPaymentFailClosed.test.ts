@@ -70,8 +70,12 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     // جهاز المحاولة يُرسَل مع الإنشاء وإلا رُفض استهلاكها؛ وفرعُ المحاولة = فرع الفاتورة.
     expect(invoice).toContain("deviceId: externalAttempt.deviceId");
     expect(invoice).toContain("const branchId = state.branchId;");
-    // مسار التصحيح يمرّ بعقد `reissue` الذي يحمل المرجع النصّي بنفسه.
-    expect(invoice).toContain("reference: paymentRef.trim()");
+    // التصحيح محكومٌ بصانع/مراجع: لا ينفّذ الطالب دفع البطاقة قبل الاعتماد؛
+    // المراجع يحجز العملية ثم يمرّر مرجع القسيمة لحظة التنفيذ الذري.
+    const approvals = readClient("../../pages/SalesControlApprovals.tsx");
+    expect(invoice).not.toContain("reference: paymentRef.trim()");
+    expect(approvals).toContain("claimCorrectionPayment");
+    expect(approvals).toContain("reference: referenceOverride");
   });
 
   it("تحويل عرض السعر يجمع المرجع ويُمرّره بدل قسر النقد", () => {
