@@ -23,27 +23,57 @@ self.addEventListener("push", (event) => {
     payload = null;
   }
   const title = payload?.title || "الرؤية العربية";
-  const body = payload?.body || "لديك متابعة اليوم.";
+  const body = payload?.body || "لديك متابعة جديدة في النظام.";
   const url = safePath(payload?.url);
 
+  // تحديث عداد الشارة على أيقونة التطبيق في الشاشة الرئيسية إن كان متاحاً
+  if (typeof self.navigator !== "undefined" && "setAppBadge" in self.navigator) {
+    if (typeof payload?.badgeCount === "number" && payload.badgeCount > 0) {
+      self.navigator.setAppBadge(payload.badgeCount).catch(() => {});
+    }
+  }
+
+  const notificationOptions = {
+    body,
+    dir: "rtl",
+    lang: "ar",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
+    // نمط اهتزاز ملموس يعطي الهاتف إحساس التنبيه الأصلي
+    vibrate: [150, 80, 150, 80, 250],
+    // tag موحّد حسب نوع الإشعار أو فريد؛ يمنع التراكم المزعج
+    tag: payload?.tag || payload?.kind || `notif_${Date.now()}`,
+    renotify: Boolean(payload?.tag || payload?.kind),
+    data: {
+      url,
+      kind: payload?.kind || "SYSTEM",
+      receivedAt: Date.now(),
+    },
+    // أزرار إجراءات سريعة على شاشة القفل ومركز الإشعارات
+    actions: [
+      { action: "open", title: "عرض" },
+      { action: "dismiss", title: "تجاهل" },
+    ],
+  };
+
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      dir: "rtl",
-      lang: "ar",
-      icon: "/icon-192.png",
-      badge: "/icon-192.png",
-      // النقر يفتح URL؛ tag يمنع تراكم عدّة إشعارات صباحية بنفس اليوم إن حدث سباق.
-      tag: payload?.kind || "brief",
-      renotify: false,
-      data: { url },
-    }),
+    self.registration.showNotification(title, notificationOptions),
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+
+  // إن كان النقر على زر "تجاهل" نكتفي بالإغلاق دون فتح التطبيق
+  if (event.action === "dismiss") return;
+
   const url = safePath(event.notification.data && event.notification.data.url);
+
+  // تصفير عداد الشارة عند فتح الإشعار
+  if (typeof self.navigator !== "undefined" && "clearAppBadge" in self.navigator) {
+    self.navigator.clearAppBadge().catch(() => {});
+  }
+
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
       // أعِد استعمال نافذة موجودة لتطبيقنا إن أمكن (يفضّل المستخدم عدم تكديس تبويبات).
@@ -56,8 +86,10 @@ self.addEventListener("notificationclick", (event) => {
               try {
                 w.navigate(url);
               } catch {
-                // بعض المتصفّحات لا تدعم navigate على العميل — يبقى focus فقط.
+                w.postMessage({ type: "PUSH_NAVIGATE", url });
               }
+            } else {
+              w.postMessage({ type: "PUSH_NAVIGATE", url });
             }
             return;
           }
@@ -65,7 +97,7 @@ self.addEventListener("notificationclick", (event) => {
           // تجاهل عناوين غير صالحة (نادرة).
         }
       }
-      // لا نافذة مفتوحة ⇒ افتح جديدة على /dashboard.
+      // لا نافذة مفتوحة ⇒ افتح جديدة على المسار المطلوب.
       if (clients.openWindow) return clients.openWindow(url);
     }),
   );

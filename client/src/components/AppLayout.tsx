@@ -5,6 +5,7 @@ import { DisplayScaleControl } from "@/components/DisplayScaleControl";
 import { QuranHeaderButton } from "@/components/quran/QuranHeaderButton";
 import { QuranSidebarCard } from "@/components/quran/QuranSidebarCard";
 import { BroadcastTicker } from "@/components/announcements/BroadcastTicker";
+import { PushNotificationPrompt } from "@/components/notifications/PushNotificationPrompt";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -98,7 +99,28 @@ function isModuleActive(loc: string, href: string): boolean {
 }
 
 function AppLayoutInner({ children }: { children: React.ReactNode }) {
-  const [loc] = useLocation();
+  const [loc, setLocation] = useLocation();
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const handlePushNavigate = (event: MessageEvent) => {
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        event.data.type === "PUSH_NAVIGATE" &&
+        typeof event.data.url === "string" &&
+        event.data.url.startsWith("/") &&
+        !event.data.url.startsWith("//")
+      ) {
+        setLocation(event.data.url);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handlePushNavigate);
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handlePushNavigate);
+    };
+  }, [setLocation]);
+
   const queryClient = useQueryClient();
   const connectivity = useConnectivity();
   const unlocked = useSyncExternalStore(
@@ -539,6 +561,9 @@ function AppLayoutInner({ children }: { children: React.ReactNode }) {
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <BroadcastTicker />
+        <div className="px-3 pt-3 md:px-6 md:pt-4 empty:hidden">
+          <PushNotificationPrompt />
+        </div>
         <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
       </div>
 

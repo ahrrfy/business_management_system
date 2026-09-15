@@ -73,3 +73,68 @@ export async function unsubscribeFromPushBrowser(): Promise<string | null> {
   await sub.unsubscribe();
   return endpoint;
 }
+
+/** هل التطبيق يعمل بوضع التثبيت كـ PWA مستقل (من الشاشة الرئيسية)؟ */
+export function isStandalonePwa(): boolean {
+  if (typeof window === "undefined") return false;
+  const isStandaloneMedia =
+    window.matchMedia?.("(display-mode: standalone)").matches ?? false;
+  // @ts-expect-error navigator.standalone خاص بـ iOS Safari Web App
+  const isNavigatorStandalone = Boolean(window.navigator?.standalone);
+  return isStandaloneMedia || isNavigatorStandalone;
+}
+
+/** هل الجهاز يعمل بنظام iOS (آيفون أو آيباد)؟ */
+export function isIosDevice(): boolean {
+  if (typeof window === "undefined") return false;
+  const ua = window.navigator?.userAgent || "";
+  const isTouchMac =
+    window.navigator?.platform === "MacIntel" &&
+    (window.navigator?.maxTouchPoints ?? 0) > 1;
+  return /iPad|iPhone|iPod/.test(ua) || isTouchMac;
+}
+
+/** هل المستخدم على هاتف iOS لكنه داخل متصفح Safari ولم يضف التطبيق للشاشة الرئيسية بعد؟ */
+export function isIosSafariBrowser(): boolean {
+  return isIosDevice() && !isStandalonePwa();
+}
+
+/** ضبط عداد الشارة التنبيهية على أيقونة التطبيق في الشاشة الرئيسية (App Badging API). */
+export async function setNotificationBadge(count?: number): Promise<void> {
+  if (typeof window === "undefined" || !("setAppBadge" in navigator)) return;
+  try {
+    if (typeof count === "number" && count > 0) {
+      await navigator.setAppBadge(count);
+    } else {
+      await navigator.clearAppBadge();
+    }
+  } catch {
+    // تجاهل البيئات التي ترفض الشارة بصمت
+  }
+}
+
+/** مسح عداد الشارة التنبيهية على أيقونة التطبيق. */
+export async function clearNotificationBadge(): Promise<void> {
+  if (typeof window === "undefined" || !("clearAppBadge" in navigator)) return;
+  try {
+    await navigator.clearAppBadge();
+  } catch {
+    // تجاهل
+  }
+}
+
+/**
+ * محاولة اشتراك هادئة بالخلفية إن كان الإذن ممنوحاً مسبقاً (`granted`).
+ * لا تُظهر أي نافذة ولا تُلقي خطأ للمستخدم.
+ */
+export async function autoResubscribeIfPermissionGranted(
+  vapidPublicKey: string,
+): Promise<SubscriptionKeys | null> {
+  if (!isPushSupported() || Notification.permission !== "granted") return null;
+  try {
+    return await subscribeToPush(vapidPublicKey);
+  } catch {
+    return null;
+  }
+}
+

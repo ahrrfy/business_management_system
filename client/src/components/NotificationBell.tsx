@@ -8,6 +8,7 @@ import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { setNotificationBadge } from "@/lib/push";
 
 const FAMILY_LABELS = {
   OPERATIONS: "تشغيلية",
@@ -76,6 +77,11 @@ export function NotificationBell({ enabled, identity }: { enabled: boolean; iden
   const markAllRead = trpc.superApp.markAllNotificationsRead.useMutation({ onSuccess: refresh });
   const rows = notifications.data?.rows ?? [];
   const unreadCount = notifications.data?.unreadCount ?? 0;
+
+  useEffect(() => {
+    if (!enabled) return;
+    void setNotificationBadge(unreadCount);
+  }, [enabled, unreadCount]);
 
   useEffect(() => {
     const fetchedRows = notifications.data?.rows;
