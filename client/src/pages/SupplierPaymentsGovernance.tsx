@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { HandCoins } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
+import { DecideInInboxNotice } from "@/components/purchases/DecideInInboxNotice";
 import type { GovernanceQueueRow } from "@/components/purchases/GovernanceApprovalQueue";
 import {
   SupplierPaymentsGovernanceWorkspace,
@@ -217,6 +218,7 @@ export default function SupplierPaymentsGovernance() {
           ) : undefined
         }
       />
+      <DecideInInboxNotice />
       {me.isLoading ? (
         <LoadingState />
       ) : branchId == null ? (
