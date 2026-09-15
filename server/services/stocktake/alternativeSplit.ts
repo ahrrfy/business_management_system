@@ -249,7 +249,7 @@ export async function splitAliasToAlternative(
     // نُبقيه ضمن الوحدة نفسها، والبديلُ المُرقّى يُخزَّن باركوداً أساسياً مُطبَّعاً (تنظيفٌ عابر).
     const aliasRow = (
       await tx
-        .select({ id: productUnitBarcodes.id })
+        .select({ id: productUnitBarcodes.id, barcode: productUnitBarcodes.barcode })
         .from(productUnitBarcodes)
         .where(
           and(
@@ -309,7 +309,9 @@ export async function splitAliasToAlternative(
       conversionFactor: "1",
       isBaseUnit: true,
       isStoreSaleUnit: srcUnit.isStoreSaleUnit,
-      barcode: aliasBarcode,
+      // يُنقَل الباركود المخزَّن **حرفيّاً** (صيغة المصنع بمسافتها) لا الهوية المُطبَّعة —
+      // فلا تُفقَد المسافةُ عند الترقية (١٥/٩). المطابقةُ تبقى عبر barcodeNormalized المولَّد.
+      barcode: aliasRow.barcode ?? aliasBarcode,
     });
     const newUnitId = extractInsertId(uRes);
 

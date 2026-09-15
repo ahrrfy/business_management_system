@@ -349,14 +349,19 @@ function validateProductGroups(
             );
         }
         if (u.barcode) {
-          const prevRows = batchBarcodes.get(u.barcode);
+          // ⚠️ يُفتَح على الهوية المُطبَّعة (canonicalizeBarcodeInput + صغيرة) لا الصيغة المخزَّنة:
+          // بعد حفظِ صيغة المصنع حرفيّاً (١٥/٩) صار «1  0172» و«10172» صيغتين مخزّنتين مختلفتين لكن
+          // هويةً واحدة ⇒ لو فُتِح على المخزَّن لَمرّا كصنفين ثمّ تصادما على barcodeNormalized فصار
+          // كلاهما غامضاً غيرَ قابلٍ للمسح. الفتحُ على الهوية يُمسك التكرارَ هنا (الرسالة بالصيغة المرئية).
+          const key = canonicalizeBarcodeInput(u.barcode).toLowerCase();
+          const prevRows = batchBarcodes.get(key);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(u.barcode, v.rowNumbers);
+            batchBarcodes.set(key, v.rowNumbers);
           }
         }
         // البدائل تدخل نفس فضاء التفرّد (أساسيّ + بديل = فضاء واحد — قاعدة PR #179):
@@ -367,7 +372,8 @@ function validateProductGroups(
               failures.set(rn, `البديل «${alias}» أطول من ٦٤ خانة`);
             continue;
           }
-          if (u.barcode && alias === u.barcode) {
+          const aliasKey = canonicalizeBarcodeInput(alias).toLowerCase(); // الهوية (كما الأساسيّ أعلاه)
+          if (u.barcode && aliasKey === canonicalizeBarcodeInput(u.barcode).toLowerCase()) {
             for (const rn of v.rowNumbers)
               failures.set(
                 rn,
@@ -375,14 +381,14 @@ function validateProductGroups(
               );
             continue;
           }
-          const prevRows = batchBarcodes.get(alias);
+          const prevRows = batchBarcodes.get(aliasKey);
           if (prevRows) {
             for (const rn of v.rowNumbers)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
             for (const rn of prevRows)
               failures.set(rn, `الباركود «${alias}» مكرّر داخل الملف`);
           } else {
-            batchBarcodes.set(alias, v.rowNumbers);
+            batchBarcodes.set(aliasKey, v.rowNumbers);
           }
         }
       }

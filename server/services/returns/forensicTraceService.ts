@@ -25,6 +25,7 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { normalizedMatchAny } from "../catalog/barcodeAliases";
 import type { Actor } from "../tx";
 
 export type ForensicSearchMode = "ITEM_BARCODE" | "CARD_LAST4" | "CUSTOMER_PHONE" | "DATE_SHIFT";
@@ -120,7 +121,10 @@ export async function forensicTraceInvoices(
       .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
       .where(
         or(
-          eq(productUnits.barcode, q),
+          // مطابقةُ الباركود عبر عمود الهوية المُطبَّع (يُسقط المسافة الداخلية) لا العمود الخامّ —
+          // فالمخزَّن «1  0172» بصيغة المصنع يطابق المسحَ «10172» (١٥/٩). المساواةُ الخامّة كانت تُخطئه.
+          // (`or` يتجاهل undefined حين يكون q فارغاً بعد التطبيع.)
+          normalizedMatchAny(productUnits.barcode, [q]),
           eq(productVariants.sku, q),
           like(products.name, `%${q}%`)
         )
@@ -580,7 +584,8 @@ export async function universalBarcodeScan(
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
       .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(or(eq(productUnits.barcode, trimmed), eq(productVariants.sku, trimmed)))
+      // الباركود عبر الهوية المُطبَّعة (المخزَّن «1  0172» يطابق المسحَ «10172»)؛ الـSKU خامٌّ كما هو.
+      .where(or(normalizedMatchAny(productUnits.barcode, [trimmed]), eq(productVariants.sku, trimmed)))
       .limit(1)
   )[0];
 

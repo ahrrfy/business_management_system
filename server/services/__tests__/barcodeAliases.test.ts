@@ -496,6 +496,45 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await resolveBarcodeOwner(d, "1110000000095")).toMatchObject({ matchKind: "ALIAS", primaryBarcode: "1110000000088" });
     });
 
+    it("⭐ الحفظ يُبقي المسافة الداخلية (صيغة المصنع «1  0172») والمطابقةُ تُسقطها ⇒ المسحُ «10172» يجده (١٥/٩)", async () => {
+      const d = db();
+      // (أ) الباركود الأساسيّ عبر assignBarcode: يُخزَّن حرفيّاً بمسافتَيه، والمسحُ عديمُ المسافة يطابقه.
+      await assignBarcode(2, "1  0172");
+      const stored = (await d.select({ b: s.productUnits.barcode }).from(s.productUnits).where(eq(s.productUnits.id, 2)))[0]?.b;
+      expect(stored).toBe("1  0172"); // ⬅ لو عاد أحدُ مسارات الكتابة إلى canonicalizeBarcodeInput لَصار «10172» وسقط هذا السطر
+      expect(await resolveBarcodeOwner(d, "10172")).toMatchObject({ productUnitId: 2, matchKind: "PRIMARY", primaryBarcode: "1  0172" });
+      // (ب) البديل عبر addUnitBarcodeAlias: يُخزَّن حرفيّاً كذلك.
+      await addUnitBarcodeAlias(1, "2  0345", null, 1);
+      expect((await listUnitBarcodes(1)).aliases.map((a) => a.barcode)).toContain("2  0345");
+      expect(await resolveBarcodeOwner(d, "20345")).toMatchObject({ productUnitId: 1, matchKind: "ALIAS" });
+      // (ج) عبر createProduct: وحدةٌ أساسٌ وبديلٌ كلاهما بمسافةٍ داخلية.
+      await createProduct(
+        {
+          name: "منتج المصنع بالفراغ",
+          variants: [
+            {
+              sku: "SP-SPACE",
+              costPrice: "1.00",
+              units: [
+                {
+                  unitName: "قطعة",
+                  conversionFactor: "1",
+                  barcode: "3  0678",
+                  isBaseUnit: true,
+                  prices: [{ priceTier: "RETAIL", price: "500.00" }],
+                  barcodeAliases: [{ barcode: "4  0910" }],
+                },
+              ],
+            },
+          ],
+        },
+        { userId: 1, branchId: 1 },
+      );
+      const owner = await resolveBarcodeOwner(d, "30678");
+      expect(owner).toMatchObject({ matchKind: "PRIMARY", primaryBarcode: "3  0678" }); // مُخزَّنٌ بمسافته
+      expect(await resolveBarcodeOwner(d, "40910")).toMatchObject({ matchKind: "ALIAS", primaryBarcode: "3  0678" });
+    });
+
     it("كشف الصدام يرى الإرث الملوَّث: باركودٌ نظيف يساوي مخزَّناً بمسافةٍ على سلعةٍ أخرى ⇒ صدام", async () => {
       const d = db();
       await d.update(s.productUnits).set({ barcode: " 10095 " }).where(eq(s.productUnits.id, 3));
