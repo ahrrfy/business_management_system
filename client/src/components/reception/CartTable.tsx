@@ -196,11 +196,11 @@ export function CartTable({
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span
                           className={cn(
-                            "rounded-full px-1.5 py-0.5 text-[10px] font-bold",
-                            isCustom ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+                            "rounded-full px-2 py-0.5 text-[10px] font-black",
+                            l.digital ? "bg-blue-100 text-blue-700" : isCustom ? "bg-violet-100 text-violet-700" : "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
                           )}
                         >
-                          {isCustom ? "تخصيص" : "جاهز"}
+                          {l.digital ? "بطاقة رقمية" : isCustom ? "تخصيص" : "جاهز"}
                         </span>
                         <span className="text-sm font-extrabold">
                           {isCustom ? l.custom!.title : l.row.productName}
@@ -308,7 +308,7 @@ export function CartTable({
                       )}
                     </td>
                     <td className="px-1 py-1.5 text-center text-xs text-muted-foreground">
-                      {isCustom ? (
+                      {isCustom || l.digital ? (
                         <span>{l.row.unitName}</span>
                       ) : (
                         <UnitSelector
@@ -322,12 +322,7 @@ export function CartTable({
                       )}
                     </td>
                     <td className="px-1 py-1.5 text-center text-xs tabular-nums" dir="ltr">
-                      {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً.
-                          ٢٣/٨: كان الزرّ بلا حدودٍ (border-transparent) فيبدو للكاشير نصّاً غير قابلٍ للنقر
-                          — بلاغ المالك «الخصم غير ظاهر». صار له حدٌّ متقطّعٌ خفيف + أيقونةُ % صغيرة يعرف
-                          بها الكاشير أنّها بابُ الخصم قبل تجربتها. الحالة النشطة (l.disc) تبقى بحدّ صلبٍ
-                          كهرمانيٍّ لتمييز البند المُخصَّم عن غيره. */}
-                      {isCustom ? (
+                      {isCustom || l.digital ? (
                         <span>{fmt(effectivePrice(l))}</span>
                       ) : (
                         <div className="relative inline-block">
@@ -371,7 +366,7 @@ export function CartTable({
                       )}
                       dir="ltr"
                     >
-                      {isCustom ? "—" : l.row.isService ? "∞" : stock.availInUnit}
+                      {isCustom || l.digital ? "—" : l.row.isService ? "∞" : stock.availInUnit}
                     </td>
                     <td className="px-1 py-1">
                       <div className="flex items-center justify-center gap-1">
@@ -382,17 +377,18 @@ export function CartTable({
                             changeQty(l.key, -1);
                           }}
                           className="grid size-7 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
-                          disabled={isCustom && l.qty <= 1}
-                          title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
+                          disabled={Boolean(l.digital) || (isCustom && l.qty <= 1)}
+                          title={l.digital ? "كمية البطاقة الرقمية ثابتة" : isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية منتج مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
                           aria-label="تقليل الكمية"
                         >
                           <Minus aria-hidden className="size-3" />
                         </button>
-                        {/* م٤: الكمية مُدخلٌ مباشر داخل الصفّ (لوحة الأرقام لم تعد تعدّلها). */}
                         <input
                           value={l.qty}
+                          readOnly={Boolean(l.digital)}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => {
+                            if (l.digital) return;
                             const n = parseInt(e.target.value.replace(/\D/g, ""), 10);
                             if (Number.isFinite(n)) setQty(l.key, n);
                             else if (e.target.value === "") setQty(l.key, 1);
@@ -408,7 +404,9 @@ export function CartTable({
                             e.stopPropagation();
                             changeQty(l.key, +1);
                           }}
-                          className="grid size-7 place-items-center rounded-md border bg-card hover:bg-muted"
+                          disabled={Boolean(l.digital)}
+                          className="grid size-7 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={l.digital ? "كمية البطاقة الرقمية ثابتة" : "زيادة الكمية"}
                           aria-label="زيادة الكمية"
                         >
                           <Plus aria-hidden className="size-3" />

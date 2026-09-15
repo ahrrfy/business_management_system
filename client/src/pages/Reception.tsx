@@ -11,7 +11,9 @@ import {
   Check,
   CheckCircle2,
   ClipboardList,
-  Copy, FilePenLine,
+  Copy,
+  CreditCard,
+  FilePenLine,
   Globe,
   HandCoins,
   Instagram,
@@ -54,7 +56,7 @@ import { D, fmt, formatIqd, round2, roundCashIQD } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { buildDraftPayload } from "@/components/reception/draftPayloadBuilder";
-import { DigitalCardsPickerDialog } from "@/components/pos/DigitalCardsPickerDialog";
+import { DigitalCardsPickerDialog, type DigitalBasketCapture } from "@/components/pos/DigitalCardsPickerDialog";
 import { DigitalFulfillmentDialog } from "@/components/pos/DigitalFulfillmentDialog";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
@@ -338,7 +340,7 @@ export default function Reception() {
   const [cardsOpen, setCardsOpen] = useState(false);
   const [fulfillIntentId, setFulfillIntentId] = useState<number | null>(null);
   const [digitalFinalizeError, setDigitalFinalizeError] = useState<string | null>(null);
-  const digitalCheckoutRef = useRef<{ appliedPaidD: import('decimal.js').Decimal; method: "CASH" | "CARD" | "TRANSFER" | "WALLET" | "CREDIT" | "CREDIT_OVERPAY" | "MIXED"; customerId: number | null } | null>(null);
+  const digitalCheckoutRef = useRef<{ appliedPaidD: import('decimal.js').Decimal; method: PayMethod; customerId: number | null } | null>(null);
 
   const resetScreen = () => {
     setCart([]);
@@ -364,14 +366,20 @@ export default function Reception() {
     setReceptionPhone("");
   };
 
+  const prepareIntent = trpc.digitalCards.sales.prepare.useMutation({
+    onSuccess: (r) => setFulfillIntentId(r.intentId),
+    onError: (e) => { digitalCheckoutRef.current = null; notify.err(e); },
+  });
+
   const finalizeSale = trpc.digitalCards.sales.finalize.useMutation({
     onMutate: () => setDigitalFinalizeError(null),
     onSuccess: (res: any) => {
-      if (res.outcome === "SUCCESS") {
+      if (res.outcome === "SUCCESS" || res.invoiceNumber) {
         setFulfillIntentId(null);
         digitalCheckoutRef.current = null;
         reqIdRef.current = crypto.randomUUID();
-        notify.ok("تم إتمام الطلب (بما فيه البطاقات الرقمية)");
+        notify.ok(`تم إتمام الطلب — الفاتورة ${res.invoiceNumber ?? ""}`, "أُنجز بيع البطاقات الرقمية بنجاح.");
+        void utils.shifts.current.invalidate();
         resetScreen();
       } else {
         setDigitalFinalizeError(res.message ?? "فشل الإتمام");
@@ -518,7 +526,7 @@ export default function Reception() {
   // حقلٌ يحمله، وعقدُ `commitDraft` يعيد بناء الإجمالي من الأسطر الخام فيرفض التثبيت لأنّ الصافي
   // لا يطابق. إخفاءُ الحقل عند وجود مسوّدة يمنع تسرّبَه لعقدٍ لا يفهمه — الشريحة الأوسع (توسيع
   // عقد المسوّدة) شغلٌ منفصل بمهاجرةٍ وحقولٍ خادميّة إضافيّة.
-  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft;
+  const invoiceDiscountAllowed = regularSumRawD.gt(0) && !activeDraft && !cart.some((c) => c.digital);
   const invoiceDiscountAmountD = invoiceDiscountAllowed
     ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
     : D(0);
@@ -733,6 +741,35 @@ export default function Reception() {
     setShowCustomization({ row });
     setSearch("");
     setShowDrop(false);
+  }
+
+  function addDigitalBasket(basket: DigitalBasketCapture) {
+    if (cart.filter((c) => c.digital).length + basket.lines.length > 50) return;
+    clearCouponIfApplied();
+    setInvoiceDiscountPct("");
+    const added: CartLine[] = basket.lines.map(({ card, student }, idx) => ({
+      key: `digital-${card.productId}-${Date.now()}-${idx}-${Math.random()}`,
+      row: {
+        branchId, productId: card.productId, productName: card.name, variantId: card.variantId,
+        variantName: null, color: null, colorHex: null, size: null, sku: basket.providerReference || "",
+        productUnitId: card.productUnitId, unitName: "بطاقة", conversionFactor: "1.0000", barcode: null,
+        isBaseUnit: true, price: String(card.sellPrice || 0), stockBase: 0, reservedBase: 0, availableBase: 0,
+        openedAt: null, isService: true, allowBackorder: false, isCustomizable: false, isPrintService: false,
+        isContractPrice: false, isBundle: false, isConsignment: false, promotionId: null, promotionName: null,
+        promotionDiscountForUnit: "0.00", promotionEffectivePrice: null, costPriceBase: null,
+      } as PosRow,
+      qty: 1,
+      digital: {
+        offeringId: card.offeringId, priceVersionId: card.priceVersionId, providerId: card.providerId,
+        offeringType: card.offeringType as "CARD" | "SUBSCRIPTION", providerName: card.providerName, providerReference: basket.providerReference || "",
+        providerBasketKey: basket.providerBasketKey || null, faceValue: card.faceValue ? String(card.faceValue) : null,
+        subscriptionDurationDays: card.subscriptionDurationDays ?? null, requiresStudentData: card.requiresStudentData ?? false,
+        student,
+      },
+    }));
+    setCart((prev) => [...added, ...prev]);
+    setCardsOpen(false);
+    setAddTick((t) => t + 1);
   }
 
   function saveCustomization(data: CustomizationData) {
@@ -1127,6 +1164,10 @@ export default function Reception() {
 
   function saveDraft() {
     if (cart.length === 0 || !!activeDraft || offline) return;
+    if (cart.some((c) => c.digital)) {
+      notify.warn("لا يمكن حفظ مسودة تحتوي على بطاقات رقمية", "أتمم بيع البطاقات الرقمية أو احذفها لحفظ بقية الطلب كمسودة.");
+      return;
+    }
     promoteM.mutate({ branchId, shiftId: shift?.id ?? null, ...getDraftPayload() });
   }
   /** ش٣ — التثبيت الذرّي من المسوّدة نفسها (يستبدل جسر «الطيّ» المؤقّت من ش٢). */
@@ -1522,6 +1563,96 @@ export default function Reception() {
             address: orderDelivery.address || undefined,
           }
         : undefined;
+
+      const digitalLines = cart.filter((c) => c.digital);
+      if (digitalLines.length > 0) {
+        if (offline) {
+          notify.errBig("لا بيع رقميّ دون اتصال", "الكروت تحتاج الخادم للتحقّق من السعر والتنفيذ.");
+          setSubmitting(false);
+          return;
+        }
+        if (activeDraft) {
+          notify.err("لا يمكن حفظ أو تثبيت مسودة تحتوي على بطاقات رقمية");
+          setSubmitting(false);
+          return;
+        }
+        const regularLinesOnly = regularLines.filter((c) => !c.digital);
+        const checkoutPayload = {
+          branchId,
+          shiftId: shift.id,
+          customerId: customerId ?? undefined,
+          contactName: customerId == null ? (customerName ?? undefined) : undefined,
+          contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
+          paymentMethod: appliedPaidD.gt(0) ? method : undefined,
+          paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
+          paidAmount: round2(appliedPaidD).toFixed(2),
+          cashRoundIQD: cashRoundActive,
+          cashRoundingOverride: mixedRoundApplied ? mixedCarrier ?? undefined : undefined,
+          deliveryFeeHeld: orderFeeHeldD.gt(0) && !routeDeliveryToWO ? orderFeeHeldD.toFixed(2) : undefined,
+          delivery: deliveryPayload,
+          openingSellUnavailableConfirmed: opts.openingConfirmed === true,
+          deferredDirect: willDefer,
+          managerApproval: mgrCredsRef.current ?? undefined,
+          clientRequestId: reqIdRef.current,
+          priceTier: effectiveTier,
+          couponCode: couponCode ?? undefined,
+          regularSale: regularLinesOnly.length > 0 ? {
+            amount: round2(regularLinesOnly.reduce((s, c) => s.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
+            ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
+            lines: regularLinesOnly.map((c) => ({
+              variantId: c.row.variantId,
+              productUnitId: c.row.productUnitId,
+              quantity: String(c.qty),
+              ...(c.disc != null && c.disc > 0 ? { discountPercent: String(c.disc) } : {}),
+            })),
+          } : null,
+          printSale: printLines.length > 0 ? {
+            amount: printAmount,
+            lines: printLines.map((c) => ({
+              variantId: c.row.variantId,
+              productUnitId: c.row.productUnitId,
+              quantity: String(c.qty),
+              unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+            })),
+          } : null,
+          workOrders: workOrderPayloads.length > 0 ? workOrderPayloads : undefined,
+        };
+
+        digitalCheckoutRef.current = {
+          appliedPaidD,
+          method,
+          customerId,
+        };
+
+        prepareIntent.mutate({
+          branchId,
+          shiftId: shift.id,
+          clientRequestId: reqIdRef.current,
+          paymentMethod: method === "CARD" ? "CARD" : "CASH",
+          cartFingerprint: reqIdRef.current,
+          customerId: customerId ?? undefined,
+          priceTier: effectiveTier,
+          sourceType: "RECEPTION",
+          sourcePayload: checkoutPayload,
+          regularLines: regularLinesOnly.map((c, idx) => ({
+            lineKey: c.key || `reg-${idx}-${c.row.productUnitId}`,
+            variantId: c.row.variantId,
+            productUnitId: c.row.productUnitId,
+            quantity: String(c.qty),
+            unitPriceOverride: c.row.price ? String(c.row.price) : undefined,
+          })),
+          lines: digitalLines.map((c, idx) => ({
+            lineKey: c.key || `dig-${idx}-${c.digital!.offeringId}`,
+            offeringId: c.digital!.offeringId,
+            priceVersionId: c.digital!.priceVersionId,
+            expectedSellPrice: String(c.row.price || c.digital!.faceValue || 0),
+            providerReference: c.digital!.providerReference,
+            student: c.digital!.student,
+          })),
+        });
+        setSubmitting(false);
+        return;
+      }
 
       // ش٣: طلبٌ محفوظٌ (مسوّدة نشطة) يُثبَّت **من مسوّدته** ذرّياً عبر reception.draftCommit —
       // idempotency ثلاثية (version + FOR UPDATE + commitRequestId الخادمي). قبله «تفريغُ
@@ -2142,6 +2273,9 @@ export default function Reception() {
       if (e.key === "F2") {
         e.preventDefault();
         searchRef.current?.focus();
+      } else if (e.key === "F3") {
+        e.preventDefault();
+        if (!offline) setCardsOpen(true);
       } else if (e.key === "F4") {
         e.preventDefault();
         submitRef.current?.({ quickFullPay: false });
@@ -2156,11 +2290,12 @@ export default function Reception() {
         else if (depositMenuOpen) setDepositMenuOpen(false);
         else if (discountFor) setDiscountFor(null);
         else if (showDrop) setShowDrop(false);
+        else if (cardsOpen) setCardsOpen(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor]);
+  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, cardsOpen, offline]);
 
   /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
   const clearCartRef = useRef<() => Promise<void>>(async () => {});
@@ -2431,6 +2566,21 @@ export default function Reception() {
           <ClipboardList aria-hidden className="size-4" /> إضافة خدمة / أمر شغل
         </button>
 
+        <button
+          type="button"
+          onClick={() => setCardsOpen(true)}
+          disabled={offline}
+          title={offline ? "البيع الرقمي يحتاج اتصالاً بالخادم" : "الكروت والاشتراكات (F3)"}
+          className={cn(
+            "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border-2 px-4 text-xs font-extrabold transition-colors",
+            offline
+              ? "cursor-not-allowed border-border bg-muted text-muted-foreground"
+              : "border-primary/60 bg-primary/10 text-primary hover:bg-primary/20",
+          )}
+        >
+          <CreditCard aria-hidden className="size-4" /> الكروت والاشتراكات
+        </button>
+
         {/* التسليم والإسناد يتمّان عبر الباركود في شاشة مستقلة — لا زرّ توصيل هنا */}
 
         </div>
@@ -2679,7 +2829,18 @@ export default function Reception() {
       {/* م٦ — اعتماد المدير للخصم >١٠٪ */}
       {approvalAsk && <ManagerApprovalDialog pct={approvalAsk.pct} onCancel={() => setApprovalAsk(null)} onApprove={(email, password) => { mgrCredsRef.current = { email, password }; setLineDiscount(approvalAsk.lineKey, approvalAsk.pct); setApprovalAsk(null); notify.ok(`خصم ${approvalAsk.pct}٪ بانتظار اعتماد المدير عند التثبيت`, "تُفحص بيانات المدير خادمياً لحظة إتمام الطلب"); }} />}
 
-      <DigitalCardsPickerDialog open={cardsOpen} branchId={branchId} offline={offline} onClose={() => setCardsOpen(false)} onPickBasket={(b) => b.lines.forEach(({ card }) => addRow({ branchId, productId: card.productId, productName: card.name, variantId: card.variantId, variantName: null, color: null, colorHex: null, size: null, sku: "", productUnitId: card.productUnitId, unitName: "بطاقة", conversionFactor: "1.0000", barcode: null, isBaseUnit: true, price: String(card.sellPrice || 0), isService: true } as PosRow))} />
+      <DigitalCardsPickerDialog
+        open={cardsOpen}
+        branchId={branchId}
+        offline={offline}
+        onClose={() => setCardsOpen(false)}
+        onPickBasket={addDigitalBasket}
+        existingCardCount={cart.filter((c) => c.digital).length}
+        existingReferences={cart.filter((c) => c.digital).map((c) => ({
+          providerId: c.digital!.providerId,
+          providerReference: c.digital!.providerReference,
+        }))}
+      />
       <DigitalFulfillmentDialog intentId={fulfillIntentId} finalizing={finalizeSale.isPending} finalizeError={digitalFinalizeError} onClose={() => { setFulfillIntentId(null); digitalCheckoutRef.current = null; }} onAllExecuted={(id: number) => { if (!finalizeSale.isPending && digitalCheckoutRef.current) finalizeSale.mutate({ intentId: id, clientRequestId: reqIdRef.current, paymentAmount: round2(digitalCheckoutRef.current.appliedPaidD).toFixed(2), paymentMethod: digitalCheckoutRef.current.method as any, customerId: digitalCheckoutRef.current.customerId ?? undefined }); }} />
     </div>
   );
