@@ -4,6 +4,7 @@ import {
   purgeAllStudioDrafts,
 } from "@/lib/productStudio/studioDrafts";
 import { pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
+import { clearNotificationBadge } from "@/lib/push";
 
 type SessionBoundaryDependencies = {
   loadStudioIdentity: () => Promise<{ userId: number } | null>;
@@ -51,6 +52,7 @@ export async function resetSessionForLogout(
   dependencies: SessionBoundaryDependencies = studioDraftDependencies,
 ): Promise<void> {
   pauseGlobalQuranAudio();
+  void clearNotificationBadge();
   await resetSessionQueryCache(queryClient);
   await dependencies.purgeStudioDrafts().catch(() => undefined);
 }
