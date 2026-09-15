@@ -258,7 +258,7 @@ export async function discoverImageGaps(actor: ProductStudioActor, input: Discov
   // حسبَ الحالة: نجرِّبُ إخفاء HEALTHY افتراضياً — لا فائدةَ من إظهار السليم في «كشف الفجوات».
   const stateFilter = input.states && input.states.length > 0
     ? input.states
-    : (["NO_IMAGES", "BUNDLE_NO_IMAGE", "SINGLE_IMAGE", "PARENT_ONLY_HAS_VARIANTS", "VARIANTS_INCOMPLETE"] as ImageHealthState[]);
+    : (IMAGE_HEALTH_STATES.filter((s) => s !== "HEALTHY") as ImageHealthState[]);
   // نُنفّذ التصفية بالحالة على subquery الخارجيّ كي لا نضيف CASE في WHERE (يتكرّر
   // الحساب في MySQL). النمط: SELECT ... FROM (SELECT ..., CASE ... FROM products WHERE ...)
   // AS x WHERE x.health IN (...)
@@ -357,8 +357,8 @@ export async function getTopGapCategories(actor: ProductStudioActor, limit = 10)
     .leftJoin(categories, eq(categories.id, products.categoryId))
     .where(and(eq(products.isActive, true), eq(products.isService, false)))
     .as("h");
-  const gapTotalSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE','SINGLE_IMAGE','PARENT_ONLY_HAS_VARIANTS','VARIANTS_INCOMPLETE') then 1 else 0 end)`;
-  const noImagesSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE') then 1 else 0 end)`;
+  const gapTotalSql = sql<number>`sum(case when ${inner.health} != 'HEALTHY' then 1 else 0 end)`;
+  const noImagesSql = sql<number>`sum(case when ${inner.health} in ('NO_IMAGES','BUNDLE_NO_IMAGE','HIGH_VALUE_NO_IMAGE','CONSIGNMENT_NO_IMAGE') then 1 else 0 end)`;
   const rows = await db
     .select({
       categoryId: inner.categoryId,
