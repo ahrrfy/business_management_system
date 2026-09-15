@@ -285,6 +285,49 @@ function makeCtx(user: unknown) {
 }
 
 describe("statutory accounting compliance", () => {
+  it("كاشف §٥: سطرٌ POSTED بلا حسابٍ نظاميّ يُعرَض في unmapped لا يُسقَط صامتاً", async () => {
+    await seedFoundation();
+    await approveCompleteProfile();
+    // مبيعةٌ مربوطة بالكامل — تظهر في الكشف.
+    await postJournal("2026-08-10", 1, [
+      { role: "AR", debit: "100.00", credit: "0.00" },
+      { role: "SALES_STATIONERY", debit: "0.00", credit: "100.00" },
+    ]);
+    const clean = await getStatutoryTrialBalance({ from: "2026-08-01", to: "2026-08-31" });
+    if (!clean.available) throw new Error(clean.reason);
+    expect(clean.unmapped.lineCount).toBe(0);
+    expect(clean.unmapped.debit).toBe("0.00");
+    expect(clean.unmapped.credit).toBe("0.00");
+
+    // سطرٌ رُحّل POSTED ثم فُقد ربطُه النظاميّ (محاكاة انجراف/سطرٍ سابقٍ للربط، أو خللِ سلامة).
+    const entryId = await postJournal("2026-08-12", 1, [
+      { role: "OPERATING_EXPENSE", debit: "40.00", credit: "0.00" },
+      { role: "AP", debit: "0.00", credit: "40.00" },
+    ]);
+    const journal = (
+      await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, entryId)).limit(1)
+    )[0];
+    await db()
+      .update(s.journalLines)
+      .set({ statutoryAccountId: null })
+      .where(eq(s.journalLines.journalId, Number(journal.id)));
+
+    const report = await getStatutoryTrialBalance({ from: "2026-08-01", to: "2026-08-31" });
+    if (!report.available) throw new Error(report.reason);
+    // الكشف المرئيّ يستبعد السطر غير المربوط (INNER JOIN) — يبقى على المبيعة المربوطة وحدها.
+    expect(report.totals.debit).toBe("100.00");
+    expect(report.totals.credit).toBe("100.00");
+    // والكاشف يُظهره صراحةً بدل حذفه صامتاً (§٥): سطران بـ٤٠ مديناً و٤٠ دائناً.
+    expect(report.unmapped.lineCount).toBe(2);
+    expect(report.unmapped.debit).toBe("40.00");
+    expect(report.unmapped.credit).toBe("40.00");
+
+    // والحزمة الرسمية محجوبةٌ ما دام ثمّة سطرٌ غير مربوط (§٥) — لا إخراجَ ورقةٍ رسميّةٍ ناقصة.
+    await expect(
+      getStatutoryAccountantPack({ from: "2026-08-01", to: "2026-08-31" }),
+    ).rejects.toThrow(/بلا حسابٍ نظاميّ/);
+  });
+
   it("يحجب بوابة ACTIVE بوضوح قبل وجود إصدار نظامي معتمد", async () => {
     await seedFoundation();
     const readiness = await getStatutoryActivationReadiness();

@@ -99,7 +99,13 @@ export default function BalanceSheet() {
           : "",
       ].filter(Boolean).join(" ")
     : "";
-  const fullNote = [NOTE, disclosure, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
+  // عند تفعيل الدفتر المزدوج: هذه لقطةٌ تشغيليّة بحقوقٍ موازَنةٍ بالإجبار؛ الميزانية المُدقّقة
+  // المشتقّة من الدفتر (حقوقٌ حقيقيّة لا مُجبَرة) في شاشة «الدليل المحاسبي النظاميّ».
+  const activeLedgerNote =
+    p?.accountingMode === "ACTIVE"
+      ? "الدفتر المزدوج مُفعَّل: حقوق الملكية هنا موازنةُ إجبار (أصول − خصوم)؛ الميزانية المُدقّقة المشتقّة من الدفتر في شاشة «الدليل المحاسبي النظاميّ»."
+      : "";
+  const fullNote = [NOTE, disclosure, activeLedgerNote, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
 
   const kpis: KpiItem[] = p
     ? [
@@ -120,7 +126,15 @@ export default function BalanceSheet() {
       { label: "الخصوم", amount: "" },
       ...sections.liabilities.map((r) => ({ label: `— ${r.label}`, amount: r.v })),
       { label: "إجمالي الخصوم", amount: p.totalLiabilities },
-      { label: "حقوق الملكية (مشتقّة)", amount: p.equity },
+      {
+        // عند تفعيل الدفتر: يحمل التصدير والطباعة تصريحَ أنّ الحقوق موازنةُ إجبار لا اشتقاقٌ من
+        // الدفتر (الميزانية المُدقّقة في الدليل المحاسبي النظاميّ) — لا يصل رقمُ الإجبار بلا إفصاح.
+        label:
+          p.accountingMode === "ACTIVE"
+            ? "حقوق الملكية (موازنةُ إجبار — الميزانية المُدقّقة في الدليل المحاسبي النظاميّ)"
+            : "حقوق الملكية (مشتقّة)",
+        amount: p.equity,
+      },
     ];
   }
 
