@@ -7,7 +7,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { D, formatIqd } from "@/lib/money";
 import { printShiftClose } from "@/lib/printing/print";
-import { readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
+import { readShiftOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Check, AlertTriangle } from "lucide-react";
@@ -36,19 +36,19 @@ export function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, br
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
   // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
-  // الوردية موسومةً «مُزامنة لاحقاً» في التقرير).
+  // الوردية موسومةً «مُزامنة لاحقاً» في التقرير). محصور بوردية الكاشير الحالية كي لا تحجبها مبيعات محطة أخرى.
   const [outboxQueued, setOutboxQueued] = useState({ count: 0, total: 0 });
   useEffect(() => {
     let alive = true;
     const load = () => {
-      void readOutboxSummary().then((s) => {
+      void readShiftOutboxSummary(shift?.id).then((s) => {
         if (alive) setOutboxQueued({ count: s.queued, total: s.queuedTotal });
       });
     };
     load();
     const off = subscribeOutbox(load);
     return () => { alive = false; off(); };
-  }, []);
+  }, [shift?.id]);
   const closeBlocked = outboxQueued.count > 0;
 
   const reportQ = trpc.shifts.report.useQuery(

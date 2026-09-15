@@ -616,15 +616,17 @@ export default function PrintPOS() {
     const amount = isCredit ? paid.toFixed(2) : total.toFixed(2);
     // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
     const tendered = forceFullPayment ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    const finalTotal = cashFull ? cashTotal : total;
     pendingRef.current = {
       lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
       customerName: selectedCustomer?.name,
-      method, cashTotal,
+      method,
+      cashTotal: finalTotal,
       rawTotal: total,
       cashRounding: cashFull ? cashTotal - total : 0,
-      received: isCredit ? paid : cashTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
-      change: isCredit ? 0 : Math.max(0, tendered - cashTotal),
-      credit: isCredit ? cashTotal - paid : 0,
+      received: isCredit ? paid : finalTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
+      change: isCredit ? 0 : Math.max(0, tendered - finalTotal),
+      credit: isCredit ? Math.max(0, total - paid) : 0,
       isCredit,
     };
     sale.mutate({
