@@ -25,6 +25,11 @@ import { useEffect, useMemo, useState } from "react";
 type Health = RouterOutputs["productStudio"]["discoverImageGaps"]["items"][number]["state"];
 
 const STATE_LABEL: Record<Health, string> = {
+  HIGH_VALUE_NO_IMAGE: "منتج هام بلا صورة",
+  CONSIGNMENT_NO_IMAGE: "أمانة بلا صورة",
+  HAS_IMAGE_NO_BARCODE: "صورة بلا باركود",
+  CORRUPTED_OR_UNPROCESSED_IMAGE: "صورة تالفة",
+  REDUNDANT_VARIANT_IMAGE: "تحايل بدائل",
   NO_IMAGES: "بلا صور",
   BUNDLE_NO_IMAGE: "بكج بلا صورة",
   SINGLE_IMAGE: "صورةٌ واحدة",
@@ -34,6 +39,11 @@ const STATE_LABEL: Record<Health, string> = {
 };
 
 const STATE_VARIANT: Record<Health, "danger" | "warning" | "info" | "success" | "neutral"> = {
+  HIGH_VALUE_NO_IMAGE: "danger",
+  CONSIGNMENT_NO_IMAGE: "danger",
+  HAS_IMAGE_NO_BARCODE: "danger",
+  CORRUPTED_OR_UNPROCESSED_IMAGE: "warning",
+  REDUNDANT_VARIANT_IMAGE: "warning",
   NO_IMAGES: "danger",
   BUNDLE_NO_IMAGE: "danger",
   SINGLE_IMAGE: "warning",
@@ -48,15 +58,20 @@ const STATE_VARIANT: Record<Health, "danger" | "warning" | "info" | "success" | 
  * بالإضافة إلى إمكانية عرضه في وضع تفصيليّ لاحقاً.
  */
 const STATE_TOOLTIP: Record<Health, string> = {
+  HIGH_VALUE_NO_IMAGE: "منتج يُطلب باستمرار (له نقطة إعادة طلب) لكنه بلا صورة. التدخل هنا ينقذ مبيعات مؤكدة!",
+  CONSIGNMENT_NO_IMAGE: "بضاعة أمانة مهملة بلا صورة، مما يضر بالعلاقات التجارية مع الموردين.",
+  HAS_IMAGE_NO_BARCODE: "المنتج يمتلك صورة جميلة للزبون لكن وحداته تفتقر لباركود، مما يعطل الكاشير والمخزن.",
+  CORRUPTED_OR_UNPROCESSED_IMAGE: "الصورة معطوبة أو فقدت بياناتها الوصفية وتسبب بطئاً أو تظهر مكسورة للزبون.",
+  REDUNDANT_VARIANT_IMAGE: "تم رفع نفس الصورة الجماعية لكل بدائل المنتج كتحايل! الزبون لا يرى لون/مقاس البديل الحقيقي.",
   NO_IMAGES: "منتجٌ نشط بلا أيّ صورةٍ معتمَدة — أنشئ حملة تصوير أو ارفع صورةً محلياً.",
-  BUNDLE_NO_IMAGE: "بكجٌ (منتجٌ مركَّب) بلا صورة موحَّدة — يمكن رفعُ صورةٍ خاصّةٍ به أو التركيب من صور مكوّناته لاحقاً.",
+  BUNDLE_NO_IMAGE: "بكجٌ (منتجٌ مركَّب) بلا صورة موحَّدة — يمكن رفعُ صورةٍ خاصةٍ به أو التركيب من صور مكوّناته لاحقاً.",
   // Codex P2: `healthCaseSql()` يُصنّف حالة SINGLE_IMAGE قبل التحقّق من صور البدائل،
   // فالمنتج ذو صورةٍ واحدة وبدائلَ غير مُغطّاة يظهر هنا. النصّ الأوّل «أضف زوايا إن استحقّ»
   // كان يوهم أنّ العمل اختياريّ، بينما قد يكون مطلوباً لكلّ بديلٍ منفصل. النصّ المصحَّح
-  // يذكر كلا المسارَين ويوجّه المدير للتحقّق من عمود «بدائل بصور».
-  SINGLE_IMAGE: "منتجٌ بصورةٍ معتمَدةٍ واحدة — قد تكون كافية للأمّ، لكن تحقّق من عمود «بدائل بصور» أدناه: إن كان أحد البدائل بلا صورةٍ خاصّةٍ به فأنشئ حملةً بديلاً-بديلاً.",
-  PARENT_ONLY_HAS_VARIANTS: "الأمّ لها صورة لكنّ بعض البدائل بلا صورةٍ خاصّة — أنشئ حملةً بديلاً-بديلاً.",
-  VARIANTS_INCOMPLETE: "أحد بدائل هذا المنتج ينقصه صورةٌ خاصّة — أنشئ حملةً تشمله.",
+  // يذكر كلا المسارَين ويوجه المدير للتحقّق من عمود «بدائل بصور».
+  SINGLE_IMAGE: "منتجٌ بصورةٍ معتمَدةٍ واحدة — قد تكون كافية للأمّ، لكن تحقّق من عمود «بدائل بصور» أدناه: إن كان أحد البدائل بلا صورةٍ خاصةٍ به فأنشئ حملةً بديلاً-بديلاً.",
+  PARENT_ONLY_HAS_VARIANTS: "الأمّ لها صورة لكنّ بعض البدائل بلا صورةٍ خاصة — أنشئ حملةً بديلاً-بديلاً.",
+  VARIANTS_INCOMPLETE: "أحد بدائل هذا المنتج ينقصه صورةٌ خاصة — أنشئ حملةً تشمله.",
   HEALTHY: "المنتج مكتمل صوراً بحسب توجيه الحملة الحاليّ. لا فعلَ مطلوب.",
 };
 
@@ -77,7 +92,7 @@ const SORT_LABEL: Record<SortOption, string> = {
 const STORAGE_KEY = "studio.discovery.filters.v1";
 type PersistedFilters = { states: Health[]; search: string; bundleOnly: boolean; sort: SortOption };
 const DEFAULT_FILTERS: PersistedFilters = {
-  states: ["NO_IMAGES", "BUNDLE_NO_IMAGE"],
+  states: ["HIGH_VALUE_NO_IMAGE", "CONSIGNMENT_NO_IMAGE", "HAS_IMAGE_NO_BARCODE", "NO_IMAGES", "BUNDLE_NO_IMAGE"],
   search: "",
   bundleOnly: false,
   sort: "MISSING_MOST",
