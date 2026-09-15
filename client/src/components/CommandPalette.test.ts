@@ -26,4 +26,12 @@ describe("hasLocalScanner", () => {
     const source = readFileSync(new URL("./CommandPalette.tsx", import.meta.url), "utf8");
     expect(/useBarcodeScanner\(\s*scanToSearch\s*,\s*\{[^}]*ignoreInputFields:\s*true/.test(source)).toBe(true);
   });
+
+  it("يربط حقل البحث بـ useBarcodeInput لفك الرموز فيزيائياً ومنع قفزات Enter العشوائية", () => {
+    const source = readFileSync(new URL("./CommandPalette.tsx", import.meta.url), "utf8");
+    expect(source).toContain("useBarcodeInput(");
+    expect(source).toContain("barcodeInput.handleKeyDown(e");
+    expect(source).toContain("playReadyBeep()");
+    expect(source).toContain("immediateTerm");
+  });
 });
