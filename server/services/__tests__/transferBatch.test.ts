@@ -11,7 +11,7 @@ import { appRouter } from "../../routers";
  *  - عزل الفرع: warehouse لا يحوّل من فرع ليس فرعه.
  *  - يرفض الصنف المكرّر ونفس الفرع مصدراً ووجهة.
  */
-const TABLES = ["auditLogs", "idempotencyKeys", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
+const TABLES = ["auditLogs", "idempotencyKeys", "stockTransferLineBundleComponents", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
 
 function db() {
   const d = getDb();

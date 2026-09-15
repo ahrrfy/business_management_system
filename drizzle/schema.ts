@@ -1653,6 +1653,49 @@ export const stockTransferLines = mysqlTable(
 
 export type StockTransferLine = typeof stockTransferLines.$inferSelect;
 
+/**
+ * لقطة مكوّنات البكج وقت إرسال التحويل.
+ *
+ * سطر السند يبقى بكجاً واحداً في التشغيل والمطابقة، بينما حركات المخزون تُكتب على مكوّناته
+ * الفعلية. اللقطة غير قابلة للتعديل بعد الإرسال، لذلك لا يغيّر تعديل وصفة البكج لاحقاً ما خرج
+ * من المصدر أو ما يجب أن يدخل الوجهة/يعود عند الإلغاء.
+ */
+export const stockTransferLineBundleComponents = mysqlTable(
+  "stockTransferLineBundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transferLineId: bigint("transferLineId", { mode: "number" }).notNull(),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull(),
+    /** كمية المكوّن بالوحدة الأساس لكل بكج واحد. */
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    componentIdx: index("idx_stlbc_component").on(table.componentVariantId),
+    lineComponentUq: unique("uq_stlbc_line_component").on(
+      table.transferLineId,
+      table.componentVariantId,
+    ),
+    quantityCheck: check(
+      "chk_stlbc_qty",
+      sql`${table.componentBaseQuantity} > 0`,
+    ),
+    lineFk: foreignKey({
+      columns: [table.transferLineId],
+      foreignColumns: [stockTransferLines.id],
+      name: "fk_stlbc_line",
+    }).onDelete("cascade"),
+    componentFk: foreignKey({
+      columns: [table.componentVariantId],
+      foreignColumns: [productVariants.id],
+      name: "fk_stlbc_component",
+    }).onDelete("restrict"),
+  }),
+);
+
+export type StockTransferLineBundleComponent =
+  typeof stockTransferLineBundleComponents.$inferSelect;
+
 /* ============================ ورديات الكاشير ============================ */
 
 export const shifts = mysqlTable(

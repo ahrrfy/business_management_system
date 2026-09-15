@@ -39,6 +39,8 @@ export interface InvoiceLine {
   availableBase?: number;
   /** خدمة (١٢/٨/٢٦): الخدمة بلا مخزون ذاتيّ ⇒ لا نُظهر تحذير «خارج المخزون»؛ createSale يخصم موادها من الوصفة. */
   isService?: boolean;
+  /** بكج مركّب: الكمية الأساس هنا عدد البكجات، والمخزون مشتق من المكوّنات. */
+  isBundle?: boolean;
   /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم «نافذاً» ولا «ناقصاً». */
   allowBackorder?: boolean;
   /** Unit price (decimal string). */

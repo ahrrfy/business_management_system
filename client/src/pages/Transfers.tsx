@@ -45,14 +45,19 @@ function genTrf(): string {
 }
 
 /** يجمع أسطر السلة (وحدات مختلفة) في بندٍ واحد لكل متغيّر بالوحدة الأساس. */
-export function aggregateByVariant(lines: TransferCartLine[]): Array<{ variantId: number; baseQuantity: number; name: string; stockBase: number }> {
-  const byVariant = new Map<number, { variantId: number; baseQuantity: number; name: string; stockBase: number }>();
+export function aggregateByVariant(lines: TransferCartLine[]): Array<{ variantId: number; baseQuantity: number; name: string; stockBase: number; availableBase: number }> {
+  const byVariant = new Map<number, { variantId: number; baseQuantity: number; name: string; stockBase: number; availableBase: number }>();
   for (const l of lines) {
     const factor = Number(l.conversionFactor) || 1;
     const base = (Number(l.qty) || 0) * factor;
+    const availableBase = Number(l.availableBase ?? l.stockBase) || 0;
     const cur = byVariant.get(l.variantId);
-    if (cur) cur.baseQuantity += base;
-    else byVariant.set(l.variantId, { variantId: l.variantId, baseQuantity: base, name: l.name, stockBase: Number(l.stockBase) || 0 });
+    if (cur) {
+      cur.baseQuantity += base;
+      cur.availableBase = Math.min(cur.availableBase, availableBase);
+    } else {
+      byVariant.set(l.variantId, { variantId: l.variantId, baseQuantity: base, name: l.name, stockBase: Number(l.stockBase) || 0, availableBase });
+    }
   }
   return Array.from(byVariant.values());
 }
@@ -101,7 +106,7 @@ export default function Transfers() {
     return () => window.removeEventListener("keydown", onKey);
   }, [tab]);
 
-  // تبديل فرع المصدر يُفرغ السلة (الأرصدة تختلف بين الفروع ⇒ stockBase المخزَّن يصير كاذباً).
+  // تبديل فرع المصدر يُفرغ السلة (الأرصدة والمتاح بعد الحجوزات يختلفان بين الفروع ⇒ اللقطة المخزَّنة تصير كاذبة).
   function changeFrom(v: number | null) { setFromBranchId(v); setCart([]); }
   // العكسُ يجعل المصدرَ فرعاً غيرَ المستنتَج ⇒ يظهر في `<InferredBranchField>` منتقًى صريحاً (لا
   // يُغطّيه عرضُ الفرع المستنتَج)، ويُتاح لعابر الفروع وحده — غيرُه لا يُرسِل مصدراً غيرَ فرعه.
@@ -139,8 +144,8 @@ export default function Transfers() {
   const blocking = useMemo(() => {
     const frac = cart.findIndex((_, i) => lineStates[i]?.fractional);
     if (frac >= 0) return `المنتج «${cart[frac].name}»: كمية غير صالحة (لا تُقبل كسور الوحدة الأساس).`;
-    const over = aggregated.find((x) => x.baseQuantity > x.stockBase);
-    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.stockBase)}).`;
+    const over = aggregated.find((x) => x.baseQuantity > x.availableBase);
+    if (over) return `المنتج «${over.name}»: الكمية المطلوبة ${fmtInt(over.baseQuantity)} تتجاوز المتاح في ${fromName} (${fmtInt(over.availableBase)}).`;
     return "";
   }, [cart, lineStates, aggregated, fromName]);
 
@@ -156,7 +161,7 @@ export default function Transfers() {
       !(await confirm({
         variant: "danger",
         title: `سند تحويل ${trf}: من ${fromName} إلى ${toName}`,
-        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة أساس) يخصم من رصيد ${fromName} فوراً ويضع البضاعة «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
+        description: `إرسال السند (${fmtInt(aggregated.length)} منتج، ${fmtInt(totalBase)} وحدة تشغيلية) يخصم السلع أو مكوّنات البكج من رصيد ${fromName} فوراً ويضعها «بالطريق» حتى يستلمها ${toName} بالمطابقة. متابعة؟`,
         confirmText: "إرسال السند",
       }))
     )
@@ -302,7 +307,7 @@ export default function Transfers() {
             <div className="flex justify-between"><span className="text-muted-foreground">إلى</span><span className="font-medium">{toName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أسطر السلة</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">أصناف السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(aggregated.length)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات (أساس)</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي وحدات السند</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalBase)}</span></div>
             {cart.length > aggregated.length && (
               <p className="text-[11px] text-muted-foreground">وحدات متعددة لنفس المنتج تُدمَج في بندٍ واحد بالوحدة الأساس.</p>
             )}

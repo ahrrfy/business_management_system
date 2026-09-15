@@ -159,6 +159,19 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
     expect(asOwnCashier?.id).toBe(invoiceId);
   });
 
+  it("بكج قديم بوحدة اسمها قطعة يُعرض ويُرجع بوحدة بكج تشغيلية", async () => {
+    const { invoiceId } = await sellFive();
+    await db().update(s.products).set({ isBundle: true }).where(eq(s.products.id, 1));
+
+    const result = await caller("admin", null).returns.getInvoice({ invoiceId });
+    expect(result?.items[0]).toMatchObject({
+      isBundle: true,
+      unitName: "بكج",
+      baseUnitName: "بكج",
+      conversionFactor: 1,
+    });
+  });
+
   it("list: مدير بلا فرع مُسنَد ⇒ FORBIDDEN (لا تسريب مرتجعات كل الفروع)", async () => {
     await sellFive();
     await expect(caller("manager", null).returns.list({})).rejects.toMatchObject({ code: "FORBIDDEN" });

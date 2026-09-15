@@ -59,6 +59,8 @@ interface NormalizedRow {
   availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
   isService: boolean;
+  /** بكج مركّب — stockBase/availableBase يمثلان عدد البكجات الممكن تركيبها. */
+  isBundle: boolean;
   /** «يُباع بالطلب» (0318): صنفٌ مخزنيّ يقبله الخادم قبل توريده ⇒ لا يُوسَم نافداً. */
   allowBackorder: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
@@ -143,6 +145,7 @@ export function ProductSearchBar({
         reservedBase: 0, // الشراء لا يعنيه المحجوز
         availableBase: r.stockBase ?? 0,
         isService: false,
+        isBundle: false,
         allowBackorder: false, // جانب الشراء لا يعنيه وسمُ البيع بالطلب.
         // PUR-UNIT-01 (٤/٩/٢٦): سعر شراء الوحدة **تقديريّاً** = تكلفة الأساس × المعامل.
         // كان الحقلان يُملآن معاً بـcostPriceBase (بوحدة الأساس)، فدرزنٌ (معامل ١٢) بتكلفة
@@ -161,13 +164,14 @@ export function ProductSearchBar({
       name: r.productName + (r.variantName ? ` — ${r.variantName}` : ""),
       sku: r.sku,
       barcode: r.barcode ?? null,
-      unitName: r.unitName,
+      unitName: r.isBundle === true && Number(r.conversionFactor) === 1 ? "بكج" : r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
       stockBranchId: r.branchId,
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
+      isBundle: r.isBundle === true,
       allowBackorder: r.allowBackorder === true,
       price: r.price ?? "0",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
@@ -207,6 +211,7 @@ export function ProductSearchBar({
       reservedBase: r.reservedBase,
       availableBase: r.availableBase,
       isService: r.isService,
+      isBundle: r.isBundle,
       allowBackorder: r.allowBackorder,
       price: r.price || "0",
       costBase: r.costBase || "0",
@@ -265,6 +270,7 @@ export function ProductSearchBar({
               reservedBase: 0,
               availableBase: purchaseRow.stockBase ?? 0,
               isService: false,
+              isBundle: false,
               allowBackorder: false,
               price: estimatedPurchaseUnitPrice(
                 purchaseRow.costPriceBase,
@@ -284,13 +290,14 @@ export function ProductSearchBar({
             name: row.productName + (row.variantName ? ` — ${row.variantName}` : ""),
             sku: row.sku,
             barcode: row.barcode ?? null,
-            unitName: row.unitName,
+            unitName: row.isBundle === true && Number(row.conversionFactor) === 1 ? "بكج" : row.unitName,
             conversionFactor: row.conversionFactor,
             stockBase: row.stockBase ?? 0,
             stockBranchId: row.branchId,
             reservedBase: row.reservedBase ?? 0,
             availableBase: row.availableBase ?? (row.stockBase ?? 0),
             isService: row.isService || row.isPrintService,
+            isBundle: row.isBundle === true,
             allowBackorder: row.allowBackorder === true,
             price: row.price ?? "0",
             costBase: "0",
@@ -317,6 +324,7 @@ export function ProductSearchBar({
             reservedBase: 0,
             availableBase: retItem.currentStock ?? 0,
             isService: false,
+            isBundle: false,
             allowBackorder: true,
             price: isPurchase ? (retItem.costPrice || "0") : (retItem.retailPrice || retItem.lowestHistoricalPrice || "0"),
             costBase: retItem.costPrice || "0",
@@ -507,6 +515,9 @@ export function ProductSearchBar({
                     {p.isService && (
                       <span className="ms-2 rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-pos)]">خدمة</span>
                     )}
+                    {p.isBundle && (
+                      <span className="ms-2 rounded-full bg-[var(--sem-info-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--sem-info)]">بكج</span>
+                    )}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                     <span>{p.sku}</span>
@@ -517,6 +528,8 @@ export function ProductSearchBar({
                     <span>•</span>
                     {p.isService ? (
                       <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
+                    ) : p.isBundle ? (
+                      <span>المتاح كبكج كامل: {fmtNum(p.availableBase)}</span>
                     ) : (
                       <>
                         <span>فعلي: {fmtNum(p.stockBase)}</span>
