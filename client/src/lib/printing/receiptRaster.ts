@@ -137,6 +137,7 @@ export async function receiptToCanvas(
   // محتجز ٣٠px + كتلة «متبقٍّ آجل» ٦٤px) — القصّ النهائي يُبقي الفعليّ فقط فلا هدر ورق.
   const digitalRows = (d.digitalDetails ?? []).length;
   const shiftRowH = d.shiftId != null ? 30 : 0;
+  const revisionBlockH = d.revision ? 180 : 0;
   const heldRowH = Number(d.heldDeposits ?? 0) > 0 ? 30 : 0;
   const creditBlockH = Number(d.credit ?? 0) > 0 ? 64 : 0; // كتلة «متبقٍّ (آجل)» مع الفاصل المتقطّع
   // هامش رسم إضافي يحمي التذييل من بلوغ سقف اللوحة عند اجتماع الشعار والباركود والتوصيل
@@ -144,7 +145,7 @@ export async function receiptToCanvas(
   const promoBlockH = 250;
   const drawingHeadroom = 256;
   const estH = 1400 + d.items.length * 96 + digitalRows * 190
-    + shiftRowH + heldRowH + creditBlockH + promoBlockH + drawingHeadroom;
+    + shiftRowH + revisionBlockH + heldRowH + creditBlockH + promoBlockH + drawingHeadroom;
   const canvas = document.createElement("canvas");
   canvas.width = W;
   canvas.height = estH;
@@ -214,6 +215,41 @@ export async function receiptToCanvas(
   if (d.cashierName || d.time) metaRow(d.cashierName ? `الكاشير: ${d.cashierName}` : "", d.time ? `الوقت: ${d.time}` : "");
   if (d.shiftId != null) metaRow(`الوردية: #${d.shiftId}`, "");
   if (d.customerName) metaRow(`العميل: ${d.customerName}`, "", true);
+  if (d.revision) {
+    y += 8;
+    const textWidth = W - PAD * 2 - 20;
+    ctx.font = "900 19px Cairo, sans-serif";
+    const titleLines = wrapLines(ctx, `فاتورة معدلة — بديلة عن ${d.revision.originalReceiptNumber}`, textWidth, 2);
+    ctx.font = "700 16px Cairo, sans-serif";
+    const requestLines = wrapLines(ctx, `طلبها: ${d.revision.revisedByName} — ${d.revision.revisedAt}`, textWidth, 2);
+    const approvalLines = d.revision.approvedByName
+      ? wrapLines(ctx, `اعتمدها: ${d.revision.approvedByName}${d.revision.approvedAt ? ` — ${d.revision.approvedAt}` : ""}`, textWidth, 2)
+      : [];
+    const boxHeight = 16 + titleLines.length * 24 + requestLines.length * 22 + approvalLines.length * 22 + 10;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#000";
+    roundRectPath(ctx, PAD + 1, y, W - PAD * 2 - 2, boxHeight, 5);
+    ctx.stroke();
+    ctx.restore();
+    ctx.font = "900 19px Cairo, sans-serif";
+    ctx.textAlign = "right";
+    let revisionY = y + 27;
+    for (const line of titleLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 24;
+    }
+    ctx.font = "700 16px Cairo, sans-serif";
+    for (const line of requestLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 22;
+    }
+    for (const line of approvalLines) {
+      ctx.fillText(line, W - PAD - 10, revisionY);
+      revisionY += 22;
+    }
+    y += boxHeight + 8;
+  }
 
   y += 2;
   dashedLine(ctx, y);

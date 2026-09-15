@@ -7,7 +7,8 @@
  */
 import { describe, it, expect } from "vitest";
 import Decimal from "decimal.js";
-import { allocateLineTax } from "../totals";
+import { allocateLineTax, calcTotals } from "../totals";
+import type { InvoiceLine, InvoiceState } from "../types";
 
 function sumShares(shares: string[]): string {
   return shares
@@ -136,5 +137,29 @@ describe("allocateLineTax", () => {
     // السطر الأوّل «abc» = 0 ⇒ لا حصة له؛ الثاني يستوعب كامل الضريبة.
     expect(shares[0]).toBe("0.00");
     expect(sumShares(shares)).toBe("100.00");
+  });
+});
+
+describe("calcTotals — تطابق تقريب الخادم", () => {
+  it("يقرّب كل سطر قبل الجمع كي لا ينحرف فرق التصحيح بسنت", () => {
+    const item = {
+      price: "0.05",
+      qty: 0.5,
+      discount: "0",
+      discountType: "amount",
+      isGift: false,
+    } as InvoiceLine;
+    const state = {
+      globalDiscount: "0",
+      globalDiscountType: "amount",
+      taxEnabled: false,
+      taxRatePercent: "0",
+      shipping: "0",
+      shippingFree: false,
+      otherExpenses: "0",
+      paidAmount: "0",
+    } as InvoiceState;
+
+    expect(calcTotals([item, { ...item }], state).grandTotal).toBe("0.06");
   });
 });

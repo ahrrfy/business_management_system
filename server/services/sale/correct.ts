@@ -18,6 +18,7 @@
 //
 // v1 (مؤجَّلٌ صريحاً، يُرفَض بأمان): المُرتجَعة (كلياً/جزئياً)، منشأ WORKORDER، الرقمية، التوصيل النشط.
 import { TRPCError } from "@trpc/server";
+import { appErrorMessage } from "@shared/errors";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
@@ -29,6 +30,7 @@ import {
   products,
   productVariants,
   receipts,
+  shifts,
 } from "../../../drizzle/schema";
 import { createPostingIntent, creditLine, debitLine,
 } from "../accounting/postingEngine";
@@ -42,6 +44,7 @@ import { resolveBranchCashShiftTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
 import { extractInsertId } from "../../lib/insertId";
 import { createSaleInTx } from "./create";
+import { mixedAwarePaymentMethod } from "./payment";
 import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
@@ -69,11 +72,14 @@ export interface CorrectSaleInput {
   lines: SaleLineInput[];
   invoiceDiscount?: string | null;
   deliveryFee?: string | null;
+  deliveryFree?: boolean;
+  deliveryWaivedAmount?: string | null;
   taxRatePercent?: string | null;
   dueDate?: string | null;
   notes?: string | null;
   /** دفعةٌ إضافية تُحصَّل الآن حين يزيد المصحّح على المقبوض سلفاً (نقص). */
   additionalPayment?: { amount: string; method: CorrectionPayMethod; reference?: string | null;
+    shiftId?: number | null;
     externalPaymentAttemptId?: number | null;
     externalPaymentDeviceId?: string | null;
   } | null;
@@ -135,6 +141,16 @@ export async function correctSaleInTx(
         message: "أكّد الدفع الخارجي قبل تحصيل فرق التصحيح",
       });
     }
+  }
+  if (input.additionalPayment && input.overpayHandling) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر تنفيذ تعديل الفاتورة",
+        why: "الطلب جمع بين تحصيل فرق إضافي ومعالجة مبلغ زائد",
+        doThis: "حدّث المقارنة واختر معالجة واحدة مطابقة للفرق النهائي",
+      }),
+    });
   }
 
     // ── ٠) idempotency: إعادة التشغيل بنفس المفتاح تُعيد التصحيح الأوّل (refId = الفاتورة الجديدة) ──
@@ -212,11 +228,10 @@ export async function correctSaleInTx(
     // ── ٠.٥) قفل درج الاسترداد **قبل** قفل الفاتورة ──
     //    ترتيب القفل الحاكم في كل مسارات المال: المصدر (الدرج) ← الطرف ← المستند. `returnSaleInTx`
     //    يقفل الدرج أولاً؛ فلو أخّرناه هنا إلى ما بعد قفل الفاتورة لتعاكس المسارانِ على نفس الدرج
-    //    والفاتورة ⇒ deadlock. ولمّا كان الفرق الزائد غير معلومٍ إلا بعد إعادة الترحيل (خطوة ⑦)،
-    //    نقفل مسبقاً بحسب **المدخلات وحدها** (حتميّ): إمّا طلبٌ صريح باسترداد نقديّ، أو فاتورةٌ
-    //    مقبوضةٌ بلا عميلٍ مسجَّل (الزبون العابر لا يحمل رصيداً دائناً ⇒ النقد مخرجه الوحيد).
+    //    والفاتورة ⇒ deadlock. يُقفَل فقط لطلب CASH_REFUND صريح: المساواة في الإجمالي لا
+    //    تحتاج درجاً، والزبون العابر الذي لم يحدد المخرج يُرفض لاحقاً ذرّياً إن ظهر فائض.
     const invPreview = (
-      await tx.select({ branchId: invoices.branchId, paidAmount: invoices.paidAmount, customerId: invoices.customerId,
+      await tx.select({ branchId: invoices.branchId, shiftId: invoices.shiftId,
         })
         .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
     )[0];
@@ -231,13 +246,8 @@ export async function correctSaleInTx(
         message: "الفاتورة لا تخصّ فرعك",
       });
     }
-    const previewPaid = round2(money(invPreview.paidAmount ?? "0"));
-    const targetCustomerPreview = input.customerId === undefined
-      ? invPreview.customerId != null ? Number(invPreview.customerId) : null
-        : input.customerId != null ? Number(input.customerId) : null;
-    const mayNeedCashRefund =
-      previewPaid.gt(0) &&
-      (input.overpayHandling === "CASH_REFUND" || targetCustomerPreview == null);
+    const mayNeedCashRefund = !input.additionalPayment
+      && input.overpayHandling === "CASH_REFUND";
     let prelockedOverpayShift: { shiftId: number } | null = null;
     if (mayNeedCashRefund) {
       prelockedOverpayShift = await resolveBranchCashShiftTx(
@@ -250,6 +260,18 @@ export async function correctSaleInTx(
         cashBucket: "DRAWER",
         shiftId: prelockedOverpayShift.shiftId,
       });
+    }
+
+    // درج فرق التصحيح يُقفَل قبل جهة التوصيل والفاتورة، ويأتي من الوردية التي حدّدها
+    // طالب التعديل. لا نكتب نقداً على وردية الأصل لمجرّد أنها كانت قناة الإصدار.
+    let addPayShiftId: number | null = null;
+    if (input.additionalPayment?.method === "CASH") {
+      const resolved = await resolveBranchCashShiftTx(
+        tx,
+        Number(invPreview.branchId),
+        input.additionalPayment.shiftId ?? null,
+      );
+      addPayShiftId = resolved.shiftId;
     }
 
     // محاولة القبض غير النقدي مصدرٌ ماليّ أيضاً؛ تُقفل قبل الفاتورة/التوصيل كي لا ينفّذ
@@ -269,6 +291,68 @@ export async function correctSaleInTx(
         },
         actor,
       );
+    }
+
+    // إن لم يوجد فرق نقدي، احتفظ بقناة الأصل على وردية مفتوحة فقط. يأتي هذا القفل بعد
+    // محاولة الدفع الخارجية (نفس ترتيب البيع العادي) وقبل المستند، منعاً لانقلاب الأقفال.
+    // الوردية المغلقة حدٌّ محاسبي: ننتقل إلى أحدث وردية مفتوحة من النوع نفسه.
+    let channelShiftId: number | null = null;
+    if (invPreview.shiftId != null) {
+      const originalShift = (
+        await tx
+          .select({ id: shifts.id, branchId: shifts.branchId, status: shifts.status, shiftType: shifts.shiftType })
+          .from(shifts)
+          .where(eq(shifts.id, Number(invPreview.shiftId)))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (originalShift && Number(originalShift.branchId) === Number(invPreview.branchId)) {
+        if (addPayShiftId != null) {
+          const paymentShift = (
+            await tx.select({ shiftType: shifts.shiftType })
+              .from(shifts)
+              .where(eq(shifts.id, addPayShiftId))
+              .limit(1)
+          )[0];
+          if (paymentShift?.shiftType !== originalShift.shiftType) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذّر تنفيذ تعديل الفاتورة",
+                why: "وردية قبض الفرق لا تطابق قناة وردية الفاتورة الأصلية",
+                doThis: `اختر وردية مفتوحة من نوع ${originalShift.shiftType} ثم أعد الاعتماد`,
+              }),
+            });
+          }
+        } else if (originalShift.status === "OPEN") {
+          channelShiftId = Number(originalShift.id);
+        } else {
+          const currentSameChannel = (
+            await tx
+              .select({ id: shifts.id })
+              .from(shifts)
+              .where(and(
+                eq(shifts.branchId, Number(invPreview.branchId)),
+                eq(shifts.shiftType, originalShift.shiftType),
+                eq(shifts.status, "OPEN"),
+              ))
+              .orderBy(desc(shifts.id))
+              .for("update")
+              .limit(1)
+          )[0];
+          if (!currentSameChannel && originalShift.shiftType === "RECEPTION") {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: appErrorMessage({
+                what: "تعذّر تنفيذ تعديل الفاتورة",
+                why: `وردية الأصل من نوع ${originalShift.shiftType} مغلقة ولا توجد وردية مفتوحة بديلة من النوع نفسه`,
+                doThis: "افتح وردية القناة نفسها ثم أعد اعتماد طلب التعديل؛ لم يتغير المال أو المخزون",
+              }),
+            });
+          }
+          channelShiftId = currentSameChannel ? Number(currentSameChannel.id) : null;
+        }
+      }
     }
 
     // بعد مصدر النقد، اقفل جهة التوصيل→الإرسالية/طلب المتجر قبل الفاتورة. التصحيح عكسٌ كامل
@@ -408,19 +492,11 @@ export async function correctSaleInTx(
     // ── ٥) وسم الأصل SUPERSEDED وتصفيره (لم يُرتجَع، بل استُبدِل) ──
     await tx.update(invoices).set({ status: "SUPERSEDED", paidAmount: "0", returnedTotal: "0" }).where(eq(invoices.id, input.originalInvoiceId));
 
-    // ── ٦) درج الدفعة الإضافية (نقص: المصحّح > المقبوض) — يلزمه درجٌ حين نقدية ──
-    let addPayShiftId: number | null = null;
-    if (input.additionalPayment && input.additionalPayment.method === "CASH") {
-      const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), null,
-      );
-      addPayShiftId = resolved.shiftId;
-    }
-
     // ── ٧) إعادة الترحيل بالبيانات المصحّحة (المدفوع مُرحَّلٌ سلفاً؛ الفائض يُقصَر بـallowPreCollectedOverpay) ──
     const correctionReqId = input.clientRequestId ? `${input.clientRequestId}:corr` : null;
     const repost = await createSaleInTx(tx, {
       branchId: Number(inv.branchId),
-      shiftId: addPayShiftId,
+      shiftId: addPayShiftId ?? channelShiftId,
       sourceType: inv.sourceType as "POS" | "ONLINE" | "ORDER",
       customerId: input.customerId === undefined ? originalCustomerId : input.customerId,
       contactName: input.contactName === undefined ? (inv.contactName ?? null) : input.contactName,
@@ -429,6 +505,8 @@ export async function correctSaleInTx(
       lines: input.lines,
       invoiceDiscount: input.invoiceDiscount ?? null,
       deliveryFee: input.deliveryFee ?? null,
+      deliveryFree: input.deliveryFree === true,
+      deliveryWaivedAmount: input.deliveryFree ? input.deliveryWaivedAmount ?? null : null,
       taxRatePercent: input.taxRatePercent ?? null,
       dueDate: input.dueDate ?? null,
       notes: input.notes ?? null,
@@ -531,6 +609,24 @@ export async function correctSaleInTx(
         },
       );
     }
+
+    // `preCollected` يعيد ختم الإيصالات التاريخية بعد إنشاء الفاتورة؛ لذلك لا تكفي طريقة
+    // الدفعة الإضافية التي رآها createSaleInTx. اطوِ الطرق الفعلية المثبّتة على البديلة كي
+    // تبقى الفلاتر والطباعة صحيحة (نقدي/بطاقة/مختلط) من دون إعادة كتابة أي إيصال تاريخي.
+    const transferredPaymentMethods = await tx
+      .select({ method: receipts.paymentMethod })
+      .from(receipts)
+      .where(and(
+        eq(receipts.invoiceId, newId),
+        eq(receipts.direction, "IN"),
+        eq(receipts.status, "COMPLETED"),
+      ))
+      .orderBy(receipts.id);
+    const displayedPaymentMethod = transferredPaymentMethods.reduce<string | null>(
+      (current, row) => mixedAwarePaymentMethod(current, row.method),
+      null,
+    );
+    await tx.update(invoices).set({ paymentMethod: displayedPaymentMethod }).where(eq(invoices.id, newId));
 
     // ── ٨) ربط الفاتورتين (نسب التصحيح ثنائية الاتجاه) ──
     await tx.update(invoices).set({ correctionOfInvoiceId: input.originalInvoiceId }).where(eq(invoices.id, newId));

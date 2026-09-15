@@ -29,12 +29,16 @@ export interface ShippingLabelItem {
 
 export interface ShippingLabelData {
   orderNumber: string;
+  /** قيمة آلية نوعية؛ رقم العرض وحده قد يُفسَّر كمنتج عند المسح. */
+  barcodeValue?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   governorate: string | null;
   addressText: string | null;
   /** مبلغ التحصيل عند الاستلام (COD) — إجمالي الطلب. */
   total: string;
+  /** الفاتورة المدفوعة بالكامل تُوسَم مدفوعة ولا تطلب من المندوب تحصيل صفرٍ «نقداً». */
+  paymentState?: "COD" | "PREPAID";
   deliveryPartyName?: string | null;
   /** رقم التتبع أو مرجع إيصال شركة التوصيل (اختياري). */
   externalTrackingRef?: string | null;
@@ -62,7 +66,7 @@ export async function shippingLabelHtml(
   const govName = o.governorate ? governorateById(o.governorate)?.name ?? o.governorate : "";
   let barcode = "";
   try {
-    barcode = code128Svg(o.orderNumber, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    barcode = code128Svg(o.barcodeValue || o.orderNumber, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
   } catch {
     barcode = "";
   }
@@ -149,8 +153,8 @@ ${CAIRO_FONT}
     </div>
 
     <div class="cod">
-      <div class="cod-l">الدفع عند الاستلام<small>COD — تُحصَّل نقداً</small></div>
-      <div class="cod-v">${esc(fmt(o.total))}<u>د.ع</u></div>
+      <div class="cod-l">${o.paymentState === "PREPAID" ? "مدفوع مسبقاً" : "الدفع عند الاستلام"}<small>${o.paymentState === "PREPAID" ? "لا يُحصَّل مبلغ عند التسليم" : "COD — تُحصَّل نقداً"}</small></div>
+      <div class="cod-v">${o.paymentState === "PREPAID" ? "مدفوع" : `${esc(fmt(o.total))}<u>د.ع</u>`}</div>
     </div>
 
     <div class="items"><b>أصناف التجهيز (${itemCount}):</b> <span class="items-list">${esc(contents || "—")}</span></div>

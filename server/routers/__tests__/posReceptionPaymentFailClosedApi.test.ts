@@ -53,6 +53,28 @@ beforeEach(async () => {
  * بلا أيّ أثرٍ ماليّ أو مخزنيّ — وهذا ما يحرسه هذا الملف على حدود كل طفرةٍ في المحطة.
  */
 describe("رفض رصيد زين في كل منافذ قبض المحطة", () => {
+  it("يحفظ مسار الاستبدال وردية قبض الفرق النقدي ولا يقبل نقداً بلا وردية", async () => {
+    const caller = appRouter.createCaller(context());
+    const request = {
+      requestKey: "exchange-cash-shift-contract",
+      invoiceId: 999,
+      reason: "اختبار عقد وردية فرق الاستبدال",
+      payload: {
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        additionalPayment: { amount: "1000.00", method: "CASH" as const },
+      },
+    };
+
+    await expect(caller.salesControl.requestExchange(request)).rejects.toThrow(/وردية قبض فرق الاستبدال/);
+    await expect(caller.salesControl.requestExchange({
+      ...request,
+      payload: {
+        ...request.payload,
+        additionalPayment: { ...request.payload.additionalPayment, shiftId: 1 },
+      },
+    })).rejects.toThrow(/الفاتورة غير موجودة/);
+  });
+
   it("يرفض قبض البطاقة من طابور الاستقبال بلا محاولة SALES_COLLECTION مؤكدة", async () => {
     await expect(
       appRouter.createCaller(context()).reception.collectOnInvoice({

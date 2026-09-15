@@ -36,6 +36,8 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printWarehouseSlipV2 } from "@/lib/printing/printTemplatesV2";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
+import { invoiceToShippingLabel } from "@/lib/printing/invoiceShippingLabel";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { DataTable } from "@/components/data-table/DataTable";
@@ -115,6 +117,7 @@ export default function InvoiceDetail() {
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [printingReceipt, setPrintingReceipt] = useState(false);
+  const [printingShippingLabel, setPrintingShippingLabel] = useState(false);
   // idempotency: مفتاح ثابت لكل دفعة (يتجدّد بعد النجاح) ⇒ نقرة مزدوجة لا تُسجّل دفعتين.
   const [clientRequestId, setClientRequestId] = useState(() =>
     crypto.randomUUID(),
@@ -205,9 +208,25 @@ export default function InvoiceDetail() {
       "FULL",
       ["manager"],
     );
+  const canRecordPayment =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["cashier", "manager"],
+    );
   const corrections = trpc.sales.correctionHistory.useQuery(
     { invoiceId },
     { enabled: Number.isFinite(invoiceId) && canCorrectInvoice, retry: false },
+  );
+  const fullCorrectionEligibility = trpc.sales.lookupForCorrection.useQuery(
+    { invoiceNumber: inv.data?.invoiceNumber ?? "" },
+    {
+      enabled: canRecordPayment && Boolean(inv.data?.invoiceNumber),
+      retry: false,
+    },
   );
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionNotes, setCorrectionNotes] = useState("");
@@ -255,6 +274,9 @@ export default function InvoiceDetail() {
       </div>
     );
   const data = inv.data;
+  const canPrintShippingLabel = !["CANCELLED", "RETURNED", "SUPERSEDED"].includes(data.status)
+    && data.consignmentId == null
+    && !["SHIPPED", "DELIVERED", "CANCELLED"].includes(data.onlineOrderStatus ?? "");
   // #1: المتبقّي الحقيقي = total − returnedTotal − paidAmount (يمنع التحصيل الزائد بعد مرتجع جزئي).
   const remaining = round2(
     D(data.total)
@@ -269,16 +291,6 @@ export default function InvoiceDetail() {
     (externalAttempt?.confirmed === true &&
       externalAttempt.fingerprint === externalFingerprint);
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
-  // بوّابة عرض مطابقة للخادم: كاشير/مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
-  const canRecordPayment =
-    !!me.data?.role &&
-    moduleAccessAllowed(
-      me.data.role as RoleKey,
-      (me.data.permissionsOverride ?? null) as PermissionMap | null,
-      "sales",
-      "FULL",
-      ["cashier", "manager"],
-    );
   // الإلغاء صار طلباً صفري الأثر؛ موظف sales=FULL يطلب، ومديرٌ مستقل يعتمد وينفّذ.
   const canCancelInvoice =
     !!me.data?.role &&
@@ -368,11 +380,7 @@ export default function InvoiceDetail() {
   //    الآن المقبوض يُنقل للمصحّحة كما هو، والفرق الزائد يُردّ نقداً أو يُرصَّد (correct.ts خطوة ⑨).
   const canFullCorrect =
     canRecordPayment &&
-    data.status !== "CANCELLED" &&
-    data.status !== "SUPERSEDED" &&
-    D(data.returnedTotal ?? "0").isZero() &&
-    data.sourceType !== "WORKORDER" &&
-    !data.consignmentNumber;
+    fullCorrectionEligibility.data?.canCorrect === true;
 
   function openCorrection() {
     setCorrectionNotes(data.notes ?? "");
@@ -477,6 +485,29 @@ export default function InvoiceDetail() {
     } finally {
       setPrintingReceipt(false);
     }
+  }
+
+  function printInvoiceShippingLabel() {
+    if (printingShippingLabel) return;
+    if (!canPrintShippingLabel) {
+      notify.warn("لا يمكن طباعة ليبل شحن لهذه الفاتورة", "اطبع الليبل من الفاتورة البديلة الفعّالة.");
+      return;
+    }
+    const labelWindow = preopenShippingLabelWindow();
+    if (!labelWindow) {
+      notify.warn("تعذّر فتح ليبل الشحن", "اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+      return;
+    }
+    setPrintingShippingLabel(true);
+    void printShippingLabel(invoiceToShippingLabel(data), { into: labelWindow })
+      .then((result) => {
+        if (!result.ok) notify.warn("تعذّرت طباعة ليبل الشحن", "أعد المحاولة بعد السماح بالنوافذ المنبثقة.");
+      })
+      .catch((cause) => {
+        try { labelWindow.close(); } catch { /* النافذة مغلقة سلفاً */ }
+        notify.err(cause instanceof Error ? cause.message : "تعذّرت طباعة ليبل الشحن");
+      })
+      .finally(() => setPrintingShippingLabel(false));
   }
 
   async function confirmInvoiceExternalPayment() {
@@ -750,6 +781,17 @@ export default function InvoiceDetail() {
             <Printer aria-hidden className="size-4" />
             {printingReceipt ? "جارٍ إعادة الطباعة…" : "إعادة طباعة حرارية"}
           </Button>
+          {canPrintShippingLabel && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={printingShippingLabel}
+              onClick={printInvoiceShippingLabel}
+            >
+              <Package aria-hidden className="size-4" />
+              {printingShippingLabel ? "جارٍ تجهيز الليبل…" : "ليبل الشحن"}
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">

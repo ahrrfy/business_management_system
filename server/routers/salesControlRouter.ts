@@ -1,16 +1,30 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { eq } from "drizzle-orm";
 import { SALES_CONTROL_STATUSES } from "@shared/salesControl";
+import { appErrorMessage } from "@shared/errors";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import {
   approveSalesControlRequest,
+  claimSalesCorrectionPayment,
   listSalesControlRequests,
+  releaseSalesCorrectionPaymentClaim,
   rejectSalesControlRequest,
   requestSalesControl,
   withdrawSalesControlRequest,
 } from "../services/sale/controlRequests";
-import { router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import {
+  router,
+  salesCorrectionComparisonProcedure,
+  salesCorrectionProcedure,
+  salesManagerProcedure,
+  salesReadProcedure,
+} from "../trpc";
 import { recordGovernedReturnExecution } from "../services/sale/controlAudit";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { customers, salesControlRequests } from "../../drizzle/schema";
+import { getDb } from "../db";
+import { listByUnitIds } from "../services/catalogService";
 
 const paymentMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const dueDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullable();
@@ -37,53 +51,125 @@ const correctionPayload = z.object({
   lines: z.array(correctionLine).min(1),
   invoiceDiscount: nonNegMoneyString.nullish(),
   deliveryFee: nonNegMoneyString.nullish(),
+  deliveryFree: z.boolean().optional(),
+  deliveryWaivedAmount: nonNegMoneyString.nullish(),
   taxRatePercent: z.string().regex(/^\d+(\.\d{1,2})?$/).nullish(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
   notes: z.string().max(5000).nullish(),
   additionalPayment: z.object({
     amount: positiveMoneyString,
     method: paymentMethod,
-    reference: z.string().trim().min(1).max(100).nullish(),
-    externalPaymentAttemptId: z.number().int().positive().nullish(),
-    externalPaymentDeviceId: z.string().trim().min(1).max(64).nullish(),
   }).nullish(),
   overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
-  overpayRefundShiftId: z.number().int().positive().nullish(),
-}).superRefine((input, refinement) => {
-  const payment = input.additionalPayment;
-  if (!payment) return;
-  if (payment.method !== "CASH" && !payment.externalPaymentAttemptId) {
-    refinement.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["additionalPayment", "externalPaymentAttemptId"],
-      message: "أكّد محاولة الدفع الخارجي قبل إرسال الطلب",
-    });
-  }
-  if (payment.method !== "CASH" && !payment.externalPaymentDeviceId) {
-    refinement.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["additionalPayment", "externalPaymentDeviceId"],
-      message: "جهاز محاولة الدفع مطلوب",
-    });
-  }
-  if (payment.method === "CASH" && (payment.externalPaymentAttemptId || payment.externalPaymentDeviceId)) {
-    refinement.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["additionalPayment", "externalPaymentAttemptId"],
-      message: "الدفع النقدي لا يحمل محاولة خارجية",
-    });
-  }
 });
 
-function actor(ctx: { user: { id: number; branchId?: number | null; role: string } }) {
+function actor(ctx: {
+  user: { id: number; branchId?: number | null; role: string };
+  scopedOwnerId?: number | null;
+  invoiceCorrectionScope?: "sales" | "reception";
+}) {
   return {
     userId: ctx.user.id,
     branchId: Number(ctx.user.branchId ?? 0),
     role: ctx.user.role,
+    scopedOwnerId: ctx.scopedOwnerId,
+    invoiceScope: ctx.invoiceCorrectionScope,
   };
 }
 
 export const salesControlRouter = router({
+  /** أسماء/وحدات سطور مقارنة التصحيح للمراجع، بلا اشتراط products:READ أو كشف تكلفة. */
+  correctionCatalog: salesCorrectionComparisonProcedure
+    .input(z.object({ requestId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { rows: [], targetCustomerName: null };
+      const request = (
+        await db
+          .select({
+            branchId: salesControlRequests.branchId,
+            requestedBy: salesControlRequests.requestedBy,
+            requestType: salesControlRequests.requestType,
+            status: salesControlRequests.status,
+            payload: salesControlRequests.payload,
+          })
+          .from(salesControlRequests)
+          .where(eq(salesControlRequests.id, input.requestId))
+          .limit(1)
+      )[0];
+      if (!request) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: appErrorMessage({
+            what: "تعذّر فتح مقارنة التعديل",
+            why: "طلب التعديل المحدد غير موجود أو أزيل",
+            doThis: "حدّث قائمة الاعتمادات واختر طلباً ظاهراً فيها",
+          }),
+        });
+      }
+      if (ctx.user.role !== "admin" && Number(request.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر فتح مقارنة التعديل",
+            why: "طلب التعديل لا يخص الفرع المسند لك",
+            doThis: "اختر طلباً من فرعك أو اطلب من مدير الفرع المعني مراجعته",
+          }),
+        });
+      }
+      if (ctx.scopedOwnerId != null && Number(request.requestedBy) !== Number(ctx.scopedOwnerId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر فتح مقارنة التعديل",
+            why: "الطلب أنشأه موظف آخر ولا تسمح صلاحيتك بعرض تفاصيله",
+            doThis: "افتح طلباً أنشأته أنت أو اطلب من المدير مراجعته",
+          }),
+        });
+      }
+      if (request.status !== "PENDING" || !["SALES_REISSUE", "SALES_EXCHANGE"].includes(request.requestType)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر فتح مقارنة التعديل",
+            why: "الطلب ليس تعديل فاتورة معلقاً أو سبق اتخاذ القرار فيه",
+            doThis: "حدّث القائمة وافتح طلب تعديل ما زال بانتظار الاعتماد",
+          }),
+        });
+      }
+      const payload = request.payload as z.infer<typeof correctionPayload>;
+      const unitIds = Array.from(new Set((payload.lines ?? []).map((line) => Number(line.productUnitId))));
+      const rows = await listByUnitIds(
+        unitIds,
+        Number(request.branchId),
+        payload.priceTier ?? "RETAIL",
+      );
+      if (rows.length !== unitIds.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: appErrorMessage({
+            what: "تعذّر تجهيز مقارنة التعديل",
+            why: "صنف أو وحدة ضمن الطلب لم يعد متاحاً بعد تقديمه",
+            doThis: "ارفض الطلب واطلب من الموظف إنشاء تعديل جديد بالأصناف المتاحة",
+          }),
+        });
+      }
+      const targetCustomer = payload.customerId == null ? null : (
+        await db.select({ name: customers.name }).from(customers)
+          .where(eq(customers.id, Number(payload.customerId))).limit(1)
+      )[0] ?? null;
+      return {
+        targetCustomerName: targetCustomer?.name ?? null,
+        rows: rows.map((row) => ({
+          productUnitId: row.productUnitId,
+          productName: row.productName,
+          variantName: row.variantName,
+          unitName: row.unitName,
+          price: row.price,
+        })),
+      };
+    }),
+
   requestDueDateChange: salesManagerProcedure
     .input(requestIdentity.extend({ dueDate }))
     .mutation(({ input, ctx }) => requestSalesControl({
@@ -94,7 +180,7 @@ export const salesControlRouter = router({
       payload: { dueDate: input.dueDate },
     }, actor(ctx))),
 
-  requestExchange: salesCashierProcedure
+  requestExchange: salesCorrectionProcedure
     .input(requestIdentity.extend({ payload: correctionPayload }))
     .mutation(({ input, ctx }) => requestSalesControl({
       ...input,
@@ -120,6 +206,23 @@ export const salesControlRouter = router({
       });
     }),
 
+  /** يحجز طلب فرق البطاقة لمراجع واحد قبل توجيهه إلى جهاز الدفع؛ لا أثر مالي هنا. */
+  claimCorrectionPayment: salesManagerProcedure
+    .input(z.object({ requestId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) => claimSalesCorrectionPayment(input.requestId, actor(ctx))),
+
+  /** تحرير الحجز مسموح قبل وجود دليل قبض مؤكد فقط. */
+  releaseCorrectionPaymentClaim: salesManagerProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      confirmation: z.literal("NO_EXTERNAL_PAYMENT_EXECUTED"),
+    }))
+    .mutation(({ input, ctx }) => releaseSalesCorrectionPaymentClaim(
+      input.requestId,
+      actor(ctx),
+      input.confirmation,
+    )),
+
   approve: salesManagerProcedure
     .input(z.object({
       requestId: z.number().int().positive(),
@@ -140,6 +243,7 @@ export const salesControlRouter = router({
         // يطابق قسيمة الجهاز — يجب أن يصل الخدمة override إلى null فتُرفض CARD حتماً، لا أن
         // يُطوى بصمتٍ إلى «لم يُرسَل شيء» فيبقى مرجع الطلب الأصليّ نافذاً (Codex على PR #997).
         reference: z.string().trim().min(1).max(100).nullable().optional(),
+        deviceId: z.string().trim().min(1).max(64).nullable().optional(),
       }).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -179,7 +283,7 @@ export const salesControlRouter = router({
    * يجب أن يستطيع **سحبه**، وإلّا بقي كاشيرُ الاستبدال حبيسَ طلبٍ لا يملك إغلاقه.
    * والخدمة تحصر السحب بصاحب الطلب حصراً، فالبوّابة الأوسع لا توسّع الأثر.
    */
-  withdraw: salesCashierProcedure
+  withdraw: salesCorrectionProcedure
     .input(z.object({
       requestId: z.number().int().positive(),
       reason: z.string().trim().min(3).max(500),

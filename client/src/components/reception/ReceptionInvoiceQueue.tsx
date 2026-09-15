@@ -50,7 +50,6 @@ import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { invoiceStatusLabel, invoiceStatusBadgeVariant,
 } from "@shared/invoiceStatus";
 import { getDeviceCode } from "@/lib/offline/outbox";
-import { receptionInvoiceCorrectionBlockReason } from "@/lib/receptionInvoiceCorrection";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -293,7 +292,7 @@ export function ReceptionInvoiceQueue({
             <tbody>
               {rows.map((r) => {
                 const remaining = remainingOf(r);
-                const canCorrect = canFulfill && receptionInvoiceCorrectionBlockReason(r) == null;
+                const canCorrect = canFulfill;
                 return (
                   <tr key={String(r.id)} className="border-b align-middle hover:bg-muted/30">
                     <td className="px-2 py-2 font-bold" dir="ltr">
@@ -369,11 +368,9 @@ export function ReceptionInvoiceQueue({
                         </Button>
                         {canCorrect && (
                           <a
-                            href={`/invoices/${r.id}/correct`}
-                            target="_blank"
-                            rel="noreferrer"
+                            href={`/reception/workflow?section=edit&invoice=${encodeURIComponent(r.invoiceNumber)}`}
                             className="inline-flex h-7 items-center gap-1 rounded-md border border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] px-1.5 text-[10px] font-bold text-[var(--sem-warn)] hover:bg-muted"
-                            title="فتح نفس محرر إنشاء الفاتورة لإضافة أو حذف أو تعديل الأصناف"
+                            title="فتح فحص أهلية التعديل ثم محرر الفاتورة"
                             aria-label={`تعديل الفاتورة ${r.invoiceNumber} وإعادة إصدارها`}
                           >
                             <PencilLine aria-hidden className="size-3" />

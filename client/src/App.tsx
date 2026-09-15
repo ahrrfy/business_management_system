@@ -33,7 +33,7 @@ import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
-import { INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
+import { INVOICE_CORRECTION_GATE, INVOICE_LIST_GATE, WORK_ORDERS_HUB_GATE } from "@/lib/navVisibility";
 import { isWebUsbSupported, tryReconnectPrinter } from "@/lib/printing/print";
 import { QuranAudioProvider, pauseGlobalQuranAudio } from "@/components/quran/QuranAudioContext";
 
@@ -416,7 +416,7 @@ export default function App() {
       <Route path="/invoices"><Shell><RequireRole gate={INVOICE_LIST_GATE}><SalesHub /></RequireRole></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       {/* التصحيح: الكاشير يرفع طلباً صفريَّ الأثر من نفس شاشة البيع؛ مديرٌ مستقل يعتمد التنفيذ. */}
-      <Route path="/invoices/:id/correct"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
+      <Route path="/invoices/:id/correct"><Shell><RequireRole gate={INVOICE_CORRECTION_GATE}><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><RequireRole gate={INVOICE_LIST_GATE}><InvoiceDetail /></RequireRole></Shell></Route>
       <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
