@@ -54,21 +54,23 @@ export async function collectOnReceptionInvoice(
   // ثمّ **تُرفَض عند القبض** — وهو أسوأ من إخفائها: يراها الموظّف ولا يستطيع تحصيلها.
   // الشرطان يتغيّران معاً أو لا يتغيّران.
   const nullShiftWorkOrder = inv.shiftId == null && inv.sourceType === "WORKORDER";
-  if (!nullShiftWorkOrder && (!invShift || invShift.shiftType !== "RECEPTION")) {
+  const allowedShiftTypes = ["RECEPTION", "PRINT_SERVICES"];
+  if (!nullShiftWorkOrder && (!invShift || !allowedShiftTypes.includes(invShift.shiftType))) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "هذه الفاتورة خارج نطاق محطة خدمة الزبائن — تُسدَّد من شاشة الفواتير",
+      message: "هذه الفاتورة خارج نطاق محطة خدمة الزبائن والطباعة — تُسدَّد من شاشة الفواتير",
     });
   }
   // «سيدخل المبلغ درجك أنت» (§٨.٥): الدفعة تُنسَب لوردية **القابض** الحاليّ لا لوردية الفاتورة
-  // الأصلية — الموظّف يُحاسَب على ما استلمه هو (تأكيد المالك ٥/٨). تفضيل وردية الاستقبال.
+  // الأصلية — الموظّف يُحاسَب على ما استلمه هو (تأكيد المالك ٥/٨). تفضيل وردية الاستقبال ثم الطباعة.
   const myShift =
     (await getOpenShift(actor.userId, Number(inv.branchId), "RECEPTION"))
+    ?? (await getOpenShift(actor.userId, Number(inv.branchId), "PRINT_SERVICES"))
     ?? (await getOpenShift(actor.userId, Number(inv.branchId)));
   if (input.method === "CASH" && !myShift) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "افتح وردية استقبال أولاً — الدفعة النقدية تدخل درجك أنت وتُحاسَب عليها عند الإغلاق",
+      message: "افتح وردية استقبال أو طباعة أولاً — الدفعة النقدية تدخل درجك أنت وتُحاسَب عليها عند الإغلاق",
     });
   }
 
