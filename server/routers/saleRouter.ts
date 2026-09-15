@@ -31,6 +31,7 @@ import {
   productVariants,
   products,
   receipts,
+  salesControlRequests,
   shifts,
   workOrders,
 } from "../../drizzle/schema";
@@ -46,7 +47,7 @@ import { requestSalesControl } from "../services/sale/controlRequests";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { registerCounterCollectionTx } from "../services/delivery/counterCollection";
 import { randomUUID } from "node:crypto";
-import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
+import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesCorrectionProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope,
 } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -56,14 +57,19 @@ import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternal
 } from "../services/posExternalPayment";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled,
 } from "@shared/posPaymentPolicy";
+import { lookupInvoiceForCorrection } from "../services/sale/correctionLookup";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
 // الأصلي أيضاً، من دون توسيع كشف فواتير الموظفين الآخرين.
 const workOrderInvoiceCustomer = alias(customers, "workOrderInvoiceCustomer");
+const onlineOrderCustomer = alias(customers, "onlineOrderCustomer");
 // ١٠/٨ — توصيل قناة المتجر: طلب المتجر بلا إرسالية (عهدته عند تأكيد المندوب) — بدونه كانت
 // فاتورة متجرٍ بيد مندوب تظهر «بلا توصيل» في القائمة والفلتر. جهة الطلب لها alias مستقل.
 const onlineDeliveryParty = alias(deliveryParties, "onlineDeliveryParty");
+const correctionRequester = alias(users, "invoiceCorrectionRequester");
+const correctionReviewer = alias(users, "invoiceCorrectionReviewer");
+const correctionOriginalInvoice = alias(invoices, "invoiceCorrectionOriginal");
 // حالة توصيل موحَّدة للعرض/الفلتر: الإرسالية أولاً، وإلا اشتقاق من حالة طلب المتجر المُسنَد.
 const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignments.status},
   CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN
@@ -462,8 +468,19 @@ export function buildSalesListConds(
 }
 
 export const saleRouter = router({
+  /** مسحٌ تشغيليّ سريع لبدء التعديل من الاستقبال؛ التنفيذ النهائي يعيد الحراس تحت الأقفال. */
+  lookupForCorrection: salesCorrectionProcedure
+    .input(z.object({ invoiceNumber: z.string().trim().min(1).max(80) }))
+    .query(({ input, ctx }) => lookupInvoiceForCorrection(input.invoiceNumber, {
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+      role: ctx.user.role,
+      scopedOwnerId: ctx.scopedOwnerId,
+      invoiceScope: ctx.invoiceCorrectionScope,
+    })),
+
   /** محاولة دفع خارجية مستقلة: INITIATED أولاً، بلا أثر على الفاتورة/الذمّة. */
-  initiateExternalPayment: salesCashierProcedure
+  initiateExternalPayment: salesCorrectionProcedure
     .input(z.object({
       branchId: z.number().int().positive(),
       method: externalMethod,
@@ -475,6 +492,16 @@ export const saleRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (ctx.invoiceCorrectionScope === "reception" && input.channel !== "SALES_COLLECTION") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر بدء عملية الدفع",
+            why: "محطة الاستقبال مخوّلة بفرق تعديل الفاتورة فقط",
+            doThis: "ابدأ التعديل من شاشة الاستقبال، أو استخدم نقطة البيع للعملية المستقلة",
+          }),
+        });
+      }
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
@@ -489,12 +516,22 @@ export const saleRouter = router({
     }),
 
   /** تأكيد خادمي مسجّل؛ البيع اللاحق يستهلك المحاولة مرةً واحدة داخل معاملته. */
-  confirmExternalPayment: salesCashierProcedure
+  confirmExternalPayment: salesCorrectionProcedure
     .input(z.object({ branchId: z.number().int().positive(), attemptId: z.number().int().positive(), deviceId: z.string().trim().min(1).max(64),
         channel: z.enum(["POS", "SALES_COLLECTION"]).default("POS"),
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (ctx.invoiceCorrectionScope === "reception" && input.channel !== "SALES_COLLECTION") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: appErrorMessage({
+            what: "تعذّر تأكيد عملية الدفع",
+            why: "محطة الاستقبال مخوّلة بفرق تعديل الفاتورة فقط",
+            doThis: "ارجع إلى شاشة تعديل الفاتورة، أو أكّد العملية المستقلة من نقطة البيع",
+          }),
+        });
+      }
       const elevated = ctx.user.role === "admin";
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم",
@@ -863,7 +900,7 @@ export const saleRouter = router({
    * مديريّ فقط (قرار المالك §١٠، مرآة المرتجع). موافقة المدير تُغطّي تجاوز الائتمان/البيع تحت التكلفة.
    * التفصيل: docs/invoice-correction-design-2026-08-10.md. الخدمة correctSale (مُتحقَّقةٌ باختبارات).
    */
-  reissue: salesCashierProcedure
+  reissue: salesCorrectionProcedure
     .input(
       z.object({
         originalInvoiceId: z.number().int().positive(),
@@ -874,65 +911,31 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: nonNegMoneyString.nullish(),
         deliveryFee: nonNegMoneyString.nullish(),
+        deliveryFree: z.boolean().optional(),
+        deliveryWaivedAmount: nonNegMoneyString.nullish(),
         taxRatePercent: z.string().nullish(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullish(),
         notes: z.string().max(5000).nullish(),
-        // دفعةٌ إضافية تُحصَّل الآن عند زيادة المصحّح على المقبوض سلفاً (نقص).
+        // اقتراح قبض فرقٍ عند الاعتماد؛ لا درج ولا إثبات مزوّد يُنشأ في مرحلة الطلب.
         additionalPayment: z.object({
           amount: positiveMoneyString,
           method: posCashPaymentMethod,
-          reference: z.string().trim().min(1).max(100).nullish(),
-              externalPaymentAttemptId: z.number().int().positive().nullish(),
-              externalPaymentDeviceId: z
-                .string()
-                .trim()
-                .min(1)
-                .max(64)
-                .nullish(),
-            }).nullish(),
+        }).nullish(),
         // الفرق الزائد (المصحّح < المقبوض): رصيد دائن للعميل أو استرداد نقديّ (قرار المالك الهجين).
         overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
-        overpayRefundShiftId: z.number().int().positive().nullish(),
         reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
         clientRequestId: z.string().min(1).max(80).optional(),
         // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
-      })
-        .superRefine((input, refinement) => {
-          const payment = input.additionalPayment;
-          if (!payment) return;
-          if (payment.method !== "CASH" && !payment.externalPaymentAttemptId) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentAttemptId"],
-              message: "أكّد الدفع الخارجي قبل تحصيل فرق التصحيح",
-            });
-          }
-          if (payment.method !== "CASH" && !payment.externalPaymentDeviceId) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentDeviceId"],
-              message: "جهاز محاولة الدفع مطلوب",
-            });
-          }
-          if (
-            payment.method === "CASH" &&
-            (payment.externalPaymentAttemptId != null ||
-              payment.externalPaymentDeviceId != null)
-          ) {
-            refinement.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["additionalPayment", "externalPaymentAttemptId"],
-              message: "الدفع النقدي لا يحمل محاولة دفع خارجية",
-            });
-          }
-        }),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       const actor = {
         userId: ctx.user.id,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
         role: ctx.user.role,
+        scopedOwnerId: ctx.scopedOwnerId,
+        invoiceScope: ctx.invoiceCorrectionScope,
       };
       // كلمة مرور الاعتماد القديمة لا تُخزَّن إطلاقاً. الاعتماد الآن قرار مستخدمٍ ثانٍ
       // على طلب صفر الأثر، وهو نفسه سلطة تجاوز الائتمان/السعر عند التنفيذ.
@@ -1271,11 +1274,17 @@ export const saleRouter = router({
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
           // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
           customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+          contactName: invoices.contactName,
+          contactPhone: invoices.contactPhone,
           customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
           customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone}, NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+          customerAddress: sql<string | null>`COALESCE(${deliveryConsignments.deliveryAddress}, NULLIF(${onlineOrders.shippingAddress}, ''), ${customers.address}, ${workOrderInvoiceCustomer.address})`,
+          recipientName: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientName}, ''), ${onlineOrderCustomer.name}, NULLIF(${invoices.contactName}, ''), ${customers.name}, ${workOrderInvoiceCustomer.name})`,
+          recipientPhone: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.recipientPhone}, ''), NULLIF(${onlineOrderCustomer.whatsapp}, ''), NULLIF(${onlineOrderCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
           customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,
+          updatedAt: invoices.updatedAt,
           dueDate: invoices.dueDate,
           subtotal: invoices.subtotal,
           taxAmount: invoices.taxAmount,
@@ -1320,6 +1329,10 @@ export const saleRouter = router({
           consignmentStatus: unifiedConsignmentStatus,
           consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
           consignmentSettledAt: deliveryConsignments.settledAt,
+          onlineOrderStatus: onlineOrders.status,
+          deliveryAddress: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.deliveryAddress}, ''), NULLIF(${onlineOrders.shippingAddress}, ''))`,
+          deliveryGovernorate: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.governorate}, ''), NULLIF(${onlineOrders.governorate}, ''))`,
+          externalTrackingRef: sql<string | null>`COALESCE(NULLIF(${deliveryConsignments.externalTrackingRef}, ''), NULLIF(${onlineOrders.trackingNumber}, ''))`,
           deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
           workOrderCreatedBy: workOrders.createdBy,
         })
@@ -1335,6 +1348,7 @@ export const saleRouter = router({
         .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId),
           )
         .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+        .leftJoin(onlineOrderCustomer, eq(onlineOrderCustomer.id, onlineOrders.customerId))
         .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId),
           )
         .where(eq(invoices.id, input.invoiceId))
@@ -1423,6 +1437,32 @@ export const saleRouter = router({
         )
       .orderBy(asc(accountingEntries.id));
 
+    // أثر التعديل المنشور: المعرّفات ثابتة للتدقيق، والأسماء الحالية للعرض، مع الزمن ورقم الأصل.
+    const correctionAudit = inv.correctionOfInvoiceId == null ? null : (
+      await db
+        .select({
+          originalInvoiceId: salesControlRequests.invoiceId,
+          originalInvoiceNumber: correctionOriginalInvoice.invoiceNumber,
+          requestedBy: salesControlRequests.requestedBy,
+          requestedByName: correctionRequester.name,
+          requestedAt: salesControlRequests.createdAt,
+          reviewedBy: salesControlRequests.reviewedBy,
+          reviewedByName: correctionReviewer.name,
+          reviewedAt: salesControlRequests.reviewedAt,
+        })
+        .from(salesControlRequests)
+        .innerJoin(correctionOriginalInvoice, eq(correctionOriginalInvoice.id, salesControlRequests.invoiceId))
+        .leftJoin(correctionRequester, eq(correctionRequester.id, salesControlRequests.requestedBy))
+        .leftJoin(correctionReviewer, eq(correctionReviewer.id, salesControlRequests.reviewedBy))
+        .where(and(
+          eq(salesControlRequests.invoiceId, Number(inv.correctionOfInvoiceId)),
+          eq(salesControlRequests.resultInvoiceId, input.invoiceId),
+          eq(salesControlRequests.status, "APPROVED"),
+        ))
+        .orderBy(desc(salesControlRequests.id))
+        .limit(1)
+    )[0] ?? null;
+
     // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
     const qrPayload = invoiceBarcodeSet({
       invoiceNumber: inv.invoiceNumber,
@@ -1453,10 +1493,10 @@ export const saleRouter = router({
     if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = invoiceForView;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload, nextAction, nextActionReason,
+      return { ...invNoCost, items: itemsNoCost, payments, returns, correctionAudit, qrPayload, nextAction, nextActionReason,
         };
     }
-    return { ...invoiceForView, items, payments, returns, qrPayload, nextAction, nextActionReason };
+    return { ...invoiceForView, items, payments, returns, correctionAudit, qrPayload, nextAction, nextActionReason };
   }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.

@@ -204,6 +204,23 @@ const PROCEDURES = {
     roles: [],
     branch: "scoped",
   },
+  // محرّر تصحيح الفاتورة: (sales=FULL أو workorders=FULL) مع products>=READ.
+  // الخدمة تقصّ موظف الاستقبال على فواتير RECEPTION، والعزل الفرعي موروث من البوابة.
+  salesCorrectionProcedure: {
+    authority: "module-map",
+    module: "sales|workorders|products",
+    level: "FULL|FULL|READ",
+    roles: [],
+    branch: "scoped",
+  },
+  // شاشة المقارنة: sales=FULL، أو workorders=FULL مع products>=READ.
+  salesCorrectionComparisonProcedure: {
+    authority: "module-map",
+    module: "sales|workorders|products",
+    level: "FULL|FULL|READ",
+    roles: [],
+    branch: "scoped",
+  },
   // بوابة قراءة فاتورة مفردة للطباعة: sales>=READ أو workorders=FULL، مع عزل الفرع.
   // تُسجَّل كسلطة مركبة كي لا يصنّف الحارس الإجراءَ كبوابة مجهولة، من دون توسيع
   // صلاحية وحدة المبيعات لمشغّل الاستقبال.

@@ -91,9 +91,9 @@ describe("deriveDocumentTotal — الإجماليّ بترتيب تقريب ا�
     expect(r.total).toBe("48.40");
   });
 
-  it("يختلف عن calcTotals — وهذا سببُ وجوده (لا تكرارٌ بلا داعٍ)", () => {
-    // `calcTotals` تجمع غير المقرَّب ثمّ تقرّب مرّة: round2(48.3924) = 48.39 ⇒ فلسٌ فرقاً.
-    // لو استُعملت في المطابقة لأظهرت اللوحة «مطابق» بينما يرفض الخادم (أو العكس).
+  it("يطابق calcTotals بعد توحيد ترتيب التقريب مع الخادم", () => {
+    // كلا المسارين يقرّب كل سطر قبل الجمع؛ فلا تعرض شاشة البيع فلساً يختلف عن
+    // المطابقة أو الفاتورة التي يثبتها الخادم.
     const lines = [
       { price: "3.4566", qty: 7, discount: "0", discountType: "percent" },
       { price: "3.4566", qty: 7, discount: "0", discountType: "percent" },
@@ -102,7 +102,7 @@ describe("deriveDocumentTotal — الإجماليّ بترتيب تقريب ا�
       globalDiscount: "", globalDiscountType: "percent", shipping: "", shippingFree: false,
       otherExpenses: "", paidAmount: "", taxEnabled: false, taxRatePercent: "0",
     } as unknown as InvoiceState;
-    expect(calcTotals(lines, state).grandTotal).toBe("48.39");
+    expect(calcTotals(lines, state).grandTotal).toBe("48.40");
     expect(deriveDocumentTotal(lines).total).toBe("48.40");
   });
 

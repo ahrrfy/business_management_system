@@ -67,7 +67,7 @@ function returnRefundOf(payload: Record<string, unknown>): Record<string, unknow
  *    البند — الصيغةُ نفسها في `returnSaleInTx`) تُقيَّد لحساب العميل.
  *  · إلغاء: **المقبوضُ القابل للردّ** (إيصالاتُ القبض المُتحقّقة − ما رُدّ منها) — صفرٌ لفاتورةٍ
  *    غير مقبوضة، لا إجماليّها.
- *  · إعادة إصدار/استبدال: الدفعةُ الإضافية التي تُحصَّل الآن إن وُجدت، وإلّا المقبوضُ الذي يُعاد
+ *  · إعادة إصدار/استبدال: الدفعةُ الإضافية المقترح تحصيلها عند الاعتماد، وإلّا المقبوضُ الذي يُعاد
  *    تخصيصه على الفاتورة البديلة.
  *  · تغيير الاستحقاق: المتبقّي الذي يتغيّر استحقاقه.
  */
@@ -110,7 +110,7 @@ export function salesControlAffectedAmount(args: {
     case "SALES_EXCHANGE": {
       const payment = payload.additionalPayment && typeof payload.additionalPayment === "object" ? asRecord(payload.additionalPayment) : null;
       if (payment && payment.amount != null && payment.amount !== "" && dec(payment.amount).gt(0)) {
-        return { amount: fix2(dec(payment.amount)), label: "دفعة اضافية تُحصَّل الآن" };
+        return { amount: fix2(dec(payment.amount)), label: "دفعة اضافية تُحصَّل عند الاعتماد" };
       }
       return refundable.gt(0)
         ? { amount: fix2(refundable), label: "المقبوض الذي يُعاد تخصيصه على الفاتورة البديلة" }
@@ -141,7 +141,7 @@ export function salesControlShiftIds(payload: unknown): number[] {
 }
 
 /** إلى أين يُرسَل المُعتمِد حين يُحجَب الاعتمادُ السطريّ. */
-export const SALES_CONTROL_FULL_SCREEN_HINT = "يقع من شاشة طلبات ضبط البيع (تحمل توجيه النقد لحظة الاعتماد)";
+export const SALES_CONTROL_FULL_SCREEN_HINT = "يقع من شاشة طلبات ضبط البيع الكاملة";
 
 /**
  * لماذا لا يُعتمَد الطلبُ سطرياً (بلا `cashRouting`)، أو `null` حين يكفي ما في الحمولة:
@@ -156,6 +156,9 @@ export function salesControlInlineBlock(
 ): string | null {
   const p = asRecord(payload);
   const missing = (v: unknown) => v == null || String(v).trim() === "";
+  if (requestType === "SALES_REISSUE" || requestType === "SALES_EXCHANGE") {
+    return `تعديل الفاتورة يلزمه عرض «كان هكذا / سيصبح هكذا» كاملاً وإدخال تسوية الفرق عند الاعتماد — ${SALES_CONTROL_FULL_SCREEN_HINT}`;
+  }
   if (requestType === "SALES_CANCEL") {
     if (p.refundPaymentMethod === "CARD" && missing(p.reference)) {
       return `الالغاء ببطاقة يلزمه مرجع عملية جهاز الدفع لحظة الاعتماد — ${SALES_CONTROL_FULL_SCREEN_HINT}`;

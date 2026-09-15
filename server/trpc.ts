@@ -560,6 +560,82 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+/**
+ * طلب تصحيح فاتورة من محرّر البيع: مبيعات FULL، أو محطة استقبال workorders:FULL، مع
+ * products:READ لأن المحرّر الأصلي يحمّل وحدات الكتالوج وأسعاره لإعادة بناء السطور.
+ * لا تمنح هذه البوابة إنشاء بيعٍ مباشر؛ استعمالها محصور بنقاط التصحيح ومحاولة فرق الدفع.
+ * branchScoped يضيف عزل الفرع والموظف، وinvoiceCorrectionScope يقصّ موظف الاستقبال على
+ * فواتير ورديات RECEPTION حصراً داخل الخدمة نفسها.
+ */
+export const salesCorrectionProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next, path }) => {
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: appErrorMessage({
+          what: "تعذّر فتح تعديل الفاتورة",
+          why: UNAUTHED_ERR_MSG,
+          doThis: "سجّل الدخول ثم أعد فتح شاشة الاستقبال أو المبيعات",
+        }),
+      });
+    }
+    const override = (ctx.user.permissionsOverride ?? null) as Record<string, AccessLevel> | null;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const salesFull = map.sales === "FULL";
+    const receptionFull = map.workorders === "FULL";
+    const productsReadable = map.products === "READ" || map.products === "FULL";
+    if (ctx.user.role !== "admin" && (!productsReadable || (!salesFull && !receptionFull))) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر فتح تعديل الفاتورة",
+          why: FORBIDDEN_MSG,
+          doThis: "اطلب من المدير منحك وصول المبيعات الكامل أو صلاحية الاستقبال، مع قراءة المنتجات",
+        }),
+      });
+    }
+    assertTwoFactorEnrolled(ctx.user, path);
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+      },
+    });
+  }),
+);
+/**
+ * مقارنة طلب التصحيح في شاشة الاعتماد: مراجع المبيعات لا يحتاج صلاحية كتالوج مستقلة،
+ * بينما موظف الاستقبال الذي يراجع طلبه يبقى محتاجاً قراءة المنتجات كما في شاشة التحرير.
+ */
+export const salesCorrectionComparisonProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next, path }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user.permissionsOverride ?? null) as Record<string, AccessLevel> | null;
+    const map = resolvePermissions(ctx.user.role as RoleKey, override);
+    const salesFull = map.sales === "FULL";
+    const receptionWithCatalog = map.workorders === "FULL"
+      && (map.products === "READ" || map.products === "FULL");
+    if (ctx.user.role !== "admin" && !salesFull && !receptionWithCatalog) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: appErrorMessage({
+          what: "تعذّر فتح مقارنة التعديل",
+          why: FORBIDDEN_MSG,
+          doThis: "اطلب صلاحية اعتماد المبيعات أو صلاحية الاستقبال مع قراءة المنتجات",
+        }),
+      });
+    }
+    assertTwoFactorEnrolled(ctx.user, path);
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        invoiceCorrectionScope: salesFull || ctx.user.role === "admin" ? "sales" as const : "reception" as const,
+      },
+    });
+  }),
+);
 // عرض/طباعة فاتورةٍ واحدة (طلب المالك — خدمة العملاء تطبع/تعيد طباعة فواتيرها): يسمح بـsales≥READ
 // **أو** صلاحية الاستقبال (workorders:FULL). مشغّل الاستقبال يُنشئ الفواتير فيطبعها، بلا فتح وحدة
 // المبيعات كاملةً (عروض الأسعار تبقى محميّة على salesReadProcedure). محميّة بالفرع (branchScoped +

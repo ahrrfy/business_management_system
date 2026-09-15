@@ -129,6 +129,17 @@ export const INVOICE_LIST_GATE: RoleGate = {
   ],
 };
 
+/** محرّر التصحيح يحتاج قراءة الكتالوج، ويقبل مبيعات FULL أو محطة استقبال FULL. */
+export const INVOICE_CORRECTION_GATE: RoleGate = {
+  allOf: [
+    { module: "products", level: "READ" },
+    { anyOf: [
+      { module: "sales", level: "FULL" },
+      { module: "workorders", level: "FULL" },
+    ] },
+  ],
+};
+
 /** مدخل المطبعة الموحّد: طابور أوامر الشغل أو إدارة الإنتاج المخزني. */
 export const WORK_ORDERS_HUB_GATE: RoleGate = {
   anyOf: [
