@@ -89,7 +89,7 @@ export default defineConfig(({ mode }) => {
           "assets/app-*.js",
           "assets/index-*.css",
           STOREFRONT_SHELL_CHUNK_GLOB,
-          "assets/*.woff2",
+          "fonts/*.woff2",
         ],
         // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
         // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
