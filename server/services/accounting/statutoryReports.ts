@@ -175,6 +175,32 @@ export async function getStatutoryTrialBalance(input: {
       creditBalance: toDbMoney(signed.isNegative() ? signed.abs() : money(0)),
     };
   });
+
+  // كاشف §٥ — «لا دينار يُسقَط صامتاً»: أسطرٌ POSTED في الدورة/الفترة/الفرع بلا حسابٍ نظاميّ
+  // (statutoryAccountId IS NULL) تُسقطها INNER JOIN لكلّ الكشوفات النظامية بلا أثر. البوّابة تمنع
+  // نشوءها (الاعتماد والترحيل يرفضان دوراً غير مربوط)، لكنّ هذا التحصين يكشف أيّ انجرافٍ لاحق
+  // (سطرٌ رُحّل قبل ربط دورٍ، أو خللُ سلامة) بإظهار مجموعه وعدده صراحةً بدل حذفه بصمت.
+  const unmappedRow = rowsOf<{ debit: string; credit: string; lineCount: number }>(
+    await context.db.execute(sql`
+      SELECT
+        CAST(COALESCE(SUM(jl.debit), 0) AS CHAR) AS debit,
+        CAST(COALESCE(SUM(jl.credit), 0) AS CHAR) AS credit,
+        COUNT(*) AS lineCount
+      FROM journalLines jl
+      INNER JOIN journalEntries je ON je.id = jl.journalId AND je.status = 'POSTED'
+      WHERE je.entryDate >= ${input.from}
+        AND je.entryDate <= ${input.to}
+        ${cyclePredicate(context.cycleId)}
+        ${branchPredicate(input.branchId)}
+        AND jl.statutoryAccountId IS NULL
+    `),
+  )[0] ?? { debit: "0", credit: "0", lineCount: 0 };
+  const unmapped = {
+    debit: toDbMoney(money(unmappedRow.debit ?? 0)),
+    credit: toDbMoney(money(unmappedRow.credit ?? 0)),
+    lineCount: Number(unmappedRow.lineCount ?? 0),
+  };
+
   return {
     available: true as const,
     accountingBasis: context.mode === "ACTIVE" ? "STATUTORY_ACTIVE" : "STATUTORY_PREVIEW",
@@ -199,6 +225,9 @@ export async function getStatutoryTrialBalance(input: {
       credit: toDbMoney(totalCredit),
       difference: toDbMoney(totalDebit.sub(totalCredit)),
     },
+    // بواقي غير مخطَّطة: مجموع/عدد أسطر الدفتر POSTED التي لا تظهر في أيّ كشفٍ نظاميّ (§٥).
+    // lineCount>0 ⇒ الكشف ناقص — إنذارٌ يُعرَض، لا حذفٌ صامت.
+    unmapped,
     rows,
   };
 }
