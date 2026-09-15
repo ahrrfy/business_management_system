@@ -347,6 +347,10 @@ export default defineConfig({
       "server/services/__tests__/capabilityGateEquivalence.test.ts",
       // تدقيق ومحاكاة مسارات وسيناريوهات المرتجعات الموحدة والحوكمة (نقي، بلا قاعدة).
       "server/services/__tests__/returnsAuditScenarios.test.ts",
+      // طلبات مرتجع البيع القديمة: حساب الأثر الحقيقي وربط شاشة الاعتماد بالطلب نفسه.
+      "server/services/decisions/sources/__tests__/returnRequestView.test.ts",
+      "server/services/returns/refundCaps.batch.test.ts",
+      "client/src/pages/__tests__/salesReturnLegacyApproval.test.tsx",
       // تطبيع ومعالجة مدخلات وقراءات باركود الشحنات والطلبات والفواتير
       "shared/barcodeScanner.test.ts",
       // تصليب قراءة القارئ (١٢/٩/٢٦): فكّ المفتاح الفيزيائيّ (مستقلّ عن التخطيط) + كشف ومضةٍ متسامحٍ مع التذبذب

@@ -65,6 +65,51 @@ function railToRefundMethod(rail: string): RefundMethod | null {
   return (REFUND_METHODS as readonly string[]).includes(rail) ? (rail as RefundMethod) : null;
 }
 
+type RefundInputRow = {
+  rail?: unknown;
+  direction?: unknown;
+  amount?: unknown;
+};
+
+function refundCapSnapshot(
+  receiptRows: RefundInputRow[],
+  applicationRows: RefundInputRow[],
+  collectedAmount: unknown,
+): RefundCapSnapshot {
+  const inByMethod = new Map<RefundMethod, Decimal>();
+  const outByMethod = new Map<RefundMethod, Decimal>();
+  const add = (target: Map<RefundMethod, Decimal>, m: RefundMethod, v: Decimal) =>
+    target.set(m, (target.get(m) ?? money(0)).plus(v));
+
+  for (const r of receiptRows) {
+    const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
+    if (!m) continue;
+    add(r.direction === "IN" ? inByMethod : outByMethod, m, money(String(r.amount ?? "0")));
+  }
+  for (const r of applicationRows) {
+    const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
+    if (!m) continue;
+    add(inByMethod, m, money(String(r.amount ?? "0")));
+  }
+  add(inByMethod, "CASH", money(String(collectedAmount ?? "0")));
+
+  let totalIn = money(0);
+  let totalOut = money(0);
+  inByMethod.forEach((v) => { totalIn = totalIn.plus(v); });
+  outByMethod.forEach((v) => { totalOut = totalOut.plus(v); });
+  const pool = Decimal.max(money(0), totalIn.minus(totalOut));
+
+  const netByMethod = new Map<RefundMethod, Decimal>();
+  const capByMethod = new Map<RefundMethod, Decimal>();
+  for (const m of REFUND_METHODS) {
+    const net = Decimal.max(money(0), (inByMethod.get(m) ?? money(0)).minus(outByMethod.get(m) ?? money(0)));
+    netByMethod.set(m, net);
+    capByMethod.set(m, isSurfacedRefundMethod(m) ? pool : Decimal.min(pool, net));
+  }
+
+  return { pool, grossIn: totalIn, grossOut: totalOut, netByMethod, capByMethod };
+}
+
 export interface RefundCapSnapshot {
   /** الوعاء الحاكم: Σ(المقبوض بكل الطرق) − Σ(المسترَدّ بكل الطرق)، مقصوصاً عند الصفر. */
   pool: Decimal;
@@ -153,40 +198,99 @@ export async function loadRefundCaps(
     `),
   );
 
-  const inByMethod = new Map<RefundMethod, Decimal>();
-  const outByMethod = new Map<RefundMethod, Decimal>();
-  const add = (target: Map<RefundMethod, Decimal>, m: RefundMethod, v: Decimal) =>
-    target.set(m, (target.get(m) ?? money(0)).plus(v));
+  return refundCapSnapshot(receiptRows, applicationRows, collectedRows[0]?.amount);
+}
 
-  for (const r of receiptRows) {
-    const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
-    if (!m) continue;
-    add(r.direction === "IN" ? inByMethod : outByMethod, m, money(r.amount ?? "0"));
+/**
+ * نسخة القراءة المجمّعة لصناديق القرارات والتقارير. تنفّذ ثلاث قراءات ثابتة مهما بلغ عدد
+ * الفواتير، ثم تبني لكل فاتورة اللقطة نفسها التي تبنيها `loadRefundCaps`. لا تُستعمل في
+ * التنفيذ المالي؛ مسار الكتابة يحتاج قفل `FOR UPDATE` الخاص بالدالة المفردة أعلاه.
+ */
+export async function loadRefundCapsByInvoiceIds(
+  exec: SqlExecutor,
+  requestedInvoiceIds: number[],
+): Promise<Map<number, RefundCapSnapshot>> {
+  const invoiceIds = Array.from(new Set(requestedInvoiceIds.filter(Number.isSafeInteger)));
+  if (!invoiceIds.length) return new Map();
+  const idList = sql.join(invoiceIds.map((id) => sql`${id}`), sql`, `);
+
+  const rawRows = await Promise.all([
+    exec.execute(sql`
+      SELECT ${receipts.invoiceId} AS invoiceId,
+             ${receipts.paymentMethod} AS rail,
+             ${receipts.direction} AS direction,
+             CAST(COALESCE(SUM(${receipts.amount}), 0) AS CHAR) AS amount
+      FROM ${receipts}
+      WHERE ${receipts.invoiceId} IN (${idList})
+        AND ${receipts.status} IN ('COMPLETED','REVERSED')
+        AND ${receipts.approvalStatus} = 'APPROVED'
+        AND NOT EXISTS (
+          SELECT 1 FROM accountingEntries ae
+          WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
+        )
+      GROUP BY ${receipts.invoiceId}, ${receipts.paymentMethod}, ${receipts.direction}
+    `),
+    exec.execute(sql`
+      SELECT CASE
+               WHEN app.orderPayAppliedKind = 'INVOICE' THEN app.appliedId
+               ELSE wo.invoiceId
+             END AS invoiceId,
+             coll.orderPayMethod AS rail,
+             CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS amount
+      FROM orderPayments app
+      JOIN orderPayments coll ON coll.id = app.parentPaymentId
+      LEFT JOIN receipts pr ON pr.id = coll.receiptId
+      LEFT JOIN workOrders wo
+        ON app.orderPayAppliedKind = 'WORKORDER' AND wo.id = app.appliedId
+      WHERE app.orderPayKind = 'APPLICATION'
+        AND (
+          (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId IN (${idList}))
+          OR (app.orderPayAppliedKind = 'WORKORDER' AND wo.invoiceId IN (${idList}))
+        )
+        AND (
+          pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <>
+            CASE WHEN app.orderPayAppliedKind = 'INVOICE' THEN app.appliedId ELSE wo.invoiceId END
+        )
+      GROUP BY invoiceId, coll.orderPayMethod
+    `),
+    exec.execute(sql`
+      SELECT cn.invoiceId AS invoiceId,
+             CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS amount
+      FROM deliveryConsignments cn
+      WHERE cn.invoiceId IN (${idList})
+        AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
+      GROUP BY cn.invoiceId
+    `),
+  ]);
+  const receiptRows = rowsOf(rawRows[0]);
+  const applicationRows = rowsOf(rawRows[1]);
+  const collectedRows = rowsOf(rawRows[2]);
+
+  const groupedReceipts = new Map<number, RefundInputRow[]>();
+  const groupedApplications = new Map<number, RefundInputRow[]>();
+  const collectedByInvoice = new Map<number, unknown>();
+  const append = (target: Map<number, RefundInputRow[]>, row: any) => {
+    const invoiceId = Number(row.invoiceId);
+    if (!Number.isSafeInteger(invoiceId)) return;
+    const current = target.get(invoiceId) ?? [];
+    current.push(row);
+    target.set(invoiceId, current);
+  };
+  receiptRows.forEach((row) => append(groupedReceipts, row));
+  applicationRows.forEach((row) => append(groupedApplications, row));
+  for (const row of collectedRows) {
+    const invoiceId = Number(row.invoiceId);
+    if (Number.isSafeInteger(invoiceId)) collectedByInvoice.set(invoiceId, row.amount);
   }
-  for (const r of applicationRows) {
-    const m = railToRefundMethod(String(r.rail ?? "") as InboundRail);
-    if (!m) continue;
-    add(inByMethod, m, money(r.amount ?? "0"));
-  }
-  add(inByMethod, "CASH", money(collectedRows[0]?.amount ?? "0"));
 
-  let totalIn = money(0);
-  let totalOut = money(0);
-  inByMethod.forEach((v) => { totalIn = totalIn.plus(v); });
-  outByMethod.forEach((v) => { totalOut = totalOut.plus(v); });
-  const pool = Decimal.max(money(0), totalIn.minus(totalOut));
-
-  const netByMethod = new Map<RefundMethod, Decimal>();
-  const capByMethod = new Map<RefundMethod, Decimal>();
-  for (const m of REFUND_METHODS) {
-    const net = Decimal.max(money(0), (inByMethod.get(m) ?? money(0)).minus(outByMethod.get(m) ?? money(0)));
-    netByMethod.set(m, net);
-    // رافدا الردّ (نقد/بطاقة) يستوعبان الوعاء كلّه مهما كان رافد القبض — قرار المالك.
-    // غيرهما رافدُ قبضٍ فقط ⇒ محدودٌ برافده **وبالوعاء معاً** (لا استرداد مزدوج).
-    capByMethod.set(m, isSurfacedRefundMethod(m) ? pool : Decimal.min(pool, net));
-  }
-
-  return { pool, grossIn: totalIn, grossOut: totalOut, netByMethod, capByMethod };
+  return new Map(invoiceIds.map((invoiceId) => [
+    invoiceId,
+    refundCapSnapshot(
+      groupedReceipts.get(invoiceId) ?? [],
+      groupedApplications.get(invoiceId) ?? [],
+      collectedByInvoice.get(invoiceId) ?? "0",
+    ),
+  ]));
 }
 
 /** السقف الفعليّ لطريقةٍ بعد قصّه بقيمة المرتجع الجاري — نفس المعادلة في القراءة والكتابة. */
