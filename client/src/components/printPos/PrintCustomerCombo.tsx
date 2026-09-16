@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 
@@ -45,7 +46,7 @@ export function PrintCustomerCombo({ C, customerId, setCustomerId }: PrintCustom
   const active = customerId != null;
 
   return (
-    <div ref={boxRef} style={{ position: "relative" }}>
+    <div ref={boxRef} style={{ position: "relative", width: "100%" }}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -53,38 +54,43 @@ export function PrintCustomerCombo({ C, customerId, setCustomerId }: PrintCustom
         aria-expanded={open}
         aria-label="اختيار العميل"
         style={{
-          height: 36,
-          borderRadius: 9,
+          height: 32,
+          width: "100%",
+          borderRadius: 6,
           border: `1.5px solid ${active ? C.primary : C.border}`,
           background: active ? C.primarySoft : C.card,
           color: active ? C.primary : C.mutedFg,
           fontFamily: "inherit",
-          fontSize: 12.5,
+          fontSize: 12,
           fontWeight: 700,
           padding: "0 8px",
           outline: "none",
           cursor: "pointer",
-          maxWidth: 160,
+          boxSizing: "border-box",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 4,
           overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
         }}
       >
-        {label}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        <ChevronDown size={13} style={{ flexShrink: 0, opacity: 0.7 }} />
       </button>
       {open && (
         <div
           role="listbox"
           style={{
             position: "absolute",
-            top: 40,
-            left: 0,
-            minWidth: 240,
+            top: 36,
+            right: 0,
+            width: "100%",
+            minWidth: 220,
             zIndex: 50,
             background: C.card,
             border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            boxShadow: "0 10px 30px rgba(0,0,0,.18)",
+            borderRadius: 8,
+            boxShadow: "0 10px 30px rgba(0,0,0,.22)",
             overflow: "hidden",
           }}
         >

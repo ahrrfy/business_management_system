@@ -15,7 +15,12 @@ const readComponent = (relative: string) =>
  * في المكوّن، والمحاولة الخارجية المؤكَّدة في الشاشة).
  */
 const readRetailPos = () => readPage("POS.tsx") + "\n" + readComponent("pos/PaymentPanel.tsx");
-const readPrintPos = () => readPage("PrintPOS.tsx") + "\n" + readComponent("print-pos/PrintPosCheckout.tsx");
+const readPrintPos = () =>
+  readPage("PrintPOS.tsx") +
+  "\n" +
+  readComponent("print-pos/PrintPosCheckout.tsx") +
+  "\n" +
+  readComponent("print-pos/PrintBottomToolbar.tsx");
 
 /**
  * العقد الحاكم للدفع غير النقدي في نقاط البيع:
@@ -58,10 +63,12 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
   it("شاشة المطبعة (PrintPOS) تتبع العقد نفسه", () => {
     const source = readPrintPos();
 
-    expect(source).toContain('<Method m="CARD" Icon={CreditCard} label="بطاقة" />');
-    expect(source).toContain('<Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />');
+    expect(source).toContain('onClick={() => setMethod("CARD")}');
+    expect(source).toContain('onClick={() => setMethod("TRANSFER")}');
     expect(source).toContain("externalPaymentConfirmed");
     expect(source).toContain("PaymentReferenceField");
+    // لا إقفال مبثوث: لا زرّ طريقةٍ مُعطَّلٌ بنصٍّ ثابت في الشاشة.
+    expect(source).not.toContain('disabled aria-describedby="pos-external-payment-disabled"');
   });
 
   it("تحصيل دفعة لاحقة على فاتورة يشتقّ طرقه من السياسة لا من نصٍّ ثابت", () => {
