@@ -21,7 +21,7 @@ const TABLES = [
   "digitalPriceChangeReports", "digitalCurrentPrices", "digitalPriceVersions", "digitalPriceBatches",
   "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "shifts", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
-  "auditLogs", "studentProfiles", "customers", "suppliers", "categories", "users", "branches",
+  "auditLogs", "studentProfiles", "openingModeSettings", "customers", "suppliers", "categories", "users", "branches",
 ];
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set for tests"); return d; }
@@ -247,7 +247,7 @@ describe("ش٧ — الإعداد (prepare)", () => {
     }, actor))).rejects.toThrow(/تغيّر سعر/);
   });
 
-  it("يرفض الآجل ووردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
+  it("يرفض الآجل خارج الفاتورة المتقدمة أو بلا عميل، ويرفض وردية مغلقة ومفاتيح أسطر مكرّرة", async () => {
     const providerId = await mkProvider();
     const walletId = await mkWallet(providerId, "100000");
     const offeringId = await mkOffering(providerId, { walletId });
@@ -259,6 +259,11 @@ describe("ش٧ — الإعداد (prepare)", () => {
     }, actor))).rejects.toThrow(/نقداً أو ببطاقة فقط/);
 
     await expect(withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: "req-credit-invoice-1", branchId: 1, shiftId: 1,
+      paymentMethod: "CREDIT", cartFingerprint: "fp", sourceType: "INVOICE", lines: [l],
+    }, actor))).rejects.toThrow(/عميلاً مسجّلاً/);
+
+    await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-dupkey-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp",
       lines: [l, { ...l }],
     }, actor))).rejects.toThrow(/مفاتيح أسطر مكرّرة/);
@@ -267,6 +272,39 @@ describe("ش٧ — الإعداد (prepare)", () => {
     await expect(withTx((tx) => intentService.prepare(tx, {
       clientRequestId: "req-shift-1", branchId: 1, shiftId: 1, paymentMethod: "CASH", cartFingerprint: "fp", lines: [l],
     }, actor))).rejects.toThrow(/لا وردية مفتوحة/);
+  });
+
+  it("يحترم إعفاء حد الائتمان أثناء نافذة وضع الافتتاح", async () => {
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "عميل افتتاح",
+      defaultPriceTier: "RETAIL",
+      creditLimit: "0",
+      currentBalance: "0",
+    });
+    await db().insert(s.openingModeSettings).values({
+      id: 1,
+      enabled: true,
+      endsAt: new Date(Date.now() + 86_400_000),
+      maxNegativeQtyPerLine: 100,
+    });
+    const providerId = await mkProvider();
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, { walletId });
+    const priced = await publish(1, providerId, [{ offeringId, providerShare: "9500" }]);
+
+    const prepared = await withTx((tx) => intentService.prepare(tx, {
+      clientRequestId: "req-credit-opening-1",
+      branchId: 1,
+      shiftId: 1,
+      paymentMethod: "CREDIT",
+      cartFingerprint: "fp-opening-credit",
+      sourceType: "INVOICE",
+      customerId: 1,
+      lines: [line(offeringId, priced.get(offeringId)!)],
+    }, actor));
+
+    expect(prepared.intentId).toBeGreaterThan(0);
   });
 
   it("الاشتراك التعليميّ يتطلّب بيانات الطالب، وغير التعليميّ يرفضها", async () => {

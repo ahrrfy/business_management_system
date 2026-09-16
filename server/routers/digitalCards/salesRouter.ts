@@ -13,6 +13,7 @@ import {
   router,
 } from "../../trpc";
 import { actorOf, requireDb, scopedBranchOf } from "./shared";
+import { verifyManagerApproval } from "../saleRouter";
 
 const studentSnapshotSchema = z.object({
   studentName: z.string().min(1).max(200),
@@ -37,6 +38,12 @@ export const salesRouter = router({
         cartFingerprint: z.string().min(1).max(64),
         customerId: z.number().int().positive().nullish(),
         priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        notes: z.string().max(5000).nullish(),
+        managerApproval: z.object({
+          email: z.string().min(1),
+          password: z.string().min(1),
+        }).optional(),
         sourceType: z.enum(["POS", "INVOICE", "RECEPTION"]).default("POS"),
         sourcePayload: z.any().optional(),
         regularLines: z.array(z.object({
@@ -78,7 +85,15 @@ export const salesRouter = router({
       if (scoped != null && input.branchId !== scoped) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا صلاحية على فرع آخر" });
       }
-      return withTx((tx) => intentService.prepare(tx, input, actorOf(ctx)));
+      const { managerApproval, ...prepareInput } = input;
+      const managerOverrideByUserId = managerApproval
+        ? await verifyManagerApproval(managerApproval, ctx, input.branchId)
+        : undefined;
+      return withTx((tx) => intentService.prepare(
+        tx,
+        { ...prepareInput, managerOverrideByUserId },
+        actorOf(ctx),
+      ));
     }),
 
   claimExecution: digitalCardsPosProcedure

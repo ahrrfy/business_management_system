@@ -39,7 +39,10 @@ import { appErrorMessage } from "../../../shared/errors";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../../lib/phone";
+import { assertCreditLimit } from "../../lib/credit";
+import { createApproval } from "../creditApprovalService";
 import { money, sumMoney, toDbMoney } from "../money";
+import { readOpeningWindowState } from "../openingModeService";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
@@ -84,9 +87,13 @@ export interface PrepareInput {
   lines: PrepareLine[];
   customerId?: number | null;
   priceTier?: PriceTier | null;
+  dueDate?: string | null;
+  notes?: string | null;
   regularLines?: DigitalCheckoutRegularLineInput[];
   sourceType?: "POS" | "INVOICE" | "RECEPTION";
   sourcePayload?: any;
+  /** داخلي فقط؛ يحقنه الراوتر بعد التحقق من هوية المدير. */
+  managerOverrideByUserId?: number;
 }
 
 /** مهلة النيّة: نافذةٌ معقولة لإصدار الكروت من جهاز المزوّد قبل أن تُعتبر مهجورة. */
@@ -202,6 +209,29 @@ export async function prepare(
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",
+    });
+  }
+  if (input.paymentMethod === "CREDIT" && input.customerId == null) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إعداد بيع الكروت والاشتراكات بالآجل",
+        why: "الفاتورة لا تحمل عميلاً مسجّلاً تُرحّل الذمّة عليه",
+        doThis: "اختر عميلاً من سجل العملاء ثم أعد الحفظ",
+      }),
+    });
+  }
+  if (
+    input.paymentMethod === "CREDIT" &&
+    (input.externalPaymentAttemptId != null || input.externalPaymentDeviceId?.trim())
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: appErrorMessage({
+        what: "تعذّر إعداد البيع الآجل",
+        why: "الطلب يحمل محاولة دفع أو جهاز دفع خارجي مع أنه لا يسجّل قبضاً",
+        doThis: "ألغِ بيانات الدفع الخارجي ثم أعد إعداد الفاتورة كذمّة كاملة",
+      }),
     });
   }
   if (input.paymentMethod === "CASH" && input.externalPaymentAttemptId != null) {
@@ -419,8 +449,41 @@ export async function prepare(
   }
 
   const expiresAt = new Date(Date.now() + INTENT_TTL_MINUTES * 60_000);
-  const checkoutSnapshot = await prepareCheckoutSnapshot(tx, input, actor);
-  const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)).plus(money(checkoutSnapshot.expectedSubtotal)));
+  const checkoutBase = await prepareCheckoutSnapshot(
+    tx,
+    { ...input, managerApprovedByUserId: input.managerOverrideByUserId ?? null },
+    actor,
+  );
+  const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)).plus(money(checkoutBase.expectedSubtotal)));
+  let creditApprovalId: number | null = null;
+  if (input.paymentMethod === "CREDIT") {
+    const customerId = input.customerId!;
+    if (input.managerOverrideByUserId != null) {
+      const approval = await createApproval(tx, {
+        customerId,
+        branchId: input.branchId,
+        maxAmount: expectedTotal,
+        approvedBy: input.managerOverrideByUserId,
+        ttlMinutes: INTENT_TTL_MINUTES,
+        notes: "digital-card credit approved before provider issuance",
+      });
+      creditApprovalId = approval.id;
+    } else {
+      // يفشل قبل إصدار أي كرت. تبقى نواة البيع تعيد الفحص عند التثبيت للحماية من تغيّر
+      // الرصيد بين الإعداد والإصدار، أمّا موافقة المدير المحدّدة بالمبلغ فتُستهلك مرةً واحدة.
+      const opening = await readOpeningWindowState(tx);
+      if (!opening.active) {
+        await assertCreditLimit(
+          tx,
+          customerId,
+          expectedTotal,
+          input.branchId,
+          "CREDIT",
+        );
+      }
+    }
+  }
+  const checkoutSnapshot = { ...checkoutBase, creditApprovalId };
 
   if (input.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
     await lockConfirmedExternalPaymentAttempt(tx, {
@@ -921,6 +984,7 @@ export async function listNeedsReview(db: DB, filters: { branchId?: number | nul
       shiftStatus: shifts.status,
       shiftOpenedAt: shifts.openedAt,
       shiftClosedAt: shifts.closedAt,
+      paymentMethod: digitalSaleIntents.paymentMethod,
       expectedTotal: digitalSaleIntents.expectedTotal,
       createdAt: digitalSaleIntents.createdAt,
       expiresAt: digitalSaleIntents.expiresAt,

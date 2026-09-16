@@ -71,6 +71,13 @@ export interface DigitalCheckoutSnapshot {
   priceTier: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   regularLines: DigitalCheckoutRegularLineSnapshot[];
   expectedSubtotal: string;
+  /** حقول الفاتورة المتقدمة التي يجب أن تبقى مرتبطة بالنيّة حتى التثبيت/الاسترداد. */
+  dueDate?: string | null;
+  notes?: string | null;
+  /** هوية مدير تحقّق منها الراوتر؛ لا تقبلها الخدمة من قناة عامة مباشرة. */
+  managerApprovedByUserId?: number | null;
+  /** موافقة ائتمان محدّدة بالعميل والمبلغ، تُستهلك ذرّياً عند إنشاء الفاتورة. */
+  creditApprovalId?: number | null;
   sourceType?: "POS" | "INVOICE" | "RECEPTION";
   sourcePayload?: any;
 }

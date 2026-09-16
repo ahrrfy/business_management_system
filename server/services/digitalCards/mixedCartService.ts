@@ -41,6 +41,10 @@ export interface CheckoutSnapshotInput {
   branchId?: number;
   customerId?: number | null;
   priceTier?: PriceTier | null;
+  dueDate?: string | null;
+  notes?: string | null;
+  /** داخلي فقط: هوية مدير تحقّق منها الراوتر، ولا تدخل بصمة طلب المستخدم. */
+  managerApprovedByUserId?: number | null;
   sourceType?: "POS" | "INVOICE" | "RECEPTION";
   sourcePayload?: any;
   regularLines?: DigitalCheckoutRegularLineInput[];
@@ -107,9 +111,19 @@ function normalizedRequest(input: CheckoutSnapshotInput) {
       };
     })
     .sort((a, b) => a.lineKey.localeCompare(b.lineKey));
+  const dueDate = input.dueDate?.trim() || null;
+  if (dueDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    checkoutError("تاريخ استحقاق الفاتورة الآجلة غير صالح");
+  }
+  const notes = input.notes?.trim() || null;
+  if (notes != null && notes.length > 5_000) {
+    checkoutError("ملاحظات الفاتورة تتجاوز 5000 محرف");
+  }
   return {
     customerId: input.customerId ?? null,
     priceTier: input.priceTier ?? null,
+    dueDate,
+    notes,
     regularLines,
   };
 }
@@ -254,6 +268,7 @@ export async function prepareCheckoutSnapshot(
         !line.isGift &&
         actor.role !== "admin" &&
         actor.role !== "manager" &&
+        input.managerApprovedByUserId == null &&
         lineDiscountExceedsThreshold(
           reference ?? money(0),
           money(line.quantity),
@@ -426,7 +441,11 @@ export async function prepareCheckoutSnapshot(
         );
       }
     }
-    if (actor.role !== "admin" && actor.role !== "manager") {
+    if (
+      actor.role !== "admin" &&
+      actor.role !== "manager" &&
+      input.managerApprovedByUserId == null
+    ) {
       const paid = costedLines.filter((line) => !line.isGift);
       const paidSubtotal = toDbMoney(sumMoney(paid.map((line) => line.total)));
       if (
@@ -454,6 +473,9 @@ export async function prepareCheckoutSnapshot(
     expectedSubtotal: toDbMoney(
       sumMoney(regularLines.map((line) => line.total)),
     ),
+    dueDate: request.dueDate,
+    notes: request.notes,
+    managerApprovedByUserId: input.managerApprovedByUserId ?? null,
     requestFingerprint: checkoutRequestFingerprint(input),
     sourceType: input.sourceType,
     sourcePayload: input.sourcePayload,
